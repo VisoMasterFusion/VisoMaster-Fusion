@@ -494,6 +494,12 @@ class ModelsProcessor(QtCore.QObject):
     def run_swapper_cscs(self, image, embedding, output):
         self.face_swappers.run_swapper_cscs(image, embedding, output)
 
+    def calc_swapper_latent_canonswap(self, source_embedding):
+        return self.face_swappers.calc_swapper_latent_canonswap(source_embedding)
+
+    def run_swapper_canonswap(self, image, embedding, output):
+        return self.face_swappers.run_canonswap(image, embedding, output)
+
     def run_enhance_frame_tile_process(self, img, enhancer_type, tile_size=256, scale=1):
         return self.frame_enhancers.run_enhance_frame_tile_process(img, enhancer_type, tile_size, scale)
 
