@@ -1554,6 +1554,7 @@ class VideoProcessor(QObject):
         # Calculate custom fps from slider to evaluate audio speed playback
         # Change audio speed slider too volume slider
         fpsorig = self.media_capture.get(cv2.CAP_PROP_FPS)
+        fpscust = self.media_capture.get(cv2.CAP_PROP_FPS)
         if self.main_window.control['VideoPlaybackCustomFpsToggle'] and not self.recording: # Use custom FPS only for playback
             fpscust = self.main_window.control['VideoPlaybackCustomFpsSlider']
         fpsdiv = fpscust / fpsorig
