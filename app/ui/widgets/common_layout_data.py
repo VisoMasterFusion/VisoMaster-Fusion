@@ -56,7 +56,7 @@ COMMON_LAYOUT_DATA: LayoutDictTypes = {
             'step': 0.1,
             'parentToggle': 'FaceRestorerEnableToggle',
             'requiredToggleValue': True,
-            'help': 'Adjust the fidelity weight to control how closely the restoration preserves the original face details.'
+            'help': 'Adjust the fidelity weight to control how closely the restoration preserves the original face details (For CodeFormer and VQFR-v2 only).'
         },
         'FaceRestorerBlendSlider': {
             'level': 2,
@@ -245,7 +245,7 @@ COMMON_LAYOUT_DATA: LayoutDictTypes = {
             'parentToggle': 'FaceExpressionRetargetingLipsEnableToggle & FaceExpressionEnableToggle',
             'requiredToggleValue': True,
             'help': 'Multiplier value for Retargeting Lips.'
-        },
+        }
     },
     'ReF-LDM Denoiser': {
         'ReferenceKVTensorsSelection': {
@@ -265,7 +265,7 @@ COMMON_LAYOUT_DATA: LayoutDictTypes = {
             'widget_type': 'ToggleButton',
             'label': 'Exclusive Reference Path',
             'control_name': 'UseReferenceExclusivePathToggle',
-            'default': False,
+            'default': True,
             'help': 'If enabled, forces the UNet to use only reference K/V for attention, maximizing focus on the reference features.'
         },
         'DenoiserBaseSeedSlider': {
@@ -273,7 +273,7 @@ COMMON_LAYOUT_DATA: LayoutDictTypes = {
             'widget_type': 'ParameterSlider',
             'label': 'Base Seed',
             'control_name': 'DenoiserBaseSeedSlider',
-            'min_value': '0', 'max_value': '999999', 'default': '220', 'step': 1,
+            'min_value': '0', 'max_value': '999', 'default': '0', 'step': 1,
             'help': 'Set a fixed base seed for the denoiser. This seed will be used for all frames and both denoiser passes (if applicable) to ensure consistent noise patterns.'
         },
         'DenoiserUNetEnableBeforeRestorersToggle': {
@@ -302,7 +302,7 @@ COMMON_LAYOUT_DATA: LayoutDictTypes = {
             'widget_type': 'ParameterSlider',
             'label': 'Single Step Timestep (t) (Before)',
             'control_name': 'DenoiserSingleStepTimestepSliderBefore',
-            'min_value': '1', 'max_value': '999', 'default': '1', 'step': 1,
+            'min_value': '0', 'max_value': '500', 'default': '500', 'step': 1,
             'parentToggle': 'DenoiserUNetEnableBeforeRestorersToggle',
             'requiredToggleValue': True,
             'parentSelection': 'DenoiserModeSelectionBefore',
@@ -314,7 +314,7 @@ COMMON_LAYOUT_DATA: LayoutDictTypes = {
             'widget_type': 'ParameterSlider',
             'label': 'DDIM Steps (Before)',
             'control_name': 'DenoiserDDIMStepsSliderBefore',
-            'min_value': '10', 'max_value': '200', 'default': '20', 'step': 10,
+            'min_value': '5', 'max_value': '50', 'default': '10', 'step': 1,
             'parentToggle': 'DenoiserUNetEnableBeforeRestorersToggle',
             'requiredToggleValue': True,
             'parentSelection': 'DenoiserModeSelectionBefore',
@@ -326,7 +326,7 @@ COMMON_LAYOUT_DATA: LayoutDictTypes = {
             'widget_type': 'ParameterDecimalSlider',
             'label': 'CFG Scale (Before)',
             'control_name': 'DenoiserCFGScaleDecimalSliderBefore',
-            'min_value': '1.0', 'max_value': '10.0', 'default': '1.0', 'step': 0.1, 'decimals': 1,
+            'min_value': '0.0', 'max_value': '10.0', 'default': '1.0', 'step': 0.1, 'decimals': 1,
             'parentToggle': 'DenoiserUNetEnableBeforeRestorersToggle',
             'requiredToggleValue': True,
             'parentSelection': 'DenoiserModeSelectionBefore',
@@ -359,7 +359,7 @@ COMMON_LAYOUT_DATA: LayoutDictTypes = {
             'widget_type': 'ParameterSlider',
             'label': 'Single Step Timestep (t) (After)',
             'control_name': 'DenoiserSingleStepTimestepSliderAfterFirst',
-            'min_value': '1', 'max_value': '999', 'default': '1', 'step': 1, # Max value was 200
+            'min_value': '0', 'max_value': '500', 'default': '500', 'step': 1, # Max value was 200
             'parentToggle': 'DenoiserAfterFirstRestorerToggle',
             'requiredToggleValue': True,
             'parentSelection': 'DenoiserModeSelectionAfterFirst',
@@ -371,7 +371,7 @@ COMMON_LAYOUT_DATA: LayoutDictTypes = {
             'widget_type': 'ParameterSlider',
             'label': 'DDIM Steps (After First)',
             'control_name': 'DenoiserDDIMStepsSliderAfterFirst',
-            'min_value': '10', 'max_value': '200', 'default': '20', 'step': 10,
+            'min_value': '5', 'max_value': '50', 'default': '10', 'step': 1,
             'parentToggle': 'DenoiserAfterFirstRestorerToggle',
             'requiredToggleValue': True,
             'parentSelection': 'DenoiserModeSelectionAfterFirst',
@@ -383,7 +383,7 @@ COMMON_LAYOUT_DATA: LayoutDictTypes = {
             'widget_type': 'ParameterDecimalSlider',
             'label': 'CFG Scale (After First)',
             'control_name': 'DenoiserCFGScaleDecimalSliderAfterFirst',
-            'min_value': '1.0', 'max_value': '10.0', 'default': '1.0', 'step': 0.1, 'decimals': 1,
+            'min_value': '0.0', 'max_value': '10.0', 'default': '1.0', 'step': 0.1, 'decimals': 1,
             'parentToggle': 'DenoiserAfterFirstRestorerToggle',
             'requiredToggleValue': True,
             'parentSelection': 'DenoiserModeSelectionAfterFirst',
@@ -416,7 +416,7 @@ COMMON_LAYOUT_DATA: LayoutDictTypes = {
             'widget_type': 'ParameterSlider',
             'label': 'Single Step Timestep (t) (After)',
             'control_name': 'DenoiserSingleStepTimestepSliderAfter',
-            'min_value': '1', 'max_value': '999', 'default': '1', 'step': 1, # Max value was 200
+            'min_value': '0', 'max_value': '500', 'default': '500', 'step': 1, # Max value was 200
             'parentToggle': 'DenoiserAfterRestorersToggle',
             'requiredToggleValue': True,
             'parentSelection': 'DenoiserModeSelectionAfter',
@@ -428,7 +428,7 @@ COMMON_LAYOUT_DATA: LayoutDictTypes = {
             'widget_type': 'ParameterSlider',
             'label': 'DDIM Steps (After)',
             'control_name': 'DenoiserDDIMStepsSliderAfter',
-            'min_value': '10', 'max_value': '200', 'default': '20', 'step': 10,
+            'min_value': '5', 'max_value': '50', 'default': '10', 'step': 1,
             'parentToggle': 'DenoiserAfterRestorersToggle',
             'requiredToggleValue': True,
             'parentSelection': 'DenoiserModeSelectionAfter',
@@ -440,7 +440,7 @@ COMMON_LAYOUT_DATA: LayoutDictTypes = {
             'widget_type': 'ParameterDecimalSlider',
             'label': 'CFG Scale (After)',
             'control_name': 'DenoiserCFGScaleDecimalSliderAfter',
-            'min_value': '1.0', 'max_value': '10.0', 'default': '1.0', 'step': 0.1, 'decimals': 1,
+            'min_value': '0.0', 'max_value': '10.0', 'default': '1.0', 'step': 0.1, 'decimals': 1,
             'parentToggle': 'DenoiserAfterRestorersToggle',
             'requiredToggleValue': True,
             'parentSelection': 'DenoiserModeSelectionAfter',

@@ -195,7 +195,7 @@ class InputFacesLoaderWorker(qtc.QThread):
 
                 embedding_store: Dict[str, numpy.ndarray] = {}
                 # Ottenere i valori di 'options'
-                options = SETTINGS_LAYOUT_DATA['Face Recognition']['RecognitionModelSelection']['options']
+                options = SETTINGS_LAYOUT_DATA['Detectors']['RecognitionModelSelection']['options']
                 for option in options:
                     if option != control['RecognitionModelSelection']:
                         target_emb, _ = self.main_window.models_processor.run_recognize_direct(img, face_kps, control['SimilarityTypeSelection'], option)

@@ -30,6 +30,7 @@ merged_embeddings*.txt
 model_assets/liveportrait_onnx/*.onnx
 model_assets/liveportrait_onnx/*.trt
 model_assets/reference_kv_data/
+model_assets/canonswap/
 output/
 saved_parameters*.json
 source_images/
