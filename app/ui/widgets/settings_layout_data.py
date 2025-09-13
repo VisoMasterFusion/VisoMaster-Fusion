@@ -11,7 +11,7 @@ SETTINGS_LAYOUT_DATA: LayoutDictTypes = {
             'help': 'Select the theme to be used',
             'exec_function': control_actions.change_theme,
             'exec_function_args': [],
-        },
+        }
     },
     'General': {
         'ProvidersPrioritySelection': {
@@ -28,12 +28,12 @@ SETTINGS_LAYOUT_DATA: LayoutDictTypes = {
             'label': 'Number of Threads',
             'min_value': '1',
             'max_value': '30',
-            'default': '2',
+            'default': '1',
             'step': 1,
             'help': 'Set number of execution threads while playing and recording. Depends strongly on GPU VRAM.',
             'exec_function': control_actions.change_threads_number,
             'exec_function_args': [],
-        },
+        }
     },
     'Video Playback Settings': {
         'VideoPlaybackCustomFpsToggle': {
@@ -66,23 +66,57 @@ SETTINGS_LAYOUT_DATA: LayoutDictTypes = {
             'help': 'Set the playback audio of the audio, when Live Sound is enabled'
         },
     },
-    'Auto Swap':{
+    'Swap settings':{
         'AutoSwapToggle': {
             'level': 1,
             'label': 'Auto Swap',
             'default': False,
             'help': 'Automatically Swap all faces using selected Source Faces/Embeddings when loading an video/image file'
         },
-    },
-    'VR180 Mode':{
+        'SwapOnlyBestMatchEnableToggle': {
+            'level': 1,
+            'label': 'Swap only best match',
+            'default': False,           
+            'help': 'only swap highest face match per face (not every match above treshold)'
+        },
         'VR180ModeEnableToggle': {
             'level': 1,
             'label': 'Enable VR180 Mode',
             'default': False,
             'help': 'Enable VR180 mode. This will treat the input video as an equirectangular VR180 video and apply face swapping within perspective crops.'
         },
+        'MaxDFMModelsSlider':{
+            'level': 1,
+            'label': 'Maximum DFM Models to use',
+            'min_value': '1',
+            'max_value': '5',
+            'default': '1',
+            'step': 1,
+            'help': "Set the maximum number of DFM Models to keep in memory at a time. Set this based on your GPU's VRAM",
+        },
+        'EmbMergeMethodSelection':{
+            'level': 1,
+            'label': 'Embedding Merge Method',
+            'options': ['Mean','Median'],
+            'default': 'Mean',
+            'help': 'Select the method to merge facial embeddings. "Mean" averages the embeddings, while "Median" selects the middle value, providing more robustness to outliers.'
+        }
     },
     'Detectors': {
+        'RecognitionModelSelection': {
+            'level': 1,
+            'label': 'Recognition Model',
+            'options': ['Inswapper128ArcFace', 'SimSwapArcFace', 'GhostArcFace', 'CSCSArcFace'],
+            'default': 'Inswapper128ArcFace',
+            'help': 'Choose the ArcFace model to be used for comparing the similarity of faces.'
+        },
+        'SimilarityTypeSelection': {
+            'level': 1,
+            'label': 'Swapping Similarity Type',
+            'options': ['Opal', 'Pearl', 'Optimal'],
+            'default': 'Opal',
+            'help': 'Choose the type of similarity calculation for face detection and matching during the face swapping process.'
+        },
         'DetectorModelSelection': {
             'level': 1,
             'label': 'Face Detect Model',
@@ -107,7 +141,6 @@ SETTINGS_LAYOUT_DATA: LayoutDictTypes = {
             'default': '20',
             'step': 1,     
             'help': 'Set the maximum number of faces to detect in a frame'
-   
         },
         'AutoRotationToggle': {
             'level': 1,
@@ -179,17 +212,6 @@ SETTINGS_LAYOUT_DATA: LayoutDictTypes = {
             'help': 'Draw bounding boxes to all detected faces in the frame'
         }
     },
-    'DFM Settings':{
-        'MaxDFMModelsSlider':{
-            'level': 1,
-            'label': 'Maximum DFM Models to use',
-            'min_value': '1',
-            'max_value': '5',
-            'default': '1',
-            'step': 1,
-            'help': "Set the maximum number of DFM Models to keep in memory at a time. Set this based on your GPU's VRAM",
-        }
-    },
     'Frame Enhancer':{
         'FrameEnhancerEnableToggle':{
             'level': 1,
@@ -224,7 +246,7 @@ SETTINGS_LAYOUT_DATA: LayoutDictTypes = {
             'help': 'Select to resize the video to 1920*1080 (only on 16/9 format)'
         }
     },
-    'Webcam Settings': {
+    'Webcam and Virtualcam Settings': {
         'WebcamMaxNoSelection': {
             'level': 2,
             'label': 'Webcam Max No',
@@ -253,8 +275,6 @@ SETTINGS_LAYOUT_DATA: LayoutDictTypes = {
             'default': '30',
             'help': 'Set the maximum frames per second (FPS) for webcam input.'
         },
-    },
-    'Virtual Camera': {
         'SendVirtCamFramesEnableToggle': {
             'level': 1,
             'label': 'Send Frames to Virtual Camera',
@@ -273,34 +293,9 @@ SETTINGS_LAYOUT_DATA: LayoutDictTypes = {
             'requiredToggleValue': True,
             'exec_function': control_actions.enable_virtualcam,
             'exec_funtion_args': [],
-        },
-    },
-    'Face Recognition': {
-        'RecognitionModelSelection': {
-            'level': 1,
-            'label': 'Recognition Model',
-            'options': ['Inswapper128ArcFace', 'SimSwapArcFace', 'GhostArcFace', 'CSCSArcFace'],
-            'default': 'Inswapper128ArcFace',
-            'help': 'Choose the ArcFace model to be used for comparing the similarity of faces.'
-        },
-        'SimilarityTypeSelection': {
-            'level': 1,
-            'label': 'Swapping Similarity Type',
-            'options': ['Opal', 'Pearl', 'Optimal'],
-            'default': 'Opal',
-            'help': 'Choose the type of similarity calculation for face detection and matching during the face swapping process.'
-        },
-    },
-    'Embedding Merge Method':{
-        'EmbMergeMethodSelection':{
-            'level': 1,
-            'label': 'Embedding Merge Method',
-            'options': ['Mean','Median'],
-            'default': 'Mean',
-            'help': 'Select the method to merge facial embeddings. "Mean" averages the embeddings, while "Median" selects the middle value, providing more robustness to outliers.'
         }
     },
-    'Media Selection':{
+    'Misc':{
         'TargetMediaFolderRecursiveToggle':{
             'level': 1,
             'label': 'Target Media Include Subfolders',
@@ -312,110 +307,19 @@ SETTINGS_LAYOUT_DATA: LayoutDictTypes = {
             'label': 'Input Faces Include Subfolders',
             'default': False,
             'help': 'Include all files from Subfolders when choosing Input Faces Folder'
-        }
-    },
-    'Misc':{    
+        },   
         'CommandLineDebugEnableToggle': {
-            'level': 3,
+            'level': 1,
             'label': 'Commandline Infos',
             'default': False,           
             'help': 'used restore strenght and needed itterations in Commandline + jpeg/mpeg infos'
-        },        
-        'SwapOnlyBestMatchEnableToggle': {
-            'level': 3,
-            'label': 'Swap only best match',
-            'default': False,           
-            'help': 'only swap highest face match per face (not every match above treshold)'
         },
         'AutoSaveWorkspaceToggle':{
-            'level': 3,
+            'level': 1,
             'label': 'Auto Save Workspace',
             'default': False,
             'help': 'Auto Saves Workspace .json in output folder at end of recording (only the status at end of recording)'
         }
-    },
-    'Experimental Settings (very experimental, better don´t touch)': {                          
-        'AnalyseImageEnableToggle': {
-            'level': 1,
-            'label': 'Analyse Image',
-            'default': False,
-            'help': 'Enable AutoColor Transfer: 1. Hans Test without mask, 2. Hans Test with mask, 3. DFL Method without mask, 4. DFL Original Method.'
-        },        
-        'DFLXSegBGEnableToggle': {
-            'level': 2,
-            'label': 'Xseg 2 Background',
-            'default': False,
-            'parentToggle': 'DFLXSeg2EnableToggle',
-            'requiredToggleValue': True,            
-            'help': 'Enable second XSeg Mask for Inside the Face. not working well atm. (uses Faceparser on swap)'
-        },
-        'OccluderMaskBgSlider': {
-            'level': 2,
-            'label': 'Xseg 2 Background Adjust',
-            'min_value': '-40',
-            'max_value': '40',
-            'default': '-10',
-            'step': 1,
-            'parentToggle': 'DFLXSegBGEnableToggle',
-            'requiredToggleValue': True,
-            'help': 'Adjust where the second Xseg Mask gets applied.'
-        },        
-        'get_cropped_face_kpsTypeSelection': {
-            'level': 1,
-            'label': 'get cropped face kps',
-            'options': ['NEAREST', 'BILINEAR'],
-            'default': 'BILINEAR',
-            'help': 'Experimental! for basic functionality testing. changes the interpolation type for necessary pipeline functions (resize/rotation/etc. of image). caution, influences Autorestore calculation'
-        },        
-        'original_face_128_384TypeSelection': {
-            'level': 1,
-            'label': 'original_128_384',
-            'options': ['NEAREST', 'BILINEAR'],
-            'default': 'BILINEAR',
-            'help': 'Experimental! for basic functionality testing. changes the interpolation type for necessary pipeline functions (resize/rotation/etc. of image). caution, influences Autorestore calculation'
-        },
-        'original_face_512TypeSelection': {
-            'level': 1,
-            'label': 'original_512',
-            'options': ['NEAREST', 'BILINEAR', 'BICUBIC'],
-            'default': 'BILINEAR',
-            'help': 'Experimental! for basic functionality testing. changes the interpolation type for necessary pipeline functions (resize/rotation/etc. of image). caution, influences Autorestore calculation'
-        },
-        'UntransformTypeSelection': {
-            'level': 1,
-            'label': 'Untransform',
-            'options': ['NEAREST', 'BILINEAR'],
-            'default': 'BILINEAR',
-            'help': 'Experimental! for basic functionality testing. changes the interpolation type for necessary pipeline functions (resize/rotation/etc. of image). caution, influences Autorestore calculation'
-        },         
-        'expression_faceeditor_t256TypeSelection': {
-            'level': 1,
-            'label': 'Expression_faceeditor_t256',
-            'options': ['NEAREST', 'BILINEAR'],
-            'default': 'BILINEAR',
-            'help': 'Experimental! for basic functionality testing. changes the interpolation type for necessary pipeline functions (resize/rotation/etc. of image). caution, influences Autorestore calculation'
-        },         
-        'expression_faceeditor_backTypeSelection': {
-            'level': 1,
-            'label': 'Expression_faceeditor_back',
-            'options': ['NEAREST', 'BILINEAR'],
-            'default': 'BILINEAR',
-            'help': 'Experimental! for basic functionality testing. changes the interpolation type for necessary pipeline functions (resize/rotation/etc. of image). caution, influences Autorestore calculation'
-        },         
-        'block_shiftTypeSelection': {
-            'level': 1,
-            'label': 'block shift',
-            'options': ['NEAREST', 'BILINEAR'],
-            'default': 'NEAREST',
-            'help': 'Experimental! for basic functionality testing. changes the interpolation type for necessary pipeline functions (resize/rotation/etc. of image). caution, influences Autorestore calculation'
-        },         
-        'AntialiasTypeSelection': {
-            'level': 1,
-            'label': 'Antialias',
-            'options': ['False', 'True'],
-            'default': 'False',
-            'help': 'Experimental! most of the time no visual effect, in rare cases minor effect'
-        },
     }
 }
 

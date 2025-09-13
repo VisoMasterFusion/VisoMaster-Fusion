@@ -164,7 +164,7 @@ class ModelsProcessor(QtCore.QObject):
             ('CPUExecutionProvider')
         ]       
         self.syncvec = torch.empty((1, 1), dtype=torch.float32, device=self.device)
-        self.nThreads = 2
+        self.nThreads = 1
 
         # Initialize models and models_path
         self.models: Dict[str, onnxruntime.InferenceSession] = {}
