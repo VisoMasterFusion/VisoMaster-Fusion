@@ -1,4 +1,4 @@
---extra-index-url https://download.pytorch.org/whl/cu118
+--extra-index-url https://download.pytorch.org/whl/cu128
 
 ftfy
 kornia
@@ -20,8 +20,10 @@ qdarkstyle
 regex
 requests
 scikit-image==0.21.0
-tensorrt-cu11==10.4.0
-torch==2.4.1+cu118
-torchaudio==2.4.1+cu118
-torchvision==0.19.1+cu118
+tensorrt==10.6.0 --extra-index-url https://pypi.nvidia.com
+tensorrt-cu12_libs==10.6.0
+tensorrt-cu12_bindings==10.6.0
+torch==2.4.1+cu128
+torchaudio==2.4.1+cu128
+torchvision==0.19.1+cu128
 tqdm

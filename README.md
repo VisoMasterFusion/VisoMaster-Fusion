@@ -84,6 +84,18 @@ conda create -n visomaster python=3.10 -y
 conda activate visomaster
 ```
 
+**3. Install requirements depending on your cuda version**
+```
+# for CUDA 11.4
+pip install -r requirements_cu118.txt
+
+# for CUDA 12.4
+pip install -r requirements_cu118.txt
+
+# for CUDA 12.8
+pip install -r requirements_cu128.txt
+```
+
 **4. Run the Application**
 Once everything is set up, start the application by opening the **Start.bat** file. On Linux, run `python main.py`.
 
