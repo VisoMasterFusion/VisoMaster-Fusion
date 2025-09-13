@@ -966,8 +966,8 @@ class VideoProcessor(QObject):
             print(f"[ERROR] Failed to enable virtual camera: {e}")
             self.virtcam = None # Ensure virtcam is None on failure
             # Optionally notify user via messagebox
-            self.main_window.display_messagebox_signal.emit('Virtual Camera Error', f'Failed to start virtual camera:\n{e}', self.main_window)
-
+            #self.main_window.display_messagebox_signal.emit('Virtual Camera Error', f'Failed to start virtual camera:\n{e}', self.main_window) 
+            # Deactivated messagebox option on error else it stops job manager processes
 
     def disable_virtualcam(self):
         if self.virtcam:
