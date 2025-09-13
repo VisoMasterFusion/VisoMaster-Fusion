@@ -11,6 +11,16 @@ import onnxruntime
 import torch
 import onnx
 from torchvision.transforms import v2
+
+from app.processors.utils import faceutil
+
+# --- NEW KORNIA IMPORT ---
+try:
+    import kornia.color as K
+except ImportError:
+    K = None # Fallback if Kornia is not installed, can add error handling or power-law
+    print("Warning: Kornia library not found. Color space conversions will use power-law approximation.")
+# --- END NEW KORNIA IMPORT ---
 from PySide6 import QtCore
 try:
     import tensorrt as trt
@@ -40,14 +50,102 @@ onnxruntime.set_default_logger_severity(4)
 onnxruntime.log_verbosity_level = -1
 lock = threading.Lock()
 
+SRGB_GAMMA = 2.2 # More precise sRGB gamma handling is complex, this is an approximation
+
+def gamma_encode_linear_rgb_to_srgb(linear_rgb: torch.Tensor, gamma=SRGB_GAMMA):
+    # Assumes input is float in [0,1], linear RGB
+    # linear_rgb -> srgb
+    return torch.pow(linear_rgb.clamp(0.0, 1.0), 1.0 / gamma)
+
+def gamma_decode_srgb_to_linear_rgb(srgb: torch.Tensor, gamma=SRGB_GAMMA):
+    # Assumes input is float in [0,1], sRGB
+    # srgb -> linear_rgb
+    return torch.pow(srgb.clamp(0.0, 1.0), gamma)
+
 class ModelsProcessor(QtCore.QObject):
     processing_complete = QtCore.Signal()
     model_loaded = QtCore.Signal()  # Signal emitted with Onnx InferenceSession
 
+    @staticmethod
+    def print_tensor_stats(tensor: torch.Tensor, name: str, enabled: bool = True):
+        if not enabled:
+            return
+        if isinstance(tensor, torch.Tensor):
+            # Cast to float for mean and std calculation if tensor is uint8
+            if tensor.dtype == torch.uint8:
+                tensor_float = tensor.float() / 255.0 # Normalize for meaningful stats
+                print(f"DEBUG DENOISER STATS for {name}: shape={tensor.shape}, dtype={tensor.dtype}, device={tensor.device}, min={tensor.min().item():.4f}, max={tensor.max().item():.4f}, mean={tensor_float.mean().item():.4f}, std={tensor_float.std().item():.4f} (stats on [0,1] float)")
+            elif tensor.dtype == torch.float16 or tensor.dtype == torch.float32:
+                print(f"DEBUG DENOISER STATS for {name}: shape={tensor.shape}, dtype={tensor.dtype}, device={tensor.device}, min={tensor.min().item():.4f}, max={tensor.max().item():.4f}, mean={tensor.mean().item():.4f}, std={tensor.std().item():.4f}")
+            else:
+                 print(f"DEBUG DENOISER STATS for {name}: shape={tensor.shape}, dtype={tensor.dtype}, device={tensor.device} (stats not computed for this dtype)")
+        else:
+            print(f"DEBUG DENOISER STATS for {name}: Not a tensor, type is {type(tensor)}")
+
+    # --- START: Functions integrated from ldm.modules.diffusionmodules.util ---
+    @staticmethod
+    def make_beta_schedule(schedule, n_timestep, linear_start=1e-4, linear_end=2e-2, cosine_s=8e-3) -> np.ndarray:
+        if schedule == "linear":
+            betas = (
+                    torch.linspace(linear_start ** 0.5, linear_end ** 0.5, n_timestep, dtype=torch.float64) ** 2
+            )
+        elif schedule == "cosine":
+            timesteps = (
+                    torch.arange(n_timestep + 1, dtype=torch.float64) / n_timestep + cosine_s
+            )
+            alphas = timesteps / (1 + cosine_s) * np.pi / 2 # type: ignore
+            alphas = torch.cos(alphas).pow(2)
+            alphas = alphas / alphas[0]
+            betas = 1 - alphas[1:] / alphas[:-1]
+            betas = np.clip(betas.numpy(), a_min=0, a_max=0.999) # type: ignore
+        elif schedule == "sqrt_linear":
+            betas = torch.linspace(linear_start, linear_end, n_timestep, dtype=torch.float64)
+        elif schedule == "sqrt": # Not used by ref-ldm
+            betas = torch.linspace(linear_start, linear_end, n_timestep, dtype=torch.float64) ** 0.5
+        else:
+            raise ValueError(f"schedule '{schedule}' unknown.")
+        return betas.numpy() if isinstance(betas, torch.Tensor) else betas
+
+
+    @staticmethod
+    def make_ddim_timesteps(ddim_discr_method: str, num_ddim_timesteps: int, num_ddpm_timesteps: int, verbose: bool = True) -> np.ndarray:
+        if ddim_discr_method == 'uniform':
+            c = num_ddpm_timesteps // num_ddim_timesteps
+            if c == 0: c = 1 # Avoid division by zero or c=0 for small num_ddpm_timesteps
+            ddim_timesteps = np.asarray(list(range(0, num_ddpm_timesteps, c)))
+        elif ddim_discr_method == 'uniform_trailing':
+            c = num_ddpm_timesteps // num_ddim_timesteps
+            if c == 0: c = 1
+            ddim_timesteps = np.arange(num_ddpm_timesteps, 0, -c).astype(int)[::-1] - 2 # Match LDM util
+            ddim_timesteps = np.clip(ddim_timesteps, 0, num_ddpm_timesteps - 1) # Ensure valid range
+        elif ddim_discr_method == 'quad':
+            ddim_timesteps = ((np.linspace(0, np.sqrt(num_ddpm_timesteps * .8), num_ddim_timesteps)) ** 2).astype(int)
+        else:
+            raise NotImplementedError(f'There is no ddim discretization method called "{ddim_discr_method}"')
+
+        steps_out = np.unique(ddim_timesteps)
+        steps_out.sort()
+
+        if verbose:
+            print(f'Selected DDPM timesteps for DDIM sampler (0-indexed): {steps_out}')
+        return steps_out
+
+    @staticmethod
+    def make_ddim_sampling_parameters(alphacums: np.ndarray, ddim_timesteps: np.ndarray, eta: float, verbose: bool=True) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
+        _prev_t = np.concatenate(([-1], ddim_timesteps[:-1])) # Use -1 to signify "before first step"
+        _alphas_prev = np.array([alphacums[pt] if pt != -1 else 1.0 for pt in _prev_t])
+        _alphas = alphacums[ddim_timesteps]
+        sigmas = eta * np.sqrt((1 - _alphas_prev) / (1 - _alphas) * (1 - _alphas / _alphas_prev))
+        sigmas = np.nan_to_num(sigmas, nan=0.0)
+        return sigmas, _alphas, _alphas_prev
+
     def __init__(self, main_window: 'MainWindow', device='cuda'):
         super().__init__()
         self.main_window = main_window
+        self.K = K # Assign the module-level K to an instance attribute
         self.provider_name = 'TensorRT'
+        self.internal_deep_copied_kv_map: Dict[str, Dict[str, torch.Tensor]] | None = None
+        self.internal_kv_map_source_filename: str | None = None
         self.device = device
         self.model_lock = threading.RLock()  # Reentrant lock for model access
         self.trt_ep_options = {
@@ -65,8 +163,8 @@ class ModelsProcessor(QtCore.QObject):
             ('CUDAExecutionProvider'),
             ('CPUExecutionProvider')
         ]       
-        self.nThreads = 2
         self.syncvec = torch.empty((1, 1), dtype=torch.float32, device=self.device)
+        self.nThreads = 2
 
         # Initialize models and models_path
         self.models: Dict[str, onnxruntime.InferenceSession] = {}
@@ -97,6 +195,24 @@ class ModelsProcessor(QtCore.QObject):
         self.frame_enhancers = FrameEnhancers(self)
         self.face_editors = FaceEditors(self)
 
+        self.lp_mask_crop_latent = faceutil.create_faded_inner_mask(size=(64, 64), border_thickness=3, fade_thickness=8, blur_radius=3, device=self.device)
+        self.lp_mask_crop_latent = torch.unsqueeze(self.lp_mask_crop_latent, 0) # Shape: [1, 64, 64]
+
+        # Denoiser specific initializations (from VR180 feature, which is correct for the implementation)
+        num_ddpm_timesteps = 1000
+        linear_start_val = 0.0015 
+        linear_end_val = 0.0155   
+        self.betas_np = ModelsProcessor.make_beta_schedule(
+            schedule="linear", 
+            n_timestep=num_ddpm_timesteps,
+            linear_start=linear_start_val, 
+            linear_end=linear_end_val    
+        )
+        self.alphas_np = 1.0 - self.betas_np
+        self.alphas_cumprod_np = np.cumprod(self.alphas_np, axis=0)
+        self.alphas_cumprod_torch = torch.from_numpy(self.alphas_cumprod_np).float().to(self.device)
+        self.vae_scale_factor = 1.0 # Confirmed by user
+
         self.clip_session = []
         self.arcface_dst = np.array( [[38.2946, 51.6963], [73.5318, 51.5014], [56.0252, 71.7366], [41.5493, 92.3655], [70.7299, 92.2041]], dtype=np.float32)
         self.FFHQ_kps = np.array([[ 192.98138, 239.94708 ], [ 318.90277, 240.1936 ], [ 256.63416, 314.01935 ], [ 201.26117, 371.41043 ], [ 313.08905, 371.15118 ] ])
@@ -121,26 +237,31 @@ class ModelsProcessor(QtCore.QObject):
         
         self.lp_mask_crop = self.face_editors.lp_mask_crop
         self.lp_lip_array = self.face_editors.lp_lip_array
+        self.rgb_to_linear_rgb_converter = None
+        self.linear_rgb_to_rgb_converter = None
 
     def load_model(self, model_name, session_options=None):
         with self.model_lock:
-            self.main_window.model_loading_signal.emit()
-            # QApplication.processEvents()
-            # if not is_file_exists(self.models_path[model_name]):
-            #     download_file(model_name, self.models_path[model_name], self.models_data[model_name]['hash'], self.models_data[model_name]['url'])
-            if session_options is None:
-                model_instance = onnxruntime.InferenceSession(self.models_path[model_name], providers=self.providers)
-            else:
-                model_instance = onnxruntime.InferenceSession(self.models_path[model_name], sess_options=session_options, providers=self.providers)
-
-            # Check if another thread has already loaded an instance for this model, if yes then delete the current one and return that instead
-            if self.models[model_name]:
-                del model_instance
-                gc.collect()
+            if self.models.get(model_name):
                 return self.models[model_name]
-            self.main_window.model_loaded_signal.emit()
 
-            return model_instance
+            self.main_window.model_loading_signal.emit()
+            try:
+                if session_options is None:
+                    model_instance = onnxruntime.InferenceSession(self.models_path[model_name], providers=self.providers)
+                else:
+                    model_instance = onnxruntime.InferenceSession(self.models_path[model_name], sess_options=session_options, providers=self.providers)
+
+                # Race condition check: another thread might have loaded it while this one was creating the instance
+                if self.models.get(model_name):
+                    del model_instance
+                    gc.collect()
+                    return self.models.get(model_name)
+                
+                self.models[model_name] = model_instance
+                return model_instance
+            finally:
+                self.main_window.model_loaded_signal.emit()
 
     def load_dfm_model(self, dfm_model):
         with self.model_lock:
@@ -210,6 +331,17 @@ class ModelsProcessor(QtCore.QObject):
         self.clip_session = []
         gc.collect()
 
+    def unload_model(self, model_name_to_unload):
+        with self.model_lock:
+            if model_name_to_unload in self.models and self.models.get(model_name_to_unload) is not None:
+                print(f"Unloading model: {model_name_to_unload}")
+                del self.models[model_name_to_unload]
+                self.models[model_name_to_unload] = None
+                gc.collect()
+                torch.cuda.empty_cache()
+            else:
+                print(f"Model '{model_name_to_unload}' not found or already unloaded.")
+
     def showModelLoadingProgressBar(self):
         self.main_window.model_load_dialog.show()
 
@@ -272,6 +404,41 @@ class ModelsProcessor(QtCore.QObject):
         self.delete_models_trt()
         torch.cuda.empty_cache()
 
+    def ensure_denoiser_models_loaded(self):
+        """Loads the UNet and VAE models if they are not already loaded."""
+        with self.model_lock: # Ensure thread safety
+            #print("Ensuring denoiser models (UNet, VAEs) are loaded...")
+            unet_model_name = self.main_window.fixed_unet_model_name
+            vae_encoder_name = 'RefLDMVAEEncoder'
+            vae_decoder_name = 'RefLDMVAEDecoder'
+
+            if not self.models.get(unet_model_name): # Use .get() for safety
+                #print(f"  Loading UNet model: {unet_model_name}")
+                self.models[unet_model_name] = self.load_model(unet_model_name)
+            # else:
+                # print(f"  UNet model '{unet_model_name}' already loaded.")
+
+            if not self.models.get(vae_encoder_name):
+                #print(f"  Loading VAE Encoder model: {vae_encoder_name}")
+                self.models[vae_encoder_name] = self.load_model(vae_encoder_name)
+            # else:
+                # print(f"  VAE Encoder model '{vae_encoder_name}' already loaded.")
+
+            if not self.models.get(vae_decoder_name):
+                #print(f"  Loading VAE Decoder model: {vae_decoder_name}")
+                self.models[vae_decoder_name] = self.load_model(vae_decoder_name)
+            # else:
+                # print(f"  VAE Decoder model '{vae_decoder_name}' already loaded.")
+            #print("Denoiser models loading check complete.")
+
+    def unload_denoiser_models(self):
+        """Unloads the UNet and VAE models."""
+        with self.model_lock: # Ensure thread safety
+            print("Unloading denoiser models (UNet, VAEs)...")
+            self.unload_model(self.main_window.fixed_unet_model_name)
+            self.unload_model('RefLDMVAEEncoder')
+            self.unload_model('RefLDMVAEDecoder')
+            print("Denoiser models unloaded.")
 
     def load_inswapper_iss_emap(self, model_name):
         with self.model_lock:
@@ -381,21 +548,21 @@ class ModelsProcessor(QtCore.QObject):
     def findCosineDistance(self, vector1, vector2):
         vector1 = vector1.ravel()
         vector2 = vector2.ravel()
-        cos_dist = 1 - np.dot(vector1, vector2)/(np.linalg.norm(vector1)*np.linalg.norm(vector2)) # 2..0
-        return 100-cos_dist*50
+        cos_dist = 1 - np.dot(vector1, vector2) / (np.linalg.norm(vector1) * np.linalg.norm(vector2))  # 2..0
+        return 100 - cos_dist * 50
 
-    def apply_facerestorer(self, swapped_face_upscaled, restorer_det_type, restorer_type, restorer_blend, fidelity_weight, detect_score):
-        return self.face_restorers.apply_facerestorer(swapped_face_upscaled, restorer_det_type, restorer_type, restorer_blend, fidelity_weight, detect_score)
+    def apply_facerestorer(self, swapped_face_upscaled, restorer_det_type, restorer_type, restorer_blend, fidelity_weight, detect_score, interpolation_method):
+        return self.face_restorers.apply_facerestorer(swapped_face_upscaled, restorer_det_type, restorer_type, restorer_blend, fidelity_weight, detect_score, interpolation_method)
 
     def apply_occlusion(self, img, amount):
         return self.face_masks.apply_occlusion(img, amount)
     
-    def apply_dfl_xseg(self, img, amount):
-        return self.face_masks.apply_dfl_xseg(img, amount)
+    def apply_dfl_xseg(self, img, amount, background, mouth, parameters):
+        return self.face_masks.apply_dfl_xseg(img, amount, background, mouth, parameters)
     
-    def apply_face_parser(self, img, parameters):
-        return self.face_masks.apply_face_parser(img, parameters)
-    
+    def process_masks_and_masks(self, swap_restorecalc, original_face_512, parameters):
+        return self.face_masks.process_masks_and_masks(swap_restorecalc, original_face_512, parameters)
+         
     def apply_face_makeup(self, img, parameters):
         return self.face_editors.apply_face_makeup(img, parameters)
     
@@ -405,5 +572,242 @@ class ModelsProcessor(QtCore.QObject):
     def restore_eyes(self, img_orig, img_swap, kpss_orig, blend_alpha=0.5, feather_radius=10, size_factor=3.5, radius_factor_x=1.0, radius_factor_y=1.0, x_offset=0, y_offset=0, eye_spacing_offset=0):
         return self.face_masks.restore_eyes(img_orig, img_swap, kpss_orig, blend_alpha, feather_radius, size_factor, radius_factor_x, radius_factor_y, x_offset, y_offset, eye_spacing_offset)
 
-    def apply_fake_diff(self, swapped_face, original_face, DiffAmount):
-        return self.face_masks.apply_fake_diff(swapped_face, original_face, DiffAmount)
+    def apply_fake_diff(self, swapped_face, original_face, lower_limit_thresh, lower_value, upper_thresh, upper_value, middle_value, parameters):
+        return self.face_masks.apply_fake_diff(swapped_face, original_face, lower_limit_thresh, lower_value, upper_thresh, upper_value, middle_value, parameters)
+
+    def run_onnx(self, image, output, model_key):
+        return self.face_masks.run_onnx(image, output, model_key)
+
+    def apply_perceptual_diff_onnx(self, swapped_face, original_face, swap_mask, lower_limit_thresh, lower_value, upper_thresh, upper_value, middle_value, feature_layer, ExcludeVGGMaskEnableToggle):
+        return self.face_masks.apply_perceptual_diff_onnx(swapped_face, original_face, swap_mask, lower_limit_thresh, lower_value, upper_thresh, upper_value, middle_value, feature_layer, ExcludeVGGMaskEnableToggle)
+
+    @staticmethod 
+    def extract_into_tensor_torch(a: torch.Tensor, t: torch.Tensor, x_shape: tuple) -> torch.Tensor:
+        if t.ndim == 0: t = t.unsqueeze(0)
+        b = t.shape[0]
+        out = torch.gather(a, 0, t.long()) 
+        return out.reshape(b, *((1,) * (len(x_shape) - 1)))
+
+    def apply_denoiser_unet(self,
+                            image_cxhxw_uint8: torch.Tensor,
+                            reference_kv_filename: str,
+                            use_reference_exclusive_path: bool,
+                            denoiser_mode: str = "Single Step (Fast)",
+                            denoiser_single_step_t: int = 1,
+                            denoiser_ddim_steps: int = 20,
+                            denoiser_cfg_scale: float = 1.0,
+                            denoiser_ddim_eta: float = 0.0,
+                            base_seed: int = 220
+                            #blur_sigma_before_sharpen: float = 0.5,
+                            #sharpen_strength: float = 0.5
+                            ) -> torch.Tensor:
+        # This flag is already defined in the original file.
+        DEBUG_DENOISER = False
+        unet_model_name = self.main_window.fixed_unet_model_name
+        vae_encoder_name = 'RefLDMVAEEncoder'
+        vae_decoder_name = 'RefLDMVAEDecoder'
+
+        if DEBUG_DENOISER:
+            print(f"\n--- Denoiser Pass Start: Mode='{denoiser_mode}', CFG Scale={denoiser_cfg_scale}, VAE Scale Factor={self.vae_scale_factor} ---")
+            ModelsProcessor.print_tensor_stats(image_cxhxw_uint8, "Initial input image_cxhxw_uint8", DEBUG_DENOISER)
+
+        with self.model_lock:
+            self.ensure_denoiser_models_loaded()
+            if not (self.models.get(unet_model_name) and \
+                    self.models.get(vae_encoder_name) and \
+                    self.models.get(vae_decoder_name)):
+                print("Denoiser: Critical models (UNet/VAEs) not loaded. Skipping.")
+                return image_cxhxw_uint8
+
+            kv_tensor_map_for_this_run: Dict[str, Dict[str, torch.Tensor]] | None = None
+            master_kv_map_from_main = self.main_window.current_kv_tensors_map
+            
+            if reference_kv_filename and reference_kv_filename != "No K/V tensor files found":
+                if self.internal_deep_copied_kv_map is None or \
+                self.internal_kv_map_source_filename != reference_kv_filename:
+                    if master_kv_map_from_main: 
+                        print(f"ModelsProcessor: Updating internal deep-copied K/V map for '{reference_kv_filename}'.")
+                        try:
+                            self.internal_deep_copied_kv_map = {
+                                layer: {
+                                    'k': tens_dict['k'].clone().to(self.device),
+                                    'v': tens_dict['v'].clone().to(self.device)
+                                }
+                                for layer, tens_dict in master_kv_map_from_main.items()
+                                if tens_dict and isinstance(tens_dict.get('k'), torch.Tensor) and isinstance(tens_dict.get('v'), torch.Tensor)
+                            }
+                            self.internal_kv_map_source_filename = reference_kv_filename
+                        except Exception as e:
+                            print(f"Denoiser: Error deep copying K/V map for '{reference_kv_filename}': {e}. Skipping denoiser pass.")
+                            self.internal_deep_copied_kv_map = None
+                            self.internal_kv_map_source_filename = None
+                            return image_cxhxw_uint8
+                    else: 
+                        self.internal_deep_copied_kv_map = None
+                        self.internal_kv_map_source_filename = None
+                kv_tensor_map_for_this_run = self.internal_deep_copied_kv_map
+            
+            if denoiser_mode == "Full Restore (DDIM)" and use_reference_exclusive_path and not kv_tensor_map_for_this_run:
+                print(f"Denoiser (Full Restore): Reference K/V tensor file selected for use, but K/V map is empty. Skipping.")
+                return image_cxhxw_uint8
+            if denoiser_mode == "Single Step (Fast)" and use_reference_exclusive_path and not kv_tensor_map_for_this_run:
+                 print(f"Denoiser (Single Step): Reference K/V tensor file selected for use, but K/V map is empty. Skipping.")
+                 return image_cxhxw_uint8
+
+        target_proc_dim = 512 
+        _, h_input, w_input = image_cxhxw_uint8.shape
+        if h_input != target_proc_dim or w_input != target_proc_dim:
+            image_to_process_cxhxw_uint8 = v2.Resize((target_proc_dim, target_proc_dim), 
+                                                     interpolation=v2.InterpolationMode.BILINEAR, 
+                                                     antialias=True)(image_cxhxw_uint8)
+        else:
+            image_to_process_cxhxw_uint8 = image_cxhxw_uint8
+
+        h_proc, w_proc = image_to_process_cxhxw_uint8.shape[1], image_to_process_cxhxw_uint8.shape[2]
+
+        # --- VAE Encoder Input Preparation ---
+        # Convert sRGB uint8 [0,255] to sRGB float [-1,1] for VAE Encoder
+        # This assumes the VAE expects sRGB-like data normalized to [-1,1].
+        image_srgb_float_minus1_1 = (image_to_process_cxhxw_uint8.float() / 127.5) - 1.0
+        image_srgb_float_minus1_1_batched = image_srgb_float_minus1_1.unsqueeze(0).contiguous()
+        
+        latent_h, latent_w = h_proc // 8, w_proc // 8
+        encoded_latent_direct_vae_out_bchw = torch.empty((1, 8, latent_h, latent_w), dtype=torch.float32, device=self.device).contiguous()
+        # Pass the sRGB [-1,1] tensor to the VAE encoder
+        self.face_restorers.run_vae_encoder(image_srgb_float_minus1_1_batched, encoded_latent_direct_vae_out_bchw)
+
+        lq_latent_x0_scaled_for_unet = encoded_latent_direct_vae_out_bchw * self.vae_scale_factor # self.vae_scale_factor is 1.0
+        
+        final_denoised_latent_x0_scaled = None 
+        should_use_kv_in_unet = use_reference_exclusive_path and (kv_tensor_map_for_this_run is not None)
+        # Both flags are now controlled by the 'use_reference_exclusive_path' UI toggle.
+        # is_ref_flag_input: Tells the UNet it's operating in a mode that might involve external K/V (like encoding a reference or using one exclusively).
+        # use_reference_exclusive_path_globally_input: Specifically tells the UNet it MUST use external K/V if provided.
+        is_ref_flag_tensor_for_unet = torch.tensor([use_reference_exclusive_path], dtype=torch.bool, device=self.device).contiguous()
+        actual_use_exclusive_path_tensor_for_unet = torch.tensor([use_reference_exclusive_path], dtype=torch.bool, device=self.device).contiguous()
+
+        if denoiser_mode == "Single Step (Fast)":
+            torch.manual_seed(base_seed + denoiser_single_step_t) 
+            noise_sample = torch.randn_like(lq_latent_x0_scaled_for_unet)
+            current_t_idx = min(max(0, denoiser_single_step_t), len(self.alphas_cumprod_np) - 1)
+            alpha_t_bar_val = self.alphas_cumprod_np[current_t_idx]
+            sqrt_alpha_bar_t_torch = torch.sqrt(torch.tensor(alpha_t_bar_val, device=self.device, dtype=torch.float32))
+            sqrt_one_minus_alpha_bar_t_torch = torch.sqrt(1.0 - torch.tensor(alpha_t_bar_val, device=self.device, dtype=torch.float32))
+            xt_noisy_scaled_8_channel = lq_latent_x0_scaled_for_unet * sqrt_alpha_bar_t_torch + noise_sample * sqrt_one_minus_alpha_bar_t_torch
+            unet_input_16_channel = torch.cat((xt_noisy_scaled_8_channel, lq_latent_x0_scaled_for_unet), dim=1)
+            timesteps_tensor_unet = torch.tensor([current_t_idx], dtype=torch.int64, device=self.device)
+            predicted_noise_from_unet = torch.empty((1, 8, latent_h, latent_w), dtype=torch.float32, device=self.device).contiguous()            
+
+            self.face_restorers.run_ref_ldm_unet(
+                x_noisy_plus_lq_latent=unet_input_16_channel,
+                timesteps_tensor=timesteps_tensor_unet,
+                is_ref_flag_tensor=is_ref_flag_tensor_for_unet,
+                use_reference_exclusive_path_globally_tensor=actual_use_exclusive_path_tensor_for_unet,
+                kv_tensor_map=kv_tensor_map_for_this_run, # Pass directly, can be None
+                output_unet_tensor=predicted_noise_from_unet
+            )
+            final_denoised_latent_x0_scaled = (xt_noisy_scaled_8_channel - sqrt_one_minus_alpha_bar_t_torch * predicted_noise_from_unet) / sqrt_alpha_bar_t_torch
+
+        elif denoiser_mode == "Full Restore (DDIM)":
+            
+            torch.manual_seed(base_seed) # Seed once before the loop for initial x_T and subsequent noise in DDIM step
+            
+            num_ddpm_timesteps = self.alphas_cumprod_np.shape[0]
+            _ddim_raw_ddpm_timesteps_np = ModelsProcessor.make_ddim_timesteps(
+                ddim_discr_method="uniform", 
+                num_ddim_timesteps=denoiser_ddim_steps,
+                num_ddpm_timesteps=num_ddpm_timesteps,
+                verbose=DEBUG_DENOISER
+            )
+            _ddim_sigmas_np, _ddim_alphas_np, _ddim_alphas_prev_np = ModelsProcessor.make_ddim_sampling_parameters(
+                alphacums=self.alphas_cumprod_np,
+                ddim_timesteps=_ddim_raw_ddpm_timesteps_np, 
+                eta=denoiser_ddim_eta,
+                verbose=DEBUG_DENOISER
+            )
+            ddim_sigmas = torch.from_numpy(_ddim_sigmas_np).float().to(self.device)
+            ddim_alphas = torch.from_numpy(_ddim_alphas_np).float().to(self.device)
+            ddim_alphas_prev = torch.from_numpy(_ddim_alphas_prev_np).float().to(self.device)
+            ddim_sqrt_one_minus_alphas = torch.sqrt(torch.clamp(1. - ddim_alphas, min=0.0))
+            current_latent_xt_scaled = torch.randn_like(lq_latent_x0_scaled_for_unet)
+
+            time_range_ddpm_indices = np.flip(_ddim_raw_ddpm_timesteps_np)
+            total_steps = len(time_range_ddpm_indices)
+            pred_x0_scaled_current_step = torch.empty_like(lq_latent_x0_scaled_for_unet)
+
+            for i, step_ddpm_idx in enumerate(time_range_ddpm_indices):
+                index_for_schedules = total_steps - 1 - i 
+                ts_unet = torch.full((1,), step_ddpm_idx, device=self.device, dtype=torch.int64)
+                unet_input_cond = torch.cat([current_latent_xt_scaled, lq_latent_x0_scaled_for_unet], dim=1)
+                e_t_cond = torch.empty_like(lq_latent_x0_scaled_for_unet)
+                
+                self.face_restorers.run_ref_ldm_unet(
+                    x_noisy_plus_lq_latent=unet_input_cond,
+                    timesteps_tensor=ts_unet,
+                    is_ref_flag_tensor=is_ref_flag_tensor_for_unet,
+                    use_reference_exclusive_path_globally_tensor=actual_use_exclusive_path_tensor_for_unet,
+                    kv_tensor_map=kv_tensor_map_for_this_run, # Pass directly, can be None
+                    output_unet_tensor=e_t_cond
+                )
+                e_t = e_t_cond
+
+                if denoiser_cfg_scale != 1.0:
+                    unet_input_uncond = torch.cat([current_latent_xt_scaled, lq_latent_x0_scaled_for_unet], dim=1)
+                    e_t_uncond = torch.empty_like(lq_latent_x0_scaled_for_unet)                    
+                    # For uncond path, exclusive_path_globally is effectively False, and no K/V map is used.
+                    self.face_restorers.run_ref_ldm_unet(
+                        x_noisy_plus_lq_latent=unet_input_uncond,
+                        timesteps_tensor=ts_unet,
+                        is_ref_flag_tensor=is_ref_flag_tensor_for_unet,
+                        use_reference_exclusive_path_globally_tensor=torch.tensor([False], dtype=torch.bool, device=self.device).contiguous(), 
+                        kv_tensor_map=None, 
+                        output_unet_tensor=e_t_uncond
+                    )
+                    e_t = e_t_uncond + denoiser_cfg_scale * (e_t_cond - e_t_uncond)
+                
+                schedule_idx_tensor = torch.tensor([index_for_schedules], device=self.device, dtype=torch.long)
+                a_t = ModelsProcessor.extract_into_tensor_torch(ddim_alphas, schedule_idx_tensor, current_latent_xt_scaled.shape)
+                a_prev = ModelsProcessor.extract_into_tensor_torch(ddim_alphas_prev, schedule_idx_tensor, current_latent_xt_scaled.shape)
+                sigma_t = ModelsProcessor.extract_into_tensor_torch(ddim_sigmas, schedule_idx_tensor, current_latent_xt_scaled.shape)
+                sqrt_one_minus_a_t = ModelsProcessor.extract_into_tensor_torch(ddim_sqrt_one_minus_alphas, schedule_idx_tensor, current_latent_xt_scaled.shape)
+                pred_x0_scaled_current_step = (current_latent_xt_scaled - sqrt_one_minus_a_t * e_t) / torch.sqrt(a_t).clamp(min=1e-8) # Clamp to avoid div by zero if a_t is 0
+                dir_xt = torch.sqrt(torch.clamp(1. - a_prev - sigma_t**2, min=1e-8)) * e_t # Clamp to avoid sqrt of negative
+                # torch.manual_seed(base_seed + step_ddpm_idx) # Seeding here per DDIM step is valid, but let's test seeding once before loop
+                noise_ddim = sigma_t * torch.randn_like(current_latent_xt_scaled)
+                current_latent_xt_scaled = torch.sqrt(a_prev) * pred_x0_scaled_current_step + dir_xt + noise_ddim
+            final_denoised_latent_x0_scaled = pred_x0_scaled_current_step
+        
+        else: 
+            print(f"Denoiser: Unknown mode '{denoiser_mode}'. Skipping denoiser pass.")
+            return image_cxhxw_uint8
+
+        if final_denoised_latent_x0_scaled is None:
+            return image_cxhxw_uint8
+
+        latent_for_vae_decoder = final_denoised_latent_x0_scaled / self.vae_scale_factor
+        decoded_image_normalized_bchw = torch.empty((1, 3, h_proc, w_proc), dtype=torch.float32, device=self.device).contiguous()
+        
+        # Run VAE Decoder
+        self.face_restorers.run_vae_decoder(latent_for_vae_decoder, decoded_image_normalized_bchw)
+        
+        # --- VAE Decoder Output Post-processing ---
+        # Apply tanh to softly map the VAE output to strictly [-1, 1] range.
+        # This helps prevent hard clipping if the VAE overshoots its nominal range.
+        decoded_image_soft_clamped_bchw = torch.tanh(decoded_image_normalized_bchw)
+
+        # Convert sRGB float [-1,1] to sRGB float [0,1].
+        # A final clamp to [0,1] is good practice for safety, though tanh helps.
+        image_after_postproc_float_0_1 = (decoded_image_soft_clamped_bchw.squeeze(0) + 1.0) / 2.0
+        image_after_postproc_float_0_1 = torch.clamp(image_after_postproc_float_0_1, 0.0, 1.0)
+
+        
+        final_image_uint8 = (image_after_postproc_float_0_1 * 255.0).byte()
+
+        if h_proc != h_input or w_proc != w_input:
+            output_image_cxhxw_uint8 = v2.Resize((h_input, w_input),
+                                                interpolation=v2.InterpolationMode.BILINEAR,
+                                                antialias=True)(final_image_uint8)
+        else:
+            output_image_cxhxw_uint8 = final_image_uint8
+
+        return output_image_cxhxw_uint8

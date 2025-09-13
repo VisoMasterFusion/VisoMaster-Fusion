@@ -836,6 +836,7 @@ class LoadLastWorkspaceDialog(QtWidgets.QDialog):
         # Create button box
         QBtn = QtWidgets.QDialogButtonBox.Ok | QtWidgets.QDialogButtonBox.Cancel
         self.buttonBox = QtWidgets.QDialogButtonBox(QBtn)
+        self.buttonBox.setCenterButtons(True)  # <-- ADD THIS LINE
         self.buttonBox.accepted.connect(self.load_workspace)
         self.buttonBox.rejected.connect(self.reject)
 
@@ -845,11 +846,103 @@ class LoadLastWorkspaceDialog(QtWidgets.QDialog):
         layout.addWidget(self.buttonBox)
 
         # Set dialog layout
-        self.setLayout(layout)
+        self.setLayout(layout)   
 
     def load_workspace(self):
         self.accept()
         save_load_actions.load_saved_workspace(self.main_window, 'last_workspace.json')    
+
+class JobLoadingDialog(QtWidgets.QDialog):
+    def __init__(self, total_steps, parent=None):
+        super().__init__(parent)
+        self.setWindowTitle("Loading Job Data...")
+        self.setWindowIcon(QtGui.QIcon(u":/media/media/visomaster_small.png"))
+        self.setWindowFlag(QtCore.Qt.WindowCloseButtonHint, False)
+        self.setModal(True)
+        self.setFixedSize(300, 120)
+
+        self.layout = QtWidgets.QVBoxLayout()
+        self.label = QtWidgets.QLabel("Loading job data...")
+        self.label.setAlignment(QtCore.Qt.AlignmentFlag.AlignCenter)
+        self.progress_bar = QtWidgets.QProgressBar()
+        self.progress_bar.setRange(0, total_steps)
+        self.progress_bar.setValue(0)
+        self.step_label = QtWidgets.QLabel("")
+        self.step_label.setAlignment(QtCore.Qt.AlignmentFlag.AlignCenter)
+
+        self.layout.addWidget(self.label)
+        self.layout.addWidget(self.progress_bar)
+        self.layout.addWidget(self.step_label)
+        self.setLayout(self.layout)
+
+    def update_progress(self, current, total, step_name):
+        self.progress_bar.setMaximum(total)
+        self.progress_bar.setValue(current)
+        self.step_label.setText(f"{step_name} ({current}/{total})")
+        QtWidgets.QApplication.processEvents()
+
+class SaveJobDialog(QtWidgets.QDialog):
+    def __init__(self, parent=None):
+        super().__init__(parent)
+        self.setWindowTitle("Save Job")
+        self.setWindowIcon(QtGui.QIcon(u":/media/media/visomaster_small.png"))
+
+        # Widgets
+        self.job_name_label = QtWidgets.QLabel("Job Name:")
+        self.job_name_edit = QtWidgets.QLineEdit(self)
+        self.job_name_edit.setPlaceholderText("Enter job name")
+        
+        self.set_output_name_checkbox = QtWidgets.QCheckBox("Use job name for output file name", self)
+        self.set_output_name_checkbox.setChecked(True)
+
+        self.output_name_label = QtWidgets.QLabel("Output File Name:")
+        self.output_name_edit = QtWidgets.QLineEdit(self)
+        self.output_name_edit.setPlaceholderText("Leave blank for default")
+
+        # Button box
+        QBtn = QtWidgets.QDialogButtonBox.Ok | QtWidgets.QDialogButtonBox.Cancel
+        self.buttonBox = QtWidgets.QDialogButtonBox(QBtn)
+        self.buttonBox.accepted.connect(self.accept)
+        self.buttonBox.rejected.connect(self.reject)
+
+        # Layout
+        layout = QtWidgets.QVBoxLayout()
+        layout.addWidget(self.job_name_label)
+        layout.addWidget(self.job_name_edit)
+        layout.addWidget(self.set_output_name_checkbox)
+        layout.addWidget(self.output_name_label)
+        layout.addWidget(self.output_name_edit)
+        layout.addWidget(self.buttonBox)
+        self.setLayout(layout)
+
+        # Connect checkbox signal to slot
+        self.set_output_name_checkbox.toggled.connect(self._toggle_output_name_field)
+
+        # Initial state
+        self._toggle_output_name_field(self.set_output_name_checkbox.isChecked())
+
+    def _toggle_output_name_field(self, checked):
+        """Show/hide the output file name field based on checkbox state."""
+        self.output_name_label.setVisible(not checked)
+        self.output_name_edit.setVisible(not checked)
+        # Adjust dialog size hint based on visibility
+        self.adjustSize()
+
+    @property
+    def job_name(self):
+        return self.job_name_edit.text().strip()
+
+    @property
+    def use_job_name_for_output(self):
+        return self.set_output_name_checkbox.isChecked()
+
+    @property
+    def output_file_name(self):
+        # Return the output file name only if the checkbox is unchecked and the field is not empty
+        if not self.use_job_name_for_output:
+            name = self.output_name_edit.text().strip()
+            return name if name else None # Return None if empty, job_name will be used
+        return None # Return None if checkbox is checked
 
 class ParametersWidget:
     def __init__(self, *args, **kwargs):

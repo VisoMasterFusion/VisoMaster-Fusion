@@ -6,5 +6,6 @@ SET APP_ROOT=%APP_ROOT:~0,-1%
 SET DEPENDENCIES=%APP_ROOT%\dependencies
 echo %DEPENDENCIES%
 SET PATH=%DEPENDENCIES%;%PATH%
+echo Starting VisoMaster...
 python main.py
 pause

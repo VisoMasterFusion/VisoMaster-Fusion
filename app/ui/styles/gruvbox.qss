@@ -1,0 +1,17 @@
+/* Gruvbox Theme for VisoMaster */
+QWidget {
+    background-color: #282828;
+    color: #ebdbb2;
+    selection-background-color: #458588;
+    selection-color: #282828;
+}
+
+QLabel {
+    color: #ebdbb2;
+}
+
+QPushButton {
+    color: #ebdbb2;
+    background-color: #3c3836;
+    border: 1px solid #504945;
+} 

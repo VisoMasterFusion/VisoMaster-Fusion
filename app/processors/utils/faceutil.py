@@ -1907,56 +1907,89 @@ def histogram_matching(source_image, target_image, diffslider):
     device = source_image.device
 
     # Convert images to float tensors in range [0, 1], shape (C, H, W)
-    source_image_t = source_image.float().to(device) / 255.0  # (C, H, W)
-    target_image_t = target_image.float().to(device) / 255.0  # (C, H, W)
+    source_image_t = source_image.float().to(device) / 255.0
+    target_image_t = target_image.float().to(device) / 255.0
 
     matched_target_image_t = target_image_t.clone()
-
+    # Create bin edges for histograms
     bin_edges = torch.linspace(0.0, 1.0, steps=257, device=device)  # 257 edges for 256 bins
 
     for channel in range(3):
-        source_channel = source_image_t[channel, :, :]  # Shape: (H, W)
+        source_channel = source_image_t[channel, :, :]
         target_channel = target_image_t[channel, :, :]
 
-        # Compute histograms
-        source_hist = torch.histc(source_channel, bins=256, min=0.0, max=1.0)
-        target_hist = torch.histc(target_channel, bins=256, min=0.0, max=1.0)
+        # Flatten values
+        source_values = source_channel.flatten()
+        target_values = target_channel.flatten()
 
-        # Compute probability mass functions (PMFs)
+        # Remove NaNs and Infs
+        source_values = source_values[~torch.isnan(source_values)]
+        source_values = source_values[~torch.isinf(source_values)]
+        target_values = target_values[~torch.isnan(target_values)]
+        target_values = target_values[~torch.isinf(target_values)]
+
+        # Check if values are empty
+        if source_values.numel() == 0 or target_values.numel() == 0:
+            print(f"No valid pixels for channel {channel}. Skipping histogram matching for this channel.")
+            continue
+
+        # Clamp values to [0, 1]
+        source_values = torch.clamp(source_values, 0.0, 1.0)
+        target_values = torch.clamp(target_values, 0.0, 1.0)
+
+        # Compute histograms
+        source_hist = torch.histc(source_values, bins=256, min=0.0, max=1.0)
+        target_hist = torch.histc(target_values, bins=256, min=0.0, max=1.0)
+
+        # Add epsilon to prevent zero division
+        source_hist += 1e-6
+        target_hist += 1e-6
+
+        # Compute PMFs
         source_pmf = source_hist / source_hist.sum()
         target_pmf = target_hist / target_hist.sum()
 
-        # Compute cumulative distribution functions (CDFs)
+        # Smooth PMFs slightly
+        kernel = torch.tensor([0.0, 1.0, 0.0], device=device)
+        source_pmf = torch.nn.functional.conv1d(source_pmf[None, None], kernel[None, None], padding=1).squeeze()
+        target_pmf = torch.nn.functional.conv1d(target_pmf[None, None], kernel[None, None], padding=1).squeeze()
+
+        # Compute CDFs
         source_cdf = torch.cumsum(source_pmf, dim=0)
         target_cdf = torch.cumsum(target_pmf, dim=0)
 
         # Flatten the target channel for interpolation
-        target_channel_flat = target_channel.flatten()
+        source_cdf = torch.maximum(source_cdf, torch.cummax(source_cdf, dim=0)[0])
+        target_cdf = torch.maximum(target_cdf, torch.cummax(target_cdf, dim=0)[0])
+
+        # 🔁 OPTIONAL: Additional light smoothing on CDFs
+        kernel_cdf = torch.tensor([0.5, 0.0, 0.5], device=device)
+        source_cdf = torch.nn.functional.conv1d(source_cdf[None, None], kernel_cdf[None, None], padding=1).squeeze()
+        target_cdf = torch.nn.functional.conv1d(target_cdf[None, None], kernel_cdf[None, None], padding=1).squeeze()
+
+        # Re-enforce monotonicity again just in case
+        source_cdf = torch.maximum(source_cdf, torch.cummax(source_cdf, dim=0)[0])
+        target_cdf = torch.maximum(target_cdf, torch.cummax(target_cdf, dim=0)[0])        
 
         # Interpolate target pixel values to get their CDF values
-        interp_t_values = interp1d(
-            target_channel_flat, bin_edges[:-1], target_cdf, device=device
-        )
+        target_channel_flat = target_channel.flatten()
+        interp_t_values = interp1d(target_channel_flat, bin_edges[:-1], target_cdf, device=device)
 
         # Invert the source CDF to get matched pixel values
-        matched_channel_flat = interp1d_inverse(
-            interp_t_values, source_cdf, bin_edges[:-1], device=device
-        )
+        matched_channel_flat = interp1d_inverse(interp_t_values, source_cdf, bin_edges[:-1], device=device)
 
-        # Reshape back to original image shape
+        # Reshape back and clamp
         matched_channel = matched_channel_flat.reshape(target_channel.shape)
+        matched_channel = torch.clamp(matched_channel, 0.0, 1.0)
 
-        # Update the matched image
+        # Replace in matched image
         matched_target_image_t[channel, :, :] = matched_channel
 
-    # Blend the images according to diffslider
+    # Blend result
     alpha = diffslider / 100.0
     final_image_t = (1 - alpha) * target_image_t + alpha * matched_target_image_t
 
-    # Scale back to [0, 255] and clip
     final_image_t = torch.clamp(final_image_t * 255.0, 0.0, 255.0)
-
-    # Ensure it's on the original device and has type float
     final_image_tensor = final_image_t.to(device).float()
 
     return final_image_tensor
@@ -1964,17 +1997,20 @@ def histogram_matching(source_image, target_image, diffslider):
 def histogram_matching_withmask(source_image, target_image, mask, diffslider):
     # Determine the device (CPU or GPU)
     device = source_image.device
+    
+    #mask_t = mask.float().to(device)
+    #valid_mask = (mask_t > 0.00)  # Shape: (1, H, W) or (H, W)
+    valid_mask = mask
+    #target_image = torch.where(valid_mask, target_image, source_image)
 
     # Convert images to float tensors in range [0, 1], shape (C, H, W)
     source_image_t = source_image.float().to(device) / 255.0  # (C, H, W)
     target_image_t = target_image.float().to(device) / 255.0  # (C, H, W)
-    mask_t = mask.float().to(device)
 
     # Apply histogram matching only to the masked areas
     matched_target_image_t = target_image_t.clone()
 
     # Define the condition for the mask
-    valid_mask = (mask_t > 0.2)  # Shape: (1, H, W) or (H, W)
 
     # Remove channel dimension from mask if present
     if valid_mask.dim() == 3 and valid_mask.size(0) == 1:
@@ -1997,16 +2033,12 @@ def histogram_matching_withmask(source_image, target_image, mask, diffslider):
         masked_target_values = masked_target_values[~torch.isnan(masked_target_values)]
         masked_target_values = masked_target_values[~torch.isinf(masked_target_values)]
 
-        # Check if masked values are empty
-        if masked_source_values.numel() == 0 or masked_target_values.numel() == 0:
-            print(f"No valid masked pixels for channel {channel}. Skipping histogram matching for this channel.")
-            continue
-
         # Ensure values are within [0.0, 1.0]
         masked_source_values = torch.clamp(masked_source_values, 0.0, 1.0)
         masked_target_values = torch.clamp(masked_target_values, 0.0, 1.0)
 
         # Compute histograms
+        #for i in range(5):
         source_hist = torch.histc(masked_source_values, bins=256, min=0.0, max=1.0)
         target_hist = torch.histc(masked_target_values, bins=256, min=0.0, max=1.0)
 
@@ -2017,25 +2049,42 @@ def histogram_matching_withmask(source_image, target_image, mask, diffslider):
         # Compute probability mass functions (PMFs)
         source_hist_sum = source_hist.sum()
         target_hist_sum = target_hist.sum()
-        if source_hist_sum == 0 or target_hist_sum == 0:
-            print(f"Histogram sum is zero for channel {channel}. Skipping histogram matching for this channel.")
-            continue
 
         source_pmf = source_hist / source_hist_sum
         target_pmf = target_hist / target_hist_sum
 
-        # Compute cumulative distribution functions (CDFs)
+        #if smooth_strength1 != 0.5:        
+            # 🔁 Smooth PMFs before computing CDFs        
+            # Berechne Kernel-Werte dynamisch
+            #center_weight = 1.0 - smooth_strength1
+            #side_weight = smooth_strength1 / 2.0
+            
+            # 🔁 OPTIONAL: Additional light smoothing on CDFs
+        kernel = torch.tensor([0.0, 1.0, 0.0], device=device)
+        source_pmf = torch.nn.functional.conv1d(source_pmf[None, None], kernel[None, None], padding=1).squeeze()
+        target_pmf = torch.nn.functional.conv1d(target_pmf[None, None], kernel[None, None], padding=1).squeeze()
+     
+        # Compute CDFs from smoothed PMFs
         source_cdf = torch.cumsum(source_pmf, dim=0)
         target_cdf = torch.cumsum(target_pmf, dim=0)
 
-        # Ensure CDFs are strictly increasing
+        # Make sure CDFs are strictly increasing
         source_cdf = torch.maximum(source_cdf, torch.cummax(source_cdf, dim=0)[0])
         target_cdf = torch.maximum(target_cdf, torch.cummax(target_cdf, dim=0)[0])
 
-        # Check for NaNs or Infs in CDFs
-        if torch.isnan(source_cdf).any() or torch.isinf(source_cdf).any():
-            print(f"Channel {channel}: source_cdf contains NaN or Inf values. Skipping histogram matching for this channel.")
-            continue
+        #if smooth_strength2 != 0.5:
+        # Berechne Kernel-Werte dynamisch
+        #center_weight = 1.0 - smooth_strength2
+        #side_weight = smooth_strength2 / 2.0
+
+        # 🔁 OPTIONAL: Additional light smoothing on CDFs
+        kernel_cdf = torch.tensor([0.5, 0.0, 0.5], device=device)
+        source_cdf = torch.nn.functional.conv1d(source_cdf[None, None], kernel_cdf[None, None], padding=1).squeeze()
+        target_cdf = torch.nn.functional.conv1d(target_cdf[None, None], kernel_cdf[None, None], padding=1).squeeze()
+
+        # Re-enforce monotonicity again just in case
+        source_cdf = torch.maximum(source_cdf, torch.cummax(source_cdf, dim=0)[0])
+        target_cdf = torch.maximum(target_cdf, torch.cummax(target_cdf, dim=0)[0])
 
         # Flatten the target channel for interpolation
         target_channel_flat = target_channel.flatten()
@@ -2069,15 +2118,12 @@ def histogram_matching_withmask(source_image, target_image, mask, diffslider):
     return final_image_tensor
 
 def interp1d(x, xp, fp, device='cpu'):
-    # Ensure xp is increasing
     assert torch.all(xp[1:] >= xp[:-1]), "xp must be increasing"
 
-    # Move tensors to the specified device and make them contiguous
-    x = x.to(device).contiguous()
-    xp = xp.to(device).contiguous()
+    x = torch.clamp(x.to(device), xp[0], xp[-1])  # Clamp statt späterem torch.where
+    xp = xp.to(device)
     fp = fp.to(device)
 
-    # Find indices in xp for each x
     indices = torch.searchsorted(xp, x, right=True) - 1
     indices = indices.clamp(0, len(xp) - 2)
 
@@ -2086,28 +2132,22 @@ def interp1d(x, xp, fp, device='cpu'):
     y0 = fp[indices]
     y1 = fp[indices + 1]
 
-    # Compute the slope
-    slope = (y1 - y0) / (x1 - x0 + 1e-6)  # Add epsilon to prevent division by zero
+    denom = (x1 - x0)
+    denom[denom == 0] = 1e-6  # robuster gegen flache Bereiche
 
-    # Compute the interpolated values
+    slope = (y1 - y0) / denom
     y = y0 + slope * (x - x0)
-
-    # Handle edge cases
-    y = torch.where(x < xp[0], fp[0], y)
-    y = torch.where(x > xp[-1], fp[-1], y)
+    y = torch.clamp(y, 0.0, 1.0)
 
     return y
 
 def interp1d_inverse(y, fp, xp, device='cpu'):
-    # Ensure fp is increasing
     assert torch.all(fp[1:] >= fp[:-1]), "fp must be increasing"
 
-    # Move tensors to the specified device and make them contiguous
-    y = y.to(device).contiguous()
-    fp = fp.to(device).contiguous()
+    y = torch.clamp(y.to(device), fp[0], fp[-1])
+    fp = fp.to(device)
     xp = xp.to(device)
 
-    # Find indices in fp for each y
     indices = torch.searchsorted(fp, y, right=True) - 1
     indices = indices.clamp(0, len(fp) - 2)
 
@@ -2116,15 +2156,12 @@ def interp1d_inverse(y, fp, xp, device='cpu'):
     x0 = xp[indices]
     x1 = xp[indices + 1]
 
-    # Compute the slope
-    slope = (x1 - x0) / (y1 - y0 + 1e-6)  # Add epsilon to prevent division by zero
+    denom = (y1 - y0)
+    denom[denom == 0] = 1e-6  # gegen flache Stellen in CDF
 
-    # Compute the interpolated values
+    slope = (x1 - x0) / denom
     x = x0 + slope * (y - y0)
-
-    # Handle edge cases
-    x = torch.where(y < fp[0], xp[0], x)
-    x = torch.where(y > fp[-1], xp[-1], x)
+    x = torch.clamp(x, 0.0, 1.0)
 
     return x
 

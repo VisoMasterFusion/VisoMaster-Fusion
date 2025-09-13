@@ -1,98 +1,128 @@
+# VisoMaster-Fusion mod
 
-# VisoMaster 
-### VisoMaster is a powerful yet easy-to-use tool for face swapping and editing in images and videos. It utilizes AI to produce natural-looking results with minimal effort, making it ideal for both casual users and professionals.  
+### Visomaster a powerful yet easy-to-use tool for face swapping and editing in images and videos. It utilizes AI to produce natural-looking results with minimal effort, making it ideal for both casual users and professionals.
+
+This version integrates major features developed by the community to create a single, enhanced application. It is built upon the incredible work of the original VisoMaster developers, **@argenspin** and **@Alucard24**.
 
 ---
 <img src=".github/screenshot.png" height="auto"/>
 
-## Features  
+## Fusion Features
 
-### 🔄 **Face Swap**  
-- Supports multiple face swapper models  
-- Compatible with DeepFaceLab trained models (DFM)  
-- Advanced multi-face swapping with masking options for each facial part  
-- Occlusion masking support (DFL XSeg Masking)  
-- Works with all popular face detectors & landmark detectors  
-- Expression Restorer: Transfers original expressions to the swapped face  
-- Face Restoration: Supports all popular upscaling & enhancement models  
+VisoMaster-Fusion includes all the great features of the original plus major enhancements from community mods:
 
-### 🎭 **Face Editor (LivePortrait Models)**  
-- Manually adjust expressions and poses for different face parts  
-- Fine-tune colors for Face, Hair, Eyebrows, and Lips using RGB adjustments  
+-   **Job Manager & Batch Processing**: A complete UI to save workspace configurations as "jobs" and run them sequentially for unattended batch processing. Features segmented recording to combine multiple clips into a single output.
+-   **VR180 Mode**: Process and swap faces in hemispherical 180-degree VR videos, with optimizations for memory and speed.
+-   **Experimental Enhancements**: Gain finer control with features like "swap only best match," advanced texture transfer modes, improved AutoColor with mask testing, and deeper integration of occlusion masks (XSeg) for more precise results.
+-   **New Models**: Includes the **GFPGAN-1024** face restorer and the  **ReF-LDM** reference-based denoiser.
+-   **Virtual Camera Streaming**: Send the processed video output directly to a virtual camera for use in OBS, Twitch, Zoom, and other applications.
 
-### 🚀 **Other Powerful Features**  
-- **Live Playback**: See processed video in real-time before saving  
-- **Face Embeddings**: Use multiple source faces for better accuracy & similarity  
-- **Live Swapping via Webcam**: Stream to virtual camera for Twitch, YouTube, Zoom, etc.  
-- **User-Friendly Interface**: Intuitive and easy to use  
-- **Video Markers**: Adjust settings per frame for precise results  
-- **TensorRT Support**: Leverages supported GPUs for ultra-fast processing  
-- **Many More Advanced Features** 🎉  
-
-## Automatic Installation (Windows)
-- For Windows users with an Nvidia GPU, we provide an automatic installer for easy set up. 
-- You can get the installer from the [releases](https://github.com/visomaster/VisoMaster/releases/tag/v0.1.1) page or from this [link](https://github.com/visomaster/VisoMaster/releases/download/v0.1.1/VisoMaster_Setup.exe).
-- Choose the correct CUDA version inside the installer based on your GPU Compatibility.
-- After successful installation, go to your installed directory and run the **Start_Portable.bat** file to launch **VisoMaster**
-
-## **Manual Installation Guide (Nvidia)**
-
-Follow the steps below to install and run **VisoMaster** on your system.
-
-## **Prerequisites**
-Before proceeding, ensure you have the following installed on your system:
-- **Git** ([Download](https://git-scm.com/downloads))
-- **Miniconda** ([Download](https://www.anaconda.com/download))
+### Thanks to Nyny & Hans for the help implementing this !
 
 ---
 
-## **Installation Steps**
+## Detailed Feature List
 
-### **1. Clone the Repository**  
-Open a terminal or command prompt and run:  
+### 🔄 **Face Swap**
+-   Supports multiple face swapper models
+-   Compatible with DeepFaceLab trained models (DFM)
+-   Advanced multi-face swapping with improved masking (Occlusion/XSeg integration for mouth and face)
+-   "Swap only best match" logic for cleaner results in multi-face scenes
+-   Works with all popular face detectors & landmark detectors
+-   Expression Restorer: Transfers original expressions to the swapped face
+
+### ✨ **Restoration & Enhancement**
+-   **Face Restoration**: Supports popular upscaling models, including the newly added **GFPGAN-1024**.
+-   **ReF-LDM Denoiser**: A powerful reference-based U-Net denoiser to clean up and enhance face quality, with options to apply before or after other restorers.
+-   **Advanced Texture Transfer**: Multiple modes for transferring texture details.
+-   **AutoColor Transfer**: Improved color matching with a "Test_Mask" feature for more precise and stable results.
+-   **Auto-Restore Blend**: Intelligently blends restored faces back into the original scene.
+
+### 🎬 **Job Manager & Batch Processing**
+-   **Dockable UI**: Manage all your jobs from a simple, integrated widget.
+-   **Save/Load Jobs**: Save your entire workspace state (models, settings, faces) as a job file.
+-   **Automated Batch Processing**: Queue up multiple jobs and process them all with a single click.
+-   **Segmented Recording**: Set multiple start and end markers to render and combine various sections of a video into one final output.
+-   **Custom File Naming**: Optionally use the job name for the output video file.
+
+### 🚀 **Other Powerful Features**
+-   **VR180 Mode**: Process and swap faces in hemispherical VR videos.
+-   **Virtual Camera Streaming**: Send processed frames to OBS, Zoom, etc.
+-   **Live Playback**: See processed video in real-time before saving.
+-   **Face Embeddings**: Use multiple source faces for better accuracy & similarity.
+-   **Live Swapping via Webcam**: Swap your face in real-time.
+-   **Improved User Interface**: Pan the preview window by holding the right mouse button, batch select input faces with the Shift key, and choose from several new themes.
+-   **Video Markers**: Adjust settings per frame for precise results.
+-   **TensorRT Support**: Leverages supported GPUs for ultra-fast processing.
+
+---
+
+## **Installation Guide (VisoMaster-Fusion)**
+
+This fused version uses a custom Python installer script to handle dependencies and compatibility between the different mods.
+
+### **Prerequisites**
+-   **Git** ([Download](https://git-scm.com/downloads))
+-   **Miniconda** ([Download](https://www.anaconda.com/download))
+
+### **Installation Steps**
+
+**1. Clone the Repository**
+Open a terminal or command prompt and run:
 ```sh
-git clone https://github.com/visomaster/VisoMaster.git
+git clone <URL_TO_YOUR_VISOMASTER_FUSION_REPO>
 ```
 ```sh
 cd VisoMaster
 ```
 
-### **2. Create and Activate a Conda Environment**  
+**2. Create and Activate a Conda Environment (Skip if you already have one)**
 ```sh
-conda create -n visomaster python=3.10.13 -y
+conda create -n visomaster python=3.10 -y
 ```
 ```sh
 conda activate visomaster
 ```
 
-### **3. Install CUDA and cuDNN**  
-```sh
-conda install -c nvidia/label/cuda-12.4.1 cuda-runtime
-```
-```sh
-conda install -c conda-forge cudnn
-```
+**4. Run the Application**
+Once everything is set up, start the application by opening the **Start.bat** file. On Linux, run `python main.py`.
 
-### **4. Install Additional Dependencies**  
-```sh
-conda install scikit-image
-```
-```sh
-pip install -r requirements_cu124.txt
-```
-
-### **5. Download Models and Other Dependencies**  
-1. Download all the required models
-```sh
-python download_models.py
-```
-2. Download all the files from this [page](https://github.com/visomaster/visomaster-assets/releases/tag/v0.1.0_dp) and copy it to the ***dependencies/*** folder.
-
-  **Note**: You do not need to download the Source code (zip) and Source code (tar.gz) files 
-### **6. Run the Application**  
-Once everything is set up, start the application by opening the **Start.bat** file.
-On Linux just run `python main.py`.
 ---
+
+## How to use the Job Manager
+1.  Set up your workspace as you normally would before recording (select source/target faces, adjust settings, etc.).
+2.  In the Job Manager widget, click the **"Save Job"** button.
+3.  Give your job a name. You can also choose whether to use this name for the final output file.
+4.  The job will appear in the list. Set up more jobs if you wish.
+5.  To process, select one or more jobs and click **"Process Selected"**, or click **"Process All"** to run the entire queue.
+6.  Processing will begin automatically. A pop-up will notify you when all jobs are complete.
+
+---
+---
+## How to use Ref-LDM
+
+1. git clone and checkout the ref-ldm-onnx slim-fast branch (or download code as zip)
+https://github.com/Glat0s/ref-ldm-onnx/tree/slim-fast
+2. Install repo requirements (in a separate python env or conda env)
+3. Use `python extract_kv_tensors_gui.py` to create reference kv pt files and put them into the Visomaster "model_assets\reference_kv_data" directory
+4. Select a reference kv file in Visomaster ref-ldm settings
+---
+
+
+## **Troubleshooting**
+-   If you face CUDA-related issues, ensure your GPU drivers are up to date.
+-   For missing models, re-run the `download_models.py` script or ensure all models are placed in the correct directories.
+
+## [Join Discord](https://discord.gg/5rx4SQuDbp)
+
+## Support The Project
+This project was made possible by the combined efforts of the original developers and the modding community. If you appreciate this work, please consider supporting them.
+
+### **Mod Credits**
+VisoMaster-Fusion would not be possible without the incredible work of:
+-   **Job Manager Mod**: Axel (https://github.com/axel-devs/VisoMaster-Job-Manager)
+-   **Experimental Mod**: Hans (https://github.com/asdf31jsa/VisoMaster-Experimental)
+-   **VR180 Mod**: Glat0s (https://github.com/Glat0s/VisoMaster/tree/dev-vr180)
 
 ## **Troubleshooting**
 - If you face CUDA-related issues, ensure your GPU drivers are up to date.
@@ -114,9 +144,8 @@ This project was made possible by the combined efforts of **[@argenspin](https:/
 
 
 ## Disclaimer: ##
-**VisoMaster** is a hobby project that we are making available to the community as a thank you to all of the contributors ahead of us.
-We've copied the disclaimer from [Swap-Mukham](https://github.com/harisreedhar/Swap-Mukham) here since it is well-written and applies 100% to this repo.
- 
+**VisoMaster** is a hobby project that we are making available to the community as a thank you to all of the contributors ahead of us. We've copied the disclaimer from Swap-Mukham here since it is well-written and applies 100% to this repo.
+
 We would like to emphasize that our swapping software is intended for responsible and ethical use only. We must stress that users are solely responsible for their actions when using our software.
 
 Intended Usage: This software is designed to assist users in creating realistic and entertaining content, such as movies, visual effects, virtual reality experiences, and other creative applications. We encourage users to explore these possibilities within the boundaries of legality, ethical considerations, and respect for others' privacy.

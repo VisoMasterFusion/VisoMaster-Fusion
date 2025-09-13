@@ -6,8 +6,8 @@ SETTINGS_LAYOUT_DATA: LayoutDictTypes = {
         'ThemeSelection': {
             'level': 1,
             'label': 'Theme',
-            'options': ['Dark', 'Dark-Blue', 'Light'],
-            'default': 'Dark',
+            'options': ['True-Dark', 'Dark', 'Dark-Blue', 'Light', 'Solarized-Dark', 'Solarized-Light', 'Dracula', 'Nord', 'Gruvbox'],
+            'default': 'True-Dark',
             'help': 'Select the theme to be used',
             'exec_function': control_actions.change_theme,
             'exec_function_args': [],
@@ -55,15 +55,15 @@ SETTINGS_LAYOUT_DATA: LayoutDictTypes = {
             'step': 1,
             'help': 'Set the maximum FPS of the video when playing'
         },
-        'LiveSoundSpeedDecimalSlider': {
+        'LiveSoundVolumeDecimalSlider': {
             'level': 1,
-            'label': 'Audio Playback Speed',
-            'min_value': '0.50',
-            'max_value': '2.00',
+            'label': 'Audio Playback Volume',
+            'min_value': '0.00',
+            'max_value': '1.00',
             'default': '1.00',
             'step': 0.01,
             'decimals': 2,
-            'help': '[Experimental] Set the playback speed of the audio, when Live Sound is enabled'
+            'help': 'Set the playback audio of the audio, when Live Sound is enabled'
         },
     },
     'Auto Swap':{
@@ -72,6 +72,14 @@ SETTINGS_LAYOUT_DATA: LayoutDictTypes = {
             'label': 'Auto Swap',
             'default': False,
             'help': 'Automatically Swap all faces using selected Source Faces/Embeddings when loading an video/image file'
+        },
+    },
+    'VR180 Mode':{
+        'VR180ModeEnableToggle': {
+            'level': 1,
+            'label': 'Enable VR180 Mode',
+            'default': False,
+            'help': 'Enable VR180 mode. This will treat the input video as an equirectangular VR180 video and apply face swapping within perspective crops.'
         },
     },
     'Detectors': {
@@ -209,6 +217,12 @@ SETTINGS_LAYOUT_DATA: LayoutDictTypes = {
             'requiredToggleValue': True,
             'help': 'Blends the enhanced results back into the original frame.'
         },
+        'FrameEnhancerDownToggle':{
+            'level': 1,
+            'label': 'Frame resize to 1920*1080',
+            'default': False,
+            'help': 'Select to resize the video to 1920*1080 (only on 16/9 format)'
+        }
     },
     'Webcam Settings': {
         'WebcamMaxNoSelection': {
@@ -299,6 +313,109 @@ SETTINGS_LAYOUT_DATA: LayoutDictTypes = {
             'default': False,
             'help': 'Include all files from Subfolders when choosing Input Faces Folder'
         }
+    },
+    'Misc':{    
+        'CommandLineDebugEnableToggle': {
+            'level': 3,
+            'label': 'Commandline Infos',
+            'default': False,           
+            'help': 'used restore strenght and needed itterations in Commandline + jpeg/mpeg infos'
+        },        
+        'SwapOnlyBestMatchEnableToggle': {
+            'level': 3,
+            'label': 'Swap only best match',
+            'default': False,           
+            'help': 'only swap highest face match per face (not every match above treshold)'
+        },
+        'AutoSaveWorkspaceToggle':{
+            'level': 3,
+            'label': 'Auto Save Workspace',
+            'default': False,
+            'help': 'Auto Saves Workspace .json in output folder at end of recording (only the status at end of recording)'
+        }
+    },
+    'Experimental Settings (very experimental, better don´t touch)': {                          
+        'AnalyseImageEnableToggle': {
+            'level': 1,
+            'label': 'Analyse Image',
+            'default': False,
+            'help': 'Enable AutoColor Transfer: 1. Hans Test without mask, 2. Hans Test with mask, 3. DFL Method without mask, 4. DFL Original Method.'
+        },        
+        'DFLXSegBGEnableToggle': {
+            'level': 2,
+            'label': 'Xseg 2 Background',
+            'default': False,
+            'parentToggle': 'DFLXSeg2EnableToggle',
+            'requiredToggleValue': True,            
+            'help': 'Enable second XSeg Mask for Inside the Face. not working well atm. (uses Faceparser on swap)'
+        },
+        'OccluderMaskBgSlider': {
+            'level': 2,
+            'label': 'Xseg 2 Background Adjust',
+            'min_value': '-40',
+            'max_value': '40',
+            'default': '-10',
+            'step': 1,
+            'parentToggle': 'DFLXSegBGEnableToggle',
+            'requiredToggleValue': True,
+            'help': 'Adjust where the second Xseg Mask gets applied.'
+        },        
+        'get_cropped_face_kpsTypeSelection': {
+            'level': 1,
+            'label': 'get cropped face kps',
+            'options': ['NEAREST', 'BILINEAR'],
+            'default': 'BILINEAR',
+            'help': 'Experimental! for basic functionality testing. changes the interpolation type for necessary pipeline functions (resize/rotation/etc. of image). caution, influences Autorestore calculation'
+        },        
+        'original_face_128_384TypeSelection': {
+            'level': 1,
+            'label': 'original_128_384',
+            'options': ['NEAREST', 'BILINEAR'],
+            'default': 'BILINEAR',
+            'help': 'Experimental! for basic functionality testing. changes the interpolation type for necessary pipeline functions (resize/rotation/etc. of image). caution, influences Autorestore calculation'
+        },
+        'original_face_512TypeSelection': {
+            'level': 1,
+            'label': 'original_512',
+            'options': ['NEAREST', 'BILINEAR', 'BICUBIC'],
+            'default': 'BILINEAR',
+            'help': 'Experimental! for basic functionality testing. changes the interpolation type for necessary pipeline functions (resize/rotation/etc. of image). caution, influences Autorestore calculation'
+        },
+        'UntransformTypeSelection': {
+            'level': 1,
+            'label': 'Untransform',
+            'options': ['NEAREST', 'BILINEAR'],
+            'default': 'BILINEAR',
+            'help': 'Experimental! for basic functionality testing. changes the interpolation type for necessary pipeline functions (resize/rotation/etc. of image). caution, influences Autorestore calculation'
+        },         
+        'expression_faceeditor_t256TypeSelection': {
+            'level': 1,
+            'label': 'Expression_faceeditor_t256',
+            'options': ['NEAREST', 'BILINEAR'],
+            'default': 'BILINEAR',
+            'help': 'Experimental! for basic functionality testing. changes the interpolation type for necessary pipeline functions (resize/rotation/etc. of image). caution, influences Autorestore calculation'
+        },         
+        'expression_faceeditor_backTypeSelection': {
+            'level': 1,
+            'label': 'Expression_faceeditor_back',
+            'options': ['NEAREST', 'BILINEAR'],
+            'default': 'BILINEAR',
+            'help': 'Experimental! for basic functionality testing. changes the interpolation type for necessary pipeline functions (resize/rotation/etc. of image). caution, influences Autorestore calculation'
+        },         
+        'block_shiftTypeSelection': {
+            'level': 1,
+            'label': 'block shift',
+            'options': ['NEAREST', 'BILINEAR'],
+            'default': 'NEAREST',
+            'help': 'Experimental! for basic functionality testing. changes the interpolation type for necessary pipeline functions (resize/rotation/etc. of image). caution, influences Autorestore calculation'
+        },         
+        'AntialiasTypeSelection': {
+            'level': 1,
+            'label': 'Antialias',
+            'options': ['False', 'True'],
+            'default': 'False',
+            'help': 'Experimental! most of the time no visual effect, in rare cases minor effect'
+        },
     }
 }
 

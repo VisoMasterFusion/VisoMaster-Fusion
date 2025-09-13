@@ -1,0 +1,17 @@
+/* Dracula Theme for VisoMaster */
+QWidget {
+    background-color: #282a36;
+    color: #f8f8f2;
+    selection-background-color: #44475a;
+    selection-color: #282a36;
+}
+
+QLabel {
+    color: #f8f8f2;
+}
+
+QPushButton {
+    color: #f8f8f2;
+    background-color: #44475a;
+    border: 1px solid #6272a4;
+} 

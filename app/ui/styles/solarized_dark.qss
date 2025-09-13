@@ -1,0 +1,17 @@
+/* Solarized Dark Theme for VisoMaster */
+QWidget {
+    background-color: #002b36;
+    color: #839496;
+    selection-background-color: #268bd2;
+    selection-color: #002b36;
+}
+
+QLabel {
+    color: #839496;
+}
+
+QPushButton {
+    color: #839496;
+    background-color: #073642;
+    border: 1px solid #586e75;
+} 

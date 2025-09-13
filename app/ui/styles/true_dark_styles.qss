@@ -1,0 +1,434 @@
+/* True Darkest Theme for VisoMaster */
+
+/* Global settings */
+QWidget {
+    background-color: #141414; /* Even Darker grey background */
+    color: #f0f0f0; /* Lighter grey text */
+    selection-background-color: #4090a3; /* Accent color for selection */
+    selection-color: #101010; /* Darkest text on selection */
+}
+
+QLabel {
+    color: #f0f0f0; /* Ensure labels have light text */
+}
+
+QPushButton {
+    color: #f0f0f0; /* Light text */
+    background-color: #202020; /* Darker secondary background */
+    border: 1px solid #363636; /* Darkest Subtle border */
+    padding: 5px 10px;
+    border-radius: 4px;
+    font-weight: bold;
+}
+
+QPushButton:hover {
+    background-color: #2b2b2b; /* Darker Slightly lighter grey on hover */
+    border: 1px solid #4090a3; /* Accent border on hover */
+}
+
+QPushButton:pressed {
+    background-color: #4090a3; /* Accent color when pressed */
+    color: #101010; /* Darkest text when pressed */
+    border: 1px solid #156a7d; /* Darker accent border */
+}
+
+QPushButton:checked {
+    background-color: #307a8d; /* Slightly darker accent for checked */
+    border: 1px solid #4090a3;
+}
+
+QPushButton:disabled {
+    background-color: #2b2b2b; /* Use hover grey for disabled */
+    color: #6a6a6a; /* Darker disabled text */
+    border: 1px solid #363636;
+}
+
+QToolTip {
+    color: #f0f0f0; /* Light text */
+    background-color: #202020; /* Darker secondary background */
+    border: 1px solid #363636; /* Darkest Subtle border */
+    padding: 4px;
+    border-radius: 3px;
+}
+
+/* Base button style for custom cards */
+TargetMediaCardButton, TargetFaceCardButton, InputFaceCardButton, EmbeddingCardButton {
+    background-color: #202020;  /* Darker secondary background */
+    border-radius: 5px;        /* Rounded corners */
+    border: 1px solid #363636;  /* Darkest Subtle border */
+    color: #f0f0f0;             /* Lighter text */
+    padding: 10px;              /* Padding */
+    font-size: 14px;
+}
+
+/* Icon inside the button */
+TargetMediaCardButton::icon, TargetFaceCardButton::icon, InputFaceCardButton::icon, EmbeddingCardButton::icon {
+    margin: 5px;
+}
+
+/* Hover state */
+TargetMediaCardButton:hover, TargetFaceCardButton:hover, InputFaceCardButton:hover, EmbeddingCardButton:hover {
+    background-color: #2b2b2b;  /* Darker Slightly lighter on hover */
+    border: 1px solid #4090a3;  /* Accent border on hover */
+}
+
+/* Pressed state */
+TargetMediaCardButton:pressed, TargetFaceCardButton:pressed, InputFaceCardButton:pressed, EmbeddingCardButton:pressed {
+    background-color: #4090a3;  /* Accent background when pressed */
+    border: 1px solid #156a7d;  /* Darker accent border */
+    color: #101010;
+}
+
+/* Checked state */
+TargetMediaCardButton:checked, TargetFaceCardButton:checked, InputFaceCardButton:checked, EmbeddingCardButton:checked {
+    border: 2px solid #4090a3;  /* Thicker accent border */
+    background-color: #307a8d; /* Slightly darker accent background */
+    color: #ffffff;
+}
+
+/* Disabled state */
+TargetMediaCardButton:disabled, TargetFaceCardButton:disabled, InputFaceCardButton:disabled, EmbeddingCardButton:disabled {
+    background-color: #2b2b2b;
+    border: 1px solid #363636;
+    color: #6a6a6a;
+}
+
+/* Focused state */
+TargetMediaCardButton:focus, TargetFaceCardButton:focus, InputFaceCardButton:focus, EmbeddingCardButton:focus {
+    outline: none;              /* Remove default focus outline */
+    border: 2px solid #4090a3;  /* Accent border on focus */
+}
+
+
+/* QSlider (videoSeekSlider) -------------------------------------- */
+#videoSeekSlider::groove:horizontal {
+    border-radius: 5px;
+    height: 10px;
+    margin: 0px;
+    background-color: #202020; /* Darker secondary grey */
+}
+
+#videoSeekSlider::groove:horizontal:hover {
+    background-color: #2b2b2b; /* Darker Lighter grey on hover */
+}
+
+#videoSeekSlider::sub-page:horizontal {
+    background-color: #156a7d; /* Darker Accent for completed part */
+    border-radius: 5px;
+    height: 10px;
+}
+
+#videoSeekSlider::sub-page:horizontal:hover {
+    background-color: #4090a3; /* Accent on hover */
+}
+
+#videoSeekSlider::add-page:horizontal {
+    background-color: #363636; /* Darkest grey for uncompleted part */
+    border-radius: 5px;
+    height: 10px;
+}
+
+#videoSeekSlider::handle:horizontal {
+    background-color: #f0f0f0; /* Lighter grey handle */
+    border: 1px solid #6a6a6a; /* Darker border */
+    height: 18px;
+    width: 8px;
+    margin: -4px 0; /* Adjust handle position */
+    border-radius: 4px;
+}
+
+#videoSeekSlider::handle:horizontal:hover {
+    background-color: #ffffff; /* White handle on hover */
+    border: 1px solid #4090a3; /* Accent border */
+}
+
+#videoSeekSlider::handle:horizontal:pressed {
+    background-color: #4090a3; /* Accent when pressed */
+    border: 1px solid #156a7d; /* Darker Accent border */
+}
+
+/* #videoSeekSlider disabled state */
+#videoSeekSlider::handle:horizontal:disabled {
+    background-color: #5a5a5a; /* Darker disabled handle */
+    border: 1px solid #363636;
+}
+
+#videoSeekSlider::groove:horizontal:disabled {
+    background-color: #363636;
+}
+
+#videoSeekSlider::sub-page:horizontal:disabled {
+    background-color: #6a6a6a;
+}
+
+
+/* ToggleButton (assuming custom class) */
+ToggleButton {
+    border: 1px solid #363636; /* Darkest border */
+    border-radius: 6px;
+    background-color: #dc2626; /* Keep original red */
+    color: #ffffff;
+    text-align: center;
+    padding: 4px;
+    font-weight: bold;
+}
+ToggleButton:hover {
+    background-color: #b91c1c; /* Darker red */
+    border: 1px solid #f87171;
+}
+ToggleButton:pressed {
+    background-color: #38b845; /* Keep original green */
+}
+ToggleButton:checked {
+    background-color: #38b845; /* Keep original green */
+    border: 1px solid #86efac;
+}
+ToggleButton:default {
+    border-color: #363636; /* Darkest border */
+}
+
+
+/* ParameterSlider / ParameterDecimalSlider - Thin Groove and Handle */
+/* -------------------------------------- */
+ParameterSlider::groove:horizontal, ParameterDecimalSlider::groove:horizontal {
+    border-radius: 3px;
+    height: 6px;
+    margin: 0px;
+    background-color: #202020; /* Darker secondary grey */
+}
+
+ParameterSlider::sub-page:horizontal, ParameterDecimalSlider::sub-page:horizontal {
+    background-color: #4090a3; /* Accent for filled part */
+    border-radius: 3px;
+    height: 6px;
+}
+
+ParameterSlider::add-page:horizontal, ParameterDecimalSlider::add-page:horizontal {
+    background-color: #363636; /* Darkest grey for remaining part */
+    border-radius: 3px;
+    height: 6px;
+}
+
+ParameterSlider::handle:horizontal, ParameterDecimalSlider::handle:horizontal {
+    background-color: #f0f0f0; /* Lighter grey handle */
+    border: 1px solid #6a6a6a; /* Darker border */
+    height: 16px;
+    width: 6px;
+    margin: -5px 0; /* Adjust handle position */
+    border-radius: 3px;
+}
+
+ParameterSlider::handle:horizontal:hover, ParameterDecimalSlider::handle:horizontal:hover {
+    background-color: #ffffff;
+    border: 1px solid #4090a3; /* Accent */
+}
+
+/* Disabled state */
+ParameterSlider::handle:horizontal:disabled, ParameterDecimalSlider::handle:horizontal:disabled {
+    background-color: #5a5a5a; /* Darker disabled handle */
+    border: 1px solid #363636;
+}
+
+ParameterSlider::groove:horizontal:disabled, ParameterDecimalSlider::groove:horizontal:disabled {
+    background-color: #363636;
+}
+
+ParameterSlider::sub-page:horizontal:disabled, ParameterDecimalSlider::sub-page:horizontal:disabled {
+    background-color: #6a6a6a;
+}
+
+/* Add styles for other common widgets if needed */
+QLineEdit, QTextEdit, QPlainTextEdit {
+    background-color: #101010; /* Darkest background for text inputs */
+    color: #f0f0f0;
+    border: 1px solid #363636;
+    border-radius: 3px;
+    padding: 4px;
+}
+
+QComboBox {
+    border: 1px solid #363636;
+    border-radius: 3px;
+    padding: 1px 18px 1px 3px;
+    min-width: 6em;
+    background-color: #202020; /* Darker */
+    color: #f0f0f0;
+}
+
+QComboBox:editable {
+    background: #101010; /* Darkest */
+}
+
+QComboBox:!editable, QComboBox::drop-down:editable {
+     background: #202020; /* Darker */
+}
+
+/* QComboBox gets the "on" state when the popup is open */
+QComboBox:!editable:on, QComboBox::drop-down:editable:on {
+    background: #2b2b2b; /* Darker hover */
+}
+
+QComboBox::drop-down {
+    subcontrol-origin: padding;
+    subcontrol-position: top right;
+    width: 15px;
+    border-left-width: 1px;
+    border-left-color: #363636; /* Darker */
+    border-left-style: solid;
+    border-top-right-radius: 3px;
+    border-bottom-right-radius: 3px;
+}
+
+QComboBox::down-arrow {
+    /* Use a standard Qt icon or specify an image */
+     image: url(PLACEHOLDER_FOR_DOWN_ARROW_ICON.png); /* Replace if you have icons */
+}
+QComboBox::down-arrow:on { /* shift the arrow when popup is open */
+    top: 1px;
+    left: 1px;
+}
+
+QComboBox QAbstractItemView { /* Style for the dropdown list */
+    border: 1px solid #363636; /* Darker */
+    background-color: #202020; /* Darker */
+    selection-background-color: #4090a3; /* Accent */
+    color: #f0f0f0;
+}
+
+QMenuBar {
+    background-color: #202020; /* Darker */
+    color: #f0f0f0;
+}
+
+QMenuBar::item {
+    background: transparent;
+    padding: 4px 8px;
+}
+
+QMenuBar::item:selected { /* when selected using mouse or keyboard */
+    background: #4090a3; /* Accent */
+    color: #101010; /* Darkest text */
+}
+
+QMenuBar::item:pressed {
+    background: #156a7d; /* Darker Accent */
+}
+
+QMenu {
+    background-color: #202020; /* Darker */
+    border: 1px solid #363636; /* Darker */
+    color: #f0f0f0;
+}
+
+QMenu::item {
+    padding: 4px 20px 4px 20px;
+}
+
+QMenu::item:selected {
+    background-color: #4090a3; /* Accent */
+    color: #101010; /* Darkest text */
+}
+
+QMenu::separator {
+    height: 1px;
+    background: #363636; /* Darker */
+    margin-left: 10px;
+    margin-right: 5px;
+}
+
+QProgressBar {
+    border: 1px solid #363636; /* Darker */
+    border-radius: 5px;
+    text-align: center;
+    background-color: #202020; /* Darker */
+    color: #f0f0f0;
+}
+
+QProgressBar::chunk {
+    background-color: #4090a3; /* Accent */
+    width: 10px; /* Progress chunk width */
+    margin: 0.5px;
+}
+
+QScrollBar:vertical {
+    border: 1px solid #363636; /* Darker */
+    background: #141414; /* Darkest */
+    width: 12px;
+    margin: 0px 0px 0px 0px;
+}
+QScrollBar::handle:vertical {
+    background: #2b2b2b; /* Darker hover */
+    min-height: 20px;
+    border-radius: 6px;
+}
+QScrollBar::handle:vertical:hover {
+    background: #454545; /* Darker scroll handle hover */
+}
+QScrollBar::add-line:vertical, QScrollBar::sub-line:vertical {
+    height: 0px;
+    background: none;
+}
+QScrollBar::add-page:vertical, QScrollBar::sub-page:vertical {
+    background: none;
+}
+
+QScrollBar:horizontal {
+    border: 1px solid #363636; /* Darker */
+    background: #141414; /* Darkest */
+    height: 12px;
+    margin: 0px 0px 0px 0px;
+}
+QScrollBar::handle:horizontal {
+    background: #2b2b2b; /* Darker hover */
+    min-width: 20px;
+    border-radius: 6px;
+}
+QScrollBar::handle:horizontal:hover {
+    background: #454545; /* Darker scroll handle hover */
+}
+QScrollBar::add-line:horizontal, QScrollBar::sub-line:horizontal {
+    width: 0px;
+    background: none;
+}
+QScrollBar::add-page:horizontal, QScrollBar::sub-page:horizontal {
+    background: none;
+}
+
+QTabWidget::pane { /* The tab widget frame */
+    border-top: 1px solid #363636; /* Darker */
+}
+
+QTabWidget::tab-bar {
+    left: 5px; /* move to the right by 5px */
+}
+
+/* Style the tab using the tab sub-control. Note that it reads QTabBar _not_ QTabWidget */
+QTabBar::tab {
+    background: #202020; /* Darker */
+    border: 1px solid #363636; /* Darker */
+    border-bottom-color: #363636; /* same as pane color */
+    border-top-left-radius: 4px;
+    border-top-right-radius: 4px;
+    min-width: 8ex;
+    padding: 4px 8px;
+    color: #f0f0f0;
+}
+
+QTabBar::tab:selected, QTabBar::tab:hover {
+    background: #2b2b2b; /* Darker hover */
+    border-color: #5a5a5a; /* Darker border */
+    border-bottom-color: #2b2b2b; /* make border same color as background */
+}
+
+QTabBar::tab:selected {
+    background: #4090a3; /* Accent */
+    color: #101010; /* Darkest text */
+    border-color: #156a7d; /* Darker Accent */
+    border-bottom-color: #4090a3; /* make border same color as background */
+}
+
+QTabBar::tab:!selected {
+    margin-top: 2px; /* make non-selected tabs look smaller */
+}
+
+/* Add more widget styles as needed */

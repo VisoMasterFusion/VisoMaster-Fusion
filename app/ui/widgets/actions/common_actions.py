@@ -10,6 +10,7 @@ from PySide6 import QtWidgets,QtCore,QtGui
 
 from app.ui.widgets import widget_components
 from app.ui.widgets.settings_layout_data import SETTINGS_LAYOUT_DATA
+from app.ui.widgets.common_layout_data import COMMON_LAYOUT_DATA 
 import app.helpers.miscellaneous as misc_helpers
 if TYPE_CHECKING:
     from app.ui.main_ui import MainWindow
@@ -363,35 +364,34 @@ def set_control_widgets_values(main_window: 'MainWindow', enable_exec_func = Tru
     control = main_window.control.copy()
     parameter_widgets = main_window.parameter_widgets
 
-    # Prepare a dictionary of settings options from layout data
-    settings_options = {
-        setting_name: setting_data
-        for setting_group in SETTINGS_LAYOUT_DATA.values()
-        for setting_name, setting_data in setting_group.items()
-    }
+    # Prepare a dictionary of ALL widget options from layout data
+    all_widget_options = {}
+    for layout_data_source in [SETTINGS_LAYOUT_DATA, COMMON_LAYOUT_DATA]: # Iterate over both
+        for group_name, group_data in layout_data_source.items():
+            for widget_key, widget_data in group_data.items():
+                all_widget_options[widget_key] = widget_data
 
     # Iterate through control items and update widgets
     for control_name, control_value in control.items():
         widget = parameter_widgets.get(control_name)
 
         if widget:
-
             # Temporarily disable frame refresh
             widget.enable_refresh_frame = False
 
             # Set the widget value
             widget.set_value(control_value)
 
-
             if enable_exec_func:
                 # Execute any associated function, if defined
-                exec_function_data = settings_options[control_name].get('exec_function')
-                if exec_function_data:
-                    exec_function = partial(
-                        exec_function_data, main_window
-                    )
-                    exec_args = settings_options[control_name].get('exec_fuction_args', [])
-                    exec_function(control_value, *exec_args)
+                widget_definition = all_widget_options.get(control_name) # Use .get() for safety
+                if widget_definition:
+                    exec_function_data = widget_definition.get('exec_function')
+                    if exec_function_data:
+                        # The functions in control_actions.py are typically (main_window, value, *additional_args)
+                        exec_args_from_layout = widget_definition.get('exec_function_args', []) 
+                        final_exec_args = [main_window, control_value] + exec_args_from_layout
+                        exec_function_data(*final_exec_args)
 
             # Re-enable frame refresh
             widget.enable_refresh_frame = True
@@ -419,11 +419,27 @@ def update_placeholder_visibility(main_window: 'MainWindow', list_widget:QtWidge
 
 @QtCore.Slot()
 def show_model_loading_dialog(main_window: 'MainWindow'):
-    main_window.model_loading_dialog = widget_components.LoadingDialog()
-    main_window.model_loading_dialog.show()
-    QtWidgets.QApplication.processEvents()
+    # Debounce: Only show dialog if loading takes longer than 300ms
+    if not hasattr(main_window, '_model_loading_timer'):
+        main_window._model_loading_timer = QtCore.QTimer()
+        main_window._model_loading_timer.setSingleShot(True)
+        def show_dialog():
+            if not hasattr(main_window, 'model_loading_dialog') or main_window.model_loading_dialog is None:
+                main_window.model_loading_dialog = widget_components.LoadingDialog()
+            if not main_window.model_loading_dialog.isVisible():
+                main_window.model_loading_dialog.show()
+                QtWidgets.QApplication.processEvents()
+        main_window._model_loading_timer.timeout.connect(show_dialog)
+    # Start or restart the timer
+    main_window._model_loading_timer.start(300)
 
 @QtCore.Slot()
 def hide_model_loading_dialog(main_window: 'MainWindow'):
-    main_window.model_loading_dialog.hide()
-    QtWidgets.QApplication.processEvents()
+    # Stop the timer if it's running
+    if hasattr(main_window, '_model_loading_timer'):
+        main_window._model_loading_timer.stop()
+    # Only hide if dialog exists and is visible
+    if hasattr(main_window, 'model_loading_dialog') and main_window.model_loading_dialog is not None:
+        if main_window.model_loading_dialog.isVisible():
+            main_window.model_loading_dialog.hide()
+            QtWidgets.QApplication.processEvents()

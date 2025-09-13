@@ -205,6 +205,15 @@ def load_saved_workspace(main_window: 'MainWindow', data_filename: str|bool = Fa
             # Add markers
             video_control_actions.remove_all_markers(main_window)
 
+            # Load job marker pairs (New format)
+            main_window.job_marker_pairs = data.get('job_marker_pairs', [])
+            # Fallback for old format (job_start_frame, job_end_frame)
+            if not main_window.job_marker_pairs: # Only try fallback if new format wasn't found
+                job_start_frame = data.get('job_start_frame', None)
+                job_end_frame = data.get('job_end_frame', None)
+                if job_start_frame is not None:
+                    main_window.job_marker_pairs.append((job_start_frame, job_end_frame))
+
             # Convert params to ParametersDict
             data['markers'] = convert_markers_to_supported_type(main_window, data['markers'], misc_helpers.ParametersDict)
         
@@ -212,6 +221,9 @@ def load_saved_workspace(main_window: 'MainWindow', data_filename: str|bool = Fa
                 video_control_actions.add_marker(main_window, marker_data['parameters'], marker_data['control'], int(marker_position))
             # main_window.videoSeekSlider.setValue(0)
             # video_control_actions.update_widget_values_from_markers(main_window, 0)
+
+            # Update slider visuals after loading markers
+            main_window.videoSeekSlider.update()
 
             # Set target media and input faces folder names
             main_window.last_target_media_folder_path = data.get('last_target_media_folder_path','')
@@ -232,49 +244,142 @@ def load_saved_workspace(main_window: 'MainWindow', data_filename: str|bool = Fa
                 common_widget_actions.set_widgets_values_using_face_id_parameters(main_window, face_id=False) 
         
 def save_current_workspace(main_window: 'MainWindow', data_filename:str|bool = False):
-    target_faces_data = {}
-    embeddings_data = {}
-    input_faces_data = {}
+    target_faces_data = {}; embeddings_data = {}; input_faces_data = {}
+    target_medias_data = []
+
+    # --- Serialize Target Medias ---
+    for media_id, target_media in main_window.target_videos.items():
+        target_medias_data.append({
+            'media_path': target_media.media_path,
+            'file_type': target_media.file_type,
+            'media_id': media_id,
+            'is_webcam': target_media.is_webcam,
+            'webcam_index': target_media.webcam_index,
+            'webcam_backend': target_media.webcam_backend
+        })
+
+    # --- Serialize Input Faces ---
     for face_id, input_face in main_window.input_faces.items():
         input_faces_data[face_id] = {'media_path': input_face.media_path}
+    
+    # --- Serialize Target Faces & Parameters ---
     for face_id, target_face in main_window.target_faces.items():
         target_faces_data[face_id] = {
             'cropped_face': target_face.cropped_face.tolist(), 
             'embedding_store': {embed_model: embedding.tolist() for embed_model, embedding in target_face.embedding_store.items()},
-            'parameters': main_window.parameters[face_id].data.copy(), #Store the current parameters. This will be overriden when loading the workspace, if there are markers for the video.
-            'control': main_window.control.copy(), #Store the current control settings. This will be overriden when loading the workspace, if there are markers for the video.
-            'assigned_input_faces': [input_face_id for input_face_id in target_face.assigned_input_faces.keys()],
-            'assigned_merged_embeddings': [embedding_id for embedding_id in target_face.assigned_merged_embeddings.keys()],
-            'assigned_input_embedding': {embed_model: embedding.tolist() for embed_model, embedding in target_face.assigned_input_embedding.items()}
-            }
-    for embedding_id, embed_button in main_window.merged_embeddings.items():
-        embeddings_data[embedding_id] = {
-            'embedding_store': {embed_model: embedding.tolist() for embed_model,embedding in embed_button.embedding_store.items()}, 
-            'embedding_name': embed_button.embedding_name}
-    
-    target_medias_data = [{'media_id': media_id, 'media_path': target_media.media_path}  for media_id,target_media in main_window.target_videos.items() if not target_media.is_webcam]
-    selected_media_id = main_window.selected_video_button.media_id if main_window.selected_video_button else False
-    markers = copy.deepcopy(main_window.markers)
-    # Convert params to dict
-    markers = convert_markers_to_supported_type(main_window, markers, dict)
+            'parameters': main_window.parameters.get(face_id, main_window.default_parameters).data.copy(), # Use .get with default, ensure it's dict
+            'assigned_input_faces': list(target_face.assigned_input_faces.keys()),
+            'assigned_merged_embeddings': list(target_face.assigned_merged_embeddings.keys()),
+            'assigned_input_embedding': {model: emb.tolist() for model, emb in target_face.assigned_input_embedding.items()} # Save calculated embedding
+        }
 
-    save_data = {
-        'selected_media_id': selected_media_id,
+    # --- Serialize Embeddings ---
+    for embedding_id, embedding_button in main_window.merged_embeddings.items():
+        embeddings_data[embedding_id] = {
+            'embedding_name': embedding_button.embedding_name,
+            'embedding_store': {model: emb.tolist() for model, emb in embedding_button.embedding_store.items()}
+        }
+    # --- Serialize Markers --- 
+    # Convert Parameters inside the markers from ParametersDict to dict before saving
+    markers_to_save = convert_markers_to_supported_type(main_window, copy.deepcopy(main_window.markers), dict)
+
+    # --- Prepare Workspace Data ---
+    data = {
         'target_medias_data': target_medias_data,
+        'selected_media_id': main_window.selected_video_button.media_id if main_window.selected_video_button else False,
+        'input_faces_data': input_faces_data,
         'target_faces_data': target_faces_data,
         'embeddings_data': embeddings_data,
-        'input_faces_data': input_faces_data,
-        'markers': markers,
-        'control': main_window.control,
+        'markers': markers_to_save, 
+        'control': main_window.control.copy(),
+        'job_marker_pairs': main_window.job_marker_pairs, # Save the list of tuples
         'last_target_media_folder_path': main_window.last_target_media_folder_path,
         'last_input_media_folder_path': main_window.last_input_media_folder_path,
         'loaded_embedding_filename': main_window.loaded_embedding_filename,
-        'current_widget_parameters': convert_parameters_to_supported_type(main_window, main_window.current_widget_parameters, dict)
+        'current_widget_parameters': main_window.current_widget_parameters.data.copy() # Save as dict
     }
-    if not data_filename:
+    if data_filename is False:
         data_filename, _ = QtWidgets.QFileDialog.getSaveFileName(main_window, filter='JSON (*.json)')
-
+    
     if data_filename:
-        with open(data_filename, 'w') as data_file: #pylint: disable=unspecified-encoding
-            data_as_json = json.dumps(save_data, indent=4)  # Salva con indentazione per leggibilità
-            data_file.write(data_as_json)
+        try:
+            with open(data_filename, 'w') as data_file: #pylint: disable=unspecified-encoding
+                data_as_json = json.dumps(data, indent=4)  # Salva con indentazione per leggibilità
+                data_file.write(data_as_json)
+            if data_filename.endswith('last_workspace.json'):
+                 print(f"Last workspace saved to: {data_filename}")
+            else:
+                common_widget_actions.create_and_show_toast_message(main_window, 'Workspace Saved', f'Saved Workspace to file: {data_filename}')
+        except Exception as e:
+            print(f"[ERROR] Failed to save workspace {data_filename}: {e}")
+            if not data_filename.endswith('last_workspace.json'): # Don't show error for auto-save
+                common_widget_actions.create_and_show_messagebox(main_window, 'Save Error', f'Failed to save workspace:\n{e}', main_window)
+
+def save_current_job(main_window: 'MainWindow'):
+    # Check for necessary conditions
+    if not main_window.selected_video_button:
+        common_widget_actions.create_and_show_messagebox(main_window, "Error", "No target video selected.", main_window)
+        return
+    if not main_window.target_faces:
+        common_widget_actions.create_and_show_messagebox(main_window, "Error", "No target faces detected or assigned.", main_window)
+        return
+    if not any(tf.get_assigned_total_input_faces() for tf in main_window.target_faces.values()):
+        common_widget_actions.create_and_show_messagebox(main_window, "Error", "No input faces assigned to any target face.", main_window)
+        return
+    
+    # Show dialog to get job name and output options
+    dialog = widget_components.SaveJobDialog(main_window)
+    if dialog.exec() == QtWidgets.QDialog.Accepted:
+        job_name = dialog.job_name
+        use_job_name = dialog.use_job_name_for_output
+        output_filename = dialog.output_file_name
+        if not job_name:
+            common_widget_actions.create_and_show_messagebox(main_window, "Error", "Job name cannot be empty.", main_window)
+            return
+    else:
+        return # User cancelled
+
+    # Prepare job data
+    job_data = {
+        'job_name': job_name,
+        'use_job_name_for_output': use_job_name,
+        'output_file_name': output_filename,
+        'target_media_path': main_window.selected_video_button.media_path,
+        'target_media_id': main_window.selected_video_button.media_id,
+        'target_media_type': main_window.selected_video_button.file_type,
+        'input_faces_data': {fid: {'media_path': face.media_path} for fid, face in main_window.input_faces.items()},
+        'target_faces_data': {},
+        'embeddings_data': {eid: {'name': emb.embedding_name, 'store': {m: e.tolist() for m, e in emb.embedding_store.items()}} 
+                            for eid, emb in main_window.merged_embeddings.items()},
+        'markers': convert_markers_to_supported_type(main_window, copy.deepcopy(main_window.markers), dict),
+        'control': main_window.control.copy(),
+        'job_marker_pairs': main_window.job_marker_pairs,
+        'current_widget_parameters': main_window.current_widget_parameters.data.copy()
+    }
+
+    # Serialize target face specifics for the job
+    for face_id, target_face in main_window.target_faces.items():
+        job_data['target_faces_data'][face_id] = {
+            'cropped_face': target_face.cropped_face.tolist(), 
+            'embedding_store': {m: e.tolist() for m, e in target_face.embedding_store.items()},
+            'parameters': main_window.parameters.get(face_id, main_window.default_parameters).data.copy(),
+            'assigned_input_faces': list(target_face.assigned_input_faces.keys()),
+            'assigned_merged_embeddings': list(target_face.assigned_merged_embeddings.keys()),
+        }
+
+    # Define save path
+    jobs_dir = os.path.join(os.getcwd(), '.jobs')
+    os.makedirs(jobs_dir, exist_ok=True)
+    save_path = os.path.join(jobs_dir, f"{job_name}.json")
+
+    # Save the job file
+    try:
+        with open(save_path, 'w') as f:
+            json.dump(job_data, f, indent=4)
+        common_widget_actions.create_and_show_toast_message(main_window, "Job Saved", f"Job '{job_name}' saved successfully.")
+        # Refresh the Job Manager list if it's visible
+        if hasattr(main_window, 'jobManagerList'):
+            main_window.jobManagerList.refresh_jobs()
+    except Exception as e:
+        print(f"[ERROR] Failed to save job '{job_name}': {e}")
+        common_widget_actions.create_and_show_messagebox(main_window, "Save Job Error", f"Failed to save job:\n{e}", main_window)

@@ -1,0 +1,18 @@
+/* Nord Theme for VisoMaster */
+
+QWidget {
+    background-color: #2e3440;
+    color: #d8dee9;
+    selection-background-color: #5e81ac;
+    selection-color: #2e3440;
+}
+
+QLabel {
+    color: #d8dee9;
+}
+
+QPushButton {
+    color: #d8dee9;
+    background-color: #3b4252;
+    border: 1px solid #4c566a;
+} 

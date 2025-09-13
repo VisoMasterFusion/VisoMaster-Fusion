@@ -6,6 +6,9 @@ import torch
 import numpy as np
 from torch.cuda import nvtx
 
+import torch.nn.functional
+from collections import defaultdict
+
 from torchvision import transforms
 from torchvision.transforms import v2
 
@@ -510,6 +513,34 @@ class FaceEditors:
         if parameters['FaceMakeupEnableToggle']:
             color = [parameters['FaceMakeupRedSlider'], parameters['FaceMakeupGreenSlider'], parameters['FaceMakeupBlueSlider']]
             out = self.face_parser_makeup_direct_rgb(img=out, parsing=outpred, part=(1, 7, 8, 10), color=color, blend_factor=parameters['FaceMakeupBlendAmountDecimalSlider'])
+        
+        if parameters['EyesMakeupEnableToggle']:
+            print("eyes")
+            color = [parameters['EyesMakeupRedSlider'], parameters['EyesMakeupGreenSlider'], parameters['EyesMakeupBlueSlider']]
+            
+            # Ausgangsmaske für Augen (Labels 4 & 5)
+            eye_mask = (outpred == 4) | (outpred == 5)  # shape: (512, 512)
+            print("outpred, eye_mask_pre (512,512): ", outpred.shape, eye_mask.shape)
+            eye_mask = eye_mask.unsqueeze(0).unsqueeze(0).float()  # shape: (1, 1, H, W)
+            print("eye_mask_post (1,1,H,W): ", eye_mask.shape)
+
+            # Pupille isolieren: erzeuge kleinere zentrale Maske mit max_pool2d
+            pupil_mask = 1 - torch.nn.functional.max_pool2d(1 - eye_mask, kernel_size=5, stride=1, padding=2)
+            pupil_mask = pupil_mask.squeeze(0).squeeze(0)  # zurück zu (H, W)
+
+            # Optional: Ränder glätten
+            if parameters['EyesMakeupBlurSlider'] > 0:
+                blur_kernel = parameters['EyesMakeupBlurSlider'] * 2 + 1
+                blur = transforms.GaussianBlur(blur_kernel, sigma=(parameters['EyesMakeupBlurSlider'] + 1) * 0.2)
+                pupil_mask = blur(pupil_mask.unsqueeze(0)).squeeze(0)
+
+            # Übergebe Pupillenmaske direkt an RGB-Blending-Funktion
+            out = self.face_parser_makeup_direct_rgb_masked(
+                img=out,
+                mask=pupil_mask,
+                color=color,
+                blend_factor=parameters['EyesMakeupBlendAmountDecimalSlider']
+            )
 
         if parameters['HairMakeupEnableToggle']:
             color = [parameters['HairMakeupRedSlider'], parameters['HairMakeupGreenSlider'], parameters['HairMakeupBlueSlider']]
@@ -528,6 +559,8 @@ class FaceEditors:
             1: parameters['FaceMakeupEnableToggle'],  # Face
             2: parameters['EyeBrowsMakeupEnableToggle'],  # Left Eyebrow
             3: parameters['EyeBrowsMakeupEnableToggle'],  # Right Eyebrow
+            4: parameters['EyesMakeupEnableToggle'],  # Left Eye
+            5: parameters['EyesMakeupEnableToggle'],  # Right Eye
             7: parameters['FaceMakeupEnableToggle'],  # Left Ear
             8: parameters['FaceMakeupEnableToggle'],  # Right Ear
             10: parameters['FaceMakeupEnableToggle'],  # Nose
@@ -591,3 +624,26 @@ class FaceEditors:
         out = img * (1 - combined_mask.unsqueeze(0)) + out * combined_mask.unsqueeze(0)
 
         return out, combined_mask.unsqueeze(0)
+        
+    def face_parser_makeup_direct_rgb_masked(self, img, mask, color, blend_factor=0.2):
+        device = img.device
+        blend_factor = min(max(blend_factor, 0.0), 1.0)
+        r, g, b = [x / 255.0 for x in color]
+        tar_color = torch.tensor([r, g, b], dtype=torch.float32).view(3, 1, 1).to(device)
+
+        # Normalisiere Bild
+        image_normalized = img.float() / 255.0
+
+        # Maske auf 3 Kanäle bringen
+        mask_3ch = mask.unsqueeze(0).expand_as(img)
+
+        # Farbmischung
+        changed = torch.where(
+            mask_3ch > 0.01,  # Optional: Schwelle gegen weiche Maskenränder
+            (1 - blend_factor) * image_normalized + blend_factor * tar_color,
+            image_normalized
+        )
+
+        # Skaliere zurück auf 0–255
+        changed = torch.clamp(changed * 255, 0, 255).to(torch.uint8)
+        return changed
