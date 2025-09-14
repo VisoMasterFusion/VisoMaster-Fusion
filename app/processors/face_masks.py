@@ -289,7 +289,10 @@ class FaceMasks:
                         # kombiniere swap und orig
                         m1 = make_mask(labels_swap, [cls], dil=d)
                         m2 = make_mask(labels_orig, [cls], dil=d)
-                        mask_fp = torch.max(mask_fp, torch.max(m1, m2))
+                        if parameters['MouthParserInsideToggle'] and cls == 11: #for mouth to be put in the swaped face (to minimize the overlap when the mouth in not aligned)
+                            mask_fp = torch.max(mask_fp, torch.min(m1, m2))
+                        else:
+                            mask_fp = torch.max(mask_fp, torch.max(m1, m2))
                 # optional Gaussian-Blur
                 if parameters['FaceBlurParserSlider'] > 0:
                     k = parameters['FaceBlurParserSlider']*2+1
