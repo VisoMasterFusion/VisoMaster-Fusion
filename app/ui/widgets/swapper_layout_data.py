@@ -88,6 +88,16 @@ SWAPPER_LAYOUT_DATA: LayoutDictTypes = {
             'default': '60',
             'step': 1,
             'help': 'Set the similarity threshold to control how similar the detected face should be to the reference (target) face.'
+        },
+        'PreSwapSharpnessDecimalSlider': {
+            'level': 1,
+            'label': 'Pre Swap Sharpness (1.0)',
+            'min_value': '0.0',
+            'max_value': '2.0',
+            'default': '1.0',
+            'step': 0.1,
+            'decimals': 1,
+            'help': 'Sharpens the original face befor swapping. can sometimes be usefull. care it can tamper with "Auto Face Restorer"!'
         }
     },
     'Swap strenght and likeness': {
