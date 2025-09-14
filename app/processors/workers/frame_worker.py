@@ -679,6 +679,10 @@ class FrameWorker(threading.Thread):
     
     def get_swapped_and_prev_face(self, output, input_face_affined, original_face_512, latent, itex, dim, swapper_model, dfm_model, parameters, ):
         # original_face_512, original_face_384, original_face_256, original_face_128 = original_faces
+        if parameters['PreSwapSharpnessDecimalSlider'] != 1.0:
+            input_face_affined = input_face_affined.permute(2, 0, 1)
+            input_face_affined = v2.functional.adjust_sharpness(input_face_affined, parameters['PreSwapSharpnessDecimalSlider'])
+            input_face_affined = input_face_affined.permute(1, 2, 0)
         prev_face = input_face_affined.clone()
         if swapper_model == 'Inswapper128':
             with torch.no_grad():  # Disabilita il calcolo del gradiente se è solo per inferenza
