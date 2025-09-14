@@ -314,6 +314,14 @@ SWAPPER_LAYOUT_DATA: LayoutDictTypes = {
             'default': False,
             'help': 'Allow the unprocessed background from the orginal image to show in the final swap.'
         },
+        'MouthParserInsideToggle': {
+            'level': 2,
+            'label': 'Mouth Inside toggle',
+            'default': True,
+            'parentToggle': 'FaceParserEnableToggle',
+            'requiredToggleValue': True,
+            'help': 'Keep the parse inside the mouth (value over 1 will slowly overlap the swapped mouth).'
+        },
         'BackgroundParserSlider': {
             'level': 2,
             'label': 'Background',

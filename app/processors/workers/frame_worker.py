@@ -938,6 +938,7 @@ class FrameWorker(threading.Thread):
         texture_mask = BgExclude.clone()
         mask_forcalc = BgExclude.clone()
         mask_calc_dill = BgExclude.clone()
+        mask_color = BgExclude.clone()
         FaceEditmaskOnes = swap_mask.clone()
         
         swap = torch.clamp(swap, 0.0, 255.0)   
@@ -946,26 +947,74 @@ class FrameWorker(threading.Thread):
         if parameters['FaceExpressionEnableToggle']:
             swap = self.apply_face_expression_restorer(original_face_512, swap, parameters)
 
-        # Restorer
-        swap_original = swap.clone()   
-            
+
         if control.get('DenoiserUNetEnableBeforeRestorersToggle', False):
             swap = self._apply_denoiser_pass(swap, control, "Before")
 
+        # Restorer
+        swap_original = swap.clone()   
+        
         if parameters["FaceRestorerEnableToggle"]:
             swap = self.models_processor.apply_facerestorer(swap, parameters['FaceRestorerDetTypeSelection'], parameters['FaceRestorerTypeSelection'], parameters["FaceRestorerBlendSlider"], parameters['FaceFidelityWeightDecimalSlider'], control['DetectorScoreSlider'], interpolation_Untransform)
         else:
             swap = swap.clone()
-        
+
+        if parameters["FaceRestorerEnableToggle"] and parameters["FaceRestorerAutoEnableToggle"]:
+            alpha_restorer = float(parameters["FaceRestorerBlendSlider"])/100.0
+            adjust_sharpness = float(parameters["FaceRestorerAutoSharpAdjustSlider"])
+            scale_factor = round(tform.scale, 2)
+            alpha_auto, blur_value = self.face_restorer_auto(original_face_512, swap_original, swap, alpha_restorer, adjust_sharpness, scale_factor, debug, restore_mask)
+
+            if debug:
+                debug_info["RestoreAlpha"] = f": {alpha_auto*100:.2f}"
+
+        if parameters["FaceRestorerAutoEnableToggle"] and parameters["FaceRestorerEnableToggle"]:
+            if blur_value != 0:
+                swap = swap_original
+                if debug: print("blur: ", blur_value)
+            elif alpha_auto != 0:
+                swap = swap * alpha_auto + swap_original * (1 - alpha_auto)
+            else:
+                swap = swap_original 
+        elif parameters["FaceRestorerEnableToggle"]:
+            alpha_restorer = float(parameters["FaceRestorerBlendSlider"])/100.0
+            swap = torch.add(torch.mul(swap, alpha_restorer), torch.mul(swap_original, 1 - alpha_restorer))   
+            
         if control.get('DenoiserAfterFirstRestorerToggle', False):
             swap = self._apply_denoiser_pass(swap, control, "AfterFirst")
 
         # Restorer2
+        swap_original2 = swap.clone()
+        
         if parameters["FaceRestorerEnable2Toggle"]:
-            swap = self.models_processor.apply_facerestorer(swap, parameters['FaceRestorerDetType2Selection'], parameters['FaceRestorerType2Selection'], parameters["FaceRestorerBlend2Slider"], parameters['FaceFidelityWeight2DecimalSlider'], control['DetectorScoreSlider']/100.0, interpolation_Untransform)
+            swap2 = self.models_processor.apply_facerestorer(swap, parameters['FaceRestorerDetType2Selection'], parameters['FaceRestorerType2Selection'], parameters["FaceRestorerBlend2Slider"], parameters['FaceFidelityWeight2DecimalSlider'], control['DetectorScoreSlider']/100.0, interpolation_Untransform)
+        else:
+            swap2 = swap.clone()
 
-        if control.get('DenoiserAfterSecondRestorerToggle', False):
-            swap = self._apply_denoiser_pass(swap, control, "AfterSecond")
+        if parameters["FaceRestorerEnable2Toggle"] and parameters["FaceRestorerAutoEnable2Toggle"]:
+            original_face_512_2 = original_face_512.clone()
+            alpha_restorer2 = float(parameters["FaceRestorerBlend2Slider"])/100.0
+            adjust_sharpness2 = float(parameters["FaceRestorerAutoSharpAdjust2Slider"])
+            scale_factor2 = round(tform.scale, 2)
+            alpha_auto2, blur_value2 = self.face_restorer_auto(original_face_512_2, swap_original2, swap2, alpha_restorer2, adjust_sharpness2, scale_factor2, debug, restore_mask)
+
+            if debug:
+                debug_info["RestoreAlpha2"] = f": {alpha_auto2*100:.2f}"
+
+        if parameters["FaceRestorerAutoEnable2Toggle"] and parameters["FaceRestorerEnable2Toggle"]:
+            if blur_value2 != 0:
+                swap = swap_original2
+                if debug: print("blur: ", blur_value2)
+            elif alpha_auto2 != 0:
+                swap = swap2 * alpha_auto2 + swap_original2 * (1 - alpha_auto2)
+            else:
+                swap = swap_original2 
+        elif parameters["FaceRestorerEnable2Toggle"]:
+            alpha_restorer2 = float(parameters["FaceRestorerBlend2Slider"])/100.0
+            swap = torch.add(torch.mul(swap2, alpha_restorer2), torch.mul(swap_original2, 1 - alpha_restorer2))
+
+        if control.get('DenoiserAfterRestorersToggle', False):
+            swap = self._apply_denoiser_pass(swap, control, "After")
 
         # Occluder
         if parameters["OccluderEnableToggle"]:
@@ -1043,28 +1092,7 @@ class FrameWorker(threading.Thread):
         
         calc_mask = torch.where(calc_mask > 0.1, 1, 0).float()
         mask_calc_dill = torch.where(mask_calc_dill > 0.1, 1, 0).float()
-  
-        if parameters["FaceRestorerEnableToggle"] and parameters["FaceRestorerAutoEnableToggle"]:
-            alpha_restorer = float(parameters["FaceRestorerBlendSlider"])/100.0
-            adjust_sharpness = float(parameters["FaceRestorerAutoSharpAdjustSlider"])
-            scale_factor = round(tform.scale, 2)
-            alpha_auto, blur_value = self.face_restorer_auto(original_face_512, swap_original, swap, alpha_restorer, adjust_sharpness, scale_factor, debug, restore_mask)
 
-            if debug:
-                debug_info["RestoreAlpha"] = f": {alpha_auto*100:.2f}"
-
-        if parameters["FaceRestorerAutoEnableToggle"] and parameters["FaceRestorerEnableToggle"]:
-            if blur_value != 0:
-                swap = swap_original
-                if debug: print("blur: ", blur_value)
-            elif alpha_auto != 0:
-                swap = swap * alpha_auto + swap_original * (1 - alpha_auto)
-            else:
-                swap = swap_original 
-        elif parameters["FaceRestorerEnableToggle"]:
-            alpha_restorer = float(parameters["FaceRestorerBlendSlider"])/100.0
-            swap = torch.add(torch.mul(swap, alpha_restorer), torch.mul(swap_original, 1 - alpha_restorer))                             
-      
         swap_backup = swap.clone()
         
         if parameters["TransferTextureEnableToggle"] or parameters["DifferencingEnableToggle"] or parameters["AutoColorEnableToggle"]:
@@ -1082,6 +1110,8 @@ class FrameWorker(threading.Thread):
             if parameters['AutoColorTransferTypeSelection'] in ['Test_Mask', 'DFL_Orig']:
                 mask_autocolor = mask_calc.clone()
                 mask_autocolor = (mask_autocolor > 0.1)
+                if parameters['AutoColorTransferTypeSelection'] == 'DFL_Orig' and not parameters['DFLXSegEnableToggle']:
+                    mask_autocolor = mask_color
 
             swap_backup = swap.clone()
 
@@ -1216,14 +1246,6 @@ class FrameWorker(threading.Thread):
             swap = swap * editor_mask + original_face_512 * (1 - editor_mask)
             swap = self.swap_edit_face_core(swap, kps, parameters, control)
             swap_mask = torch.ones_like(swap_mask)
-        # Restorer2
-        if parameters["FaceRestorerEnable2Toggle"]:
-            swap2 = self.models_processor.apply_facerestorer(swap, parameters['FaceRestorerDetType2Selection'], parameters['FaceRestorerType2Selection'], parameters["FaceRestorerBlend2Slider"], parameters['FaceFidelityWeight2DecimalSlider'], control['DetectorScoreSlider']/100.0, interpolation_Untransform)
-            alpha_restorer2 = float(parameters["FaceRestorerBlend2Slider"])/100.0
-            swap = torch.add(torch.mul(swap2, alpha_restorer2), torch.mul(swap, 1 - alpha_restorer2))  
-
-        if control.get('DenoiserAfterRestorersToggle', False):
-            swap = self._apply_denoiser_pass(swap, control, "After")
 
         if is_perspective_crop:
             return swap, t512_mask(swap_mask), None
