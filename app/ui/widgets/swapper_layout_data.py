@@ -20,6 +20,38 @@ SWAPPER_LAYOUT_DATA: LayoutDictTypes = {
             'requiredSelectionValue': 'Inswapper128',
             'help': 'Select the resolution for the swapped face in pixels. Higher values offer better quality but are slower to process.'
         },
+        'SwapperResAutoSelectEnableToggle': {
+            'level': 2,
+            'label': 'Enable Auto Resolution',
+            'default': False,
+            'parentSelection': 'SwapModelSelection',
+            'requiredSelectionValue': 'Inswapper128',
+            'help': 'Autoselect Swapper Resolution based on original Face Size (only for Inswapper).'
+        },
+        'InStyleResAEnableToggle': {
+            'level': 2,
+            'label': '512 Resolution',
+            'default': False,            
+            'parentSelection': 'SwapModelSelection',
+            'requiredSelectionValue': 'InStyleSwapper256 Version A',
+            'help': 'Like the inswapper Resolution (512) for InStyleSwappers. i dont know to hide it with 3 selections possible :(.'
+        }, 
+        'InStyleResBEnableToggle': {
+            'level': 2,
+            'label': '512 Resolution',
+            'default': False,            
+            'parentSelection': 'SwapModelSelection',
+            'requiredSelectionValue': 'InStyleSwapper256 Version B',
+            'help': 'Like the inswapper Resolution (512) for InStyleSwappers. i dont know to hide it with 3 selections possible :(.'
+        }, 
+        'InStyleResCEnableToggle': {
+            'level': 2,
+            'label': '512 Resolution',
+            'default': False,            
+            'parentSelection': 'SwapModelSelection',
+            'requiredSelectionValue': 'InStyleSwapper256 Version C',
+            'help': 'Like the inswapper Resolution (512) for InStyleSwappers. i dont know to hide it with 3 selections possible :(.'
+        },
         'DFMModelSelection': {
             'level': 2,
             'label': 'DFM Model',

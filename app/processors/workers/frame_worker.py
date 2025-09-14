@@ -591,18 +591,32 @@ class FrameWorker(threading.Thread):
                 latent = latent - (factor * dst_latent)
 
             dim = 1
-            if parameters['SwapperResSelection'] == '128':
-                dim = 1
-                input_face_affined = original_face_128
-            elif parameters['SwapperResSelection'] == '256':
-                dim = 2
-                input_face_affined = original_face_256
-            elif parameters['SwapperResSelection'] == '384':
-                dim = 3
-                input_face_affined = original_face_384
-            elif parameters['SwapperResSelection'] == '512':
-                dim = 4
-                input_face_affined = original_face_512
+            if parameters['SwapperResAutoSelectEnableToggle']:
+                if tform.scale <= 1.00:
+                    dim = 4
+                    input_face_affined = original_face_512
+                elif tform.scale <= 1.75:
+                    dim = 3
+                    input_face_affined = original_face_384
+                elif tform.scale <= 2:
+                    dim = 2
+                    input_face_affined = original_face_256
+                else:
+                    dim = 1
+                    input_face_affined = original_face_128
+            else:        
+                if parameters['SwapperResSelection'] == '128':
+                    dim = 1
+                    input_face_affined = original_face_128
+                elif parameters['SwapperResSelection'] == '256':
+                    dim = 2
+                    input_face_affined = original_face_256
+                elif parameters['SwapperResSelection'] == '384':
+                    dim = 3
+                    input_face_affined = original_face_384
+                elif parameters['SwapperResSelection'] == '512':
+                    dim = 4
+                    input_face_affined = original_face_512
 
         elif swapper_model in ('InStyleSwapper256 Version A', 'InStyleSwapper256 Version B', 'InStyleSwapper256 Version C'):
             version = swapper_model[-1]
@@ -613,8 +627,12 @@ class FrameWorker(threading.Thread):
                 dst_latent = torch.from_numpy(self.models_processor.calc_swapper_latent_iss(t_e, version)).float().to(self.models_processor.device)
                 latent = latent - (factor * dst_latent)
 
-            dim = 2
-            input_face_affined = original_face_256
+            if (parameters['SwapModelSelection'] == 'InStyleSwapper256 Version A' and parameters['InStyleResAEnableToggle']) or (parameters['SwapModelSelection'] == 'InStyleSwapper256 Version B' and parameters['InStyleResBEnableToggle']) or (parameters['SwapModelSelection'] == 'InStyleSwapper256 Version C' and parameters['InStyleResCEnableToggle']):
+                dim = 4
+                input_face_affined = original_face_512
+            else:
+                dim = 2
+                input_face_affined = original_face_256
 
         elif swapper_model == 'SimSwap512':
             latent = torch.from_numpy(self.models_processor.calc_swapper_latent_simswap512(s_e)).float().to(self.models_processor.device)
@@ -686,17 +704,22 @@ class FrameWorker(threading.Thread):
         elif swapper_model in ('InStyleSwapper256 Version A', 'InStyleSwapper256 Version B', 'InStyleSwapper256 Version C'):
             version = swapper_model[-1] #Version Name
             with torch.no_grad():  # Disabilita il calcolo del gradiente se è solo per inferenza
+                dim_res = dim // 2
                 for _ in range(itex):
-                    input_face_disc = input_face_affined.permute(2, 0, 1)
-                    input_face_disc = torch.unsqueeze(input_face_disc, 0).contiguous()
+                    for j in range(dim_res):
+                        for i in range(dim_res):
+                            input_face_disc = input_face_affined[j::dim_res,i::dim_res]
+                            input_face_disc = input_face_disc.permute(2, 0, 1)
+                            input_face_disc = torch.unsqueeze(input_face_disc, 0).contiguous()
 
-                    swapper_output = torch.empty((1,3,256,256), dtype=torch.float32, device=self.models_processor.device).contiguous()
-                    self.models_processor.run_iss_swapper(input_face_disc, latent, swapper_output, version)
+                            swapper_output = torch.empty((1,3,256,256), dtype=torch.float32, device=self.models_processor.device).contiguous()
+                            self.models_processor.run_iss_swapper(input_face_disc, latent, swapper_output, version)
 
-                    swapper_output = torch.squeeze(swapper_output)
-                    swapper_output = swapper_output.permute(1, 2, 0)
+                            swapper_output = torch.squeeze(swapper_output)
+                            swapper_output = swapper_output.permute(1, 2, 0)
 
-                    output = swapper_output.clone()
+                            output[j::dim_res, i::dim_res] = swapper_output.clone()
+                    
                     prev_face = input_face_affined.clone()
                     input_face_affined = output.clone()
                     output = torch.mul(output, 255)
