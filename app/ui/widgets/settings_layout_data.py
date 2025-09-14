@@ -106,7 +106,7 @@ SETTINGS_LAYOUT_DATA: LayoutDictTypes = {
         'RecognitionModelSelection': {
             'level': 1,
             'label': 'Recognition Model',
-            'options': ['Inswapper128ArcFace', 'SimSwapArcFace', 'GhostArcFace', 'CSCSArcFace'],
+            'options': ['Inswapper128ArcFace', 'SimSwapArcFace', 'GhostArcFace', 'CSCSArcFace', 'CanonSwapArcFace'],
             'default': 'Inswapper128ArcFace',
             'help': 'Choose the ArcFace model to be used for comparing the similarity of faces.'
         },

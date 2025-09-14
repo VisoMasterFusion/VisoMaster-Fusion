@@ -1,0 +1,62 @@
+================================================================================
+                  Research Responsible AI License (ResearchRAIL-M)
+================================================================================
+
+Preamble
+
+The Research Responsible AI License (ResearchRAIL-M) is a license designed to permit free and open access, re-use, and downstream distribution of AI models and code for research purposes, while explicitly prohibiting the use of the model for certain specified harmful or unethical applications.
+
+This license governs the use of the model, its derivatives, and any code provided with it. By using, copying, modifying, or distributing the model or the code, you accept and agree to be bound by the terms of this license.
+
+--------------------------------------------------------------------------------
+
+**Section I: Definitions**
+
+*   "Model" refers to the machine learning model, including its architecture, parameters, and weights, provided under this license. In this case, the Model is CanonSwap.
+*   "Code" refers to the source code provided for using, training, or modifying the Model.
+*   "Derivatives" refer to any new model, code, or work that is created by modifying, fine-tuning, or building upon the original Model or Code.
+*   "You" refers to the individual or legal entity exercising permissions granted by this license.
+*   "Use" refers to any form of running, deploying, or interacting with the Model or Code.
+
+**Section II: Permissions and Conditions**
+
+Subject to the restrictions in Section III, you are granted a worldwide, royalty-free, non-exclusive, perpetual license to:
+1.  Use, reproduce, and distribute the Model and Code.
+2.  Create and distribute Derivatives of the Model and Code.
+3.  Use the Model and Code for any academic and research purposes.
+
+**Section III: Use-Based Restrictions**
+
+You are explicitly prohibited from using the Model, Code, or any Derivatives for the following purposes. The following is a non-exhaustive list of restricted uses:
+
+1.  **Violation of Laws:** In any way that violates any applicable national, federal, state, local, or international law or regulation.
+
+2.  **Harm to Individuals:** To harm, exploit, or endanger individuals or groups, including but not limited to:
+    a. Generating, promoting, or disseminating content that is defamatory, libelous, or slanderous.
+    b. Generating non-consensual intimate imagery or "deepfake" pornography.
+    c. Harassing, threatening, stalking, or abusing others.
+    d. Promoting discrimination or hate speech based on identity, ethnicity, religion, gender, sexual orientation, disability, or other protected characteristics.
+
+3.  **Misinformation and Deception:**
+    a. Generating or disseminating verifiably false information with the intent to mislead others.
+    b. Impersonating another individual without their consent for malicious or deceptive purposes.
+    c. Creating fraudulent documents, identities, or other forms of misrepresentation.
+
+4.  **Critical Infrastructure and Public Safety:**
+    a. Use in applications that could directly cause physical harm or risk public safety, such as autonomous vehicles, weapons systems, or critical infrastructure control (e.g., power grids, water management).
+
+5.  **Infringement of Rights:**
+    a. In any way that infringes on the privacy, intellectual property, or other rights of third parties.
+
+**Section IV: Distribution**
+
+If you distribute the Model, Code, or any Derivatives, you must:
+1.  Include a full copy of this license.
+2.  Provide a clear attribution to the original work (Pixel-Talk/CanonSwap).
+3.  Clearly state that the use of the distributed work is subject to the restrictions outlined in Section III.
+
+**Section V: Disclaimer of Warranty and Limitation of Liability**
+
+THE MODEL AND CODE ARE PROVIDED "AS IS," WITHOUT WARRANTY OF ANY KIND, EXPRESS OR IMPLIED. IN NO EVENT SHALL THE AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES, OR OTHER LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT, OR OTHERWISE, ARISING FROM, OUT OF, OR IN CONNECTION WITH THE MODEL, CODE, OR THE USE OR OTHER DEALINGS IN THE MODEL OR CODE.
+
+You are solely responsible for your use of the Model and Code and for complying with all applicable laws. The authors and copyright holders are exempt from any liability arising from your violation of the terms of this license or any applicable laws.

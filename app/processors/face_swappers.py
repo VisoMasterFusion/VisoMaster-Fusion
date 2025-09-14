@@ -1,3 +1,4 @@
+import math
 import torch
 from skimage import transform as trans
 from torchvision.transforms import v2
@@ -6,6 +7,9 @@ import numpy as np
 from numpy.linalg import norm as l2norm
 import onnx
 from typing import TYPE_CHECKING
+import torch.nn.functional as F
+from scipy.special import softmax
+from torch import Tensor
 if TYPE_CHECKING:
     from app.processors.models_processor import ModelsProcessor
 from app.helpers.downloader import download_file
@@ -60,7 +64,7 @@ class FaceSwappers:
                 img = img.to(torch.float32)  # Convert to float32 if uint8
             img = torch.sub(img, 127.5)
             img = torch.div(img, 127.5)
-        elif arcface_model == 'SimSwapArcFace':
+        elif arcface_model == 'SimSwapArcFace' or arcface_model == 'CanonSwapArcFace':
             cropped_image = img.permute(1, 2, 0).clone()
             if img.dtype == torch.uint8:
                 img = torch.div(img.to(torch.float32), 255.0)
@@ -289,3 +293,182 @@ class FaceSwappers:
         elif self.models_processor.device != "cpu":
             self.models_processor.syncvec.cpu()
         ghostfaceswap_model.run_with_iobinding(io_binding)
+
+    def calc_swapper_latent_canonswap(self, source_embedding):
+        latent = source_embedding.reshape((1,-1))
+        return latent
+
+    def _canonswap_headpose_pred_to_degree(self, pred: Tensor) -> Tensor:
+        """Converts headpose prediction to degrees. Tensor version."""
+        device = pred.device
+        idx_tensor = torch.arange(66, dtype=torch.float32, device=device)
+        pred_softmax = F.softmax(pred, dim=1)
+        degree = torch.sum(pred_softmax * idx_tensor, axis=1) * 3 - 97.5
+        return degree
+
+    def _canonswap_get_rotation_matrix(self, pitch_: Tensor, yaw_: Tensor, roll_: Tensor) -> Tensor:
+        """Calculates rotation matrix from pitch, yaw, roll in degrees."""
+        # transform to radian
+        pitch = pitch_ / 180 * math.pi
+        yaw = yaw_ / 180 * math.pi
+        roll = roll_ / 180 * math.pi
+
+        device = pitch.device
+
+        if pitch.ndim == 1:
+            pitch = pitch.unsqueeze(1)
+        if yaw.ndim == 1:
+            yaw = yaw.unsqueeze(1)
+        if roll.ndim == 1:
+            roll = roll.unsqueeze(1)
+
+        bs = pitch.shape[0]
+        ones = torch.ones([bs, 1]).to(device)
+        zeros = torch.zeros([bs, 1]).to(device)
+        x, y, z = pitch, yaw, roll
+
+        rot_x = torch.cat([
+            ones, zeros, zeros,
+            zeros, torch.cos(x), -torch.sin(x),
+            zeros, torch.sin(x), torch.cos(x)
+        ], dim=1).reshape([bs, 3, 3])
+
+        rot_y = torch.cat([
+            torch.cos(y), zeros, torch.sin(y),
+            zeros, ones, zeros,
+            -torch.sin(y), zeros, torch.cos(y)
+        ], dim=1).reshape([bs, 3, 3])
+
+        rot_z = torch.cat([
+            torch.cos(z), -torch.sin(z), zeros,
+            torch.sin(z), torch.cos(z), zeros,
+            zeros, zeros, ones
+        ], dim=1).reshape([bs, 3, 3])
+
+        rot = rot_z @ rot_y @ rot_x
+        return rot.permute(0, 2, 1)
+
+    def _canonswap_transform_keypoint(self, kp_info: dict) -> Tensor:
+        """Transforms keypoints using pose, translation, expression, and scale."""
+        kp = kp_info['kp']
+        pitch = self._canonswap_headpose_pred_to_degree(kp_info['pitch'])
+        yaw = self._canonswap_headpose_pred_to_degree(kp_info['yaw'])
+        roll = self._canonswap_headpose_pred_to_degree(kp_info['roll'])
+
+        t, exp, scale = kp_info['t'], kp_info['exp'], kp_info['scale']
+        rot_mat = self._canonswap_get_rotation_matrix(pitch, yaw, roll)
+        bs = kp.shape[0]
+
+        kp_transformed = kp @ rot_mat + exp
+        kp_transformed = kp_transformed * scale.reshape(bs, 1, 1)
+        kp_transformed[..., 0:2] += t[:, :2].reshape(bs, 1, 2)
+        return kp_transformed
+
+
+    def run_canonswap(self, image, embedding, output) -> Tensor:
+        """
+        Executes the CanonSwap pipeline for a single frame using ONNX io_binding.
+        """
+        device = self.models_processor.device
+        #source_id = torch.from_numpy(embedding).unsqueeze(0).to(device)
+        source_id = embedding
+
+        # Load models if not already loaded
+        model_names = [
+            'CanonSwapMotionExtractor', 'CanonSwapAppearanceFeatureExtractor',
+            'CanonSwapDenseMotionNetwork', 'CanonSwapSwapModule',
+            'CanonSwapRefineModule', 'CanonSwapWarpingDecoder', 'CanonSwapSpadeGenerator'
+        ]
+        models = {}
+        for name in model_names:
+            if not self.models_processor.models.get(name):
+                self.models_processor.models[name] = self.models_processor.load_model(name)
+            models[name] = self.models_processor.models[name]
+
+        # --- 1. Motion Extraction ---
+        kp_info_tensors = {
+            'pitch': torch.empty((1, 66), dtype=torch.float32, device=device),
+            'yaw': torch.empty((1, 66), dtype=torch.float32, device=device),
+            'roll': torch.empty((1, 66), dtype=torch.float32, device=device),
+            't': torch.empty((1, 3), dtype=torch.float32, device=device),
+            'exp': torch.empty((1, 63), dtype=torch.float32, device=device),
+            'scale': torch.empty((1, 1), dtype=torch.float32, device=device),
+            'kp': torch.empty((1, 63), dtype=torch.float32, device=device),
+        }
+        io_binding_motion = models['CanonSwapMotionExtractor'].io_binding()
+        io_binding_motion.bind_input(name='input_image', device_type=device, device_id=0, element_type=np.float32, shape=image.shape, buffer_ptr=image.data_ptr())
+        for name, tensor in kp_info_tensors.items():
+            io_binding_motion.bind_output(name=name, device_type=device, device_id=0, element_type=np.float32, shape=tensor.shape, buffer_ptr=tensor.data_ptr())
+        models['CanonSwapMotionExtractor'].run_with_iobinding(io_binding_motion)
+
+        bs = kp_info_tensors['kp'].shape[0]
+        kp_info_tensors['kp'] = kp_info_tensors['kp'].reshape(bs, 21, 3)
+        kp_info_tensors['exp'] = kp_info_tensors['exp'].reshape(bs, 21, 3)
+
+        # --- 2. Transform Keypoints ---
+        x_t = self._canonswap_transform_keypoint(kp_info_tensors)
+        x_can = kp_info_tensors['scale'].reshape(bs, 1, 1) * kp_info_tensors['kp']
+
+        # --- 3. Appearance Feature Extraction ---
+        feature_volume = torch.empty((1, 32, 16, 64, 64), dtype=torch.float32, device=device)
+        io_binding_app = models['CanonSwapAppearanceFeatureExtractor'].io_binding()
+        io_binding_app.bind_input(name='input_image', device_type=device, device_id=0, element_type=np.float32, shape=image.shape, buffer_ptr=image.data_ptr())
+        io_binding_app.bind_output(name='feature_volume', device_type=device, device_id=0, element_type=np.float32, shape=feature_volume.shape, buffer_ptr=feature_volume.data_ptr())
+        models['CanonSwapAppearanceFeatureExtractor'].run_with_iobinding(io_binding_app)
+
+        # --- 4. First Warp (Driving -> Canonical) ---
+        deformation_initial = torch.empty((1, 16, 64, 64, 3), dtype=torch.float32, device=device)
+        io_binding_dense1 = models['CanonSwapDenseMotionNetwork'].io_binding()
+        io_binding_dense1.bind_input(name='feature', device_type=device, device_id=0, element_type=np.float32, shape=feature_volume.shape, buffer_ptr=feature_volume.data_ptr())
+        io_binding_dense1.bind_input(name='kp_driving', device_type=device, device_id=0, element_type=np.float32, shape=x_can.shape, buffer_ptr=x_can.data_ptr())
+        io_binding_dense1.bind_input(name='kp_source', device_type=device, device_id=0, element_type=np.float32, shape=x_t.shape, buffer_ptr=x_t.data_ptr())
+        io_binding_dense1.bind_output(name='deformation', device_type=device, device_id=0, element_type=np.float32, shape=deformation_initial.shape, buffer_ptr=deformation_initial.data_ptr())
+        io_binding_dense1.bind_output('occlusion_map', device) # Bind to device memory
+        models['CanonSwapDenseMotionNetwork'].run_with_iobinding(io_binding_dense1)
+        f_can = F.grid_sample(feature_volume, deformation_initial, align_corners=False)
+
+        # --- 5. Swap and Refine in Canonical Space ---
+        f_can_swapped = torch.empty_like(f_can)
+        io_binding_swap = models['CanonSwapSwapModule'].io_binding()
+        io_binding_swap.bind_input(name='feature_volume', device_type=device, device_id=0, element_type=np.float32, shape=f_can.shape, buffer_ptr=f_can.data_ptr())
+        io_binding_swap.bind_input(name='id_embedding', device_type=device, device_id=0, element_type=np.float32, shape=source_id.shape, buffer_ptr=source_id.data_ptr())
+        io_binding_swap.bind_output(name='swapped_feature_volume', device_type=device, device_id=0, element_type=np.float32, shape=f_can_swapped.shape, buffer_ptr=f_can_swapped.data_ptr())
+        models['CanonSwapSwapModule'].run_with_iobinding(io_binding_swap)
+
+        f_can_swapped_refined = torch.empty_like(f_can_swapped)
+        io_binding_refine = models['CanonSwapRefineModule'].io_binding()
+        io_binding_refine.bind_input(name='feature_volume', device_type=device, device_id=0, element_type=np.float32, shape=f_can_swapped.shape, buffer_ptr=f_can_swapped.data_ptr())
+        io_binding_refine.bind_output(name='refined_feature_volume', device_type=device, device_id=0, element_type=np.float32, shape=f_can_swapped_refined.shape, buffer_ptr=f_can_swapped_refined.data_ptr())
+        models['CanonSwapRefineModule'].run_with_iobinding(io_binding_refine)
+
+        # --- 6. Second Warp (Canonical -> Driving) ---
+        deformation_final = torch.empty_like(deformation_initial)
+        occlusion_map_final = torch.empty((1, 1, 64, 64), dtype=torch.float32, device=device)
+        io_binding_dense2 = models['CanonSwapDenseMotionNetwork'].io_binding()
+        io_binding_dense2.bind_input(name='feature', device_type=device, device_id=0, element_type=np.float32, shape=f_can_swapped_refined.shape, buffer_ptr=f_can_swapped_refined.data_ptr())
+        io_binding_dense2.bind_input(name='kp_driving', device_type=device, device_id=0, element_type=np.float32, shape=x_t.shape, buffer_ptr=x_t.data_ptr())
+        io_binding_dense2.bind_input(name='kp_source', device_type=device, device_id=0, element_type=np.float32, shape=x_can.shape, buffer_ptr=x_can.data_ptr())
+        io_binding_dense2.bind_output(name='deformation', device_type=device, device_id=0, element_type=np.float32, shape=deformation_final.shape, buffer_ptr=deformation_final.data_ptr())
+        io_binding_dense2.bind_output(name='occlusion_map', device_type=device, device_id=0, element_type=np.float32, shape=occlusion_map_final.shape, buffer_ptr=occlusion_map_final.data_ptr())
+        models['CanonSwapDenseMotionNetwork'].run_with_iobinding(io_binding_dense2)
+        warped_3d_volume = F.grid_sample(f_can_swapped_refined, deformation_final, align_corners=False)
+
+        # --- 7. Decode to 2D Feature and then to Image ---
+        warped_feature_2d = torch.empty((1, 256, 64, 64), dtype=torch.float32, device=device)
+        io_binding_warpdec = models['CanonSwapWarpingDecoder'].io_binding()
+        io_binding_warpdec.bind_input(name='warped_3d_volume', device_type=device, device_id=0, element_type=np.float32, shape=warped_3d_volume.shape, buffer_ptr=warped_3d_volume.data_ptr())
+        io_binding_warpdec.bind_input(name='occlusion_map', device_type=device, device_id=0, element_type=np.float32, shape=occlusion_map_final.shape, buffer_ptr=occlusion_map_final.data_ptr())
+        io_binding_warpdec.bind_output(name='warped_feature_2d', device_type=device, device_id=0, element_type=np.float32, shape=warped_feature_2d.shape, buffer_ptr=warped_feature_2d.data_ptr())
+        models['CanonSwapWarpingDecoder'].run_with_iobinding(io_binding_warpdec)
+
+        output_image_norm = torch.empty((1, 3, 512, 512), dtype=torch.float32, device=device)
+        io_binding_spade = models['CanonSwapSpadeGenerator'].io_binding()
+        io_binding_spade.bind_input(name='warped_feature_2d', device_type=device, device_id=0, element_type=np.float32, shape=warped_feature_2d.shape, buffer_ptr=warped_feature_2d.data_ptr())
+        io_binding_spade.bind_output(name='output_image', device_type=device, device_id=0, element_type=np.float32, shape=output_image_norm.shape, buffer_ptr=output_image_norm.data_ptr())
+        models['CanonSwapSpadeGenerator'].run_with_iobinding(io_binding_spade)
+        
+        # --- 8. Format Output ---
+        # The model output is already in the [0,1] range, so we just need to scale it to [0,255]
+        output_frame = torch.mul(output_image_norm.squeeze(0), 255)
+
+        return output_frame
