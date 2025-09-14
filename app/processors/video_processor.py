@@ -966,8 +966,8 @@ class VideoProcessor(QObject):
             print(f"[ERROR] Failed to enable virtual camera: {e}")
             self.virtcam = None # Ensure virtcam is None on failure
             # Optionally notify user via messagebox
-            self.main_window.display_messagebox_signal.emit('Virtual Camera Error', f'Failed to start virtual camera:\n{e}', self.main_window)
-
+            #self.main_window.display_messagebox_signal.emit('Virtual Camera Error', f'Failed to start virtual camera:\n{e}', self.main_window) 
+            # Deactivated messagebox option on error else it stops job manager processes
 
     def disable_virtualcam(self):
         if self.virtcam:
@@ -1554,6 +1554,7 @@ class VideoProcessor(QObject):
         # Calculate custom fps from slider to evaluate audio speed playback
         # Change audio speed slider too volume slider
         fpsorig = self.media_capture.get(cv2.CAP_PROP_FPS)
+        fpscust = self.media_capture.get(cv2.CAP_PROP_FPS)
         if self.main_window.control['VideoPlaybackCustomFpsToggle'] and not self.recording: # Use custom FPS only for playback
             fpscust = self.main_window.control['VideoPlaybackCustomFpsSlider']
         fpsdiv = fpscust / fpsorig
