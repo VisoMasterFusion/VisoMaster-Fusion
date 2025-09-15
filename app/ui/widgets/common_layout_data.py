@@ -153,20 +153,14 @@ COMMON_LAYOUT_DATA: LayoutDictTypes = {
             'parentToggle': 'FaceRestorerAutoEnable2Toggle',
             'requiredToggleValue': True,
             'help': 'Adjust sharp calc. mostly needed for over 0, which makes the swap sharper. depends on swap model, restorer model, resolution, face size,...'
-        },
+        }
+    },
+    'Face expressions': {
         'FaceExpressionEnableToggleBoth': {
             'level': 1,
             'label': 'Enable Face Expression Restorer',
             'default': False,
             'help': 'Enabled the use of the LivePortrait face expression model to restore facial expressions after swapping.'
-        },
-        'FaceExpressionRelativeToggle': {
-            'level': 2,
-            'label': 'Relative',
-            'default': False,
-            'parentToggle': 'FaceExpressionEnableToggleBoth',
-            'requiredToggleValue': True,
-            'help': 'Makes the animation relative to the initial pose of the source image. Can be better for a more natural look.'
         },
         'FaceExpressionCropScaleDecimalSliderBoth': {
             'level': 2,
@@ -194,15 +188,23 @@ COMMON_LAYOUT_DATA: LayoutDictTypes = {
         },
         'FaceExpressionEyesToggle': {
             'level': 2,
-            'label': 'Restore the eyes',
+            'label': 'Restore The Eyes',
             'default': False,
             'parentToggle': 'FaceExpressionEnableToggleBoth',
             'requiredToggleValue': True,
             'help': 'Activate the eyes face expression restorer'
         },
+        'FaceExpressionRelativeEyesToggle': {
+            'level': 3,
+            'label': 'Relative Position',
+            'default': False,
+            'parentToggle': 'FaceExpressionEnableToggleBoth & FaceExpressionEyesToggle',
+            'requiredToggleValue': True,
+            'help': 'Makes the animation relative to the initial pose of the source image. Can be better for a more natural look.'
+        },
         'FaceExpressionFriendlyFactorDecimalSliderEyes': {
             'level': 3,
-            'label': 'Expression Friendly Factor Eyes',
+            'label': 'Eyes Expression Factor',
             'min_value': '0.0',
             'max_value': '2.0',
             'default': '1.0',
@@ -222,7 +224,7 @@ COMMON_LAYOUT_DATA: LayoutDictTypes = {
         },
         'FaceExpressionRetargetingEyesMultiplierDecimalSliderBoth': {
             'level': 4,
-            'label': 'Retargeting Eyes Multiplier',
+            'label': 'Eyes Multiplier',
             'min_value': '0.0',
             'max_value': '2.0',
             'default': '1.0',
@@ -242,7 +244,7 @@ COMMON_LAYOUT_DATA: LayoutDictTypes = {
         },
         'FaceExpressionNormalizeEyesThresholdDecimalSliderBoth': {
             'level': 5,
-            'label': 'Normalize Eyes Threshold',
+            'label': 'Eyes Threshold',
             'min_value': '0.10',
             'max_value': '1.00',
             'default': '0.40',
@@ -254,7 +256,7 @@ COMMON_LAYOUT_DATA: LayoutDictTypes = {
         },     
         'FaceExpressionNormalizeEyesMaxDecimalSliderBoth': {
             'level': 5,
-            'label': 'Max eye open ratio',
+            'label': 'Max Open Ratio',
             'min_value': '0.00',
             'max_value': '1.00',
             'default': '0.50',
@@ -266,15 +268,23 @@ COMMON_LAYOUT_DATA: LayoutDictTypes = {
         },     
         'FaceExpressionLipsToggle': {
             'level': 2,
-            'label': 'Restore the lips',
+            'label': 'Restore The Lips',
             'default': False,
             'parentToggle': 'FaceExpressionEnableToggleBoth',
             'requiredToggleValue': True,
             'help': 'Activate the lips face expression restorer'
         },
+        'FaceExpressionRelativeLipsToggle': {
+            'level': 3,
+            'label': 'Relative Position',
+            'default': False,
+            'parentToggle': 'FaceExpressionEnableToggleBoth & FaceExpressionLipsToggle',
+            'requiredToggleValue': True,
+            'help': 'Makes the animation relative to the initial pose of the source image. Can be better for a more natural look.'
+        },
         'FaceExpressionFriendlyFactorDecimalSliderLips': {
             'level': 3,
-            'label': 'Expression Friendly Factor Lips',
+            'label': 'Lips Expression Factor',
             'min_value': '0.0',
             'max_value': '2.0',
             'default': '1.0',
@@ -294,7 +304,7 @@ COMMON_LAYOUT_DATA: LayoutDictTypes = {
         },
         'FaceExpressionRetargetingLipsMultiplierDecimalSliderBoth': {
             'level': 4,
-            'label': 'Retargeting Lips Multiplier',
+            'label': 'Lips Multiplier',
             'min_value': '0.0',
             'max_value': '2.0',
             'default': '1.0',
@@ -314,7 +324,7 @@ COMMON_LAYOUT_DATA: LayoutDictTypes = {
         },
         'FaceExpressionNormalizeLipsThresholdDecimalSliderBoth': {
             'level': 4,
-            'label': 'Normalize Lips Threshold',
+            'label': 'Lips Threshold',
             'min_value': '0.00',
             'max_value': '0.20',
             'default': '0.03',

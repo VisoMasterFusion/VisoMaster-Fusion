@@ -31,6 +31,12 @@ FACE_EDITOR_LAYOUT_DATA: LayoutDictTypes = {
             'step': 1,
             'help': 'Blur amount.'
         },
+        'FaceEditorBeforeEnableToggle': {
+            'level': 1,
+            'label': 'Face Editor before swap',
+            'default': False,
+            'help': 'Enable Face Pose/Expression Editor before the swap.'
+        },
         'FaceEditorEnableToggle': {
             'level': 1,
             'label': 'Enable Face Pose/Expression Editor',
@@ -158,7 +164,7 @@ FACE_EDITOR_LAYOUT_DATA: LayoutDictTypes = {
             'min_value': '-20.00',
             'max_value': '15.00',
             'default': '0.00',
-            'step': 0.01,
+            'step': 0.05,
             'decimals': 2,
             'parentToggle': 'FaceEditorEnableToggle',
             'requiredToggleValue': True,
@@ -170,7 +176,7 @@ FACE_EDITOR_LAYOUT_DATA: LayoutDictTypes = {
             'min_value': '0.00',
             'max_value': '15.00',
             'default': '0.00',
-            'step': 0.01,
+            'step': 0.05,
             'decimals': 2,
             'parentToggle': 'FaceEditorEnableToggle',
             'requiredToggleValue': True,
@@ -190,10 +196,10 @@ FACE_EDITOR_LAYOUT_DATA: LayoutDictTypes = {
         'MouthSmileDecimalSlider': {
             'level': 2,
             'label': 'Mouth Smile',
-            'min_value': '-0.30',
+            'min_value': '-0.80',
             'max_value': '1.30',
             'default': '0.00',
-            'step': 0.01,
+            'step': 0.05,
             'decimals': 2,
             'parentToggle': 'FaceEditorEnableToggle',
             'requiredToggleValue': True,

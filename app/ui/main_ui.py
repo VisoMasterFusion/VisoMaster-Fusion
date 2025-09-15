@@ -218,14 +218,14 @@ class MainWindow(QtWidgets.QMainWindow, Ui_MainWindow):
         # VR180 splits COMMON_LAYOUT_DATA
         common_parameters_layout_data = {}
         common_controls_layout_data = {}
-
+        
         for group_name, widgets_in_group in COMMON_LAYOUT_DATA.items():
             # UNet Denoiser group now contains mostly controls
             if group_name == 'ReF-LDM Denoiser':
                 common_controls_layout_data[group_name] = widgets_in_group
             else: # Other groups like 'Face Restorer' are parameters
                 common_parameters_layout_data[group_name] = widgets_in_group
-       
+        
         if common_parameters_layout_data:
             layout_actions.add_widgets_to_tab_layout(self, LAYOUT_DATA=common_parameters_layout_data, layoutWidget=self.commonWidgetsLayout, data_type='parameter')
         if common_controls_layout_data:
