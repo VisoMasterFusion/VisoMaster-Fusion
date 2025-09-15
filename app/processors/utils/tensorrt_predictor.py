@@ -231,7 +231,7 @@ class TensorRTPredictor:
             torch.cuda.synchronize()
             self.context_pool.put(pool_entry)
 
-    def predict_async(self, feed_dict: Dict[str, Any], stream: torch.cuda.Stream) -> OrderedDictType[str, torch.Tensor]:
+    def predict_async(self, feed_dict: Dict[str, Any], stream: torch.cuda.Stream()) -> OrderedDictType[str, torch.Tensor]:
         """
         Esegue l'inferenza in modalità asincrona usando execute_async_v3().
 
