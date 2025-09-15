@@ -970,6 +970,13 @@ class FrameWorker(threading.Thread):
         
         swap = torch.clamp(swap, 0.0, 255.0)   
 
+        # Face editor before swap
+        if parameters['FaceEditorEnableToggle'] and self.main_window.editFacesButton.isChecked() and parameters['FaceEditorBeforeEnableToggle']:
+            editor_mask = t512_mask(swap_mask).clone()
+            swap = swap * editor_mask + original_face_512 * (1 - editor_mask)
+            swap = self.swap_edit_face_core(swap, kps, parameters, control)
+            swap_mask = torch.ones_like(swap_mask)
+
         # Expression Restorer
         if parameters['FaceExpressionEnableToggleBoth'] and (parameters['FaceExpressionLipsToggle'] or parameters['FaceExpressionEyesToggle']):
             swap = self.apply_face_expression_restorer(original_face_512, swap, parameters)
@@ -1268,7 +1275,7 @@ class FrameWorker(threading.Thread):
 
             swap = swap * 255.0
     
-        if parameters['FaceEditorEnableToggle'] and self.main_window.editFacesButton.isChecked():
+        if parameters['FaceEditorEnableToggle'] and self.main_window.editFacesButton.isChecked() and not parameters['FaceEditorBeforeEnableToggle']:
             editor_mask = t512_mask(swap_mask).clone()
             swap = swap * editor_mask + original_face_512 * (1 - editor_mask)
             swap = self.swap_edit_face_core(swap, kps, parameters, control)
@@ -1597,7 +1604,8 @@ class FrameWorker(threading.Thread):
         flag_lip_retargeting = parameters['FaceExpressionRetargetingLipsEnableToggleBoth'] 
         lip_retargeting_multiplier = parameters['FaceExpressionRetargetingLipsMultiplierDecimalSliderBoth']
         eyes_normalize_max = parameters['FaceExpressionNormalizeEyesMaxDecimalSliderBoth']
-        flag_relative_motion = parameters['FaceExpressionRelativeToggle']
+        flag_relative_motion_eyes = parameters['FaceExpressionRelativeEyesToggle']
+        flag_relative_motion_lips = parameters['FaceExpressionRelativeLipsToggle']
         
         lip_delta_before_animation, eye_delta_before_animation = None, None
 
@@ -1642,7 +1650,7 @@ class FrameWorker(threading.Thread):
         #Eyes
         if flag_activate_eyes:
             for eyes_idx in [11, 13, 15, 16, 18]:
-                if flag_relative_motion:
+                if flag_relative_motion_eyes:
                     delta_new_eyes[:, eyes_idx, :] = (x_s_info['exp'] + (x_d_i_info['exp'] - 0))[:, eyes_idx, :]
                 else:
                     delta_new_eyes[:, eyes_idx, :] = x_d_i_info['exp'][:, eyes_idx, :]
@@ -1669,7 +1677,7 @@ class FrameWorker(threading.Thread):
                     combined_eye_ratio_tensor = combined_eye_ratio_tensor * eye_retargeting_multiplier
                 # ∆_eyes,i = R_eyes(x_s; c_s,eyes, c_d,eyes,i)                
                     eyes_delta = self.models_processor.lp_retarget_eye(x_s, combined_eye_ratio_tensor, parameters["FaceEditorTypeSelection"])
-            if flag_relative_motion:
+            if flag_relative_motion_eyes:
                 x_d_i_new_eyes = x_s + (eyes_delta if eyes_delta is not None else 0)
             else:
                 x_d_i_new_eyes = x_d_i_new_eyes + (eyes_delta if eyes_delta is not None else 0)
@@ -1681,7 +1689,7 @@ class FrameWorker(threading.Thread):
         #Lips
         if flag_activate_lips:
             for lip_idx in [6, 12, 14, 17, 19, 20]:
-                if flag_relative_motion:
+                if flag_relative_motion_lips:
                     delta_new_lips[:, lip_idx, :] = (x_s_info['exp'] + (x_d_i_info['exp'] - torch.from_numpy(self.models_processor.lp_lip_array).to(dtype=torch.float32, device=self.models_processor.device)))[:, lip_idx, :]
                 else:
                     delta_new_lips[:, lip_idx, :] = x_d_i_info['exp'][:, lip_idx, :]
@@ -1708,7 +1716,7 @@ class FrameWorker(threading.Thread):
                 combined_lip_ratio_tensor = combined_lip_ratio_tensor * lip_retargeting_multiplier
                 # ∆_lip,i = R_lip(x_s; c_s,lip, c_d,lip,i)
                 lip_delta = self.models_processor.lp_retarget_lip(x_s, combined_lip_ratio_tensor, parameters["FaceEditorTypeSelection"])
-            if flag_relative_motion:
+            if flag_relative_motion_lips:
                 x_d_i_new_lips = x_s + (lip_delta if lip_delta is not None else 0)
             else:
                 x_d_i_new_lips = x_d_i_new_lips + (lip_delta if lip_delta is not None else 0)
