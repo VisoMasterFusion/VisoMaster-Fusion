@@ -154,116 +154,175 @@ COMMON_LAYOUT_DATA: LayoutDictTypes = {
             'requiredToggleValue': True,
             'help': 'Adjust sharp calc. mostly needed for over 0, which makes the swap sharper. depends on swap model, restorer model, resolution, face size,...'
         },
-        'FaceExpressionEnableToggle': {
+        'FaceExpressionEnableToggleBoth': {
             'level': 1,
             'label': 'Enable Face Expression Restorer',
             'default': False,
             'help': 'Enabled the use of the LivePortrait face expression model to restore facial expressions after swapping.'
         },
-        'FaceExpressionCropScaleDecimalSlider': {
+        'FaceExpressionRelativeToggle': {
+            'level': 2,
+            'label': 'Relative',
+            'default': False,
+            'parentToggle': 'FaceExpressionEnableToggleBoth',
+            'requiredToggleValue': True,
+            'help': 'Makes the animation relative to the initial pose of the source image. Can be better for a more natural look.'
+        },
+        'FaceExpressionCropScaleDecimalSliderBoth': {
             'level': 2,
             'label': 'Crop Scale',
-            'min_value': '1.80',
-            'max_value': '3.00',
-            'default': '2.30',
-            'step': 0.05,
-            'decimals': 2,
-            'parentToggle': 'FaceExpressionEnableToggle',
+            'min_value': '2.0',
+            'max_value': '3.0',
+            'default': '2.5',
+            'step': 0.1,
+            'decimals': 1,
+            'parentToggle': 'FaceExpressionEnableToggleBoth',
             'requiredToggleValue': True,
             'help': 'Changes swap crop scale. Increase the value to capture the face more distantly.'
         },
-        'FaceExpressionVYRatioDecimalSlider': {
+        'FaceExpressionVYRatioDecimalSliderBoth': {
             'level': 2,
             'label': 'VY Ratio',
             'min_value': '-0.125',
             'max_value': '-0.100',
-            'default': '-0.125',
+            'default': '-0.100',
             'step': 0.001,
             'decimals': 3,
-            'parentToggle': 'FaceExpressionEnableToggle',
+            'parentToggle': 'FaceExpressionEnableToggleBoth',
             'requiredToggleValue': True,
             'help': 'Changes the vy ratio for crop scale. Increase the value to capture the face more distantly.'
         },
-        'FaceExpressionFriendlyFactorDecimalSlider': {
+        'FaceExpressionEyesToggle': {
             'level': 2,
-            'label': 'Expression Friendly Factor',
+            'label': 'Restore the eyes',
+            'default': False,
+            'parentToggle': 'FaceExpressionEnableToggleBoth',
+            'requiredToggleValue': True,
+            'help': 'Activate the eyes face expression restorer'
+        },
+        'FaceExpressionFriendlyFactorDecimalSliderEyes': {
+            'level': 3,
+            'label': 'Expression Friendly Factor Eyes',
             'min_value': '0.0',
-            'max_value': '1.0',
+            'max_value': '2.0',
             'default': '1.0',
             'decimals': 1,
             'step': 0.1,
-            'parentToggle': 'FaceExpressionEnableToggle',
+            'parentToggle': 'FaceExpressionEnableToggleBoth & FaceExpressionEyesToggle',
             'requiredToggleValue': True,
-            'help': 'Control the expression similarity between the driving face and the swapped face.'
+            'help': 'Control the expression similarity between the driving face and the swapped face of the eyes.'
         },
-        'FaceExpressionAnimationRegionSelection': {
-            'level': 2,
-            'label': 'Animation Region',
-            'options': ['all', 'eyes', 'lips'],
-            'default': 'all',
-            'parentToggle': 'FaceExpressionEnableToggle',
-            'requiredToggleValue': True,
-            'help': 'The facial region involved in the restoration process.'
-        },
-        'FaceExpressionNormalizeLipsEnableToggle': {
-            'level': 2,
-            'label': 'Normalize Lips',
-            'default': True,
-            'parentToggle': 'FaceExpressionEnableToggle',
-            'requiredToggleValue': True,
-            'help': 'Normalize the lips during the facial restoration process.'
-        },
-        'FaceExpressionNormalizeLipsThresholdDecimalSlider': {
+        'FaceExpressionRetargetingEyesEnableToggleBoth': {
             'level': 3,
-            'label': 'Normalize Lips Threshold',
-            'min_value': '0.00',
-            'max_value': '1.00',
-            'default': '0.03',
-            'decimals': 2,
-            'step': 0.01,
-            'parentToggle': 'FaceExpressionNormalizeLipsEnableToggle & FaceExpressionEnableToggle',
-            'requiredToggleValue': True,
-            'help': 'Threshold value for Normalize Lips.'
-        },
-        'FaceExpressionRetargetingEyesEnableToggle': {
-            'level': 2,
             'label': 'Retargeting Eyes',
             'default': False,
-            'parentToggle': 'FaceExpressionEnableToggle',
+            'parentToggle': 'FaceExpressionEnableToggleBoth & FaceExpressionEyesToggle',
             'requiredToggleValue': True,
-            'help': 'Adjusting or redirecting the gaze or movement of the eyes during the facial restoration process. It overrides the Animation Region settings, meaning that the Animation Region will be ignored.'
+            'help': 'Adjusting or redirecting the gaze or movement of the eyes during the facial restoration process.'
         },
-        'FaceExpressionRetargetingEyesMultiplierDecimalSlider': {
-            'level': 3,
+        'FaceExpressionRetargetingEyesMultiplierDecimalSliderBoth': {
+            'level': 4,
             'label': 'Retargeting Eyes Multiplier',
-            'min_value': '0.00',
-            'max_value': '2.00',
-            'default': '1.00',
-            'decimals': 2,
-            'step': 0.01,
-            'parentToggle': 'FaceExpressionRetargetingEyesEnableToggle & FaceExpressionEnableToggle',
+            'min_value': '0.0',
+            'max_value': '2.0',
+            'default': '1.0',
+            'decimals': 1,
+            'step': 0.1,
+            'parentToggle': 'FaceExpressionRetargetingEyesEnableToggleBoth & FaceExpressionEnableToggleBoth & FaceExpressionEyesToggle',
             'requiredToggleValue': True,
             'help': 'Multiplier value for Retargeting Eyes.'
         },
-        'FaceExpressionRetargetingLipsEnableToggle': {
-            'level': 2,
-            'label': 'Retargeting Lips',
-            'default': False,
-            'parentToggle': 'FaceExpressionEnableToggle',
+        'FaceExpressionNormalizeEyesEnableToggleBoth': {
+            'level': 4,
+            'label': 'Normalize Eyes',
+            'default': True,
+            'parentToggle': 'FaceExpressionEnableToggleBoth & FaceExpressionEyesToggle & FaceExpressionRetargetingEyesEnableToggleBoth',
             'requiredToggleValue': True,
-            'help': 'Adjusting or modifying the position, shape, or movement of the lips during the facial restoration process. It overrides the Animation Region settings, meaning that the Animation Region will be ignored.'
+            'help': 'Normalize the Eyes during the facial restoration process.'
         },
-        'FaceExpressionRetargetingLipsMultiplierDecimalSlider': {
-            'level': 3,
-            'label': 'Retargeting Lips Multiplier',
-            'min_value': '0.00',
-            'max_value': '2.00',
-            'default': '1.00',
+        'FaceExpressionNormalizeEyesThresholdDecimalSliderBoth': {
+            'level': 5,
+            'label': 'Normalize Eyes Threshold',
+            'min_value': '0.10',
+            'max_value': '1.00',
+            'default': '0.40',
             'decimals': 2,
             'step': 0.01,
-            'parentToggle': 'FaceExpressionRetargetingLipsEnableToggle & FaceExpressionEnableToggle',
+            'parentToggle': 'FaceExpressionNormalizeEyesEnableToggleBoth & FaceExpressionEnableToggleBoth & FaceExpressionEyesToggle & FaceExpressionRetargetingEyesEnableToggleBoth',
+            'requiredToggleValue': True,
+            'help': 'Threshold for the eye open ratio, it will dictate at wich open/close ratio it uses the modified faceutil function.'
+        },     
+        'FaceExpressionNormalizeEyesMaxDecimalSliderBoth': {
+            'level': 5,
+            'label': 'Max eye open ratio',
+            'min_value': '0.00',
+            'max_value': '1.00',
+            'default': '0.50',
+            'decimals': 2,
+            'step': 0.01,
+            'parentToggle': 'FaceExpressionNormalizeEyesEnableToggleBoth & FaceExpressionEnableToggleBoth & FaceExpressionEyesToggle & FaceExpressionRetargetingEyesEnableToggleBoth',
+            'requiredToggleValue': True,
+            'help': 'Max eye open ratio that the target will have (<0.5 is best).'
+        },     
+        'FaceExpressionLipsToggle': {
+            'level': 2,
+            'label': 'Restore the lips',
+            'default': False,
+            'parentToggle': 'FaceExpressionEnableToggleBoth',
+            'requiredToggleValue': True,
+            'help': 'Activate the lips face expression restorer'
+        },
+        'FaceExpressionFriendlyFactorDecimalSliderLips': {
+            'level': 3,
+            'label': 'Expression Friendly Factor Lips',
+            'min_value': '0.0',
+            'max_value': '2.0',
+            'default': '1.0',
+            'decimals': 1,
+            'step': 0.1,
+            'parentToggle': 'FaceExpressionEnableToggleBoth & FaceExpressionLipsToggle',
+            'requiredToggleValue': True,
+            'help': 'Control the expression similarity between the driving face and the swapped face of the lips.'
+        },
+        'FaceExpressionRetargetingLipsEnableToggleBoth': {
+            'level': 3,
+            'label': 'Retargeting Lips',
+            'default': False,
+            'parentToggle': 'FaceExpressionEnableToggleBoth & FaceExpressionLipsToggle',
+            'requiredToggleValue': True,
+            'help': 'Adjusting or modifying the position, shape, or movement of the lips during the facial restoration process.'
+        },
+        'FaceExpressionRetargetingLipsMultiplierDecimalSliderBoth': {
+            'level': 4,
+            'label': 'Retargeting Lips Multiplier',
+            'min_value': '0.0',
+            'max_value': '2.0',
+            'default': '1.0',
+            'decimals': 1,
+            'step': 0.1,
+            'parentToggle': 'FaceExpressionRetargetingLipsEnableToggleBoth & FaceExpressionEnableToggleBoth & FaceExpressionLipsToggle',
             'requiredToggleValue': True,
             'help': 'Multiplier value for Retargeting Lips.'
+        },
+        'FaceExpressionNormalizeLipsEnableToggleBoth': {
+            'level': 3,
+            'label': 'Normalize Lips',
+            'default': False,
+            'parentToggle': 'FaceExpressionEnableToggleBoth & FaceExpressionLipsToggle',
+            'requiredToggleValue': True,
+            'help': 'Normalize the lips during the facial restoration process.'
+        },
+        'FaceExpressionNormalizeLipsThresholdDecimalSliderBoth': {
+            'level': 4,
+            'label': 'Normalize Lips Threshold',
+            'min_value': '0.00',
+            'max_value': '0.20',
+            'default': '0.03',
+            'decimals': 2,
+            'step': 0.01,
+            'parentToggle': 'FaceExpressionNormalizeLipsEnableToggleBoth & FaceExpressionEnableToggleBoth & FaceExpressionLipsToggle',
+            'requiredToggleValue': True,
+            'help': 'Threshold value for Normalize Lips.'
         }
     },
     'ReF-LDM Denoiser': {
