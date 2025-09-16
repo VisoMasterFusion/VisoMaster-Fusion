@@ -273,7 +273,7 @@ def clear_gpu_memory(main_window: 'MainWindow'):
     main_window.editFacesButton.setChecked(False)
     update_gpu_memory_progressbar(main_window)
 
-    main_window.videoSeekSlider.markers = set()
+    #main_window.videoSeekSlider.markers = set() # Comment this to keep markers visible after vram clear
     main_window.videoSeekSlider.update()
 
 def extract_frame_as_pixmap(media_file_path, file_type, webcam_index=False, webcam_backend=False):
