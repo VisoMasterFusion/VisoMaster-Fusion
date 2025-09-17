@@ -33,6 +33,12 @@ SETTINGS_LAYOUT_DATA: LayoutDictTypes = {
             'help': 'Set number of execution threads while playing and recording. Depends strongly on GPU VRAM.',
             'exec_function': control_actions.change_threads_number,
             'exec_function_args': [],
+        },
+        'KeepControlsToggle': {
+            'level': 1,
+            'label': 'Keep Controls Active',
+            'default': False,
+            'help': 'Keep the controls active during recording.'
         }
     },
     'Video Playback Settings': {

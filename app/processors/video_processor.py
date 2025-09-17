@@ -272,7 +272,9 @@ class VideoProcessor(QObject):
 
         if self.recording:
             # Disable UI elements during default style recording
-            #layout_actions.disable_all_parameters_and_control_widget(self.main_window)
+            if not self.main_window.control['KeepControlsToggle']:
+                layout_actions.disable_all_parameters_and_control_widget(self.main_window)
+                
             # Create the ffmpeg subprocess for default style
             if not self.create_ffmpeg_subprocess_default_style():
                 print("[ERROR] Failed to start FFmpeg for default-style recording.")
@@ -587,8 +589,8 @@ class VideoProcessor(QObject):
                 print(f"[WARN] Could not reset video capture position: {e}")
 
         # Re-enable UI elements if they were disabled by either recording mode
-        #if was_processing_segments or was_recording_default_style:
-        #     layout_actions.enable_all_parameters_and_control_widget(self.main_window)
+        if was_processing_segments or was_recording_default_style:
+             layout_actions.enable_all_parameters_and_control_widget(self.main_window)
 
         # Final cleanup (cache, gc, buttons)
         print("Clearing GPU Cache and running garbage collection.")
@@ -1150,7 +1152,8 @@ class VideoProcessor(QObject):
         self.segment_temp_dir = None # Reset just in case
 
         # Disable UI elements
-        layout_actions.disable_all_parameters_and_control_widget(self.main_window)
+        if not self.main_window.control['KeepControlsToggle']:
+            layout_actions.disable_all_parameters_and_control_widget(self.main_window)
 
         # Create temporary directory
         try:
