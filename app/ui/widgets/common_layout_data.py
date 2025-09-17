@@ -84,7 +84,7 @@ COMMON_LAYOUT_DATA: LayoutDictTypes = {
             'max_value': '60',
             'default': '0',
             'step': 1,
-            'parentToggle': 'FaceRestorerAutoEnableToggle',
+            'parentToggle': 'FaceRestorerEnableToggle & FaceRestorerAutoEnableToggle',
             'requiredToggleValue': True,
             'help': 'Adjust sharp calc. mostly needed for over 0, which makes the swap sharper. depends on swap model, restorer model, resolution, face size,...'
         },        
@@ -150,7 +150,7 @@ COMMON_LAYOUT_DATA: LayoutDictTypes = {
             'max_value': '60',
             'default': '0',
             'step': 1,
-            'parentToggle': 'FaceRestorerAutoEnable2Toggle',
+            'parentToggle': 'FaceRestorerEnable2Toggle & FaceRestorerAutoEnable2Toggle',
             'requiredToggleValue': True,
             'help': 'Adjust sharp calc. mostly needed for over 0, which makes the swap sharper. depends on swap model, restorer model, resolution, face size,...'
         }
@@ -167,7 +167,7 @@ COMMON_LAYOUT_DATA: LayoutDictTypes = {
             'label': 'Crop Scale',
             'min_value': '2.0',
             'max_value': '3.0',
-            'default': '2.5',
+            'default': '2.3',
             'step': 0.1,
             'decimals': 1,
             'parentToggle': 'FaceExpressionEnableToggleBoth',
@@ -179,7 +179,7 @@ COMMON_LAYOUT_DATA: LayoutDictTypes = {
             'label': 'VY Ratio',
             'min_value': '-0.125',
             'max_value': '-0.100',
-            'default': '-0.100',
+            'default': '-0.125',
             'step': 0.001,
             'decimals': 3,
             'parentToggle': 'FaceExpressionEnableToggleBoth',
