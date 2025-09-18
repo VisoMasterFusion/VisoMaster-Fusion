@@ -783,25 +783,17 @@ class FrameWorker(threading.Thread):
                 output = torch.clamp(output, 0, 255)
 
         elif swapper_model == 'CanonSwap':
-            for k in range(itex):
-                input_face_disc = torch.mul(input_face_affined, 255.0).permute(2, 0, 1)
-                input_face_disc = torch.div(input_face_disc.float(), 127.5)
-                input_face_disc = torch.sub(input_face_disc, 1)
-                #input_face_disc = input_face_disc[[2, 1, 0], :, :] # Inverte i canali da BGR a RGB (assumendo che l'input sia BGR)
-                input_face_disc = torch.unsqueeze(input_face_disc, 0).contiguous()
-                swapper_output = torch.empty((1,3,256,256), dtype=torch.float32, device=self.models_processor.device).contiguous()
-                self.models_processor.run_swapper_canonswap(input_face_disc, latent, swapper_output)
-                swapper_output = swapper_output[0]
-                swapper_output = swapper_output.permute(1, 2, 0)
-                swapper_output = torch.mul(swapper_output, 127.5)
-                swapper_output = torch.add(swapper_output, 127.5)
-                #swapper_output = swapper_output[:, :, [2, 1, 0]] # Inverte i canali da RGB a BGR (assumendo che l'input sia RGB)
-                prev_face = input_face_affined.clone()
-                input_face_affined = swapper_output.clone()
-                input_face_affined = torch.div(input_face_affined, 255)
+            # input_face_affined is a HWC tensor in [0,1] range.
+            # run_swapper_canonswap expects a BCHW tensor in [0,1] range.
+            input_face_disc = input_face_affined.permute(2, 0, 1)  # HWC to CHW
+            input_face_disc = torch.unsqueeze(input_face_disc, 0).contiguous() # CHW to BCHW
 
-                output = swapper_output.clone()
-                output = torch.clamp(output, 0, 255)
+            # run_swapper_canonswap returns a CxHxW tensor with values in [0, 255]
+            swapped_face_tensor = self.models_processor.run_swapper_canonswap(input_face_disc, latent, None)
+            prev_face = input_face_affined.clone() # This is [0,1] HWC
+            swap = t512(swapped_face_tensor)
+            return swap, prev_face
+
 
         elif swapper_model == 'DeepFaceLive (DFM)' and dfm_model:
             out_celeb, _, _ = dfm_model.convert(original_face_512, parameters['DFMAmpMorphSlider']/100, rct=parameters['DFMRCTColorToggle'])
