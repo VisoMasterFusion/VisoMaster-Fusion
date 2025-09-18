@@ -2,7 +2,7 @@
 ################################################################################
 ## Form generated from reading UI file 'MainWindow.ui'
 ##
-## Created by: Qt User Interface Compiler version 6.9.1
+## Created by: Qt User Interface Compiler version 6.9.2
 ##
 ## WARNING
 ################################################################################
@@ -541,6 +541,14 @@ class Ui_MainWindow(object):
         self.commonWidgetsLayout.setObjectName(u"commonWidgetsLayout")
         self.commonWidgetsLayout_1.addLayout(self.commonWidgetsLayout)
         self.tabWidget.addTab(self.common_tab, "")
+        self.denoiser_tab = QWidget()
+        self.denoiser_tab.setObjectName(u"denoiser_tab")
+        self.denoiserWidgetsLayout_1 = QVBoxLayout(self.denoiser_tab)
+        self.denoiserWidgetsLayout_1.setObjectName(u"denoiserWidgetsLayout_1")
+        self.denoiserWidgetsLayout = QVBoxLayout()
+        self.denoiserWidgetsLayout.setObjectName(u"denoiserWidgetsLayout")
+        self.denoiserWidgetsLayout_1.addLayout(self.denoiserWidgetsLayout)
+        self.tabWidget.addTab(self.denoiser_tab, "")
         self.settings_tab = QWidget()
         self.settings_tab.setObjectName(u"settings_tab")
         self.verticalLayout_2 = QVBoxLayout(self.settings_tab)
@@ -724,7 +732,8 @@ class Ui_MainWindow(object):
         self.controlOptionsDockWidget.setWindowTitle(QCoreApplication.translate("MainWindow", u"Control Options", None))
         self.tabWidget.setTabText(self.tabWidget.indexOf(self.face_swap_tab), QCoreApplication.translate("MainWindow", u"Face Swap", None))
         self.tabWidget.setTabText(self.tabWidget.indexOf(self.face_editor_tab), QCoreApplication.translate("MainWindow", u"Face Editor", None))
-        self.tabWidget.setTabText(self.tabWidget.indexOf(self.common_tab), QCoreApplication.translate("MainWindow", u"Common", None))
+        self.tabWidget.setTabText(self.tabWidget.indexOf(self.common_tab), QCoreApplication.translate("MainWindow", u"Restorers", None))
+        self.tabWidget.setTabText(self.tabWidget.indexOf(self.denoiser_tab), QCoreApplication.translate("MainWindow", u"Denoiser", None))
         self.label.setText(QCoreApplication.translate("MainWindow", u"Output Directory", None))
         self.outputFolderButton.setText(QCoreApplication.translate("MainWindow", u"Browse Folder", None))
         self.tabWidget.setTabText(self.tabWidget.indexOf(self.settings_tab), QCoreApplication.translate("MainWindow", u"Settings", None))
