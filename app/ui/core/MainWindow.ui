@@ -1127,11 +1127,21 @@
        </widget>
        <widget class="QWidget" name="common_tab">
         <attribute name="title">
-         <string>Common</string>
+         <string>Restorers</string>
         </attribute>
         <layout class="QVBoxLayout" name="commonWidgetsLayout_1">
          <item>
           <layout class="QVBoxLayout" name="commonWidgetsLayout"/>
+         </item>
+        </layout>
+       </widget>
+	   <widget class="QWidget" name="denoiser_tab">
+        <attribute name="title">
+         <string>Denoiser</string>
+        </attribute>
+        <layout class="QVBoxLayout" name="denoiserWidgetsLayout_1">
+         <item>
+          <layout class="QVBoxLayout" name="denoiserWidgetsLayout"/>
          </item>
         </layout>
        </widget>
