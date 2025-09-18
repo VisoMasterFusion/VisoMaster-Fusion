@@ -2,6 +2,13 @@ from app.helpers.typing_helper import LayoutDictTypes
 
 FACE_EDITOR_LAYOUT_DATA: LayoutDictTypes = {
     '': {
+        'FaceEditorBeforeTypeSelection': {
+            'level': 1,
+            'label': 'Pipeline Position',
+            'options': ['Beginning', 'After First Restorer', 'After Second Restorer', 'End'],
+            'default': 'Beginning',
+            'help': 'Select the Face Pose/Expression Editor position in the pipeline.'
+        },
         'FaceEditorCropScaleDecimalSlider': {
             'level': 1,
             'label': 'Crop Scale',
@@ -30,12 +37,6 @@ FACE_EDITOR_LAYOUT_DATA: LayoutDictTypes = {
             'default': '5',
             'step': 1,
             'help': 'Blur amount.'
-        },
-        'FaceEditorBeforeEnableToggle': {
-            'level': 1,
-            'label': 'Face Editor before swap',
-            'default': False,
-            'help': 'Enable Face Pose/Expression Editor before the swap.'
         },
         'FaceEditorEnableToggle': {
             'level': 1,
