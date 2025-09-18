@@ -418,12 +418,13 @@ class FaceSwappers:
 
         # --- 4. First Warp (Driving -> Canonical) ---
         deformation_initial = torch.empty((1, 16, 64, 64, 3), dtype=torch.float32, device=device)
+        occlusion_map_initial = torch.empty((1, 1, 64, 64), dtype=torch.float32, device=device)
         io_binding_dense1 = models['CanonSwapDenseMotionNetwork'].io_binding()
         io_binding_dense1.bind_input(name='feature', device_type=device, device_id=0, element_type=np.float32, shape=feature_volume.shape, buffer_ptr=feature_volume.data_ptr())
         io_binding_dense1.bind_input(name='kp_driving', device_type=device, device_id=0, element_type=np.float32, shape=x_can.shape, buffer_ptr=x_can.data_ptr())
         io_binding_dense1.bind_input(name='kp_source', device_type=device, device_id=0, element_type=np.float32, shape=x_t.shape, buffer_ptr=x_t.data_ptr())
         io_binding_dense1.bind_output(name='deformation', device_type=device, device_id=0, element_type=np.float32, shape=deformation_initial.shape, buffer_ptr=deformation_initial.data_ptr())
-        io_binding_dense1.bind_output('occlusion_map', device) # Bind to device memory
+        io_binding_dense1.bind_output(name='occlusion_map', device_type=device, device_id=0, element_type=np.float32, shape=occlusion_map_initial.shape, buffer_ptr=occlusion_map_initial.data_ptr())
         models['CanonSwapDenseMotionNetwork'].run_with_iobinding(io_binding_dense1)
         f_can = F.grid_sample(feature_volume, deformation_initial, align_corners=False)
 
