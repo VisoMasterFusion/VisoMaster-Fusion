@@ -3,6 +3,7 @@ import os
 from functools import partial
 import uuid
 from typing import TYPE_CHECKING, Dict
+import torch
 
 from PySide6 import QtWidgets, QtGui, QtCore
 from PySide6.QtWidgets import QPushButton
@@ -336,6 +337,7 @@ class TargetFaceCardButton(CardButton):
         self.assigned_input_faces: Dict[str, Dict[str, np.ndarray]] = {}  # Inside Dict (key - input face_id): {Key: embedding_swap_model, Value: InputFaceCardButton.embedding_store}
         self.assigned_merged_embeddings: Dict[str, Dict[str, np.ndarray]] = {}  # Key: embedding_swap_model, Value: EmbeddingCardButton.embedding_store
         self.assigned_input_embedding = {}  # Key: embedding_swap_model, Value: np.ndarray
+        self.assigned_kv_map: Dict | None = None
         
         self.setCheckable(True)
         self.clicked.connect(self.load_target_face)
@@ -382,6 +384,7 @@ class TargetFaceCardButton(CardButton):
             main_window.merged_embeddings[embedding_id].setChecked(True)
         
         main_window.selected_target_face_id = self.face_id
+        main_window.current_kv_tensors_map = self.assigned_kv_map
 
         # print('main_window.selected_target_face_id', main_window.selected_target_face_id)     
         common_widget_actions.set_widgets_values_using_face_id_parameters(main_window=main_window, face_id=self.face_id)      
@@ -422,6 +425,72 @@ class TargetFaceCardButton(CardButton):
 
         else:
             self.assigned_input_embedding = {}
+
+        # --- New KV Map Logic ---
+        main_window = self.main_window
+        control = main_window.control
+        denoiser_on = control.get('DenoiserUNetEnableBeforeRestorersToggle', False) or \
+                      control.get('DenoiserAfterFirstRestorerToggle', False) or \
+                      control.get('DenoiserAfterRestorersToggle', False)
+
+        if denoiser_on and self.assigned_input_faces:
+            first_input_face_id = list(self.assigned_input_faces.keys())[0]
+            input_face_button = main_window.input_faces.get(first_input_face_id)
+
+            if input_face_button:
+                kv_map_path = input_face_button.kv_map
+                
+                if isinstance(kv_map_path, str) and os.path.exists(kv_map_path):
+                    try:
+                        print(f"Loading K/V map from: {kv_map_path}")
+                        self.assigned_kv_map = torch.load(kv_map_path)
+                    except Exception as e:
+                        print(f"Error loading K/V map from {kv_map_path}: {e}")
+                        self.assigned_kv_map = None
+                        input_face_button.kv_map = None
+                else:
+                    print(f"Generating K/V map for input face: {input_face_button.media_path}")
+                    try:
+                        from PIL import Image
+                        models_processor = main_window.models_processor
+                        models_processor.ensure_kv_extractor_loaded()
+
+                        if models_processor.kv_extractor:
+                            cropped_face_np = input_face_button.cropped_face
+                            pil_img = Image.fromarray(cropped_face_np[..., ::-1])
+                            
+                            if pil_img.size != (512, 512):
+                                pil_img = pil_img.resize((512, 512), Image.Resampling.LANCZOS)
+
+                            kv_map = models_processor.kv_extractor.extract_kv(pil_img)
+                            
+                            kv_data_dir = "model_assets/reference_kv_data"
+                            os.makedirs(kv_data_dir, exist_ok=True)
+                            new_kv_map_path = os.path.join(kv_data_dir, f"{input_face_button.face_id}.pt")
+                            torch.save(kv_map, new_kv_map_path)
+                            print(f"Saved K/V map to: {new_kv_map_path}")
+
+                            input_face_button.kv_map = new_kv_map_path
+                            self.assigned_kv_map = kv_map
+                        else:
+                            print("KV Extractor not available, cannot generate K/V map.")
+                            self.assigned_kv_map = None
+                            input_face_button.kv_map = None
+
+                    except Exception as e:
+                        print(f"Error generating K/V map: {e}")
+                        traceback.print_exc()
+                        self.assigned_kv_map = None
+                        input_face_button.kv_map = None
+                    finally:
+                        main_window.models_processor.unload_kv_extractor()
+            else:
+                self.assigned_kv_map = None
+        else:
+            self.assigned_kv_map = None
+
+        if main_window.selected_target_face_id == self.face_id:
+            main_window.current_kv_tensors_map = self.assigned_kv_map
 
     def create_context_menu(self):
         # create context menu
@@ -503,6 +572,7 @@ class InputFaceCardButton(CardButton):
         self.cropped_face = cropped_face
         self.embedding_store = embedding_store  # Key: embedding_swap_model, Value: embedding
         self.media_path = media_path
+        self.kv_map: str | None = None
 
         self.setCheckable(True)
         self.setToolTip(media_path)
@@ -585,6 +655,22 @@ class InputFaceCardButton(CardButton):
         
     def remove_input_face_from_list(self):
         main_window = self.main_window
+        
+        if isinstance(self.kv_map, str) and self.kv_map.endswith('.pt'):
+            try:
+                if os.path.exists(self.kv_map):
+                    os.remove(self.kv_map)
+                    print(f"Removed K/V data file: {self.kv_map}")
+            except Exception as e:
+                print(f"Error removing K/V data file {self.kv_map}: {e}")
+
+        if isinstance(self.kv_map, str) and os.path.exists(self.kv_map):
+            try:
+                os.remove(self.kv_map)
+                print(f"Removed K/V data file: {self.kv_map}")
+            except Exception as e:
+                print(f"Error removing K/V data file {self.kv_map}: {e}")
+
         i = self.get_item_position()
         main_window.inputFacesList.takeItem(i)   
         main_window.input_faces.pop(self.face_id)

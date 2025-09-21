@@ -100,6 +100,7 @@ def handle_denoiser_state_change(main_window: 'MainWindow', new_value_of_toggle_
     any_denoiser_will_be_active = is_now_before_enabled or is_now_after_first_enabled or is_now_after_enabled
     
     if any_denoiser_will_be_active:
+        main_window.models_processor.ensure_kv_extractor_loaded()
         main_window.models_processor.ensure_denoiser_models_loaded()
         # If a denoiser section was just activated, update its control visibility
         pass_suffix_to_update = None
@@ -120,5 +121,6 @@ def handle_denoiser_state_change(main_window: 'MainWindow', new_value_of_toggle_
     else: # No denoiser will be active
         if denoiser_was_active: # Was on, now off
             main_window.models_processor.unload_denoiser_models()
+            main_window.models_processor.unload_kv_extractor()
     
     # Frame refresh is handled by common_actions.update_control after this function returns.

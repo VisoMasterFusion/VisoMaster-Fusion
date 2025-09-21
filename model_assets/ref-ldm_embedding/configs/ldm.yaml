@@ -1,0 +1,109 @@
+model:
+  base_learning_rate: 5.0e-05
+  target: ldm.models.diffusion.ddpm.LatentDiffusion
+  params:
+    monitor: val/ddim_latent_l1_loss_ema
+    val_loss_run_ddim_steps: 200
+    linear_start: 0.0015
+    linear_end: 0.0155
+    log_every_t: 100
+    timesteps: 1000
+    loss_type: l2
+    image_size: 64
+    channels: 8
+    first_stage_key: gt_image
+    first_stage_config:
+      target: ldm.models.autoencoder.VQModelInterface
+      params:
+        ckpt_path: ./ckpts/vqgan.ckpt
+        embed_dim: 8
+        n_embed: 8192
+        monitor: val/rec_loss
+        ddconfig:
+          double_z: false
+          z_channels: 8
+          resolution: 512
+          in_channels: 3
+          out_ch: 3
+          ch: 128
+          ch_mult:
+          - 1
+          - 1
+          - 2
+          - 4
+          num_res_blocks: 2
+          attn_resolutions: []
+          dropout: 0.0
+        lossconfig:
+          target: torch.nn.Identity
+    cond_stage_config:
+    - cond_stage_key: lq_image
+      conditioning_key: concat
+      uncond_prob: 0.1
+      cond_model_config: __is_first_stage__
+    unet_config:
+      target: ldm.modules.diffusionmodules.openaimodel.UNetModel
+      params:
+        image_size: 64
+        in_channels: 16
+        out_channels: 8
+        model_channels: 160
+        channel_mult:
+        - 1
+        - 2
+        - 2
+        - 4
+        attention_resolutions:
+        - 2
+        - 4
+        - 8
+        num_res_blocks: 2
+        num_head_channels: 32
+        use_spatial_transformer: false
+    perceptual_loss_scale: 0.0
+    perceptual_loss_weight_by_t: true
+    perceptual_loss_config:
+      target: ldm.modules.losses.identity_loss.IdentityLoss
+      params:
+        model_path: ./pretrained/insightface_webface_r50.onnx
+        center_crop: true
+        resize_hw:
+        - 112
+        - 112
+data:
+  target: main.DataModuleFromConfig
+  params:
+    batch_size: 5
+    num_workers: 10
+    wrap: false
+    train:
+      target: ldm.data.ir.ImageRestorationDataset
+      params:
+        use_given_lq: false
+        use_given_ref: false
+        file_list: ./data/ffhq/file_list/train.csv
+        gt_dir: ./data/ffhq/images512x512
+        image_size:
+        - 512
+        - 512
+        degrad_opt:
+          blur_kernel_list:
+          - iso
+          - aniso
+          blur_kernel_prob:
+          - 0.5
+          - 0.5
+          blur_kernel_size: 41
+          blur_sigma:
+          - 0
+          - 16
+          downsample_range:
+          - 1
+          - 32
+          noise_range:
+          - 0
+          - 20
+          jpeg_range:
+          - 30
+          - 100
+        lr_flip_aug: true
