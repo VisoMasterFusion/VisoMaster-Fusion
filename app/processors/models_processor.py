@@ -557,8 +557,8 @@ class ModelsProcessor(QtCore.QObject):
         cos_dist = 1 - np.dot(vector1, vector2) / (np.linalg.norm(vector1) * np.linalg.norm(vector2))  # 2..0
         return 100 - cos_dist * 50
 
-    def apply_facerestorer(self, swapped_face_upscaled, restorer_det_type, restorer_type, restorer_blend, fidelity_weight, detect_score, interpolation_method):
-        return self.face_restorers.apply_facerestorer(swapped_face_upscaled, restorer_det_type, restorer_type, restorer_blend, fidelity_weight, detect_score, interpolation_method)
+    def apply_facerestorer(self, swapped_face_upscaled, restorer_det_type, restorer_type, restorer_blend, fidelity_weight, detect_score):
+        return self.face_restorers.apply_facerestorer(swapped_face_upscaled, restorer_det_type, restorer_type, restorer_blend, fidelity_weight, detect_score)
 
     def apply_occlusion(self, img, amount):
         return self.face_masks.apply_occlusion(img, amount)

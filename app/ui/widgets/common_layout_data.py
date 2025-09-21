@@ -70,11 +70,39 @@ COMMON_LAYOUT_DATA: LayoutDictTypes = {
             'requiredToggleValue': True,
             'help': 'Adjust sharp calc. mostly needed for over 0, which makes the swap sharper. depends on swap model, restorer model, resolution, face size,...'
         },        
+        'FaceRestorerAutoMaskEnableToggle': {
+            'level': 2,
+            'label': 'Sharpness Mask',
+            'default': False,
+            'parentToggle': 'FaceRestorerEnableToggle',
+            'requiredToggleValue': True,
+            'help': 'Auto Adjust Restorer Blend Amount with sharpness Map'
+        },      
+        'FaceRestorerAutoSharpMaskAdjustDecimalSlider': {
+            'level': 3,
+            'label': 'Mask Adjust',
+            'min_value': '0.00',
+            'max_value': '1.00',
+            'default': '1.00',
+            'decimals': 2,
+            'step': 0.05,
+            'parentToggle': 'FaceRestorerEnableToggle',
+            'requiredToggleValue': True,
+            'help': 'Adjust Min/Max Blend value change from base auto Blend value'
+        },                                                   
         'FaceRestorerEnable2Toggle': {
             'level': 1,
             'label': 'Enable Face Restorer 2',
             'default': False,
-            'help': 'Enable the use of a face restoration model to improve the quality of the face after swapping.'
+            'help': 'Enable the use of a face restoration model to improve the quality of the face after swapping.'                                                                                                                            
+        },
+        'FaceRestorerEnable2EndToggle': {
+            'level': 2,
+            'label': 'Apply at End',
+            'default': False,
+            'parentToggle': 'FaceRestorerEnable2Toggle',
+            'requiredToggleValue': True,            
+            'help': 'Apply the second restorer at end of pipeline (after Face Editor to compensate the sharpness loss, befor final-blur and jpeg/mpeg-Compression. when disabled apply directly after first restorer like originaly.'
         },
         'FaceRestorerType2Selection': {
             'level': 2,
@@ -135,7 +163,38 @@ COMMON_LAYOUT_DATA: LayoutDictTypes = {
             'parentToggle': 'FaceRestorerEnable2Toggle & FaceRestorerAutoEnable2Toggle',
             'requiredToggleValue': True,
             'help': 'Adjust sharp calc. mostly needed for over 0, which makes the swap sharper. depends on swap model, restorer model, resolution, face size,...'
-        }
+        },
+        'FaceRestorerAutoMask2EnableToggle': {
+            'level': 2,
+            'label': 'Sharpness Mask',
+            'default': False,
+            'parentToggle': 'FaceRestorerEnable2Toggle',
+            'requiredToggleValue': True,
+            'help': 'Auto Adjust Restorer Blend Amount with sharpness Map'
+        },      
+        'FaceRestorerAutoSharpMask2AdjustDecimalSlider': {
+            'level': 3,
+            'label': 'Mask Adjust',
+            'min_value': '0.00',
+            'max_value': '1.00',
+            'default': '0',
+            'decimals': 2,
+            'step': 0.05,
+            'parentToggle': 'FaceRestorerEnable2Toggle',
+            'requiredToggleValue': True,
+            'help': 'Adjust Min/Max Blend value change from base auto Blend value'
+        },      
+        'FaceRestorerAutoSharpMask2BlurSlider': {
+            'level': 3,
+            'label': 'Mask Blur',
+            'min_value': '0',
+            'max_value': '20',
+            'default': '0',
+            'step': 1,
+            'parentToggle': 'FaceRestorerEnable2Toggle',
+            'requiredToggleValue': True,
+            'help': 'Blure Sharpness Mask'
+        },
     },
     'Face expressions': {
         'FaceExpressionBeforeTypeSelection': {

@@ -13,9 +13,9 @@ class FaceRestorers:
     def __init__(self, models_processor: 'ModelsProcessor'):
         self.models_processor = models_processor
 
-    def apply_facerestorer(self, swapped_face_upscaled, restorer_det_type, restorer_type, restorer_blend, fidelity_weight, detect_score, interpolation_method):
+    def apply_facerestorer(self, swapped_face_upscaled, restorer_det_type, restorer_type, restorer_blend, fidelity_weight, detect_score):
         temp = swapped_face_upscaled
-        t512 = v2.Resize((512, 512), antialias=False)
+        t512 = v2.Resize((512, 512), antialias=True)
         t256 = v2.Resize((256, 256), antialias=False)
         t1024 = v2.Resize((1024, 1024), antialias=False)
         t2048 = v2.Resize((2048, 2048), antialias=False)
@@ -103,7 +103,7 @@ class FaceRestorers:
 
         # Invert Transform
         if restorer_det_type == 'Blend' or restorer_det_type == 'Reference':
-            outpred = v2.functional.affine(outpred, tform.inverse.rotation*57.2958, (tform.inverse.translation[0], tform.inverse.translation[1]), tform.inverse.scale, 0, interpolation=interpolation_method, center = (0,0) )
+            outpred = v2.functional.affine(outpred, tform.inverse.rotation*57.2958, (tform.inverse.translation[0], tform.inverse.translation[1]), tform.inverse.scale, 0, interpolation=v2.InterpolationMode.BILINEAR, center = (0,0) )
 
         # Blend
         #alpha = float(restorer_blend)/100.0
