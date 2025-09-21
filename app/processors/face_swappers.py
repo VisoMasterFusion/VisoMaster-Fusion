@@ -364,14 +364,11 @@ class FaceSwappers:
         kp_transformed[..., 0:2] += t[:, :2].reshape(bs, 1, 2)
         return kp_transformed
 
-
     def run_canonswap(self, image, embedding, output) -> Tensor:
         """
         Executes the CanonSwap pipeline for a single frame using ONNX io_binding.
         """
         device = self.models_processor.device
-        #source_id = torch.from_numpy(embedding).unsqueeze(0).to(device)
-        source_id = embedding
 
         # Load models if not already loaded
         model_names = [
@@ -421,8 +418,8 @@ class FaceSwappers:
         occlusion_map_initial = torch.empty((1, 1, 64, 64), dtype=torch.float32, device=device)
         io_binding_dense1 = models['CanonSwapDenseMotionNetwork'].io_binding()
         io_binding_dense1.bind_input(name='feature', device_type=device, device_id=0, element_type=np.float32, shape=feature_volume.shape, buffer_ptr=feature_volume.data_ptr())
-        io_binding_dense1.bind_input(name='kp_driving', device_type=device, device_id=0, element_type=np.float32, shape=x_can.shape, buffer_ptr=x_can.data_ptr())
-        io_binding_dense1.bind_input(name='kp_source', device_type=device, device_id=0, element_type=np.float32, shape=x_t.shape, buffer_ptr=x_t.data_ptr())
+        io_binding_dense1.bind_input(name='kp_driving', device_type=device, device_id=0, element_type=np.float32, shape=x_t.shape, buffer_ptr=x_t.data_ptr())
+        io_binding_dense1.bind_input(name='kp_source', device_type=device, device_id=0, element_type=np.float32, shape=x_can.shape, buffer_ptr=x_can.data_ptr())
         io_binding_dense1.bind_output(name='deformation', device_type=device, device_id=0, element_type=np.float32, shape=deformation_initial.shape, buffer_ptr=deformation_initial.data_ptr())
         io_binding_dense1.bind_output(name='occlusion_map', device_type=device, device_id=0, element_type=np.float32, shape=occlusion_map_initial.shape, buffer_ptr=occlusion_map_initial.data_ptr())
         models['CanonSwapDenseMotionNetwork'].run_with_iobinding(io_binding_dense1)
@@ -432,7 +429,7 @@ class FaceSwappers:
         f_can_swapped = torch.empty_like(f_can)
         io_binding_swap = models['CanonSwapSwapModule'].io_binding()
         io_binding_swap.bind_input(name='feature_volume', device_type=device, device_id=0, element_type=np.float32, shape=f_can.shape, buffer_ptr=f_can.data_ptr())
-        io_binding_swap.bind_input(name='id_embedding', device_type=device, device_id=0, element_type=np.float32, shape=source_id.shape, buffer_ptr=source_id.data_ptr())
+        io_binding_swap.bind_input(name='id_embedding', device_type=device, device_id=0, element_type=np.float32, shape=embedding.shape, buffer_ptr=embedding.data_ptr())
         io_binding_swap.bind_output(name='swapped_feature_volume', device_type=device, device_id=0, element_type=np.float32, shape=f_can_swapped.shape, buffer_ptr=f_can_swapped.data_ptr())
         models['CanonSwapSwapModule'].run_with_iobinding(io_binding_swap)
 

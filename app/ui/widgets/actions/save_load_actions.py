@@ -1,3 +1,4 @@
+import os
 import json
 from pathlib import Path
 import uuid
@@ -7,7 +8,9 @@ from typing import TYPE_CHECKING, Dict
 
 from PySide6 import QtWidgets
 import numpy as np
+import torch
 
+from app.ui.widgets import widget_components
 from app.ui.widgets.actions import common_actions as common_widget_actions
 from app.ui.widgets.actions import card_actions
 from app.ui.widgets.actions import list_view_actions
@@ -166,6 +169,13 @@ def load_saved_workspace(main_window: 'MainWindow', data_filename: str|bool = Fa
             #Use run() instead of start(), as we dont want it running in a different thread as it could create synchronisation issues in the steps below
             main_window.input_faces_loader_worker.run() 
 
+            for face_id, input_face_data in data['input_faces_data'].items():
+                if face_id in main_window.input_faces:
+                    input_face_button = main_window.input_faces[face_id]
+                    kv_map_loaded = input_face_data.get('kv_map')
+                    if kv_map_loaded:
+                        input_face_button.kv_map = kv_map_loaded
+
             # Add embeddings
             embeddings_data = data['embeddings_data']
             for embedding_id, embedding_data in embeddings_data.items():
@@ -247,6 +257,12 @@ def save_current_workspace(main_window: 'MainWindow', data_filename:str|bool = F
     target_faces_data = {}; embeddings_data = {}; input_faces_data = {}
     target_medias_data = []
 
+    # --- Check if Denoiser is enabled ---
+    control = main_window.control
+    is_denoiser_enabled = control.get('DenoiserUNetEnableBeforeRestorersToggle', False) or \
+                          control.get('DenoiserAfterFirstRestorerToggle', False) or \
+                          control.get('DenoiserAfterRestorersToggle', False)
+
     # --- Serialize Target Medias ---
     for media_id, target_media in main_window.target_videos.items():
         target_medias_data.append({
@@ -260,17 +276,36 @@ def save_current_workspace(main_window: 'MainWindow', data_filename:str|bool = F
 
     # --- Serialize Input Faces ---
     for face_id, input_face in main_window.input_faces.items():
-        input_faces_data[face_id] = {'media_path': input_face.media_path}
+        kv_map_serializable = None
+        if is_denoiser_enabled and input_face.kv_map:
+            if isinstance(input_face.kv_map, str): # Already a path
+                kv_map_serializable = input_face.kv_map
+            else: # It's the actual tensor data, save it to a .pt file
+                kv_data_dir = "model_assets/reference_kv_data"
+                os.makedirs(kv_data_dir, exist_ok=True)
+                new_kv_map_path = os.path.join(kv_data_dir, f"{input_face.face_id}.pt")
+                try:
+                    torch.save(input_face.kv_map, new_kv_map_path)
+                    kv_map_serializable = new_kv_map_path
+                except Exception as e:
+                    print(f"Error saving K/V map to {new_kv_map_path}: {e}")
+                    kv_map_serializable = None
+        input_faces_data[face_id] = {
+            'media_path': input_face.media_path,
+            'kv_map': kv_map_serializable
+        }
     
     # --- Serialize Target Faces & Parameters ---
     for face_id, target_face in main_window.target_faces.items():
+        assigned_kv_map_serializable = None
         target_faces_data[face_id] = {
             'cropped_face': target_face.cropped_face.tolist(), 
             'embedding_store': {embed_model: embedding.tolist() for embed_model, embedding in target_face.embedding_store.items()},
             'parameters': main_window.parameters.get(face_id, main_window.default_parameters).data.copy(), # Use .get with default, ensure it's dict
             'assigned_input_faces': list(target_face.assigned_input_faces.keys()),
             'assigned_merged_embeddings': list(target_face.assigned_merged_embeddings.keys()),
-            'assigned_input_embedding': {model: emb.tolist() for model, emb in target_face.assigned_input_embedding.items()} # Save calculated embedding
+            'assigned_input_embedding': {model: emb.tolist() for model, emb in target_face.assigned_input_embedding.items()},
+            'assigned_kv_map': assigned_kv_map_serializable
         }
 
     # --- Serialize Embeddings ---
@@ -313,7 +348,7 @@ def save_current_workspace(main_window: 'MainWindow', data_filename:str|bool = F
         except Exception as e:
             print(f"[ERROR] Failed to save workspace {data_filename}: {e}")
             if not data_filename.endswith('last_workspace.json'): # Don't show error for auto-save
-                common_widget_actions.create_and_show_messagebox(main_window, 'Save Error', f'Failed to save workspace:\n{e}', main_window)
+                common_widget_actions.create_and_show_messagebox(main_window, 'Save Error', f'Failed to save workspace:\\n{e}', main_window)
 
 def save_current_job(main_window: 'MainWindow'):
     # Check for necessary conditions
