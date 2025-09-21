@@ -1890,31 +1890,60 @@ def apply_laplace_filter(img):
 
     return laplacian.squeeze(0).squeeze(0)  # (H, W)
 
-def jpegBlur(img, q):
-    device = img.device  # Original device (CPU or GPU)
+def _map_jpeg_quality(base_q: int, face_scale: float, *,
+                      gamma: float = 0.6,
+                      strength: float = 1.0,
+                      q_min: int = 5, q_max: int = 95) -> int:
+    """
+    base_q:  UI-Wert [1..100]
+    face_scale: tform.scale = (Original-Gesichtsbreite)/512
+                <1 -> Gesicht war kleiner (upsampled); >1 -> größer (downsampled)
+    gamma:    Krümmung (0.4..0.8 fühlt sich gut an)
+    strength: 0..1, wie stark die Skalierung vom base_q abweicht
+    q_min/q_max: harte Klammern (vermeidet Extremwerte)
+    """
+    # numerisch stabil klammern
+    f = max(0.25, min(4.0, float(face_scale)))   # weicher Arbeitsbereich
+    # norm >1, wenn f<1; norm <1, wenn f>1
+    norm = (1.0 / f) ** gamma
 
-    # Ensure the image is in [C, H, W] format
-    if img.dim() != 3 or img.size(0) != 3:
-        raise ValueError("Image must have shape [3, H, W].")
+    # weiche Mischung: bei strength=0 → base_q, bei 1 → volle Skalierung
+    q_scaled = base_q * norm
+    q_eff = (1.0 - strength) * base_q + strength * q_scaled
 
-    # Convert to uint8 if necessary
-    if img.dtype == torch.float32:
-        img_uint8 = img.type(torch.uint8).cpu()
+    # sauber runden + clampen
+    q_eff = int(round(max(q_min, min(q_max, q_eff))))
+    return q_eff
+
+def jpegBlur(img: torch.Tensor, q: int) -> torch.Tensor:
+    """
+    img: [3,H,W], float32 (0..255) ODER (0..1) ODER uint8 (0..255)
+    q:   1..100
+    """
+    if img.ndim != 3 or img.shape[0] != 3:
+        raise ValueError("Image must have shape [3,H,W].")
+    device = img.device
+
+    # in uint8 konvertieren (sauber klammern + runden)
+    if img.dtype == torch.float32 or img.dtype == torch.float64:
+        # Erkennen, ob 0..1 -> auf 0..255 hochskalieren
+        mx = float(img.max().detach().item())
+        if mx <= 1.0 + 1e-6:
+            img_uint8 = (img.clamp(0, 1) * 255.0).round().to(torch.uint8).cpu()
+        else:
+            img_uint8 = img.clamp(0, 255).round().to(torch.uint8).cpu()
     elif img.dtype == torch.uint8:
         img_uint8 = img.cpu()
     else:
-        raise ValueError("Unsupported image data type.")
+        img_uint8 = img.to(torch.float32).clamp(0,255).round().to(torch.uint8).cpu()
 
-    # Encode JPEG (works on CPU)
-    buffer = torchvision.io.encode_jpeg(img_uint8, quality=q)
+    # Encoding erwartet [H,W,C] auf CPU
+    img_hwc = img_uint8.contiguous()#.permute(1, 2, 0).contiguous()
+    buf = torchvision.io.encode_jpeg(img_hwc, quality=int(q))
+    out_hwc = torchvision.io.decode_jpeg(buf)             # [H,W,C], uint8
+    out_chw = out_hwc#.permute(2, 0, 1).contiguous()       # [3,H,W]
 
-    # Decode JPEG (input must be on CPU when using nvjpeg)
-    img_blurred = torchvision.io.decode_jpeg(buffer)
-
-    # Move back to the original device
-    img_blurred = img_blurred.to(device).type(torch.float32)
-
-    return img_blurred
+    return out_chw.to(device=device, dtype=torch.float32)
 
 def histogram_matching(source_image, target_image, diffslider):
     # Determine the device (CPU or GPU)

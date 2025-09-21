@@ -44,6 +44,7 @@ def get_scaling_transforms(control_params):
     interpolation_original_face_128_384 = interpolation_map.get(control_params.get("original_face_128_384TypeSelection", "BILINEAR"))
     interpolation_original_face_512 = interpolation_map.get(control_params.get("original_face_512TypeSelection", "BILINEAR"))
     interpolation_Untransform = interpolation_map.get(control_params.get("UntransformTypeSelection", "BILINEAR"))
+    interpolation_scaleback = interpolation_map.get(control_params.get("ScalebackFrameTypeSelection", "BILINEAR"))
     interpolation_expression_faceeditor_t256 = interpolation_map.get(control_params.get("expression_faceeditor_t256TypeSelection", "BILINEAR"))
     interpolation_expression_faceeditor_back = interpolation_map.get(control_params.get("expression_faceeditor_backTypeSelection", "BILINEAR"))
     
@@ -58,7 +59,7 @@ def get_scaling_transforms(control_params):
     t256 = v2.Resize((256, 256), interpolation=interpolation_original_face_128_384, antialias=antialias_method)
     t128 = v2.Resize((128, 128), interpolation=interpolation_original_face_128_384, antialias=antialias_method)
     
-    return t512, t384, t256, t128, interpolation_get_cropped_face_kps, interpolation_original_face_128_384, interpolation_original_face_512, interpolation_Untransform, t256_face, interpolation_expression_faceeditor_back, interpolation_block_shift
+    return t512, t384, t256, t128, interpolation_get_cropped_face_kps, interpolation_original_face_128_384, interpolation_original_face_512, interpolation_Untransform, interpolation_scaleback, t256_face, interpolation_expression_faceeditor_back, interpolation_block_shift
 
 def absoluteFilePaths(directory: str, include_subfolders=False):
     if include_subfolders:

@@ -61,6 +61,10 @@ class MainWindow(QtWidgets.QMainWindow, Ui_MainWindow):
         self.cur_selected_target_face_button: widget_components.TargetFaceCardButton = False
         self.selected_video_button: widget_components.TargetMediaCardButton = False
         self.selected_target_face_id = False
+        self._rightFacesStrip = None                # Container-Widget
+        self._rightFacesButtonsRow = None           # HLayout für Buttons
+        self._faceButtonsOriginalTexts = {}         # zum Wiederherstellen
+        self._rightFacesStripVisible = False
         # '''
             # self.parameters dict have the following structure:
             # {
@@ -494,4 +498,173 @@ class MainWindow(QtWidgets.QMainWindow, Ui_MainWindow):
             self._populate_reference_kv_tensors()
 
     def save_last_workspace(self):
-        pass
+        pass       
+
+    @QtCore.Slot(bool)
+    def _on_faces_panel_toggled(self, checked: bool):
+        # checked=True  -> Faces-Panel sichtbar  -> alles zurück ins Panel
+        # checked=False -> Faces-Panel aus       -> Liste + Buttons nach rechts
+        if checked:
+            # zurück ins Panel
+            if getattr(self, "_rightFacesStrip", None):
+                self._restore_faces_strip_to_panel()
+        else:
+            # nach rechts ziehen
+            self._ensure_right_faces_strip()
+            self._move_faces_strip_to_right()
+
+    def _ensure_right_faces_strip(self):
+        if getattr(self, "_rightFacesStrip", None) is not None:
+            return
+
+        self._rightFacesStrip = QtWidgets.QWidget(self.dockWidgetContents_2)
+        stripLayout = QtWidgets.QVBoxLayout(self._rightFacesStrip)
+        stripLayout.setContentsMargins(0, 0, 0, 0)
+        stripLayout.setSpacing(6)
+
+        # Faces oben
+        self._rightFacesFacesHolder = QtWidgets.QVBoxLayout()
+        self._rightFacesFacesHolder.setContentsMargins(0, 0, 0, 0)
+        self._rightFacesFacesHolder.setSpacing(0)
+        stripLayout.addLayout(self._rightFacesFacesHolder)
+
+        # Buttons unten nebeneinander
+        self._rightFacesButtonsRow = QtWidgets.QHBoxLayout()
+        self._rightFacesButtonsRow.setContentsMargins(0, 0, 0, 0)
+        self._rightFacesButtonsRow.setSpacing(8)
+        stripLayout.addLayout(self._rightFacesButtonsRow)
+
+        # unter den Tabs im rechten Dock
+        self.gridLayout_5.addWidget(self._rightFacesStrip, 2, 0, 1, 1)
+        
+        # ---- Höhe & Policies für den Strip kompakt setzen ----
+        sp_strip = self._rightFacesStrip.sizePolicy()
+        sp_strip.setVerticalPolicy(QtWidgets.QSizePolicy.Fixed)
+        self._rightFacesStrip.setSizePolicy(sp_strip)
+
+        # Max-Höhen: Liste + Buttons zusammen ~170px
+        # -> Liste (Thumbnails)
+        try:
+            self.targetFacesList.setMaximumHeight(80)  # kompakte Thumbnail-Zeile
+        except Exception:
+            pass
+
+        # Buttons-Reihe: optional per Container fixieren
+        self._rightFacesButtonsRowContainer = getattr(self, "_rightFacesButtonsRowContainer", None)
+        if self._rightFacesButtonsRowContainer is None:
+            self._rightFacesButtonsRowContainer = QtWidgets.QWidget(self._rightFacesStrip)
+            lay = QtWidgets.QHBoxLayout(self._rightFacesButtonsRowContainer)
+            lay.setContentsMargins(0, 0, 0, 0)
+            lay.setSpacing(8)
+            # alten Row-Layout-Inhalt in den Container umziehen
+            while self._rightFacesButtonsRow.count():
+                item = self._rightFacesButtonsRow.takeAt(0)
+                w = item.widget()
+                if w:
+                    lay.addWidget(w)
+            # alten Row durch Container ersetzen
+            parent_v = self._rightFacesStrip.layout()
+            parent_v.removeItem(self._rightFacesButtonsRow)
+            parent_v.addWidget(self._rightFacesButtonsRowContainer)
+            self._rightFacesButtonsRow = lay
+
+        self._rightFacesButtonsRowContainer.setFixedHeight(32)
+
+        # Gesamthöhe des Strips hart deckeln
+        self._rightFacesStrip.setMaximumHeight(120)
+
+        # ---- Layout-Gewichte: Tabs (Zeile 1) kriegen alles, Strip (Zeile 2) nichts ----
+        self.gridLayout_5.setRowStretch(1, 1)  # Tabs
+        self.gridLayout_5.setRowStretch(2, 0)  # Faces-Strip
+
+    def _move_faces_strip_to_right(self):
+        # targetFacesList aus Faces-Panel lösen
+        try:
+            self.gridLayout_2.removeWidget(self.targetFacesList)
+        except Exception:
+            pass
+
+        self.targetFacesList.setParent(self._rightFacesStrip)
+        sp = self.targetFacesList.sizePolicy()
+        sp.setVerticalStretch(1)     # Liste füllt den oberen Bereich
+        self.targetFacesList.setSizePolicy(sp)
+        self._rightFacesFacesHolder.addWidget(self.targetFacesList)
+
+        # Buttons aus der linken Column nehmen
+        btns = [self.findTargetFacesButton, self.clearTargetFacesButton,
+                self.swapfacesButton, self.editFacesButton]
+
+        # Originaltexte einmalig merken
+        if not hasattr(self, "_faceButtonsOriginalTexts"):
+            self._faceButtonsOriginalTexts = {}
+        if not self._faceButtonsOriginalTexts:
+            for b in btns:
+                self._faceButtonsOriginalTexts[b.objectName()] = b.text()
+
+        try:
+            for b in btns:
+                self.controlButtonsLayout.removeWidget(b)
+        except Exception:
+            pass
+
+        # Kurzlabels setzen und unten nebeneinander einsetzen
+        short_map = {
+            "findTargetFacesButton": "Find",
+            "clearTargetFacesButton": "Clear",
+            "swapfacesButton": "Swap",
+            "editFacesButton": "Edit",
+        }
+        for b in btns:
+            b.setParent(self._rightFacesStrip)
+            b.setText(short_map.get(b.objectName(), b.text()))
+            b.setFlat(True)
+            self._rightFacesButtonsRow.addWidget(b)
+
+        self._rightFacesButtonsRow.addStretch(1)
+        # Kompakte Darstellung erzwingen
+        self.targetFacesList.setViewMode(QtWidgets.QListView.IconMode)
+        self.targetFacesList.setWrapping(True)
+        self.targetFacesList.setSpacing(4)
+        self.targetFacesList.setMinimumHeight(60)
+        self.targetFacesList.setMaximumHeight(80)  # wichtig
+
+    def _restore_faces_strip_to_panel(self):
+        # Liste zurück ins Faces-Panel (Originalzelle 1,1,1,1 – wie in deiner .ui)
+        try:
+            self._rightFacesFacesHolder.removeWidget(self.targetFacesList)
+        except Exception:
+            pass
+
+        self.targetFacesList.setParent(self.facesPanelGroupBox)
+        self.gridLayout_2.addWidget(self.targetFacesList, 1, 1, 1, 1)
+
+        # Buttons zurück in die linke, vertikale Spalte (untereinander)
+        btns = [self.findTargetFacesButton, self.clearTargetFacesButton,
+                self.swapfacesButton, self.editFacesButton]
+
+        try:
+            for b in btns:
+                self._rightFacesButtonsRow.removeWidget(b)
+        except Exception:
+            pass
+
+        for b in btns:
+            b.setParent(self.facesButtonsWidget)
+            # Originaltext wiederherstellen
+            if hasattr(self, "_faceButtonsOriginalTexts"):
+                orig = self._faceButtonsOriginalTexts.get(b.objectName())
+                if orig:
+                    b.setText(orig)
+            b.setFlat(True)
+            self.controlButtonsLayout.addWidget(b)
+
+        # Limits zurücksetzen
+        self.targetFacesList.setMaximumHeight(16777215)
+        if hasattr(self, "_rightFacesStrip"):
+            self._rightFacesStrip.setMaximumHeight(16777215)
+        if hasattr(self, "_rightFacesButtonsRowContainer") and self._rightFacesButtonsRowContainer:
+            self._rightFacesButtonsRowContainer.setMaximumHeight(16777215)
+
+        # Tabs/Strip-Stretches optional neutralisieren (nicht zwingend)
+        self.gridLayout_5.setRowStretch(1, 0)
+        self.gridLayout_5.setRowStretch(2, 0)
