@@ -103,7 +103,7 @@ class FaceMasks:
             # falls nötig, wieder auf [0,1] clampen
             outpred = outpred.clamp(0,1)
 
-        if amount < 0:
+        elif amount < 0:
             r = int(-amount)
             k = 2*r + 1
             # Erosion = invertieren → dilatieren → invertieren
@@ -215,6 +215,7 @@ class FaceMasks:
         def make_mask(labels, attributes, dil):
             m = torch.isin(labels, torch.tensor(attributes, device=labels.device)).float()
             if abs(dil) > 1:
+                dil = abs(dil)
                 # invertieren falls negative, dann dilatieren
                 inv = (1-m) if dil<0 else m
                 inv = inv.unsqueeze(0).unsqueeze(0)
@@ -288,7 +289,7 @@ class FaceMasks:
                     if d:
                         # kombiniere swap und orig
                         m1 = make_mask(labels_swap, [cls], dil=d)
-                        m2 = make_mask(labels_orig, [cls], dil=d)
+                        m2 = make_mask(labels_orig, [cls], dil=0)
                         if parameters['MouthParserInsideToggle'] and cls == 11: #for mouth to be put in the swaped face (to minimize the overlap when the mouth in not aligned)
                             mask_fp = torch.max(mask_fp, torch.min(m1, m2))
                         else:
@@ -332,8 +333,16 @@ class FaceMasks:
                         tex_o = torch.max(tex_o, m_orig)
                     else:
                         if d:
-                            tex   = torch.max(tex,   make_mask(labels_swap, [cls], dil=d))
-                            tex_o = torch.max(tex_o, make_mask(labels_orig, [cls], dil=d))
+                            if d > 0:
+                                tex   = torch.max(tex,   make_mask(labels_swap, [cls], dil=d))
+                                tex_o = torch.max(tex_o, make_mask(labels_orig, [cls], dil=d))
+                            if d <= 0:
+                                tex_temp = make_mask(labels_swap, [cls], dil=d)
+                                tex_o_temp = make_mask(labels_orig, [cls], dil=d)
+                                tex_temp = torch.max(tex_temp,   tex_o_temp)
+                                #tex_o_temp = torch.max(tex_temp,   tex_o_temp) #tex_temp
+                                tex   = tex - tex_temp #torch.max(tex,   make_mask(labels_swap, [cls], dil=d))
+                                tex_o = tex_o - tex_temp #torch.max(tex_o, make_mask(labels_orig, [cls], dil=d))
                 # optional BG texture exclusion
                 if parameters["BackgroundParserTextureSlider"] != 0:
                     tex_o = torch.max(

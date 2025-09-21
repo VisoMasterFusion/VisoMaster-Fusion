@@ -1074,7 +1074,7 @@ class FrameWorker(threading.Thread):
             scale_factor = round(tform.scale, 2)
             automasktoggle = parameters["FaceRestorerAutoMaskEnableToggle"]
             automaskadjust = parameters["FaceRestorerAutoSharpMaskAdjustDecimalSlider"]
-            automaskblur = parameters["FaceRestorerAutoSharpMaskBlurSlider"]
+            automaskblur = 2 #parameters["FaceRestorerAutoSharpMaskBlurSlider"]
             restore_mask = mask_calc_dill.clone()
             
             alpha_auto, blur_value = self.face_restorer_auto(original_face_512_autorestore, swap_original_autorestore, swap_restorecalc, alpha_restorer, adjust_sharpness, scale_factor, debug, restore_mask, automasktoggle, automaskadjust, automaskblur)#, parameters["FaceRestorerMaskSlider"], parameters["AutoRestorerTenengradTreshSlider"]/100, parameters["AutoRestorerCombWeightSlider"]/100)
@@ -1147,10 +1147,18 @@ class FrameWorker(threading.Thread):
                 swap = torch.add(torch.mul(swap2, alpha_restorer2), torch.mul(swap_original2, 1 - alpha_restorer2))
         
         if parameters["TransferTextureEnableToggle"] or parameters["DifferencingEnableToggle"] or parameters["AutoColorEnableToggle"]:
+            mask = torch.zeros((512, 512), dtype=torch.uint8, device=self.models_processor.device)
+            mask = mask.unsqueeze(0)
+            
             mask_calc = mask_calc_dill.clone()
             mask_calc = 1 - mask_calc
+            
             mask_calc = mask_calc + (BgExclude)
-            mask_calc = torch.where(mask_calc > 0.01, 1, 0)
+            mask_calc = torch.where(
+                mask_calc > 0.01, 
+                1,
+                0
+            )
             if parameters['BGExcludeBlurAmountSlider'] > 0:
                 orig = mask_calc.clone()
                 gauss = transforms.GaussianBlur(parameters['BGExcludeBlurAmountSlider']*2+1, (parameters['BGExcludeBlurAmountSlider']+1)*0.2)
@@ -1158,14 +1166,15 @@ class FrameWorker(threading.Thread):
                 mask_calc = torch.max(mask_calc, orig) 
 
         if parameters["AutoColorEnableToggle"]:
-            if parameters['AutoColorTransferTypeSelection'] in ['Test_Mask', 'DFL_Orig']:
+            # --- AutoColor block ---
+            if parameters['AutoColorTransferTypeSelection'] == 'Test_Mask' or parameters['AutoColorTransferTypeSelection'] == 'DFL_Orig':
                 mask_autocolor = mask_calc.clone()
                 mask_autocolor = (mask_autocolor > 0.1)
-                if parameters['AutoColorTransferTypeSelection'] == 'DFL_Orig' and not parameters['DFLXSegEnableToggle']:
-                    mask_autocolor = mask_color
+                                                                                                                        
+                                                                                                                                       
 
             swap_backup = swap.clone()
-
+            
             if parameters['AutoColorTransferTypeSelection'] == 'Test':
                 swap = faceutil.histogram_matching(original_face_512, swap, parameters["AutoColorBlendAmountSlider"])
 
@@ -1173,7 +1182,7 @@ class FrameWorker(threading.Thread):
                 swap = faceutil.histogram_matching_withmask(original_face_512, swap, mask_autocolor, parameters["AutoColorBlendAmountSlider"])
                 if parameters["ExcludeMaskEnableToggle"]:
                     swap_backup = faceutil.histogram_matching_withmask(original_face_512, swap_backup, mask_autocolor, parameters["AutoColorBlendAmountSlider"])
-
+                
             elif parameters['AutoColorTransferTypeSelection'] == 'DFL_Test':
                 swap = faceutil.histogram_matching_DFL_test(original_face_512, swap, parameters["AutoColorBlendAmountSlider"])
 
@@ -1181,32 +1190,65 @@ class FrameWorker(threading.Thread):
                 swap = faceutil.histogram_matching_DFL_Orig(original_face_512, swap, mask_autocolor, parameters["AutoColorBlendAmountSlider"])
 
         if parameters["TransferTextureEnableToggle"]:
-            TextureFeatureLayerTypeSelection = 'combo_relu3_3_relu3_1'
-            clip_limit = parameters['TransferTextureClipLimitDecimalSlider'] if parameters['TransferTextureClaheEnableToggle'] else 0.0
+            # --- TransferTexture block ---
             
+            TransferTextureKernelSizeSlider = 12 #parameters['TransferTextureKernelSizeSlider']
+            TransferTextureSigmaDecimalSlider = 4.00 # parameters['TransferTextureSigmaDecimalSlider']
+            TransferTextureWeightSlider = 1 #parameters['TransferTextureWeightNewDecimalSlider']
+            #TransferTextureLambdSlider = parameters['TransferTextureLambdSlider'] #2 #8 #
+            TransferTexturePhiDecimalSlider = 9.7 #parameters['TransferTexturePhiDecimalSlider']
+            TransferTextureGammaDecimalSlider = 0.5 #parameters['TransferTextureGammaDecimalSlider']
+            #TransferTextureThetaSlider = parameters['TransferTextureThetaSlider'] #1 #8 #
+            if parameters['TransferTextureModeEnableToggle']:
+                TransferTextureLambdSlider = 8
+                TransferTextureThetaSlider = 8
+            else:
+                TransferTextureLambdSlider = 2
+                TransferTextureThetaSlider = 1               
+            TextureFeatureLayerTypeSelection = 'combo_relu3_3_relu3_1' #parameters['TextureFeatureLayerTypeSelection']
+
+            if parameters['TransferTextureClaheEnableToggle']:
+                clip_limit = parameters['TransferTextureClipLimitDecimalSlider']
+            else:
+                clip_limit = 0.0
+            
+            alpha_clahe = parameters['TransferTextureAlphaClaheDecimalSlider']
+            grid_size = (4,4) #(parameters['TransferTextureGridSizeSlider'], parameters['TransferTextureGridSizeSlider'])
+            global_gamma = parameters['TransferTexturePreGammaDecimalSlider']
+            global_contrast = parameters['TransferTexturePreContrastDecimalSlider']
+                               
             diff_mask_texture = t128_mask(texture_mask.clone())
             
+            #swap = torch.where(calc_mask, swap, original_face_512)
             texture_mask_view = calc_mask.clone()
             gradient_texture = self.gradient_magnitude(
-                original_face_512, texture_mask_view, 12, 1, 4.0, 
-                8 if parameters['TransferTextureModeEnableToggle'] else 2, 0.5, 9.7, 
-                8 if parameters['TransferTextureModeEnableToggle'] else 1, 
-                clip_limit, parameters['TransferTextureAlphaClaheDecimalSlider'], (4,4), 
-                parameters['TransferTexturePreGammaDecimalSlider'], parameters['TransferTexturePreContrastDecimalSlider']
+                original_face_512, texture_mask_view,
+                TransferTextureKernelSizeSlider, TransferTextureWeightSlider,
+                TransferTextureSigmaDecimalSlider, TransferTextureLambdSlider,
+                TransferTextureGammaDecimalSlider, TransferTexturePhiDecimalSlider,
+                TransferTextureThetaSlider, clip_limit, alpha_clahe, grid_size, global_gamma, global_contrast
             )
 
-            mask = torch.ones((1, 128, 128), dtype=torch.uint8, device=self.models_processor.device)
+            
+
+            mask = torch.ones((128, 128), dtype=torch.uint8, device=self.models_processor.device)
+            mask = mask.unsqueeze(0)
             mask_texture = t128_mask(calc_mask.clone())
             if parameters["ExcludeOriginalVGGMaskEnableToggle"]:
+                swapped_face_resized = swap.clone()
+                original_face_resized = original_face_512.clone()
                 mask, diff_norm_texture = self.models_processor.apply_perceptual_diff_onnx(
-                    swap.clone(), original_face_512.clone(), mask_texture,
-                    parameters['TextureLowerLimitThreshSlider']/100, 0,
+                    swapped_face_resized, original_face_resized, mask_texture,
+                    parameters['TextureLowerLimitThreshSlider']/100,
+                    0,
                     parameters['TextureUpperLimitThreshSlider']/100,
                     parameters['TextureUpperLimitValueSlider']/100,
                     parameters['TextureMiddleLimitValueSlider']/100,
-                    TextureFeatureLayerTypeSelection, parameters['ExcludeVGGMaskEnableToggle']
+                    TextureFeatureLayerTypeSelection,
+                    parameters['ExcludeVGGMaskEnableToggle']
                 )
-                if not parameters["ExcludeVGGMaskEnableToggle"]: mask = diff_norm_texture
+                if not parameters["ExcludeVGGMaskEnableToggle"]:                
+                    mask = diff_norm_texture
                 if parameters['TextureBlendAmountSlider'] > 0:                                    
                     gauss = transforms.GaussianBlur(parameters['TextureBlendAmountSlider']*2+1, (parameters['TextureBlendAmountSlider']+1)*0.2)
                     mask = gauss(mask.type(torch.float32)) 
@@ -1221,6 +1263,7 @@ class FrameWorker(threading.Thread):
                     diff_mask_texture = gauss(diff_mask_texture.type(torch.float32))
                     diff_mask_texture = torch.max(diff_mask_texture, orig)
                 mask = mask * diff_mask_texture
+
                 mask = mask.clamp(0.0, 1.0)
             elif parameters["ExcludeOriginalVGGMaskEnableToggle"]:
                 mask = mask + (1-diff_mask_texture) 
@@ -1228,19 +1271,29 @@ class FrameWorker(threading.Thread):
                 mask = 1 - mask
 
             mask = t512_mask(mask)                   
+
             mask = mask + (mask_calc)
             mask = mask.clamp(0.0, 1.0)
+
             swap_texture_backup = swap.clone()
             swap_texture_backup = faceutil.histogram_matching_DFL_Orig(original_face_512, swap_texture_backup, calc_mask, 100)
+
             gradient_texture = faceutil.histogram_matching_DFL_Orig(original_face_512, gradient_texture, calc_mask, 100)
-            alpha = parameters['TransferTextureBlendAmountSlider'] /100
+
+            alpha = parameters['TransferTextureBlendAmountSlider'] /100   # 0 = kein Detail, 1 = voller Gradient
             w = alpha * (1 - mask)
             swap = swap_texture_backup * (1 - w) + gradient_texture * w
+
             texture_mask_view = mask.clone()
             swap = swap.clamp(0, 255)
 
         if parameters["DifferencingEnableToggle"]:
-            FeatureLayerTypeSelection = 'combo_relu3_3_relu3_1'
+            # --- Differencing block ---
+
+            swapped_face_resized = swap.clone()
+            FeatureLayerTypeSelection = 'combo_relu3_3_relu3_1'#parameters['FeatureLayerTypeSelection']
+
+            original_face_resized = original_face_512.clone()
             diff_mask = t128_mask(calc_mask.clone())
 
             lower_thresh  = parameters['DifferencingLowerLimitThreshSlider']  / 100.0
@@ -1249,20 +1302,40 @@ class FrameWorker(threading.Thread):
             upper_value   = parameters['DifferencingUpperLimitValueSlider'] / 100.0
 
             mask, diff_norm_texture = self.models_processor.apply_perceptual_diff_onnx(
-                swap.clone(), original_face_512.clone(), diff_mask,
-                lower_thresh, 0, upper_thresh, upper_value, middle_value, FeatureLayerTypeSelection, False
+                swapped_face_resized, original_face_resized, diff_mask,
+                lower_thresh,
+                0,
+                upper_thresh,
+                upper_value,
+                middle_value,
+                FeatureLayerTypeSelection,
+                False
             )
         
             eps = 1e-6
             inv_lower = 1.0 / max(lower_thresh, eps)
             inv_mid   = 1.0 / max((upper_thresh - lower_thresh), eps)
             inv_high  = 1.0 / max((1.0 - upper_thresh), eps)
+
+            # 3) Die drei linearen Teilstücke
+            #    lower_value ist hier 0, daher entfällt das Offset
             res_low  = diff_norm_texture * inv_lower * middle_value
             res_mid  = middle_value + (diff_norm_texture - lower_thresh) * inv_mid * (upper_value - middle_value)
             res_high = upper_value  + (diff_norm_texture - upper_thresh) * inv_high * (1.0 - upper_value)
-            result = torch.where(diff_norm_texture < lower_thresh, res_low, torch.where(diff_norm_texture > upper_thresh, res_high, res_mid))
+
+            # 4) Piecewise in zwei where-Aufrufen
+            result = torch.where(
+                diff_norm_texture < lower_thresh,
+                res_low,                                             # Bereich [0, lower_thresh)
+                torch.where(
+                    diff_norm_texture > upper_thresh,
+                    res_high,                                        # Bereich (upper_thresh, 1]
+                    res_mid                                          # Bereich [lower_thresh, upper_thresh]
+                )
+            )
             mask = result                
-            mask = t512_mask(mask)
+            mask = t512_mask(mask)#(1-mask_calc_dill)# + (1-texture_mask)                                       
+            #mask = mask.clamp(0.0, 1.0)            
             
             gauss = transforms.GaussianBlur(parameters['DifferencingBlendAmountSlider']*2+1, (parameters['DifferencingBlendAmountSlider']+1)*0.2)
             mask = gauss(mask.type(torch.float32))
@@ -1270,7 +1343,8 @@ class FrameWorker(threading.Thread):
             mask = mask.clamp(0.0, 1.0) 
             swap = swap * mask + original_face_512 * (1 - mask)
             swap = swap.clamp(0, 255)   
-            diff_mask = mask.clone()
+            
+            diff_mask = mask.clone()                     
 
         # Apply color corrections
         if parameters['ColorEnableToggle']:

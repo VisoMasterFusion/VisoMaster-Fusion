@@ -184,17 +184,6 @@ COMMON_LAYOUT_DATA: LayoutDictTypes = {
             'requiredToggleValue': True,
             'help': 'Adjust Min/Max Blend value change from base auto Blend value'
         },      
-        'FaceRestorerAutoSharpMask2BlurSlider': {
-            'level': 3,
-            'label': 'Mask Blur',
-            'min_value': '0',
-            'max_value': '20',
-            'default': '0',
-            'step': 1,
-            'parentToggle': 'FaceRestorerEnable2Toggle',
-            'requiredToggleValue': True,
-            'help': 'Blure Sharpness Mask'
-        },
     },
     'Face expressions': {
         'FaceExpressionBeforeTypeSelection': {
