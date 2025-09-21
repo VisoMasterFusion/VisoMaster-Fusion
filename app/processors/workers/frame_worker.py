@@ -884,7 +884,7 @@ class FrameWorker(threading.Thread):
 
         mask_calc_dill = None
 
-        debug = control.get("CommandLineDebugEnableToggle", False)
+        debug = parameters["CommandLineDebugEnableToggle"]
         debug_info: dict[str, str] = {}  
 
         tform = self.get_face_similarity_tform(swapper_model, kps_5)
@@ -993,7 +993,6 @@ class FrameWorker(threading.Thread):
             if debug:
                 debug_info["RestoreAlpha"] = f": {alpha_auto*100:.2f}"
 
-        if parameters["FaceRestorerAutoEnableToggle"] and parameters["FaceRestorerEnableToggle"]:
             if blur_value != 0:
                 swap = swap_original
                 if debug: print("blur: ", blur_value)
@@ -1037,7 +1036,6 @@ class FrameWorker(threading.Thread):
             if debug:
                 debug_info["RestoreAlpha2"] = f": {alpha_auto2*100:.2f}"
 
-        if parameters["FaceRestorerAutoEnable2Toggle"] and parameters["FaceRestorerEnable2Toggle"]:
             if blur_value2 != 0:
                 swap = swap_original2
                 if debug: print("blur: ", blur_value2)
@@ -1298,9 +1296,6 @@ class FrameWorker(threading.Thread):
         # Expression Restorer End
         if parameters['FaceExpressionEnableToggleBoth'] and (parameters['FaceExpressionLipsToggle'] or parameters['FaceExpressionEyesToggle']) and parameters['FaceExpressionBeforeTypeSelection'] == 'End':
             swap = self.apply_face_expression_restorer(original_face_512, swap, parameters)
-
-        if is_perspective_crop:
-            return swap, t512_mask(swap_mask), None
             
         if parameters['FinalBlendAdjEnableToggle'] and parameters['FinalBlendAmountSlider'] > 0:
             final_blur_strength = parameters['FinalBlendAmountSlider']  # Ein Parameter steuert beides
@@ -1311,56 +1306,62 @@ class FrameWorker(threading.Thread):
             gaussian_blur = transforms.GaussianBlur(kernel_size=kernel_size, sigma=sigma)
             swap = gaussian_blur(swap)
 
-        if parameters['ColorNoiseDecimalSlider'] > 0:
-            noise = (torch.rand_like(swap) - 0.5) * 2 * parameters['ColorNoiseDecimalSlider']
-            swap = torch.clamp(swap + noise, 0.0, 255.0)
+        if parameters['JPEGCompressionEnableToggle']:
+            jpeg_q = int(parameters["JPEGCompressionAmountSlider"])
+            if jpeg_q != 100:
+                s = float(tform.scale)
+
+                gamma     = 0.60 #parameters["JPEGCompressionGammaDecimalSlider"]
+                strength  = 0.85 #parameters["JPEGCompressionAdjustSlider"]/100
+                q_min     = 14 #parameters["JPEGCompressionQMinSlider"]
+                q_max     = 100 #parameters["JPEGCompressionQMaxSlider"]
+
+                jpeg_q_eff = faceutil._map_jpeg_quality(
+                    base_q=jpeg_q, face_scale=s,
+                    gamma=gamma, strength=strength,
+                    q_min=q_min, q_max=q_max
+                )
+
+                if debug:
+                    debug_info["JPEG Quality"] = f"{jpeg_q_eff} (base={jpeg_q}, scale={s:.3f})"
+
+                swap2 = faceutil.jpegBlur(swap, jpeg_q_eff)
+                blend = parameters['JPEGCompressionBlendSlider'] / 100.0
+                swap  = torch.add(swap2 * blend, swap * (1.0 - blend))
 
         if parameters["BlockShiftEnableToggle"]:
-
-            #tform_scale = parameters["BlockShiftAmountSlider"] / tform.scale# / 2
-            base_quality = parameters["BlockShiftAmountSlider"]  
-
-            # s = tform.scale = Originalgröße / 512.0
-            s = tform.scale  
-
-            s = 1.0/s - 1.0
-            tform_scale = int(round(base_quality + (8 - base_quality) * s))
-            tform_scale = round(tform_scale)
-            tform_scale = min(8, tform_scale)
-            tform_scale = max(1, tform_scale)
-
-            swap2 = self.apply_block_shift_gpu(swap, tform_scale, parameters["BlockShiftMaxAmountSlider"])        
-            block_shift_blend = parameters["BlockShiftBlendAmountSlider"]/100.0#*max(1,(parameters["BlockShiftAdjustAmountSlider"]*2*tform_scale2))# * tform.scale
-            #block_shift_blend = min(1, block_shift_blend)
-            #block_shift_blend = max(0.1, block_shift_blend)
-            if debug:
-                debug_info["MPEG Blocksize"] = f": {tform_scale:.2f})"
+            base_quality = parameters["BlockShiftAmountSlider"]     
+                                                                                                      
+            max_px = parameters["BlockShiftMaxAmountSlider"]
+            
+            swap2 = self.apply_block_shift_gpu_jitter(
+                swap, 
+                block_size=base_quality, 
+                max_amount_pixels=float(max_px),
+                seed=1337
+            )
+                                                                                             
+            block_shift_blend = parameters["BlockShiftBlendAmountSlider"]/100.0
+            swap = swap2 * block_shift_blend + swap * (1.0 - block_shift_blend)  
 
             swap = torch.add(torch.mul(swap2, block_shift_blend), torch.mul(swap, 1 - block_shift_blend))                          
             
-        if parameters['JPEGCompressionEnableToggle']:
-            try: 
-                jpeg_q = parameters["JPEGCompressionAmountSlider"]
-                if jpeg_q != 100:
-                    base_quality = jpeg_q  
-                    s = tform.scale  
-                    s = 1.0/s - 1.0
-                    jpeg_q = int(round(base_quality + (100 - base_quality) * s))
-                    jpeg_q = max(1, min(100, jpeg_q))
-                    
-                    if debug:
-                        debug_info["JPEG Quality"] = f": {jpeg_q:.2f})"
-
-                    swap2 = faceutil.jpegBlur(swap, jpeg_q)
-                    blend = parameters['JPEGCompressionBlendSlider']/100
-                    swap = torch.add(torch.mul(swap2, blend), torch.mul(swap, 1 - blend))                          
-                    
-            except: pass
+        if parameters['ColorNoiseDecimalSlider'] > 0:
+            noise = (torch.rand_like(swap) - 0.5) * 2 * parameters['ColorNoiseDecimalSlider']
+            swap = torch.clamp(swap + noise, 0.0, 255.0)
 
         if parameters['AnalyseImageEnableToggle']:
             image_analyse_swap = self.analyze_image(swap)
             print("original:", self.analyze_image(original_face_512))
             print("    swap: ", image_analyse_swap)
+
+        if debug and debug_info:
+            one_liner = ", ".join(f"{key}={value}" for key, value in debug_info.items())
+            print(f"[DEBUG] {one_liner}")
+
+        if is_perspective_crop:
+            return swap, t512_mask(swap_mask), None
+            
 
         # Add blur to swap_mask results
         gauss = transforms.GaussianBlur(parameters['OverallMaskBlendAmountSlider'] * 2 + 1, (parameters['OverallMaskBlendAmountSlider'] + 1) * 0.2)
@@ -1436,10 +1437,6 @@ class FrameWorker(threading.Thread):
         swap = torch.add(swap, img_crop)
         swap = swap.type(torch.uint8)
         img[0:3, top:bottom, left:right] = swap
-
-        if debug and debug_info:
-            one_liner = ", ".join(f"{key}={value}" for key, value in debug_info.items())
-            print(f"[DEBUG] {one_liner}")
 
         return img, original_face_512_clone, swap_mask_clone
 
@@ -2141,28 +2138,112 @@ class FrameWorker(threading.Thread):
 
         return {"var_lap": var_lap, "ttengrad": ttengrad, "combined": combined}        
        
-    def apply_block_shift_gpu(self, img, block_size=8, shift_max=2):
-        block_size = 2 ** block_size
+    @torch.no_grad()
+    def apply_block_shift_gpu_jitter(
+        self,
+        img: torch.Tensor, 
+        block_size: int,
+        max_amount_pixels: float,
+        *,
+        seed: int = 1337,
+        pad_mode: str = "replicate",
+        align_corners: bool = True
+    ) -> torch.Tensor:
+        """
+        MPEG-ähnlicher Block-Jitter: verschiebt jedes BxB-Block-Feld um einen
+        deterministischen (bx, by)-abhängigen Offset in Pixeln.
+
+        Args:
+            img: Tensor [C, H, W] (BGR/RGB egal). CPU oder CUDA. dtype float/uint8 egal.
+            block_size: Blockgröße B (z. B. 8).
+            max_amount_pixels: max. |Offset| in Pixeln (wird auf beide Achsen angewendet).
+            seed: globaler Seed für deterministische Offsets (frame-stabil).
+            pad_mode: Padding-Modus für Rand (replicate|reflect|zeros).
+            align_corners: wie in grid_sample (True ist für pixelgenaue Shifts meist stabiler).
+
+        Returns:
+            Tensor [C, H, W] – gleiche Device/Dtype wie Eingang.
+        """
+        seed = seed + self.frame_number*17
+        assert img.ndim == 3, "expected [C,H,W]"
         C, H, W = img.shape
-        img = img.float()
+        device  = img.device
+        dtype   = img.dtype
 
-        H_crop = H - (H % block_size); W_crop = W - (W % block_size)
-        img = img[:, :H_crop, :W_crop]
+        # ggf. auf float32 für grid_sample rechnen (am Ende casten wir zurück)
+        work = img if img.dtype in (torch.float32, torch.float16, torch.bfloat16) else img.float()
 
-        H_blocks = H_crop // block_size; W_blocks = W_crop // block_size
+        # Auf vielfache von B padden (unten/rechts), danach wieder croppen
+        B = int(2 ** block_size)
+        H_pad = (B - (H % B)) % B
+        W_pad = (B - (W % B)) % B
+        if H_pad or W_pad:
+            pad = (0, W_pad, 0, H_pad)  # (left, right, top, bottom)
+            mode = {"replicate":"replicate", "reflect":"reflect", "zeros":"constant"}[pad_mode]
+            work = F.pad(work[None], pad=pad, mode=mode).squeeze(0)
+        Hp, Wp = work.shape[-2:]
 
-        shift_x = torch.randint(-shift_max, shift_max + 1, (H_blocks, W_blocks), device=img.device)
-        shift_y = torch.randint(-shift_max, shift_max + 1, (H_blocks, W_blocks), device=img.device)
+        # Anzahl Blöcke
+        nby = Hp // B
+        nbx = Wp // B
 
-        base_grid = F.affine_grid(torch.eye(2, 3, device=img.device).unsqueeze(0), [1, C, H_crop, W_crop], align_corners=False)
-        shift_x = shift_x.float() * (2 / W_crop); shift_y = shift_y.float() * (2 / H_crop)
+        # --- deterministische Offsets pro Block im Bereich [-max, +max] ---
+        # Baue Block-Koordinatenfelder
+        by_grid, bx_grid = torch.meshgrid(
+            torch.arange(nby, device=device, dtype=torch.float32),
+            torch.arange(nbx, device=device, dtype=torch.float32),
+            indexing="ij"
+        )
+        # einfacher Hash -> [0,1)
+        # (sin-Hash: frame-stabil, abhängig nur von (bx,by) und seed)
+        h = torch.sin( (bx_grid*12.9898 + by_grid*78.233 + float(seed)) * 43758.5453 )
+        frac = torch.frac(h * 0.5 + 0.5)   # in [0,1)
 
-        shift_x = shift_x.repeat_interleave(block_size, dim=0).repeat_interleave(block_size, dim=1)
-        shift_y = shift_y.repeat_interleave(block_size, dim=0).repeat_interleave(block_size, dim=1)
+        # zwei unabhängige Offsets aus dem Hash ableiten
+        # dx_base, dy_base in [-1,1] -> * max_amount_pixels
+        max_amount_pixels = max_amount_pixels/4
+        dx_base = ( (frac) * 2.0 - 1.0 ) * float(max_amount_pixels)
+        # zweite "Quelle": einfach andere lineare Kombi
+        h2 = torch.sin( (bx_grid*96.233 + by_grid*15.987 + (float(seed)+101)) * 12345.6789 )
+        frac2 = torch.frac(h2 * 0.5 + 0.5)
+        dy_base = ( (frac2) * 2.0 - 1.0 ) * float(max_amount_pixels)
 
-        base_grid[..., 0] += shift_x; base_grid[..., 1] += shift_y
-        distorted_img = F.grid_sample(img.unsqueeze(0), base_grid, mode='bilinear', padding_mode='border', align_corners=False)
-        return distorted_img.squeeze(0).clamp(0, 255)
+        # auf Pixelraster upsamplen, indem wir jeden Block-Offset auf BxB "kacheln"
+        dx = torch.repeat_interleave(torch.repeat_interleave(dx_base, B, dim=0), B, dim=1)  # [Hp,Wp]
+        dy = torch.repeat_interleave(torch.repeat_interleave(dy_base, B, dim=0), B, dim=1)  # [Hp,Wp]
+
+        # --- Flow-Field für grid_sample bauen ---
+        # grid_sample nimmt Normalized-Koordinaten in [-1,1]
+        # Displacement in "normalized" Einheiten: dx_norm = 2*dx/(Wp-1), dy_norm = 2*dy/(Hp-1)
+        # (x ~ width, y ~ height)
+        xs = torch.linspace(-1.0, 1.0, Wp, device=device)
+        ys = torch.linspace(-1.0, 1.0, Hp, device=device)
+        grid_y, grid_x = torch.meshgrid(ys, xs, indexing="ij")        # [Hp,Wp]
+        dx_norm = (2.0 * dx) / max(Wp - 1, 1)
+        dy_norm = (2.0 * dy) / max(Hp - 1, 1)
+
+        flow_x = grid_x + dx_norm
+        flow_y = grid_y + dy_norm
+        flow = torch.stack([flow_x, flow_y], dim=-1)                   # [Hp,Wp,2]
+
+        # auf [1,C,Hp,Wp] bringen
+        warped = F.grid_sample(
+            work[None], 
+            flow[None],
+            mode="bilinear",
+            padding_mode="border",   # keine schwarzen Kanten
+            align_corners=align_corners
+        ).squeeze(0)
+
+        # auf Originalgröße zurückcroppen, wenn gepaddet
+        if H_pad or W_pad:
+            warped = warped[..., :H, :W]
+
+        # dtype zurück
+        if warped.dtype != dtype:
+            warped = warped.to(dtype)
+
+        return warped
         
     def analyze_image(self, image):
         image = image.float() /255.0
