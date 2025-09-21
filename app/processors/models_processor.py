@@ -3,7 +3,7 @@ import os
 import subprocess as sp
 import gc
 import traceback
-from typing import Dict, TYPE_CHECKING
+from typing import Dict, TYPE_CHECKING, Optional
 
 from packaging import version
 import numpy as np
@@ -42,6 +42,7 @@ from app.processors.utils.dfm_model import DFMModel
 from app.processors.models_data import models_list, arcface_mapping_model_dict, models_trt_list
 from app.helpers.miscellaneous import is_file_exists
 from app.helpers.downloader import download_file
+from app.processors.utils.ref_ldm_kv_embedding import KVExtractor
 
 if TYPE_CHECKING:
     from app.ui.main_ui import MainWindow
@@ -146,6 +147,7 @@ class ModelsProcessor(QtCore.QObject):
         self.provider_name = 'TensorRT'
         self.internal_deep_copied_kv_map: Dict[str, Dict[str, torch.Tensor]] | None = None
         self.internal_kv_map_source_filename: str | None = None
+        self.kv_extractor: Optional[KVExtractor] = None
         self.device = device
         self.model_lock = threading.RLock()  # Reentrant lock for model access
         self.trt_ep_options = {
@@ -404,6 +406,51 @@ class ModelsProcessor(QtCore.QObject):
         self.delete_models_trt()
         torch.cuda.empty_cache()
 
+    def ensure_kv_extractor_loaded(self):
+        if self.kv_extractor is None:
+            try:
+                print("Loading KV Extractor...")
+
+                base_path = "model_assets/ref-ldm_embedding"
+                configs_path = os.path.join(base_path, "configs")
+                ckpts_path = os.path.join(base_path, "ckpts")
+                os.makedirs(configs_path, exist_ok=True)
+                os.makedirs(ckpts_path, exist_ok=True)
+
+                ref_ldm_files = {
+                    "configs/ldm.yaml": "https://raw.githubusercontent.com/Glat0s/ref-ldm-onnx/slim-fast/configs/ldm.yaml",
+                    "configs/refldm.yaml": "https://raw.githubusercontent.com/Glat0s/ref-ldm-onnx/slim-fast/configs/refldm.yaml",
+                    "configs/vqgan.yaml": "https://raw.githubusercontent.com/Glat0s/ref-ldm-onnx/slim-fast/configs/vqgan.yaml",
+                    "ckpts/refldm.ckpt": "https://github.com/ChiWeiHsiao/ref-ldm/releases/download/1.0.0/refldm.ckpt",
+                    "ckpts/vqgan.ckpt": "https://github.com/ChiWeiHsiao/ref-ldm/releases/download/1.0.0/vqgan.ckpt",
+                }
+
+                for rel_path, url in ref_ldm_files.items():
+                    full_path = os.path.join(base_path, rel_path)
+                    if not is_file_exists(full_path):
+                        print(f"Downloading ReF-LDM file: {os.path.basename(full_path)}...")
+                        download_file(os.path.basename(full_path), full_path, None, url)
+
+                config_path = os.path.join(configs_path, "refldm.yaml")
+                model_path = os.path.join(ckpts_path, "refldm.ckpt")
+                vae_path = os.path.join(ckpts_path, "vqgan.ckpt")
+
+                if not all(os.path.exists(p) for p in [config_path, model_path, vae_path]):
+                    print("ReF-LDM model files not found even after download attempt. Cannot load KV Extractor.")
+                    return
+
+                self.kv_extractor = KVExtractor(
+                    model_config_path=config_path,
+                    model_ckpt_path=model_path,
+                    vae_ckpt_path=vae_path,
+                    device=self.device
+                )
+                print("KV Extractor loaded.")
+            except Exception as e:
+                print(f"Failed to load KV Extractor: {e}")
+                traceback.print_exc()
+                self.kv_extractor = None
+
     def ensure_denoiser_models_loaded(self):
         """Loads the UNet and VAE models if they are not already loaded."""
         with self.model_lock: # Ensure thread safety
@@ -439,6 +486,18 @@ class ModelsProcessor(QtCore.QObject):
             self.unload_model('RefLDMVAEEncoder')
             self.unload_model('RefLDMVAEDecoder')
             print("Denoiser models unloaded.")
+
+    def unload_kv_extractor(self):
+        """Unloads the KVExtractor model and clears associated memory."""
+        with self.model_lock:
+            if self.kv_extractor is not None:
+                print("Unloading KV Extractor...")
+                del self.kv_extractor
+                self.kv_extractor = None
+                gc.collect()
+                if torch.cuda.is_available():
+                    torch.cuda.empty_cache()
+                print("KV Extractor unloaded.")
 
     def load_inswapper_iss_emap(self, model_name):
         with self.model_lock:
@@ -596,7 +655,7 @@ class ModelsProcessor(QtCore.QObject):
 
     def apply_denoiser_unet(self,
                             image_cxhxw_uint8: torch.Tensor,
-                            reference_kv_filename: str,
+                            reference_kv_map: Dict | None,
                             use_reference_exclusive_path: bool,
                             denoiser_mode: str = "Single Step (Fast)",
                             denoiser_single_step_t: int = 1,
@@ -626,32 +685,20 @@ class ModelsProcessor(QtCore.QObject):
                 return image_cxhxw_uint8
 
             kv_tensor_map_for_this_run: Dict[str, Dict[str, torch.Tensor]] | None = None
-            master_kv_map_from_main = self.main_window.current_kv_tensors_map
-            
-            if reference_kv_filename and reference_kv_filename != "No K/V tensor files found":
-                if self.internal_deep_copied_kv_map is None or \
-                self.internal_kv_map_source_filename != reference_kv_filename:
-                    if master_kv_map_from_main: 
-                        print(f"ModelsProcessor: Updating internal deep-copied K/V map for '{reference_kv_filename}'.")
-                        try:
-                            self.internal_deep_copied_kv_map = {
-                                layer: {
-                                    'k': tens_dict['k'].clone().to(self.device),
-                                    'v': tens_dict['v'].clone().to(self.device)
-                                }
-                                for layer, tens_dict in master_kv_map_from_main.items()
-                                if tens_dict and isinstance(tens_dict.get('k'), torch.Tensor) and isinstance(tens_dict.get('v'), torch.Tensor)
-                            }
-                            self.internal_kv_map_source_filename = reference_kv_filename
-                        except Exception as e:
-                            print(f"Denoiser: Error deep copying K/V map for '{reference_kv_filename}': {e}. Skipping denoiser pass.")
-                            self.internal_deep_copied_kv_map = None
-                            self.internal_kv_map_source_filename = None
-                            return image_cxhxw_uint8
-                    else: 
-                        self.internal_deep_copied_kv_map = None
-                        self.internal_kv_map_source_filename = None
-                kv_tensor_map_for_this_run = self.internal_deep_copied_kv_map
+            if reference_kv_map:
+                try:
+                    # Deep copy to ensure tensors are on the correct device and to avoid side effects
+                    kv_tensor_map_for_this_run = {
+                        layer: {
+                            'k': tens_dict['k'].clone().to(self.device),
+                            'v': tens_dict['v'].clone().to(self.device)
+                        }
+                        for layer, tens_dict in reference_kv_map.items()
+                        if tens_dict and isinstance(tens_dict.get('k'), torch.Tensor) and isinstance(tens_dict.get('v'), torch.Tensor)
+                    }
+                except Exception as e:
+                    print(f"Denoiser: Error deep copying K/V map: {e}. Skipping denoiser pass.")
+                    return image_cxhxw_uint8
             
             if denoiser_mode == "Full Restore (DDIM)" and use_reference_exclusive_path and not kv_tensor_map_for_this_run:
                 print(f"Denoiser (Full Restore): Reference K/V tensor file selected for use, but K/V map is empty. Skipping.")

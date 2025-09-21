@@ -1,5 +1,5 @@
 import traceback
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Dict
 import threading
 import math
 from math import floor, ceil
@@ -65,9 +65,8 @@ class FrameWorker(threading.Thread):
             # Update parameters from markers (if exists)
             with self.main_window.models_processor.model_lock: # Ensure thread safety for UI data access
                 video_control_actions.update_parameters_and_control_from_marker(self.main_window, self.frame_number)
-            
-            self.parameters = self.main_window.parameters.copy() 
-            current_control_state = self.main_window.control.copy()
+                self.parameters = self.main_window.parameters.copy() 
+                current_control_state = self.main_window.control.copy()
 
             self.is_view_face_compare = self.main_window.faceCompareCheckBox.isChecked()
             self.is_view_face_mask = self.main_window.faceMaskCheckBox.isChecked()
@@ -124,8 +123,7 @@ class FrameWorker(threading.Thread):
         tensor = tensor.permute(1, 2, 0).cpu().numpy()
         return Image.fromarray(tensor)
     
-    def _apply_denoiser_pass(self, image_tensor_cxhxw_uint8: torch.Tensor, control: dict, pass_suffix: str) -> torch.Tensor:
-        kv_tensor_file_selected = control.get('ReferenceKVTensorsSelection')
+    def _apply_denoiser_pass(self, image_tensor_cxhxw_uint8: torch.Tensor, control: dict, pass_suffix: str, kv_map: Dict | None) -> torch.Tensor:
         use_exclusive_path = control.get('UseReferenceExclusivePathToggle', False)
         denoiser_seed_from_slider_val = int(control.get('DenoiserBaseSeedSlider', 1))
         denoiser_mode_key = f'DenoiserModeSelection{pass_suffix}'
@@ -137,13 +135,14 @@ class FrameWorker(threading.Thread):
         single_step_t_key = f'DenoiserSingleStepTimestepSlider{pass_suffix}'
         single_step_t_val = int(control.get(single_step_t_key, 1))
 
-        if not kv_tensor_file_selected or kv_tensor_file_selected == "No K/V tensor files found":
+        if not kv_map:
             if use_exclusive_path:
-                print(f"Denoiser {pass_suffix}: No K/V tensor file selected, but 'Exclusive Reference Path' is ON. Skipping.")
+                print(f"Denoiser {pass_suffix}: No source face for K/V, but 'Exclusive Reference Path' is ON. Skipping.")
                 return image_tensor_cxhxw_uint8
+
         denoised_image = self.models_processor.apply_denoiser_unet(
             image_tensor_cxhxw_uint8,
-            reference_kv_filename=kv_tensor_file_selected, 
+            reference_kv_map=kv_map, 
             use_reference_exclusive_path=use_exclusive_path,
             denoiser_mode=denoiser_mode_val, 
             base_seed=denoiser_seed_from_slider_val,
@@ -182,7 +181,8 @@ class FrameWorker(threading.Thread):
                                  kps_all_on_crop_param: np.ndarray | None,
                                  swap_button_is_checked_global: bool,
                                  edit_button_is_checked_global: bool,
-                                 eye_side_for_debug: str = ""
+                                 eye_side_for_debug: str = "",
+                                 kv_map_for_swap: Dict | None = None
                                  ) -> torch.Tensor:
         processed_crop_torch_rgb_uint8 = perspective_crop_torch_rgb_uint8.clone()
         if kps_5_on_crop_param is None or kps_5_on_crop_param.size == 0:
@@ -213,7 +213,8 @@ class FrameWorker(threading.Thread):
                     perspective_crop_torch_rgb_uint8, kps_5_on_crop_param,
                     kps=kps_all_on_crop_param, s_e=s_e_for_swap_core, t_e=t_e_for_swap_np,
                     parameters=parameters_for_face, control=control_global, dfm_model_name=parameters_for_face['DFMModelSelection'],
-                    is_perspective_crop=True
+                    is_perspective_crop=True,
+                    kv_map=kv_map_for_swap
                 )
             except Exception as e_swap_core:
                 print(f"Error in swap_core for VR crop {eye_side_for_debug}: {e_swap_core}")
@@ -329,7 +330,8 @@ class FrameWorker(threading.Thread):
                         item_data['face_crop_tensor'], item_data['target_button'], item_data['params'], control,
                         kps_5_on_crop_param=item_data['kps_on_crop'], kps_all_on_crop_param=item_data['kps_all_on_crop'],
                         swap_button_is_checked_global=swap_button_is_checked_global, edit_button_is_checked_global=edit_button_is_checked_global,
-                        eye_side_for_debug=item_data['original_eye_side']
+                        eye_side_for_debug=item_data['original_eye_side'],
+                        kv_map_for_swap=item_data['target_button'].assigned_kv_map
                     ) if swap_button_is_checked_global or edit_button_is_checked_global else item_data['face_crop_tensor']
                     
                     processed_perspective_crops_details[f"{item_data['original_eye_side']}_{item_data['theta']}_{item_data['phi']}"] = {
@@ -390,17 +392,30 @@ class FrameWorker(threading.Thread):
                                 sim = self.models_processor.findCosineDistance(fface['embedding'], target_face.get_embedding(control['RecognitionModelSelection']))
                                 if sim >= params['SimilarityThresholdSlider'] and sim > best_sim: best_sim, best_fface = sim, fface
                             if best_fface:
+                                denoiser_on = control.get('DenoiserUNetEnableBeforeRestorersToggle', False) or \
+                                              control.get('DenoiserAfterFirstRestorerToggle', False) or \
+                                              control.get('DenoiserAfterRestorersToggle', False)
+                                print(f"[DEBUG] Denoiser check for target {target_face.face_id}: denoiser_on={denoiser_on}, assigned_kv_map is None={target_face.assigned_kv_map is None}, assigned_input_faces={target_face.assigned_input_faces.keys()}")
+                                if denoiser_on and target_face.assigned_kv_map is None and target_face.assigned_input_faces:
+                                    target_face.calculate_assigned_input_embedding()
+
                                 s_e = None; arcface_model = self.models_processor.get_arcface_model(params['SwapModelSelection'])
                                 if swap_button_is_checked_global and params['SwapModelSelection'] != 'DeepFaceLive (DFM)': s_e = target_face.assigned_input_embedding.get(arcface_model)
                                 if s_e is not None and np.isnan(s_e).any(): s_e = None
                                 
-                                img, best_fface['original_face'], best_fface['swap_mask'] = self.swap_core(img, best_fface['kps_5'], best_fface['kps_all'], s_e=s_e, t_e=target_face.get_embedding(arcface_model), parameters=params, control=control, dfm_model_name=params['DFMModelSelection'])
+                                kv_map_for_swap = target_face.assigned_kv_map
+                                img, best_fface['original_face'], best_fface['swap_mask'] = self.swap_core(img, best_fface['kps_5'], best_fface['kps_all'], s_e=s_e, t_e=target_face.get_embedding(arcface_model), parameters=params, control=control, dfm_model_name=params['DFMModelSelection'], kv_map=kv_map_for_swap)
                                 if edit_button_is_checked_global and any(params[f] for f in ('FaceMakeupEnableToggle', 'HairMakeupEnableToggle', 'EyeBrowsMakeupEnableToggle', 'LipsMakeupEnableToggle')):
                                     img = self.swap_edit_face_core_makeup(img, best_fface['kps_all'], params, control)
                     else:
                         for fface in det_faces_data_for_display:
                             best_target, params, _ = self._find_best_target_match(fface['embedding'], control)
                             if best_target:
+                                denoiser_on = control.get('DenoiserUNetEnableBeforeRestorersToggle', False) or \
+                                              control.get('DenoiserAfterFirstRestorerToggle', False) or \
+                                              control.get('DenoiserAfterRestorersToggle', False)
+                                if denoiser_on and best_target.assigned_kv_map is None and best_target.assigned_input_faces:
+                                    best_target.calculate_assigned_input_embedding()
 
                                 fface['kps_5'] = self.keypoints_adjustments(fface['kps_5'], params)
                                 arcface_model = self.models_processor.get_arcface_model(params['SwapModelSelection'])
@@ -408,8 +423,9 @@ class FrameWorker(threading.Thread):
                                 if swap_button_is_checked_global and params['SwapModelSelection'] != 'DeepFaceLive (DFM)':
                                     s_e = best_target.assigned_input_embedding.get(arcface_model)
                                     if s_e is not None and np.isnan(s_e).any(): s_e = None
-
-                                img, fface['original_face'], fface['swap_mask'] = self.swap_core(img, fface['kps_5'], fface['kps_all'], s_e=s_e, t_e=best_target.get_embedding(arcface_model), parameters=params, control=control, dfm_model_name=params['DFMModelSelection'])
+                                
+                                kv_map_for_swap = best_target.assigned_kv_map
+                                img, fface['original_face'], fface['swap_mask'] = self.swap_core(img, fface['kps_5'], fface['kps_all'], s_e=s_e, t_e=best_target.get_embedding(arcface_model), parameters=params, control=control, dfm_model_name=params['DFMModelSelection'], kv_map=kv_map_for_swap)
                                 if edit_button_is_checked_global and any(params[f] for f in ('FaceMakeupEnableToggle', 'HairMakeupEnableToggle', 'EyeBrowsMakeupEnableToggle', 'LipsMakeupEnableToggle')):
                                     img = self.swap_edit_face_core_makeup(img, fface['kps_all'], params, control)
 
@@ -873,7 +889,8 @@ class FrameWorker(threading.Thread):
                     kps: np.ndarray | bool = False, s_e: np.ndarray | None = None, t_e: np.ndarray | None = None,
                     parameters: dict | None = None, control: dict | None = None,
                     dfm_model_name: str | None = None,
-                    is_perspective_crop: bool = False
+                    is_perspective_crop: bool = False,
+                    kv_map: Dict | None = None
                     ) -> tuple[torch.Tensor, torch.Tensor | None, torch.Tensor | None]:
 
         valid_s_e = s_e if isinstance(s_e, np.ndarray) else None
@@ -974,7 +991,7 @@ class FrameWorker(threading.Thread):
             swap = self.apply_face_expression_restorer(original_face_512, swap, parameters)
 
         if control.get('DenoiserUNetEnableBeforeRestorersToggle', False):
-            swap = self._apply_denoiser_pass(swap, control, "Before")
+            swap = self._apply_denoiser_pass(swap, control, "Before", kv_map)
 
         # Restorer
         swap_original = swap.clone()   
@@ -1017,7 +1034,7 @@ class FrameWorker(threading.Thread):
             swap = self.apply_face_expression_restorer(original_face_512, swap, parameters)
             
         if control.get('DenoiserAfterFirstRestorerToggle', False):
-            swap = self._apply_denoiser_pass(swap, control, "AfterFirst")
+            swap = self._apply_denoiser_pass(swap, control, "AfterFirst", kv_map)
 
         # Restorer2
         swap_original2 = swap.clone()
@@ -1061,7 +1078,7 @@ class FrameWorker(threading.Thread):
             swap = self.apply_face_expression_restorer(original_face_512, swap, parameters)
             
         if control.get('DenoiserAfterRestorersToggle', False):
-            swap = self._apply_denoiser_pass(swap, control, "After")
+            swap = self._apply_denoiser_pass(swap, control, "After", kv_map)
 
         # Occluder
         if parameters["OccluderEnableToggle"]:
