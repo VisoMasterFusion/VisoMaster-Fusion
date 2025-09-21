@@ -278,8 +278,12 @@ def show_hide_faces_panel(main_window: 'MainWindow', checked):
 def show_hide_input_target_media_panel(main_window: 'MainWindow', checked):
     if checked:
         main_window.input_Target_DockWidget.show()
+        main_window.input_Faces_DockWidget.show()
+        main_window.jobManagerDockWidget.show()
     else:
         main_window.input_Target_DockWidget.hide()
+        main_window.input_Faces_DockWidget.hide()
+        main_window.jobManagerDockWidget.hide()
     fit_image_to_view_onchange(main_window)
 
 def show_hide_parameters_panel(main_window: 'MainWindow', checked):
