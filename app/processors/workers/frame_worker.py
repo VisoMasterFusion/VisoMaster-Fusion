@@ -36,7 +36,7 @@ if TYPE_CHECKING:
 torchvision.disable_beta_transforms_warning()
 
 # These will be dynamically set per frame based on control parameters
-t512, t384, t256, t128, interpolation_get_cropped_face_kps, interpolation_original_face_128_384, interpolation_original_face_512, interpolation_Untransform, t256_face, interpolation_expression_faceeditor_back, interpolation_block_shift = None, None, None, None, None, None, None, None, None, None, None
+t512, t384, t256, t128, interpolation_get_cropped_face_kps, interpolation_original_face_128_384, interpolation_original_face_512, interpolation_Untransform, interpolation_scaleback, t256_face, interpolation_expression_faceeditor_back, interpolation_block_shift = None, None, None, None, None, None, None, None, None, None, None, None
 
 class FrameWorker(threading.Thread):
     def __init__(self, frame, main_window: 'MainWindow', frame_number, frame_queue, is_single_frame=False):
@@ -57,8 +57,8 @@ class FrameWorker(threading.Thread):
         self.lock = threading.Lock()
 
     def set_scaling_transforms(self, control_params):
-        global t512, t384, t256, t128, interpolation_get_cropped_face_kps, interpolation_original_face_128_384, interpolation_original_face_512, interpolation_Untransform, t256_face, interpolation_expression_faceeditor_back, interpolation_block_shift
-        t512, t384, t256, t128, interpolation_get_cropped_face_kps, interpolation_original_face_128_384, interpolation_original_face_512, interpolation_Untransform, t256_face, interpolation_expression_faceeditor_back, interpolation_block_shift = get_scaling_transforms(control_params)
+        global t512, t384, t256, t128, interpolation_get_cropped_face_kps, interpolation_original_face_128_384, interpolation_original_face_512, interpolation_Untransform, interpolation_scaleback, t256_face, interpolation_expression_faceeditor_back, interpolation_block_shift
+        t512, t384, t256, t128, interpolation_get_cropped_face_kps, interpolation_original_face_128_384, interpolation_original_face_512, interpolation_Untransform, interpolation_scaleback, t256_face, interpolation_expression_faceeditor_back, interpolation_block_shift = get_scaling_transforms(control_params)
 
     def run(self):
         try:
@@ -416,7 +416,7 @@ class FrameWorker(threading.Thread):
                 if control['ManualRotationEnableToggle']:
                     img = v2.functional.rotate(img, angle=-control['ManualRotationAngleSlider'], interpolation=v2.InterpolationMode.BILINEAR, expand=True)
                 if scale_applied:
-                    img = v2.Resize((img_y, img_x), antialias=False)(img)
+                    img = v2.Resize((img_y, img_x), interpolation=interpolation_scaleback, antialias=False)(img)
                 processed_tensor_rgb_uint8 = img
             
             # --- Common Post-Processing ---

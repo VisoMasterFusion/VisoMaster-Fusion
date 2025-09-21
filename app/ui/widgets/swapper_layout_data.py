@@ -1673,7 +1673,14 @@ SWAPPER_LAYOUT_DATA: LayoutDictTypes = {
             'parentToggle': 'ActivateexperimentalsettingsEnableToggle',
             'requiredToggleValue': True,
             'help': 'Experimental! for basic functionality testing. changes the interpolation type for necessary pipeline functions (resize/rotation/etc. of image). caution, influences Autorestore calculation'
-        },         
+        },
+        'ScalebackFrameTypeSelection': {
+            'level': 2,
+            'label': 'Scaleback Frame',
+            'options': ['NEAREST', 'BILINEAR', 'BICUBIC'],
+            'default': 'BILINEAR',
+            'help': 'Experimental! for basic functionality testing. changes the interpolation type for necessary pipeline functions (resize/rotation/etc. of image). caution, influences Autorestore calculation'
+        },          
         'expression_faceeditor_t256TypeSelection': {
             'level': 2,
             'label': 'Expression_faceeditor_t256',
