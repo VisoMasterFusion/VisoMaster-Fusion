@@ -326,6 +326,120 @@ SETTINGS_LAYOUT_DATA: LayoutDictTypes = {
             'default': False,
             'help': 'Auto Saves Workspace .json in output folder at end of recording (only the status at end of recording)'
         }
+    },
+   'Experimental Settings (very experimental, better don´t touch)': {                          
+        'ActivateexperimentalsettingsEnableToggle': {
+            'level': 1,
+            'label': 'Experimental settings',
+            'default': False,
+            'help': 'Enable AutoColor Transfer: 1. Hans Test without mask, 2. Hans Test with mask, 3. DFL Method without mask, 4. DFL Original Method.'
+        },
+        'AnalyseImageEnableToggle': {
+            'level': 2,
+            'label': 'Analyse Image',
+            'default': False,
+            'parentToggle': 'ActivateexperimentalsettingsEnableToggle',
+            'requiredToggleValue': True, 
+            'help': 'Image analysis'
+        },        
+        'DFLXSegBGEnableToggle': {
+            'level': 2,
+            'label': 'Xseg 2 Background',
+            'default': False,
+            'parentToggle': 'DFLXSeg2EnableToggle & ActivateexperimentalsettingsEnableToggle',
+            'requiredToggleValue': True,            
+            'help': 'Enable second XSeg Mask for Inside the Face. not working well atm. (uses Faceparser on swap)'
+        },
+        'OccluderMaskBgSlider': {
+            'level': 3,
+            'label': 'Xseg 2 Background Adjust',
+            'min_value': '-40',
+            'max_value': '40',
+            'default': '-10',
+            'step': 1,
+            'parentToggle': 'DFLXSegBGEnableToggle',
+            'requiredToggleValue': True,
+            'help': 'Adjust where the second Xseg Mask gets applied.'
+        },        
+        'get_cropped_face_kpsTypeSelection': {
+            'level': 2,
+            'label': 'get cropped face kps',
+            'options': ['NEAREST', 'BILINEAR'],
+            'default': 'BILINEAR',
+            'parentToggle': 'ActivateexperimentalsettingsEnableToggle',
+            'requiredToggleValue': True,
+            'help': 'Experimental! for basic functionality testing. changes the interpolation type for necessary pipeline functions (resize/rotation/etc. of image). caution, influences Autorestore calculation'
+        },        
+        'original_face_128_384TypeSelection': {
+            'level': 2,
+            'label': 'original_128_384',
+            'options': ['NEAREST', 'BILINEAR'],
+            'default': 'BILINEAR',
+            'parentToggle': 'ActivateexperimentalsettingsEnableToggle',
+            'requiredToggleValue': True,
+            'help': 'Experimental! for basic functionality testing. changes the interpolation type for necessary pipeline functions (resize/rotation/etc. of image). caution, influences Autorestore calculation'
+        },
+        'original_face_512TypeSelection': {
+            'level': 2,
+            'label': 'original_512',
+            'options': ['NEAREST', 'BILINEAR', 'BICUBIC'],
+            'default': 'BILINEAR',
+            'parentToggle': 'ActivateexperimentalsettingsEnableToggle',
+            'requiredToggleValue': True,
+            'help': 'Experimental! for basic functionality testing. changes the interpolation type for necessary pipeline functions (resize/rotation/etc. of image). caution, influences Autorestore calculation'
+        },
+        'UntransformTypeSelection': {
+            'level': 2,
+            'label': 'Untransform',
+            'options': ['NEAREST', 'BILINEAR'],
+            'default': 'BILINEAR',
+            'parentToggle': 'ActivateexperimentalsettingsEnableToggle',
+            'requiredToggleValue': True,
+            'help': 'Experimental! for basic functionality testing. changes the interpolation type for necessary pipeline functions (resize/rotation/etc. of image). caution, influences Autorestore calculation'
+        },
+        'ScalebackFrameTypeSelection': {
+            'level': 2,
+            'label': 'Scaleback Frame',
+            'options': ['NEAREST', 'BILINEAR', 'BICUBIC'],
+            'default': 'BILINEAR',
+            'help': 'Experimental! for basic functionality testing. changes the interpolation type for necessary pipeline functions (resize/rotation/etc. of image). caution, influences Autorestore calculation'
+        },          
+        'expression_faceeditor_t256TypeSelection': {
+            'level': 2,
+            'label': 'Expression_faceeditor_t256',
+            'options': ['NEAREST', 'BILINEAR'],
+            'default': 'BILINEAR',
+            'parentToggle': 'ActivateexperimentalsettingsEnableToggle',
+            'requiredToggleValue': True,
+            'help': 'Experimental! for basic functionality testing. changes the interpolation type for necessary pipeline functions (resize/rotation/etc. of image). caution, influences Autorestore calculation'
+        },         
+        'expression_faceeditor_backTypeSelection': {
+            'level': 2,
+            'label': 'Expression_faceeditor_back',
+            'options': ['NEAREST', 'BILINEAR'],
+            'default': 'BILINEAR',
+            'parentToggle': 'ActivateexperimentalsettingsEnableToggle',
+            'requiredToggleValue': True,
+            'help': 'Experimental! for basic functionality testing. changes the interpolation type for necessary pipeline functions (resize/rotation/etc. of image). caution, influences Autorestore calculation'
+        },         
+        'block_shiftTypeSelection': {
+            'level': 2,
+            'label': 'block shift',
+            'options': ['NEAREST', 'BILINEAR'],
+            'default': 'NEAREST',
+            'parentToggle': 'ActivateexperimentalsettingsEnableToggle',
+            'requiredToggleValue': True,
+            'help': 'Experimental! for basic functionality testing. changes the interpolation type for necessary pipeline functions (resize/rotation/etc. of image). caution, influences Autorestore calculation'
+        },         
+        'AntialiasTypeSelection': {
+            'level': 2,
+            'label': 'Antialias',
+            'options': ['False', 'True'],
+            'default': 'False',
+            'parentToggle': 'ActivateexperimentalsettingsEnableToggle',
+            'requiredToggleValue': True,
+            'help': 'Experimental! most of the time no visual effect, in rare cases minor effect'
+        }
     }
 }
 

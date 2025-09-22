@@ -958,8 +958,6 @@ class FrameWorker(threading.Thread):
                 prev_face = torch.mul(prev_face, 1-alpha)
                 swap = torch.add(swap, prev_face)
 
-        border_mask = self.get_border_mask(parameters)
-
         # Create masks
         border_mask, border_mask_calc = self.get_border_mask(parameters)
         swap_mask = torch.ones((128, 128), dtype=torch.float32, device=self.models_processor.device)
@@ -975,8 +973,6 @@ class FrameWorker(threading.Thread):
         texture_mask = BgExclude.clone()
         mask_forcalc = BgExclude.clone()
         mask_calc_dill = BgExclude.clone()
-        mask_color = BgExclude.clone()
-        FaceEditmaskOnes = swap_mask.clone()
         
         swap = torch.clamp(swap, 0.0, 255.0)   
 
@@ -985,7 +981,6 @@ class FrameWorker(threading.Thread):
             editor_mask = t512_mask(swap_mask).clone()
             swap = swap * editor_mask + original_face_512 * (1 - editor_mask)
             swap = self.swap_edit_face_core(swap, kps, parameters, control)
-            swap_mask = torch.ones_like(swap_mask)
 
         # Expression Restorer beginning
         if parameters['FaceExpressionEnableToggleBoth'] and (parameters['FaceExpressionLipsToggle'] or parameters['FaceExpressionEyesToggle']) and parameters['FaceExpressionBeforeTypeSelection'] == 'Beginning':
@@ -1005,83 +1000,146 @@ class FrameWorker(threading.Thread):
         # Occluder
         if parameters["OccluderEnableToggle"]:
             mask = self.models_processor.apply_occlusion(original_face_256, parameters["OccluderSizeSlider"])
-            mask = t128(mask)
+            mask = t128_mask(mask)
             swap_mask = torch.mul(swap_mask, mask)
             gauss = transforms.GaussianBlur(parameters['OccluderXSegBlurSlider']*2+1, (parameters['OccluderXSegBlurSlider']+1)*0.2)
             swap_mask = gauss(swap_mask)
 
-        mouth = 0
-        BgExclude = 0
-        BgExcludeOccluder = 0
+        # -------------------------------
+        # MASKEN: Parser / CLIPs / Restore
+        # -------------------------------
+        t512_mask = v2.Resize((512, 512), interpolation=v2.InterpolationMode.BILINEAR, antialias=False)
+        t256_near = v2.Resize((256, 256), interpolation=v2.InterpolationMode.NEAREST,  antialias=False)
+        t128_bi   = v2.Resize((128, 128), interpolation=v2.InterpolationMode.BILINEAR, antialias=False)
 
-        swap_mask_noFP = swap_mask.clone()                                          
-        if parameters["FaceParserEnableToggle"] or (parameters["DFLXSegEnableToggle"] and parameters["DFLXSeg2EnableToggle"] and parameters["DFLXSegSizeSlider"] != parameters["DFLXSeg2SizeSlider"] and (parameters["DFLXSegBGEnableToggle"] or parameters["XSegMouthEnableToggle"])) or ((parameters["TransferTextureEnableToggle"] or parameters["DifferencingEnableToggle"]) and parameters["ExcludeMaskEnableToggle"]):
+        swap_mask_noFP = swap_mask.clone()  # unveränderte 128er Basismaske für Editor-End
+
+        need_any_parser = (
+            parameters.get("FaceParserEnableToggle", False)
+            or (parameters.get("DFLXSegEnableToggle", False)
+                and parameters.get("DFLXSeg2EnableToggle", False)
+                and parameters.get("XSegMouthEnableToggle", False)
+                and parameters.get("DFLXSegSizeSlider", 0) != parameters.get("DFLXSeg2SizeSlider", 0))
+            or ((parameters.get("TransferTextureEnableToggle", False)
+                 or parameters.get("DifferencingEnableToggle", False))
+                and parameters.get("ExcludeMaskEnableToggle", False))
+        )
+
+        FaceParser_mask_128 = None  # [1,128,128] float
+        texture_exclude_512 = None  # [1,512,512] float (AUSSCHLUSS)
+        mouth_512           = None  # [512,512] float
+
+        if need_any_parser:
             out = self.models_processor.process_masks_and_masks(
-                swap_restorecalc, # Use the current state of the swapped face
-                original_face_512,
+                swap_restorecalc,    # aktueller Swap-Stand (uint8, 3x512x512)
+                original_face_512,   # original (uint8, 3x512x512)
                 parameters
-            )     
-            BgExclude             = out.get("BgExclude",          0)
-            FaceParser_mask       = out.get("FaceParser_mask", 1)
-            texture_mask          = out.get("texture_mask",    texture_mask)
-            mouth                 = out.get("mouth",           0)        
-            
-            swap_mask       = FaceParser_mask * swap_mask
+            )
+            FaceParser_mask_128 = out.get("FaceParser_mask", None)    # [1,128,128], 1=behalten
+            texture_exclude_512 = out.get("texture_mask", None)       # [1,512,512], 1=ausschließen
+            mouth_512           = out.get("mouth", None)              # [512,512]
 
-        # CLIPs
-        if parameters["ClipEnableToggle"]:
-            mask = self.models_processor.run_CLIPs(original_face_512, parameters["ClipText"], parameters["ClipAmountSlider"])
-            mask = t128_mask(mask)
-            swap_mask *= mask
-            swap_mask_noFP *= mask                                                                                                              
+        # FaceParser-Maske (128) auf swap_mask anwenden (wenn vorhanden)
+        if FaceParser_mask_128 is not None:
+            swap_mask = swap_mask * FaceParser_mask_128
 
-        if parameters['RestoreMouthEnableToggle'] or parameters['RestoreEyesEnableToggle']:
+        # ----- CLIPs (falls aktiv): liefert i. d. R. 512er-Maske -> auf 128 bringen und an 128er swap_mask anhängen
+        if parameters.get("ClipEnableToggle", False):
+            mask_clip_512 = self.models_processor.run_CLIPs(original_face_512, parameters["ClipText"], parameters["ClipAmountSlider"])
+            mask_clip_128 = t128_bi(mask_clip_512)
+            swap_mask *= mask_clip_128
+            swap_mask_noFP *= mask_clip_128
+
+        # ----- Restore Eyes/Mouth (Steuerung im 512er Raum, danach auf 128 mappen)
+        if parameters.get('RestoreMouthEnableToggle', False) or parameters.get('RestoreEyesEnableToggle', False):
             M = tform.params[0:2]
             ones_column = np.ones((kps_5.shape[0], 1), dtype=np.float32)
-            homogeneous_kps = np.hstack([kps_5, ones_column])
-            dst_kps_5 = np.dot(homogeneous_kps, M.T)
+            dst_kps_5 = np.hstack([kps_5, ones_column]) @ M.T
 
-            img_swap_mask = torch.ones((1, 512, 512), dtype=torch.float32, device=self.models_processor.device).contiguous()
-            img_orig_mask = torch.zeros((1, 512, 512), dtype=torch.float32, device=self.models_processor.device).contiguous()
+            img_swap_mask = torch.ones((1, 512, 512), dtype=torch.float32, device=self.models_processor.device)
+            img_orig_mask = torch.zeros((1, 512, 512), dtype=torch.float32, device=self.models_processor.device)
 
-            if parameters['RestoreMouthEnableToggle']:
-                img_swap_mask = self.models_processor.restore_mouth(img_orig_mask, img_swap_mask, dst_kps_5, parameters['RestoreMouthBlendAmountSlider']/100, parameters['RestoreMouthFeatherBlendSlider'], parameters['RestoreMouthSizeFactorSlider']/100, parameters['RestoreXMouthRadiusFactorDecimalSlider'], parameters['RestoreYMouthRadiusFactorDecimalSlider'], parameters['RestoreXMouthOffsetSlider'], parameters['RestoreYMouthOffsetSlider'])
-                img_swap_mask = torch.clamp(img_swap_mask, 0, 1)
+            if parameters.get('RestoreMouthEnableToggle', False):
+                img_swap_mask = self.models_processor.restore_mouth(
+                    img_orig_mask, img_swap_mask, dst_kps_5,
+                    parameters['RestoreMouthBlendAmountSlider']/100.0,
+                    parameters['RestoreMouthFeatherBlendSlider'],
+                    parameters['RestoreMouthSizeFactorSlider']/100.0,
+                    parameters['RestoreXMouthRadiusFactorDecimalSlider'],
+                    parameters['RestoreYMouthRadiusFactorDecimalSlider'],
+                    parameters['RestoreXMouthOffsetSlider'],
+                    parameters['RestoreYMouthOffsetSlider']
+                ).clamp(0, 1)
 
-            if parameters['RestoreEyesEnableToggle']:
-                img_swap_mask = self.models_processor.restore_eyes(img_orig_mask, img_swap_mask, dst_kps_5, parameters['RestoreEyesBlendAmountSlider']/100, parameters['RestoreEyesFeatherBlendSlider'], parameters['RestoreEyesSizeFactorDecimalSlider'],  parameters['RestoreXEyesRadiusFactorDecimalSlider'], parameters['RestoreYEyesRadiusFactorDecimalSlider'], parameters['RestoreXEyesOffsetSlider'], parameters['RestoreYEyesOffsetSlider'], parameters['RestoreEyesSpacingOffsetSlider'])
-                img_swap_mask = torch.clamp(img_swap_mask, 0, 1)
+            if parameters.get('RestoreEyesEnableToggle', False):
+                img_swap_mask = self.models_processor.restore_eyes(
+                    img_orig_mask, img_swap_mask, dst_kps_5,
+                    parameters['RestoreEyesBlendAmountSlider']/100.0,
+                    parameters['RestoreEyesFeatherBlendSlider'],
+                    parameters['RestoreEyesSizeFactorDecimalSlider'],
+                    parameters['RestoreXEyesRadiusFactorDecimalSlider'],
+                    parameters['RestoreYEyesRadiusFactorDecimalSlider'],
+                    parameters['RestoreXEyesOffsetSlider'],
+                    parameters['RestoreYEyesOffsetSlider'],
+                    parameters['RestoreEyesSpacingOffsetSlider']
+                ).clamp(0, 1)
 
-            gauss = transforms.GaussianBlur(parameters['RestoreEyesMouthBlurSlider']*2+1, (parameters['RestoreEyesMouthBlurSlider']+1)*0.2)
-            img_swap_mask = gauss(img_swap_mask)
+            if parameters.get('RestoreEyesMouthBlurSlider', 0) > 0:
+                b = parameters['RestoreEyesMouthBlurSlider']
+                gauss = transforms.GaussianBlur(b*2+1, (b+1)*0.2)
+                img_swap_mask = gauss(img_swap_mask)
 
-            img_swap_mask = t128_mask(img_swap_mask)
-            swap_mask_noFP = torch.mul(swap_mask_noFP, img_swap_mask)                                                                     
-            swap_mask = torch.mul(swap_mask, img_swap_mask)
-
-        if parameters["DFLXSegEnableToggle"]:           
-            if parameters["DFLXSeg2EnableToggle"] and parameters["XSegMouthEnableToggle"] and parameters["DFLXSegSizeSlider"] != parameters["DFLXSeg2SizeSlider"]:
-                mouth = mouth.unsqueeze(0); mouth = t256(mouth)
-            else:
-                mouth = 0
-            img_xseg = original_face_256
-            
-            img_mask, mask_forcalc, mask_calc_dill = self.models_processor.apply_dfl_xseg(img_xseg, -parameters["DFLXSegSizeSlider"], BgExcludeOccluder, mouth, parameters)
-            
-            mask_calc_dill = torch.mul(calc_mask, 1 - mask_calc_dill)
-            calc_mask = torch.mul(calc_mask, 1 - mask_forcalc)
-
-            img_mask = t128_mask(img_mask)
-            swap_mask_noFP = torch.mul(swap_mask_noFP, 1 - img_mask)                                                                    
-            swap_mask = torch.mul(swap_mask, 1 - img_mask)
-        else:
-            calc_mask = swap_mask.clone()
-
-        calc_mask = t512_mask(calc_mask).clone()
-        mask_calc_dill = t512_mask(mask_calc_dill).clone()
+            mask_128 = t128_bi(img_swap_mask)
+            swap_mask_noFP = swap_mask_noFP * mask_128
+            swap_mask      = swap_mask      * mask_128
         
+        # -------------------------------
+        # DFL XSeg
+        # -------------------------------
+        # calc_mask: 512er "Erlaubnis"-Maske; mask_calc_dill: 512er dilatierte Variante (für Restorer-Auto)
+        calc_mask     = torch.ones((1, 512, 512), dtype=torch.float32, device=self.models_processor.device)
+        mask_calc_dill= torch.zeros((1, 512, 512), dtype=torch.float32, device=self.models_processor.device)
+
+        if parameters.get("DFLXSegEnableToggle", False):
+            # Basisbild für XSeg
+            img_xseg_256 = t256_near(original_face_512)
+
+            # Mouth ggf. auf 256 mappen
+            mouth_256 = None
+            if parameters.get("DFLXSeg2EnableToggle", False) and parameters.get("XSegMouthEnableToggle", False) \
+               and parameters.get("DFLXSegSizeSlider", 0) != parameters.get("DFLXSeg2SizeSlider", 0) \
+               and mouth_512 is not None:
+                mouth_256 = t256_near(mouth_512.unsqueeze(0))  # [1,256,256]
+
+            # apply_dfl_xseg liefert: img_mask(256), mask_forcalc(256), mask_calc_dill(256)
+            img_mask_256, mask_forcalc_256, mask_calc_dill_256 = self.models_processor.apply_dfl_xseg(
+                img_xseg_256,
+                -parameters["DFLXSegSizeSlider"],
+                0,                               # BgExcludeOccluder war nicht genutzt
+                mouth_256 if mouth_256 is not None else 0,
+                parameters
+            )
+
+            # auf 512 bringen
+            img_mask_512       = t512_mask(img_mask_256)
+            mask_forcalc_512   = t512_mask(mask_forcalc_256)
+            mask_calc_dill_512 = t512_mask(mask_calc_dill_256)
+
+            # Deine Logik: invertiert als Erlaubnis-/Calc-Masken
+            calc_mask      = (1.0 - mask_forcalc_512).clamp(0,1)          # [1,512,512]
+            mask_calc_dill = (1.0 - mask_calc_dill_512).clamp(0,1)
+
+            # swap_mask reduzieren (128er)
+            img_mask_128 = t128_bi(img_mask_512)
+            swap_mask_noFP = swap_mask_noFP * (1.0 - img_mask_128)
+            swap_mask      = swap_mask      * (1.0 - img_mask_128)
+        else:
+            # kein XSeg -> calc_mask aus FaceParser/Basis
+            calc_mask = t512_mask(swap_mask.clone()).clamp(0,1)
+            
         calc_mask = torch.where(calc_mask > 0.1, 1, 0).float()
         mask_calc_dill = torch.where(mask_calc_dill > 0.1, 1, 0).float()
+        
         if parameters["FaceRestorerEnableToggle"] and parameters["FaceRestorerAutoEnableToggle"]:
 
             original_face_512_autorestore = original_face_512.clone()
@@ -1150,7 +1208,6 @@ class FrameWorker(threading.Thread):
                     debug_info["Restore2"] = f": {-blur_value2:.2f}"
                 elif isinstance(alpha_auto2, torch.Tensor):
                     swap = swap2 * alpha_auto2 + swap_original2 * (1 - alpha_auto2)
-                    print("alpha2 mean: ", alpha_auto2)
                 elif alpha_auto2 != 0:
                     swap = swap2 * alpha_auto2 + swap_original2 * (1 - alpha_auto2)
                     if debug:
@@ -1163,206 +1220,197 @@ class FrameWorker(threading.Thread):
                 alpha_restorer2 = float(parameters["FaceRestorerBlend2Slider"])/100.0
                 swap = torch.add(torch.mul(swap2, alpha_restorer2), torch.mul(swap_original2, 1 - alpha_restorer2))
         
-        if parameters["TransferTextureEnableToggle"] or parameters["DifferencingEnableToggle"] or parameters["AutoColorEnableToggle"]:
-            mask = torch.zeros((512, 512), dtype=torch.uint8, device=self.models_processor.device)
-            mask = mask.unsqueeze(0)
-            
+        if parameters["TransferTextureEnableToggle"] or parameters["DifferencingEnableToggle"] or parameters["AutoColorEnableToggle"]:          
             mask_calc = mask_calc_dill.clone()
             mask_calc = 1 - mask_calc
             
-            mask_calc = mask_calc + (BgExclude)
+            mask_calc = mask_calc# + (BgExclude)
             mask_calc = torch.where(
                 mask_calc > 0.01, 
                 1,
                 0
             )
+            
             if parameters['BGExcludeBlurAmountSlider'] > 0:
                 orig = mask_calc.clone()
                 gauss = transforms.GaussianBlur(parameters['BGExcludeBlurAmountSlider']*2+1, (parameters['BGExcludeBlurAmountSlider']+1)*0.2)
                 mask_calc = gauss(mask_calc.type(torch.float32))
                 mask_calc = torch.max(mask_calc, orig) 
 
-        if parameters["AutoColorEnableToggle"]:
-            # --- AutoColor block ---
-            if parameters['AutoColorTransferTypeSelection'] == 'Test_Mask' or parameters['AutoColorTransferTypeSelection'] == 'DFL_Orig':
-                mask_autocolor = mask_calc.clone()
-                mask_autocolor = (mask_autocolor > 0.1)
-                                                                                                                        
-                                                                                                                                       
-
-            swap_backup = swap.clone()
+        # -------------------------------
+        # AutoColor (Maske 512)
+        # -------------------------------
+        if parameters.get("AutoColorEnableToggle", False):
+            # calc_mask ist [1,512,512], 1=erlaubt
+            mask_autocolor = calc_mask.clone()
+            mask_autocolor = (mask_autocolor > 0.1)
+            #swap_backup = swap.clone()
             
+
             if parameters['AutoColorTransferTypeSelection'] == 'Test':
                 swap = faceutil.histogram_matching(original_face_512, swap, parameters["AutoColorBlendAmountSlider"])
 
             elif parameters['AutoColorTransferTypeSelection'] == 'Test_Mask':
                 swap = faceutil.histogram_matching_withmask(original_face_512, swap, mask_autocolor, parameters["AutoColorBlendAmountSlider"])
-                if parameters["ExcludeMaskEnableToggle"]:
-                    swap_backup = faceutil.histogram_matching_withmask(original_face_512, swap_backup, mask_autocolor, parameters["AutoColorBlendAmountSlider"])
-                
+                #if parameters.get("ExcludeMaskEnableToggle", False):
+                #    swap_backup = faceutil.histogram_matching_withmask(original_face_512, swap_backup, mask_autocolor, parameters["AutoColorBlendAmountSlider"])
+
             elif parameters['AutoColorTransferTypeSelection'] == 'DFL_Test':
                 swap = faceutil.histogram_matching_DFL_test(original_face_512, swap, parameters["AutoColorBlendAmountSlider"])
 
             elif parameters['AutoColorTransferTypeSelection'] == 'DFL_Orig':
-                swap = faceutil.histogram_matching_DFL_Orig(original_face_512, swap, mask_autocolor, parameters["AutoColorBlendAmountSlider"])
+                swap = faceutil.histogram_matching_DFL_Orig(original_face_512, swap, mask_autocolor, 100)
+        
+        # -------------------------------
+        # TransferTexture
+        # -------------------------------
+        if parameters.get("TransferTextureEnableToggle", False):
+            # Basis-Maske(n)
+            # calc_mask: [1,512,512], 1=erlaubt
+            # texture_exclude_512: [1,512,512], 1=ausschließen  (aus Parser)
+            # Wir bauen mask_final (512): 1 = erlauben, 0 = sperren
+            if parameters.get("ExcludeMaskEnableToggle", False) and texture_exclude_512 is not None:
+                # Optionaler Blend der FaceParser-Texture-Maske
+                m = texture_exclude_512.clone()
+                if parameters.get('FaceParserBlurTextureSlider', 0) > 0:
+                    b = parameters['FaceParserBlurTextureSlider']
+                    gauss = transforms.GaussianBlur(b*2+1, (b+1)*0.2)
+                    m = torch.max(gauss(m.float()), m)  # blur + preserve edges
+                # Ausschluss invertieren -> Erlauben
+                mask_final_512 = (1.0 - m).clamp(0,1) + (mask_calc)
+                mask_final_512 = mask_final_512.clamp(0,1)
+                if parameters.get("FaceParserBlendTextureSlider", 0) > 0:
+                    mask_final_512 = (mask_final_512 + parameters["FaceParserBlendTextureSlider"]/100.0).clamp(0,1)
+                mask_128_for_vgg = v2.Resize((128,128), interpolation=v2.InterpolationMode.BILINEAR, antialias=False)(mask_final_512)
+            else:
+                mask_final_512 = calc_mask.clone()
+                mask_128_for_vgg = v2.Resize((128,128), interpolation=v2.InterpolationMode.BILINEAR, antialias=False)(mask_final_512)
+                mask_final_512 = 1-calc_mask.clone()
+                
 
-        if parameters["TransferTextureEnableToggle"]:
-            # --- TransferTexture block ---
-            
-            TransferTextureKernelSizeSlider = 12 #parameters['TransferTextureKernelSizeSlider']
-            TransferTextureSigmaDecimalSlider = 4.00 # parameters['TransferTextureSigmaDecimalSlider']
-            TransferTextureWeightSlider = 1 #parameters['TransferTextureWeightNewDecimalSlider']
-            #TransferTextureLambdSlider = parameters['TransferTextureLambdSlider'] #2 #8 #
-            TransferTexturePhiDecimalSlider = 9.7 #parameters['TransferTexturePhiDecimalSlider']
-            TransferTextureGammaDecimalSlider = 0.5 #parameters['TransferTextureGammaDecimalSlider']
-            #TransferTextureThetaSlider = parameters['TransferTextureThetaSlider'] #1 #8 #
-            if parameters['TransferTextureModeEnableToggle']:
+            # ggf. auf 128er für VGG-Diff (falls dein apply_perceptual_diff_onnx das erwartet)
+            #mask_128_for_vgg = v2.Resize((128,128), interpolation=v2.InterpolationMode.BILINEAR, antialias=False)(mask_final_512)
+
+            # Histogrammvor-Anpassungen (wie bei dir)
+            swap_texture_backup = faceutil.histogram_matching_DFL_Orig(original_face_512, swap.clone(), calc_mask, 100)
+
+            # Gradient (dein Shader)
+            TransferTextureKernelSizeSlider   = 12
+            TransferTextureSigmaDecimalSlider = 4.00
+            TransferTextureWeightSlider       = 1
+            TransferTexturePhiDecimalSlider   = 9.7
+            TransferTextureGammaDecimalSlider = 0.5
+            if parameters.get('TransferTextureModeEnableToggle', False):
                 TransferTextureLambdSlider = 8
                 TransferTextureThetaSlider = 8
             else:
                 TransferTextureLambdSlider = 2
-                TransferTextureThetaSlider = 1               
-            TextureFeatureLayerTypeSelection = 'combo_relu3_3_relu3_1' #parameters['TextureFeatureLayerTypeSelection']
+                TransferTextureThetaSlider = 1
+            TextureFeatureLayerTypeSelection = 'combo_relu3_3_relu3_1'
 
-            if parameters['TransferTextureClaheEnableToggle']:
-                clip_limit = parameters['TransferTextureClipLimitDecimalSlider']
-            else:
-                clip_limit = 0.0
-            
-            alpha_clahe = parameters['TransferTextureAlphaClaheDecimalSlider']
-            grid_size = (4,4) #(parameters['TransferTextureGridSizeSlider'], parameters['TransferTextureGridSizeSlider'])
-            global_gamma = parameters['TransferTexturePreGammaDecimalSlider']
-            global_contrast = parameters['TransferTexturePreContrastDecimalSlider']
-                               
-            diff_mask_texture = t128_mask(texture_mask.clone())
-            
-            #swap = torch.where(calc_mask, swap, original_face_512)
-            texture_mask_view = calc_mask.clone()
+            clip_limit     = parameters['TransferTextureClipLimitDecimalSlider'] if parameters.get('TransferTextureClaheEnableToggle', False) else 0.0
+            alpha_clahe    = parameters['TransferTextureAlphaClaheDecimalSlider']
+            grid_size      = (4,4)
+            global_gamma   = parameters['TransferTexturePreGammaDecimalSlider']
+            global_contrast= parameters['TransferTexturePreContrastDecimalSlider']
+
             gradient_texture = self.gradient_magnitude(
-                original_face_512, texture_mask_view,
+                original_face_512, calc_mask,
                 TransferTextureKernelSizeSlider, TransferTextureWeightSlider,
                 TransferTextureSigmaDecimalSlider, TransferTextureLambdSlider,
                 TransferTextureGammaDecimalSlider, TransferTexturePhiDecimalSlider,
                 TransferTextureThetaSlider, clip_limit, alpha_clahe, grid_size, global_gamma, global_contrast
             )
-
-            
-
-            mask = torch.ones((128, 128), dtype=torch.uint8, device=self.models_processor.device)
-            mask = mask.unsqueeze(0)
-            mask_texture = t128_mask(calc_mask.clone())
-            if parameters["ExcludeOriginalVGGMaskEnableToggle"]:
-                swapped_face_resized = swap.clone()
-                original_face_resized = original_face_512.clone()
-                mask, diff_norm_texture = self.models_processor.apply_perceptual_diff_onnx(
-                    swapped_face_resized, original_face_resized, mask_texture,
-                    parameters['TextureLowerLimitThreshSlider']/100,
-                    0,
-                    parameters['TextureUpperLimitThreshSlider']/100,
-                    parameters['TextureUpperLimitValueSlider']/100,
-                    parameters['TextureMiddleLimitValueSlider']/100,
-                    TextureFeatureLayerTypeSelection,
-                    parameters['ExcludeVGGMaskEnableToggle']
-                )
-                if not parameters["ExcludeVGGMaskEnableToggle"]:                
-                    mask = diff_norm_texture
-                if parameters['TextureBlendAmountSlider'] > 0:                                    
-                    gauss = transforms.GaussianBlur(parameters['TextureBlendAmountSlider']*2+1, (parameters['TextureBlendAmountSlider']+1)*0.2)
-                    mask = gauss(mask.type(torch.float32)) 
-           
-            if parameters["ExcludeMaskEnableToggle"]:
-                mask = mask + parameters["FaceParserBlendTextureSlider"]/100
-                mask = mask.clamp(0.0, 1.0)
-                diff_mask_texture = 1 - diff_mask_texture
-                if parameters['FaceParserBlurTextureSlider'] > 0:
-                    orig = diff_mask_texture.clone()
-                    gauss = transforms.GaussianBlur(parameters['FaceParserBlurTextureSlider']*2+1, (parameters['FaceParserBlurTextureSlider']+1)*0.2)
-                    diff_mask_texture = gauss(diff_mask_texture.type(torch.float32))
-                    diff_mask_texture = torch.max(diff_mask_texture, orig)
-                mask = mask * diff_mask_texture
-
-                mask = mask.clamp(0.0, 1.0)
-            elif parameters["ExcludeOriginalVGGMaskEnableToggle"]:
-                mask = mask + (1-diff_mask_texture) 
-            else:
-                mask = 1 - mask
-
-            mask = t512_mask(mask)                   
-
-            mask = mask + (mask_calc)
-            mask = mask.clamp(0.0, 1.0)
-
-            swap_texture_backup = swap.clone()
-            swap_texture_backup = faceutil.histogram_matching_DFL_Orig(original_face_512, swap_texture_backup, calc_mask, 100)
-
             gradient_texture = faceutil.histogram_matching_DFL_Orig(original_face_512, gradient_texture, calc_mask, 100)
 
-            alpha = parameters['TransferTextureBlendAmountSlider'] /100   # 0 = kein Detail, 1 = voller Gradient
-            w = alpha * (1 - mask)
-            swap = swap_texture_backup * (1 - w) + gradient_texture * w
+            # Optional VGG-Exclude (du hast beides kombiniert: VGG + Exclude)
+            if parameters.get("ExcludeOriginalVGGMaskEnableToggle", False):
+                swapped_face_resized   = swap.clone()
+                original_face_resized  = original_face_512.clone()
+                mask_input = mask_128_for_vgg
+                lower = parameters['TextureLowerLimitThreshSlider']/100.0
+                upper = parameters['TextureUpperLimitThreshSlider']/100.0
+                upper_v = parameters['TextureUpperLimitValueSlider']/100.0
+                middle_v = parameters['TextureMiddleLimitValueSlider']/100.0
 
-            texture_mask_view = mask.clone()
-            swap = swap.clamp(0, 255)
+                mask_vgg, diff_norm_texture = self.models_processor.apply_perceptual_diff_onnx(
+                    swapped_face_resized, original_face_resized, mask_input,
+                    lower, 0, upper, upper_v, middle_v,
+                    TextureFeatureLayerTypeSelection,
+                    parameters.get('ExcludeVGGMaskEnableToggle', False)
+                )
+                # Wenn ExcludeVGGMaskEnableToggle==False -> mask_vgg = diff_norm_texture
+                if not parameters.get('ExcludeVGGMaskEnableToggle', False):
+                    mask_vgg = diff_norm_texture
 
-        if parameters["DifferencingEnableToggle"]:
-            # --- Differencing block ---
+                if parameters.get('TextureBlendAmountSlider', 0) > 0:
+                    b = parameters['TextureBlendAmountSlider']
+                    gauss = transforms.GaussianBlur(b*2+1, (b+1)*0.2)
+                    mask_vgg = gauss(mask_vgg.float())
 
-            swapped_face_resized = swap.clone()
-            FeatureLayerTypeSelection = 'combo_relu3_3_relu3_1'#parameters['FeatureLayerTypeSelection']
+                # VGG-Maske als weiteres Limit: 512
+                mask_vgg_512 = t512_mask(mask_vgg)
+                # final erlauben = mask_final_512 * (1 - (1 - mask_vgg)) = mask_final_512 * mask_vgg
+                mask_final_512 = (mask_final_512 * mask_vgg_512).clamp(0,1)
+                mask_final_512 = (mask_final_512 + mask_calc).clamp(0,1)
 
+            # Mischen:  w = alpha*(1 - mask_final_512)
+            alpha_t = parameters['TransferTextureBlendAmountSlider']/100.0
+            w = alpha_t * (1.0 - mask_final_512)# + (1-calc_mask)
+            w = w.clamp(0,1)
+            swap = (swap_texture_backup * (1.0 - w) + gradient_texture * w).clamp(0,255)
+
+            texture_mask_view = (1.0 - mask_final_512).clone()  # falls du für Debug/Anzeige brauchst
+
+        # -------------------------------
+        # Differencing
+        # -------------------------------
+        if parameters.get("DifferencingEnableToggle", False):
+            # 128er Eingabemaske für VGG
+            diff_mask_128 = v2.Resize((128,128), interpolation=v2.InterpolationMode.BILINEAR, antialias=False)(calc_mask.clone())
+
+            swapped_face_resized  = swap.clone()
             original_face_resized = original_face_512.clone()
-            diff_mask = t128_mask(calc_mask.clone())
+            FeatureLayerTypeSelection = 'combo_relu3_3_relu3_1'
 
-            lower_thresh  = parameters['DifferencingLowerLimitThreshSlider']  / 100.0
-            upper_thresh  = parameters['DifferencingUpperLimitThreshSlider']  / 100.0
-            middle_value  = parameters['DifferencingMiddleLimitValueSlider'] / 100.0
-            upper_value   = parameters['DifferencingUpperLimitValueSlider'] / 100.0
+            lower_thresh = parameters['DifferencingLowerLimitThreshSlider']/100.0
+            upper_thresh = parameters['DifferencingUpperLimitThreshSlider']/100.0
+            middle_value = parameters['DifferencingMiddleLimitValueSlider']/100.0
+            upper_value  = parameters['DifferencingUpperLimitValueSlider']/100.0
 
-            mask, diff_norm_texture = self.models_processor.apply_perceptual_diff_onnx(
-                swapped_face_resized, original_face_resized, diff_mask,
-                lower_thresh,
-                0,
-                upper_thresh,
-                upper_value,
-                middle_value,
-                FeatureLayerTypeSelection,
-                False
+            mask_diff_128, diff_norm_texture = self.models_processor.apply_perceptual_diff_onnx(
+                swapped_face_resized, original_face_resized, diff_mask_128,
+                lower_thresh, 0, upper_thresh, upper_value, middle_value,
+                FeatureLayerTypeSelection, False
             )
-        
+
+            # piecewise auf diff_norm_texture (wie bei dir), dann 512 & Blur/Blend
             eps = 1e-6
             inv_lower = 1.0 / max(lower_thresh, eps)
             inv_mid   = 1.0 / max((upper_thresh - lower_thresh), eps)
             inv_high  = 1.0 / max((1.0 - upper_thresh), eps)
 
-            # 3) Die drei linearen Teilstücke
-            #    lower_value ist hier 0, daher entfällt das Offset
             res_low  = diff_norm_texture * inv_lower * middle_value
             res_mid  = middle_value + (diff_norm_texture - lower_thresh) * inv_mid * (upper_value - middle_value)
             res_high = upper_value  + (diff_norm_texture - upper_thresh) * inv_high * (1.0 - upper_value)
 
-            # 4) Piecewise in zwei where-Aufrufen
-            result = torch.where(
-                diff_norm_texture < lower_thresh,
-                res_low,                                             # Bereich [0, lower_thresh)
-                torch.where(
-                    diff_norm_texture > upper_thresh,
-                    res_high,                                        # Bereich (upper_thresh, 1]
-                    res_mid                                          # Bereich [lower_thresh, upper_thresh]
-                )
+            piece = torch.where(
+                diff_norm_texture < lower_thresh, res_low,
+                torch.where(diff_norm_texture > upper_thresh, res_high, res_mid)
             )
-            mask = result                
-            mask = t512_mask(mask)#(1-mask_calc_dill)# + (1-texture_mask)                                       
-            #mask = mask.clamp(0.0, 1.0)            
-            
-            gauss = transforms.GaussianBlur(parameters['DifferencingBlendAmountSlider']*2+1, (parameters['DifferencingBlendAmountSlider']+1)*0.2)
-            mask = gauss(mask.type(torch.float32))
-            mask = mask + mask_calc
-            mask = mask.clamp(0.0, 1.0) 
-            swap = swap * mask + original_face_512 * (1 - mask)
-            swap = swap.clamp(0, 255)   
-            
-            diff_mask = mask.clone()                     
 
+            mask512 = t512_mask(piece)
+            if parameters.get('DifferencingBlendAmountSlider', 0) > 0:
+                b = parameters['DifferencingBlendAmountSlider']
+                gauss = transforms.GaussianBlur(b*2+1, (b+1)*0.2)
+                mask512 = gauss(mask512.float())
+
+            # mit calc_mask kombinieren
+            mask512 = (mask512 * calc_mask).clamp(0,1)
+
+            swap = (swap * mask512 + original_face_512 * (1.0 - mask512)).clamp(0,255)
+            diff_mask = 1-mask512.clone()  # falls du später "diff" anzeigen willst
+        
         # Apply color corrections
         if parameters['ColorEnableToggle']:
             swap = torch.unsqueeze(swap,0).contiguous()
@@ -1422,7 +1470,6 @@ class FrameWorker(threading.Thread):
                     debug_info["Restore2"] = f": {-blur_value2:.2f}"
                 elif isinstance(alpha_auto2, torch.Tensor):
                     swap = swap2 * alpha_auto2 + swap_original2 * (1 - alpha_auto2)
-                    print("alpha2 mean: ", alpha_auto2)
                 elif alpha_auto2 != 0:
                     swap = swap2 * alpha_auto2 + swap_original2 * (1 - alpha_auto2)
                     if debug:
@@ -1456,7 +1503,7 @@ class FrameWorker(threading.Thread):
                 s = float(tform.scale)
 
                 gamma     = 0.60 #parameters["JPEGCompressionGammaDecimalSlider"]
-                strength  = 0.85 #parameters["JPEGCompressionAdjustSlider"]/100
+                strength  = 0.80 #parameters["JPEGCompressionAdjustSlider"]/100
                 q_min     = 14 #parameters["JPEGCompressionQMinSlider"]
                 q_max     = 100 #parameters["JPEGCompressionQMaxSlider"]
 
@@ -1496,9 +1543,9 @@ class FrameWorker(threading.Thread):
 
         if parameters['AnalyseImageEnableToggle']:
             image_analyse_swap = self.analyze_image(swap)
-            print("original:", self.analyze_image(original_face_512))
-            print("    swap: ", image_analyse_swap)
-
+            if debug:
+                debug_info["JS: "] = image_analyse_swap
+        
         if debug and debug_info:
             one_liner = ", ".join(f"{key}={value}" for key, value in debug_info.items())
             print(f"[DEBUG] {one_liner}")
@@ -1525,7 +1572,7 @@ class FrameWorker(threading.Thread):
         swap_mask_clone = None
         # Uninvert and create image from swap mask
         if self.is_view_face_mask:
-            mask_show_type = parameters['MaskShowSelection']            
+            mask_show_type = parameters['MaskShowSelection'] 
             if mask_show_type == 'swap_mask':
                 if parameters['FaceEditorEnableToggle'] and self.main_window.editFacesButton.isChecked():
                     swap_mask_clone = t512_mask(torch.ones_like(swap_mask)).clone()
@@ -1580,6 +1627,8 @@ class FrameWorker(threading.Thread):
         #Add the cropped areas and place them back into the original image
         swap = torch.add(swap, img_crop)
         swap = swap.type(torch.uint8)
+        swap = swap.clamp(0, 255)
+                                              
         img[0:3, top:bottom, left:right] = swap
 
         return img, original_face_512_clone, swap_mask_clone
