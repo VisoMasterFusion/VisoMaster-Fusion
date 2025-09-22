@@ -1179,7 +1179,7 @@ class FrameWorker(threading.Thread):
             swap = self.apply_face_expression_restorer(original_face_512, swap, parameters)
             
         if control.get('DenoiserAfterFirstRestorerToggle', False):
-            swap = self._apply_denoiser_pass(swap, control, "AfterFirst")
+            swap = self._apply_denoiser_pass(swap, control, "AfterFirst", kv_map)
 
         swap_backup = swap.clone()
         if parameters["FaceRestorerEnable2Toggle"] and not parameters["FaceRestorerEnable2EndToggle"]:
@@ -1487,7 +1487,7 @@ class FrameWorker(threading.Thread):
             swap = self.apply_face_expression_restorer(original_face_512, swap, parameters)
             
         if control.get('DenoiserAfterRestorersToggle', False):
-            swap = self._apply_denoiser_pass(swap, control, "After")
+            swap = self._apply_denoiser_pass(swap, control, "After", kv_map)
         if parameters['FinalBlendAdjEnableToggle'] and parameters['FinalBlendAmountSlider'] > 0:
             final_blur_strength = parameters['FinalBlendAmountSlider']  # Ein Parameter steuert beides
             # Bestimme kernel_size und sigma basierend auf dem Parameter
