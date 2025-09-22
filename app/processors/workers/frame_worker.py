@@ -901,7 +901,7 @@ class FrameWorker(threading.Thread):
 
         mask_calc_dill = None
 
-        debug = parameters["CommandLineDebugEnableToggle"]
+        debug = control.get("CommandLineDebugEnableToggle", False)
         debug_info: dict[str, str] = {}  
 
         tform = self.get_face_similarity_tform(swapper_model, kps_5)
