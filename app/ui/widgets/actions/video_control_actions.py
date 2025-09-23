@@ -691,6 +691,7 @@ def save_current_frame_to_file(main_window: 'MainWindow'):
         save_filename = misc_helpers.get_output_file_path(main_window.video_processor.media_path, main_window.control['OutputMediaFolder'], media_type='image')
         if save_filename:
             # frame is main_window.video_processor.current_frame, which is already RGB.
+            frame = frame[..., ::-1]
             pil_image = Image.fromarray(frame) # Correct: Pass RGB frame directly to Pillow.
             pil_image.save(save_filename, 'PNG')
             common_widget_actions.create_and_show_toast_message(main_window, 'Image Saved', f'Saved Current Image to file: {save_filename}')
