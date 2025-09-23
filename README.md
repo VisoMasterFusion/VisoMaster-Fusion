@@ -90,10 +90,13 @@ conda activate visomaster
 pip install -r requirements_cu118.txt
 
 # for CUDA 12.4
-pip install -r requirements_cu118.txt
+pip install -r requirements_cu124.txt
 
 # for CUDA 12.8
 pip install -r requirements_cu128.txt
+
+# for RTX50xx series and CUDA 12.9
+pip install -r requirements_rtx50.txt
 ```
 
 **4. Run the Application**
