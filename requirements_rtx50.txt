@@ -27,3 +27,6 @@ requests
 pyqt-toast-notification
 qdarkstyle
 pyqtdarktheme
+omegaconf
+einops
+lightning

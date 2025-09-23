@@ -342,25 +342,25 @@ SETTINGS_LAYOUT_DATA: LayoutDictTypes = {
             'requiredToggleValue': True, 
             'help': 'Image analysis'
         },        
-        'DFLXSegBGEnableToggle': {
-            'level': 2,
-            'label': 'Xseg 2 Background',
-            'default': False,
-            'parentToggle': 'DFLXSeg2EnableToggle & ActivateexperimentalsettingsEnableToggle',
-            'requiredToggleValue': True,            
-            'help': 'Enable second XSeg Mask for Inside the Face. not working well atm. (uses Faceparser on swap)'
-        },
-        'OccluderMaskBgSlider': {
-            'level': 3,
-            'label': 'Xseg 2 Background Adjust',
-            'min_value': '-40',
-            'max_value': '40',
-            'default': '-10',
-            'step': 1,
-            'parentToggle': 'DFLXSegBGEnableToggle',
-            'requiredToggleValue': True,
-            'help': 'Adjust where the second Xseg Mask gets applied.'
-        },        
+#        'DFLXSegBGEnableToggle': {
+#            'level': 2,
+#            'label': 'Xseg 2 Background',
+#            'default': False,
+#            'parentToggle': 'ActivateexperimentalsettingsEnableToggle',
+#            'requiredToggleValue': True,            
+#            'help': 'Enable second XSeg Mask for Inside the Face. not working well atm. (uses Faceparser on swap)'
+#        },
+#        'OccluderMaskBgSlider': {
+#            'level': 3,
+#            'label': 'Xseg 2 Background Adjust',
+#            'min_value': '-40',
+#            'max_value': '40',
+#            'default': '-10',
+#            'step': 1,
+#            'parentToggle': 'DFLXSegBGEnableToggle',
+#            'requiredToggleValue': True,
+#            'help': 'Adjust where the second Xseg Mask gets applied.'
+#        },
         'get_cropped_face_kpsTypeSelection': {
             'level': 2,
             'label': 'get cropped face kps',
@@ -402,6 +402,8 @@ SETTINGS_LAYOUT_DATA: LayoutDictTypes = {
             'label': 'Scaleback Frame',
             'options': ['NEAREST', 'BILINEAR', 'BICUBIC'],
             'default': 'BILINEAR',
+            'parentToggle': 'ActivateexperimentalsettingsEnableToggle',
+            'requiredToggleValue': True,
             'help': 'Experimental! for basic functionality testing. changes the interpolation type for necessary pipeline functions (resize/rotation/etc. of image). caution, influences Autorestore calculation'
         },          
         'expression_faceeditor_t256TypeSelection': {

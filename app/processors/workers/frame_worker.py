@@ -986,10 +986,11 @@ class FrameWorker(threading.Thread):
         if parameters['FaceExpressionEnableToggleBoth'] and (parameters['FaceExpressionLipsToggle'] or parameters['FaceExpressionEyesToggle']) and parameters['FaceExpressionBeforeTypeSelection'] == 'Beginning':
             swap = self.apply_face_expression_restorer(original_face_512, swap, parameters)
 
+        # First Denoiser pass - Before Restorers
         if control.get('DenoiserUNetEnableBeforeRestorersToggle', False):
             swap = self._apply_denoiser_pass(swap, control, "Before", kv_map)
 
-        # Restorer
+        # First Restorer
         swap_original = swap.clone()   
         
         if parameters["FaceRestorerEnableToggle"]:
@@ -1140,6 +1141,7 @@ class FrameWorker(threading.Thread):
         calc_mask = torch.where(calc_mask > 0.1, 1, 0).float()
         mask_calc_dill = torch.where(mask_calc_dill > 0.1, 1, 0).float()
         
+        # First Restorer and Auto Restore pass (after masks)
         if parameters["FaceRestorerEnableToggle"] and parameters["FaceRestorerAutoEnableToggle"]:
 
             original_face_512_autorestore = original_face_512.clone()
@@ -1174,14 +1176,24 @@ class FrameWorker(threading.Thread):
         elif parameters["FaceRestorerEnableToggle"]:
             alpha_restorer = float(parameters["FaceRestorerBlendSlider"])/100.0
             swap = torch.add(torch.mul(swap_restorecalc, alpha_restorer), torch.mul(swap_original, 1 - alpha_restorer))                             
-       # Expression Restorer After First Restorer
+
+        # Face editor After First Restorer
+        if parameters['FaceEditorEnableToggle'] and self.main_window.editFacesButton.isChecked() and parameters['FaceEditorBeforeTypeSelection'] == 'After First Restorer':
+            editor_mask = t512_mask(swap_mask).clone()
+            swap = swap * editor_mask + original_face_512 * (1 - editor_mask)
+            swap = self.swap_edit_face_core(swap, kps, parameters, control)
+            
+        # Expression Restorer After First Restorer
         if parameters['FaceExpressionEnableToggleBoth'] and (parameters['FaceExpressionLipsToggle'] or parameters['FaceExpressionEyesToggle']) and parameters['FaceExpressionBeforeTypeSelection'] == 'After First Restorer':
             swap = self.apply_face_expression_restorer(original_face_512, swap, parameters)
-            
+
+        # Second Denoiser pass - After First Restorer
         if control.get('DenoiserAfterFirstRestorerToggle', False):
             swap = self._apply_denoiser_pass(swap, control, "AfterFirst", kv_map)
 
         swap_backup = swap.clone()
+        
+        # Second Restorer - Before Diff / Texture Transfer and AutoColor
         if parameters["FaceRestorerEnable2Toggle"] and not parameters["FaceRestorerEnable2EndToggle"]:
             swap_original2 = swap.clone()
 
@@ -1219,7 +1231,19 @@ class FrameWorker(threading.Thread):
             else:
                 alpha_restorer2 = float(parameters["FaceRestorerBlend2Slider"])/100.0
                 swap = torch.add(torch.mul(swap2, alpha_restorer2), torch.mul(swap_original2, 1 - alpha_restorer2))
-        
+
+        # Face editor After Second Restorer
+        if parameters['FaceEditorEnableToggle'] and self.main_window.editFacesButton.isChecked() and parameters['FaceEditorBeforeTypeSelection'] == 'After Second Restorer':
+            editor_mask = t512_mask(swap_mask).clone()
+            swap = swap * editor_mask + original_face_512 * (1 - editor_mask)
+            swap = self.swap_edit_face_core(swap, kps, parameters, control)
+            swap_mask = swap_mask_noFP
+  
+        # Expression Restorer After Second Restorer
+        if parameters['FaceExpressionEnableToggleBoth'] and (parameters['FaceExpressionLipsToggle'] or parameters['FaceExpressionEyesToggle']) and parameters['FaceExpressionBeforeTypeSelection'] == 'After Second Restorer':
+            swap = self.apply_face_expression_restorer(original_face_512, swap, parameters)
+
+        # Textures and Color pass begins
         if parameters["TransferTextureEnableToggle"] or parameters["DifferencingEnableToggle"] or parameters["AutoColorEnableToggle"]:          
             mask_calc = mask_calc_dill.clone()
             mask_calc = 1 - mask_calc
@@ -1431,23 +1455,10 @@ class FrameWorker(threading.Thread):
 
             swap = swap * 255.0
 
-        # Face editor End
-        if parameters['FaceEditorEnableToggle'] and self.main_window.editFacesButton.isChecked() and parameters['FaceEditorBeforeTypeSelection'] == 'End':
-            editor_mask = t512_mask(swap_mask).clone()
-            swap = swap * editor_mask + original_face_512 * (1 - editor_mask)
-            swap = self.swap_edit_face_core(swap, kps, parameters, control)
-            swap_mask = swap_mask_noFP
-  
-        # Expression Restorer End
-        if parameters['FaceExpressionEnableToggleBoth'] and (parameters['FaceExpressionLipsToggle'] or parameters['FaceExpressionEyesToggle']) and parameters['FaceExpressionBeforeTypeSelection'] == 'End':
-            swap = self.apply_face_expression_restorer(original_face_512, swap, parameters)
-            
+        # Second Restorer - After Diff / Texture Transfer and AutoColor
         if parameters["FaceRestorerEnable2Toggle"] and parameters["FaceRestorerEnable2EndToggle"]:
             swap_original2 = swap.clone()
-
             swap2 = self.models_processor.apply_facerestorer(swap, parameters['FaceRestorerDetType2Selection'], parameters['FaceRestorerType2Selection'], parameters["FaceRestorerBlend2Slider"], parameters['FaceFidelityWeight2DecimalSlider'], control['DetectorScoreSlider'])
-        #else:
-        #    swap2 = swap.clone()
             
             if parameters["FaceRestorerAutoEnable2Toggle"]:
                 original_face_512_autorestore2 = original_face_512.clone()
@@ -1482,12 +1493,34 @@ class FrameWorker(threading.Thread):
                 alpha_restorer2 = float(parameters["FaceRestorerBlend2Slider"])/100.0
                 swap = torch.add(torch.mul(swap2, alpha_restorer2), torch.mul(swap_original2, 1 - alpha_restorer2))
 
-        # Expression Restorer After Second Restorer
-        if parameters['FaceExpressionEnableToggleBoth'] and (parameters['FaceExpressionLipsToggle'] or parameters['FaceExpressionEyesToggle']) and parameters['FaceExpressionBeforeTypeSelection'] == 'After Second Restorer':
-            swap = self.apply_face_expression_restorer(original_face_512, swap, parameters)
-            
+        # Third denoiser pass - After restorers
         if control.get('DenoiserAfterRestorersToggle', False):
             swap = self._apply_denoiser_pass(swap, control, "After", kv_map)
+
+        # -------------------------------
+        # AutoColor (Maske 512) - second pass at the end (to color the restored and denoized faces after the first pipeline pass)
+        # -------------------------------
+        if parameters.get("AutoColorEnableToggle", False) and parameters.get("AutoColorEndEnableToggle", False):
+            # calc_mask ist [1,512,512], 1=erlaubt
+            mask_autocolor = calc_mask.clone()
+            mask_autocolor = (mask_autocolor > 0.1)
+            #swap_backup = swap.clone()
+            
+            if parameters['AutoColorTransferTypeSelection'] == 'Test':
+                swap = faceutil.histogram_matching(original_face_512, swap, parameters["AutoColorBlendAmountSlider"])
+
+            elif parameters['AutoColorTransferTypeSelection'] == 'Test_Mask':
+                swap = faceutil.histogram_matching_withmask(original_face_512, swap, mask_autocolor, parameters["AutoColorBlendAmountSlider"])
+                #if parameters.get("ExcludeMaskEnableToggle", False):
+                #    swap_backup = faceutil.histogram_matching_withmask(original_face_512, swap_backup, mask_autocolor, parameters["AutoColorBlendAmountSlider"])
+
+            elif parameters['AutoColorTransferTypeSelection'] == 'DFL_Test':
+                swap = faceutil.histogram_matching_DFL_test(original_face_512, swap, parameters["AutoColorBlendAmountSlider"])
+
+            elif parameters['AutoColorTransferTypeSelection'] == 'DFL_Orig':
+                swap = faceutil.histogram_matching_DFL_Orig(original_face_512, swap, mask_autocolor, 100)
+        
+        # Final blending
         if parameters['FinalBlendAdjEnableToggle'] and parameters['FinalBlendAmountSlider'] > 0:
             final_blur_strength = parameters['FinalBlendAmountSlider']  # Ein Parameter steuert beides
             # Bestimme kernel_size und sigma basierend auf dem Parameter
@@ -1497,6 +1530,7 @@ class FrameWorker(threading.Thread):
             gaussian_blur = transforms.GaussianBlur(kernel_size=kernel_size, sigma=sigma)
             swap = gaussian_blur(swap)
 
+        # Artefact pass - Jpeg and Blockshift
         if parameters['JPEGCompressionEnableToggle']:
             jpeg_q = int(parameters["JPEGCompressionAmountSlider"])
             if jpeg_q != 100:
@@ -1541,7 +1575,7 @@ class FrameWorker(threading.Thread):
             noise = (torch.rand_like(swap) - 0.5) * 2 * parameters['ColorNoiseDecimalSlider']
             swap = torch.clamp(swap + noise, 0.0, 255.0)
 
-        if parameters['AnalyseImageEnableToggle']:
+        if control.get('AnalyseImageEnableToggle', False):
             image_analyse_swap = self.analyze_image(swap)
             if debug:
                 debug_info["JS: "] = image_analyse_swap
@@ -1552,7 +1586,6 @@ class FrameWorker(threading.Thread):
 
         if is_perspective_crop:
             return swap, t512_mask(swap_mask), None
-            
 
         # Add blur to swap_mask results
         gauss = transforms.GaussianBlur(parameters['OverallMaskBlendAmountSlider'] * 2 + 1, (parameters['OverallMaskBlendAmountSlider'] + 1) * 0.2)
