@@ -5,7 +5,7 @@ kornia
 numexpr
 numpy==1.26.4
 onnx==1.16.1
-onnxruntime-gpu==1.18.0
+onnxruntime-gpu==1.22.0
 onnxsim
 opencv-python==4.10.0.84
 packaging==24.1
@@ -27,3 +27,6 @@ torch==2.4.1+cu128
 torchaudio==2.4.1+cu128
 torchvision==0.19.1+cu128
 tqdm
+omegaconf
+einops
+lightning

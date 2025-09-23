@@ -217,7 +217,9 @@ class MainWindow(QtWidgets.QMainWindow, Ui_MainWindow):
         self.parametersPanelCheckBox.toggled.connect(partial(layout_actions.show_hide_parameters_panel, self))
         self.facesPanelCheckBox.toggled.connect(partial(layout_actions.show_hide_faces_panel, self))
         self.facesPanelCheckBox.toggled.connect(self._on_faces_panel_toggled)
-        self.mediaPanelCheckBox.toggled.connect(partial(layout_actions.show_hide_input_target_media_panel, self))
+        self.TargetMediaCheckBox.toggled.connect(partial(layout_actions.show_hide_input_target_media_panel, self))
+        self.InputFacesCheckBox.toggled.connect(partial(layout_actions.show_hide_input_faces_panel, self))
+        self.JobsCheckBox.toggled.connect(partial(layout_actions.show_hide_input_jobs_panel, self))
 
         self.faceMaskCheckBox.clicked.connect(partial(video_control_actions.process_compare_checkboxes, self))
         self.faceCompareCheckBox.clicked.connect(partial(video_control_actions.process_compare_checkboxes, self))

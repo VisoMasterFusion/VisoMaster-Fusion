@@ -5,7 +5,7 @@ FACE_EDITOR_LAYOUT_DATA: LayoutDictTypes = {
         'FaceEditorBeforeTypeSelection': {
             'level': 1,
             'label': 'Pipeline Position',
-            'options': ['Beginning', 'After First Restorer', 'After Second Restorer', 'End'],
+            'options': ['Beginning', 'After First Restorer', 'After Second Restorer'],
             'default': 'Beginning',
             'help': 'Select the Face Pose/Expression Editor position in the pipeline.'
         },

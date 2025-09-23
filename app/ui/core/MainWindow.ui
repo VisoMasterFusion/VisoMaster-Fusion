@@ -36,9 +36,29 @@
        <item>
         <layout class="QHBoxLayout" name="panelVisibilityCheckBoxLayout">
          <item>
-          <widget class="QCheckBox" name="mediaPanelCheckBox">
+          <widget class="QCheckBox" name="TargetMediaCheckBox">
            <property name="text">
-            <string>Media Panel</string>
+            <string>Target Videos/Images Panel</string>
+           </property>
+           <property name="checked">
+            <bool>true</bool>
+           </property>
+          </widget>
+         </item>
+		 <item>
+          <widget class="QCheckBox" name="InputFacesCheckBox">
+           <property name="text">
+            <string>Input Faces Panel</string>
+           </property>
+           <property name="checked">
+            <bool>true</bool>
+           </property>
+          </widget>
+         </item>
+		 <item>
+          <widget class="QCheckBox" name="JobsCheckBox">
+           <property name="text">
+            <string>Jobs Panel</string>
            </property>
            <property name="checked">
             <bool>true</bool>
