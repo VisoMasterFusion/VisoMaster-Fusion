@@ -1,4 +1,9 @@
+import os
 from pathlib import Path
+
+# ensure ref-ldm paths exist
+refldm_ckpts_path = "model_assets/ref-ldm_embedding/ckpts"
+os.makedirs(refldm_ckpts_path, exist_ok=True)
 
 models_dir = str(Path(__file__).resolve().parent.parent.parent / 'model_assets') # More robust path
 assets_repo = "https://github.com/visomaster/visomaster-assets/releases/download"
@@ -586,7 +591,7 @@ models_list = [
     {
         "model_name": "CanonSwapRefineModule",
         "local_path": f"{models_dir}/canonswap/refine_module.onnx",
-        "hash": "322357cd97f03d6879c163ed634dc88c8e610b0378ee16c2b242c0146bdb3e04a",
+        "hash": "322357cd97f03d6879c163ed634dc88c8e610b0378ee16c2b242c0146bdb3e04",
         "url": "https://github.com/Glat0s/CanonSwap-onnx/releases/download/v0.1/refine_module.onnx"
 
     },
@@ -600,7 +605,7 @@ models_list = [
     {
         "model_name": "CanonSwapWarpingDecoder",
         "local_path": f"{models_dir}/canonswap/warping_decoder.onnx",
-        "hash": "c06e4edc10b510fe7b3a245999d6528f4c504dd24b87ef9e16d43161bfb7577a7",
+        "hash": "c06e4edc10b510fe7b3a245999d6528f4c504dd24b87ef9e16d43161bfb7577a",
         "url": "https://github.com/Glat0s/CanonSwap-onnx/releases/download/v0.1/warping_decoder.onnx"
 
     },
@@ -609,5 +614,17 @@ models_list = [
         "local_path": f"{models_dir}/canonswap/spade_generator.onnx",
         "hash": "46ccc2f024e87e28a5b1ad16acf8ee6d6b574e0b36f1cb62c79ca2b2fccb9372",
         "url": "https://github.com/Glat0s/CanonSwap-onnx/releases/download/v0.1/spade_generator.onnx"
+    },
+    {
+        "model_name": "RefLdm",
+        "local_path": f"{models_dir}/ref-ldm_embedding/ckpts/refldm.ckpt",
+        "hash": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+        "url": "https://github.com/ChiWeiHsiao/ref-ldm/releases/download/1.0.0/refldm.ckpt"
+    },
+    {
+        "model_name": "VQGAN",
+        "local_path": f"{models_dir}/ref-ldm_embedding/ckpts/vqgan.ckpt",
+        "hash": "70b0a9a0c7fd49bd1442c479ab16f3bf728008ed1fd7659c1a9987ef4b753b51",
+        "url": "https://github.com/ChiWeiHsiao/ref-ldm/releases/download/1.0.0/vqgan.ckpt"
     }
 ]
