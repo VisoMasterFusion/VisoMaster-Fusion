@@ -17,7 +17,7 @@ DENOISER_LAYOUT_DATA: LayoutDictTypes = {
             'widget_type': 'ParameterSlider',
             'label': 'Base Seed',
             'control_name': 'DenoiserBaseSeedSlider',
-            'min_value': '0', 'max_value': '999', 'default': '220', 'step': 1,
+            'min_value': '1', 'max_value': '999', 'default': '220', 'step': 1,
             'help': 'Set a fixed base seed for the denoiser. This seed will be used for all frames and both denoiser passes (if applicable) to ensure consistent noise patterns.'
         },
         'DenoiserUNetEnableBeforeRestorersToggle': {

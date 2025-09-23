@@ -170,9 +170,6 @@ class MainWindow(QtWidgets.QMainWindow, Ui_MainWindow):
         self.videoSeekSlider.sliderReleased.connect(partial(video_control_actions.on_slider_released, self))
         video_control_actions.set_up_video_seek_slider(self)
         self.frameAdvanceButton.clicked.connect(partial(video_control_actions.advance_video_slider_by_n_frames, self))
-        # Audio toggle
-        self.liveSoundButton.toggled.connect(partial(video_control_actions.toggle_live_sound, self))
-
         self.frameRewindButton.clicked.connect(partial(video_control_actions.rewind_video_slider_by_n_frames, self))
 
         # JOB MANAGER changes addMarkerButton connection

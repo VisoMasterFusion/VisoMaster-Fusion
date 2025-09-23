@@ -30,3 +30,4 @@ tqdm
 omegaconf
 einops
 lightning
+send2trash
