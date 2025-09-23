@@ -3,7 +3,7 @@ import os
 from functools import partial
 import uuid
 from typing import TYPE_CHECKING, Dict
-import send2trash
+from send2trash import send2trash
 import torch
 
 from PySide6 import QtWidgets, QtGui, QtCore
@@ -1637,3 +1637,4 @@ class FormGroupBox(QtWidgets.QGroupBox):
         self.main_window = main_window
         self.setSizePolicy(QtWidgets.QSizePolicy.Minimum, QtWidgets.QSizePolicy.Preferred)
         self.setFlat(True)
+
