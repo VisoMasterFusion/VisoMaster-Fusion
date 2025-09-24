@@ -5,6 +5,10 @@ from pathlib import Path
 refldm_ckpts_path = "model_assets/ref-ldm_embedding/ckpts"
 os.makedirs(refldm_ckpts_path, exist_ok=True)
 
+# ensure canonswap path exist
+canonswap_model_path = "model_assets/canonswap"
+os.makedirs(canonswap_model_path, exist_ok=True)
+
 models_dir = str(Path(__file__).resolve().parent.parent.parent / 'model_assets') # More robust path
 assets_repo = "https://github.com/visomaster/visomaster-assets/releases/download"
 

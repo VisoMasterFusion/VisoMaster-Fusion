@@ -47,6 +47,7 @@ import numpy as np
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
+from torchvision.transforms import v2
 from einops import rearrange
 from omegaconf import OmegaConf
 from PIL import Image
@@ -881,25 +882,56 @@ class KVExtractor:
         print("All model files and configs found.")
 
     @staticmethod
-    def _normalize_image(image: Image.Image) -> torch.Tensor:
-        if image.size != (512, 512):
-            raise ValueError(f"Input image must be 512x512, but got {image.size}")
-        
-        image_rgb = image.convert("RGB")
-        img_np = np.array(image_rgb, dtype=np.float32)
-        img_tensor = torch.from_numpy(img_np).permute(2, 0, 1)
+    def _normalize_image(image) -> torch.Tensor:
+        if isinstance(image, Image.Image):
+            if image.size != (512, 512):
+                image = image.resize((512, 512), Image.Resampling.LANCZOS)
+            
+            image_rgb = image.convert("RGB")
+            img_np = np.array(image_rgb, dtype=np.float32)
+            img_tensor = torch.from_numpy(img_np).permute(2, 0, 1)
+        elif isinstance(image, torch.Tensor):
+            if image.shape[1:] != (512, 512):
+                img_tensor = v2.Resize((512, 512), antialias=True)(image)
+            else:
+                img_tensor = image.float()
+        else:
+            raise TypeError(f"Unsupported image type: {type(image)}")
+
         image_tensor_norm = img_tensor / 127.5 - 1.0
         return image_tensor_norm.unsqueeze(0)
 
     @torch.no_grad()
     def extract_kv(self,
-                   image: Image.Image,
-                   scale_factor: float = 1.0
-                   ) -> Dict[str, Dict[str, torch.Tensor]]:
+                    image,
+                    scale_factor: float = 1.0,
+                    color_match_image: Optional[torch.Tensor] = None
+                    ) -> Dict[str, Dict[str, torch.Tensor]]:
         """
-        Extracts the K/V embedding from a single 512x512 reference image.
+        Extracts the K/V embedding from a single 512x512 reference image,
+        which can be a PIL Image or a PyTorch Tensor.
         """
         print("Extracting K/V from reference image...")
+
+        if color_match_image is not None:
+            from app.processors.utils import faceutil
+            from torchvision.transforms import v2
+            print("Applying color matching to reference image for K/V extraction.")
+            if isinstance(image, Image.Image):
+                image_tensor = torch.from_numpy(np.array(image)).permute(2, 0, 1)
+            else:
+                image_tensor = image.clone()
+
+            if image_tensor.dtype != torch.uint8:
+                image_tensor = image_tensor.clamp(0, 255).byte()
+            if color_match_image.dtype != torch.uint8:
+                color_match_image = color_match_image.clamp(0, 255).byte()
+
+            if color_match_image.shape[1:] != (512,512):
+                color_match_image = v2.Resize((512,512), antialias=True)(color_match_image)
+
+            # Match color of 'image' to 'color_match_image'
+            image = faceutil.histogram_matching(color_match_image, image_tensor, 100)
 
         ref_tensor = self._normalize_image(image).to(self.device)
 

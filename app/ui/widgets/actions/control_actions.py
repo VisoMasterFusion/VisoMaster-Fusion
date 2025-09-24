@@ -124,3 +124,21 @@ def handle_denoiser_state_change(main_window: 'MainWindow', new_value_of_toggle_
             main_window.models_processor.unload_kv_extractor()
     
     # Frame refresh is handled by common_actions.update_control after this function returns.
+
+def handle_kv_color_correction_change(main_window: 'MainWindow', new_value: bool):
+    """
+    Invalidates existing K/V maps on target faces if the color correction setting changes,
+    forcing recalculation on next use.
+    """
+    print(f"K/V color correction toggled to: {new_value}. Invalidating existing K/V maps.")
+    for face_id, target_face_button in main_window.target_faces.items():
+        # Check if the existing KV map was generated with the OPPOSITE setting
+        if hasattr(target_face_button, 'assigned_kv_map') and target_face_button.assigned_kv_map is not None:
+            was_color_transferred = getattr(target_face_button, 'kv_data_color_transferred', False)
+            if was_color_transferred != new_value:
+                print(f"  - Invalidating K/V map for target face {face_id} due to setting change.")
+                target_face_button.assigned_kv_map = None
+                # The flag will be reset when the new map is generated.
+    
+    # Refresh frame to trigger potential recalculation if processing is active
+    common_widget_actions.refresh_frame(main_window)

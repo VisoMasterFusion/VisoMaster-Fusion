@@ -12,6 +12,15 @@ DENOISER_LAYOUT_DATA: LayoutDictTypes = {
             'default': True,
             'help': 'If enabled, forces the UNet to use only reference K/V for attention, maximizing focus on the reference features.'
         },
+        'KVDataAutoColorToggle': {
+            'level': 1,
+            'widget_type': 'ToggleButton',
+            'label': 'Color Correct K/V Source',
+            'control_name': 'KVDataAutoColorToggle',
+            'default': False,
+            'help': 'Apply auto color correction to the K/V reference source image, matching it to the target frame. May improve illumination consistency. Re-assigning the input face to the target face will trigger re-calculation.',
+            'exec_function': control_actions.handle_kv_color_correction_change
+        },
         'DenoiserBaseSeedSlider': {
             'level': 1,
             'widget_type': 'ParameterSlider',

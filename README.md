@@ -17,8 +17,6 @@ VisoMaster-Fusion includes all the great features of the original plus major enh
 -   **New Models**: Includes the **GFPGAN-1024** face restorer and the  **ReF-LDM** reference-based denoiser.
 -   **Virtual Camera Streaming**: Send the processed video output directly to a virtual camera for use in OBS, Twitch, Zoom, and other applications.
 
-### Thanks to Nyny & Hans for the help implementing this !
-
 ---
 
 ## Detailed Feature List
@@ -57,15 +55,27 @@ VisoMaster-Fusion includes all the great features of the original plus major enh
 
 ---
 
+### **Prerequisites**
+- All versions require CUDA https://developer.nvidia.com/cuda-toolkit-archive()
+
+- Portable Version: No other pre-requirements
+- Non-Portable Version:
+    -   **Git** ([Download](https://git-scm.com/downloads))
+    -   **Miniconda** ([Download](https://www.anaconda.com/download))
+        <br> or
+    -   **uv** ([Installation choices])(https://docs.astral.sh/uv/getting-started/installation/)
+
+
 ## **Installation Guide (VisoMaster-Fusion)**
 
-This fused version uses a custom Python installer script to handle dependencies and compatibility between the different mods.
+### **Portable version**
 
-### **Prerequisites**
--   **Git** ([Download](https://git-scm.com/downloads))
--   **Miniconda** ([Download](https://www.anaconda.com/download))
+Download only the Run_Portable.bat file from this repo (you don't need to clone the whole repo) from link below and put it in a new directory were you want to run VisoMaster from. Then just execute the bat file to run VisoMaster. Portable dependencies will be installed on the first run to portable-files directory. Select your installed CUDA version on the initial run.
+- [Download - Start_Portable.bat](Start_Portable.bat)
 
-### **Installation Steps**
+You don't need any other steps from below for the portable version.
+
+### **Non-Portable - Installation Steps**
 
 **1. Clone the Repository**
 Open a terminal or command prompt and run:
@@ -75,32 +85,63 @@ git clone <URL_TO_YOUR_VISOMASTER_FUSION_REPO>
 ```sh
 cd VisoMaster
 ```
+```sh
+git checkout fusion
+```
 
-**2. Create and Activate a Conda Environment (Skip if you already have one)**
+**2. Create and Activate a python Environment (Skip if you already have one)**
+
+
+#### In case you like to use "anaconda"
+
 ```sh
 conda create -n visomaster python=3.10 -y
 ```
 ```sh
 conda activate visomaster
 ```
+```sh
+pip install uv
+```
+
+### In case you like to use "uv" directly
+
+```sh
+uv venv --python 3.10
+```
+```sh
+.venv\Scripts\activate
+```
 
 **3. Install requirements depending on your cuda version**
 ```
 # for CUDA 11.4
-pip install -r requirements_cu118.txt
+uv pip install -r requirements_cu118.txt
 
 # for CUDA 12.4
-pip install -r requirements_cu124.txt
+uv pip install -r requirements_cu124.txt
 
 # for CUDA 12.8
-pip install -r requirements_cu128.txt
+uv pip install -r requirements_cu128.txt
 
 # for RTX50xx series and CUDA 12.9
-pip install -r requirements_rtx50.txt
+uv pip install -r requirements_rtx50.txt
 ```
 
-**4. Run the Application**
-Once everything is set up, start the application by opening the **Start.bat** file. On Linux, run `python main.py`.
+**4. Download required models**
+```sh
+python download_models.py
+```
+
+**5. Run the Application**
+
+Once everything is set up, start the application by opening the **Start.bat** file or `python main.py` in a visomaster conda shell. On Linux, use `python main.py`.
+
+**5.1 Update to latest code state**
+```sh
+cd VisoMaster
+git pull
+```
 
 ---
 
@@ -113,20 +154,6 @@ Once everything is set up, start the application by opening the **Start.bat** fi
 6.  Processing will begin automatically. A pop-up will notify you when all jobs are complete.
 
 ---
----
-## How to use Ref-LDM
-
-1. git clone and checkout the ref-ldm-onnx slim-fast branch (or download code as zip)
-https://github.com/Glat0s/ref-ldm-onnx/tree/slim-fast
-2. Install repo requirements (in a separate python env or conda env)
-3. Use `python extract_kv_tensors_gui.py` to create reference kv pt files and put them into the Visomaster "model_assets\reference_kv_data" directory
-4. Select a reference kv file in Visomaster ref-ldm settings
----
-
-
-## **Troubleshooting**
--   If you face CUDA-related issues, ensure your GPU drivers are up to date.
--   For missing models, re-run the `download_models.py` script or ensure all models are placed in the correct directories.
 
 ## [Join Discord](https://discord.gg/5rx4SQuDbp)
 
@@ -137,7 +164,8 @@ This project was made possible by the combined efforts of the original developer
 VisoMaster-Fusion would not be possible without the incredible work of:
 -   **Job Manager Mod**: Axel (https://github.com/axel-devs/VisoMaster-Job-Manager)
 -   **Experimental Mod**: Hans (https://github.com/asdf31jsa/VisoMaster-Experimental)
--   **VR180 Mod**: Glat0s (https://github.com/Glat0s/VisoMaster/tree/dev-vr180)
+-   **VR180/Ref-ldm Mod**: Glat0s (https://github.com/Glat0s/VisoMaster/tree/dev-vr180)
+-   **Many Optimizations**: Nyny (https://github.com/Elricfae/VisoMaster---Modded)
 
 ## **Troubleshooting**
 - If you face CUDA-related issues, ensure your GPU drivers are up to date.
@@ -180,4 +208,4 @@ By using this software, users acknowledge that they have read, understood, and a
 Remember, technology should be used to empower and inspire, not to harm or deceive. Let's strive for ethical and responsible use of deep fake technology for the betterment of society.
 
 Here is also an attribution to the original work for CanonSwap - https://github.com/Pixel-Talk/CanonSwap
-And here is a clear statement that the usage of the CanonSwap is subject to the restrictions outlined in Section III in the full copy of the CanonSwap-LICENSE.txt license file in this repo.
+And here is a clear statement that the usage of the CanonSwap is subject to the restrictions outlined in Section III in the full copy of the LICENSE-CanonSwap.txt license file in this repo.

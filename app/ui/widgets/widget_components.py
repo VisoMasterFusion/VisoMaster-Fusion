@@ -1,5 +1,6 @@
 # pylint: disable=keyword-arg-before-vararg
 import os
+import traceback
 from functools import partial
 import uuid
 from typing import TYPE_CHECKING, Dict
@@ -399,6 +400,7 @@ class TargetFaceCardButton(CardButton):
         self.assigned_merged_embeddings: Dict[str, Dict[str, np.ndarray]] = {}  # Key: embedding_swap_model, Value: EmbeddingCardButton.embedding_store
         self.assigned_input_embedding = {}  # Key: embedding_swap_model, Value: np.ndarray
         self.assigned_kv_map: Dict | None = None
+        self.kv_data_color_transferred = False
         
         self.setCheckable(True)
         self.clicked.connect(self.load_target_face)
@@ -494,23 +496,25 @@ class TargetFaceCardButton(CardButton):
                       control.get('DenoiserAfterFirstRestorerToggle', False) or \
                       control.get('DenoiserAfterRestorersToggle', False)
 
+        self.assigned_kv_map = None
+        self.kv_data_color_transferred = False
+
         if denoiser_on and self.assigned_input_faces:
             first_input_face_id = list(self.assigned_input_faces.keys())[0]
             input_face_button = main_window.input_faces.get(first_input_face_id)
 
             if input_face_button:
-                kv_map_path = input_face_button.kv_map
+                should_color_correct = main_window.control.get('KVDataAutoColorToggle', False)
                 
-                if isinstance(kv_map_path, str) and os.path.exists(kv_map_path):
-                    try:
-                        print(f"Loading K/V map from: {kv_map_path}")
-                        self.assigned_kv_map = torch.load(kv_map_path)
-                    except Exception as e:
-                        print(f"Error loading K/V map from {kv_map_path}: {e}")
-                        self.assigned_kv_map = None
-                        input_face_button.kv_map = None
+                # If the input face has a map and its color correction state matches, use it.
+                if (hasattr(input_face_button, 'kv_map') and input_face_button.kv_map is not None and
+                    getattr(input_face_button, 'kv_map_color_transferred', False) == should_color_correct):
+                    print(f"Using cached K/V map for input face: {input_face_button.media_path}")
+                    self.assigned_kv_map = input_face_button.kv_map
+                    self.kv_data_color_transferred = input_face_button.kv_map_color_transferred
                 else:
-                    print(f"Generating K/V map for input face: {input_face_button.media_path}")
+                    # Otherwise, generate a new one
+                    print(f"Generating K/V map for input face: {input_face_button.media_path} (Color Correct: {should_color_correct})")
                     try:
                         from PIL import Image
                         models_processor = main_window.models_processor
@@ -523,32 +527,33 @@ class TargetFaceCardButton(CardButton):
                             if pil_img.size != (512, 512):
                                 pil_img = pil_img.resize((512, 512), Image.Resampling.LANCZOS)
 
-                            kv_map = models_processor.kv_extractor.extract_kv(pil_img)
-                            
-                            kv_data_dir = "model_assets/reference_kv_data"
-                            os.makedirs(kv_data_dir, exist_ok=True)
-                            new_kv_map_path = os.path.join(kv_data_dir, f"{input_face_button.face_id}.pt")
-                            torch.save(kv_map, new_kv_map_path)
-                            print(f"Saved K/V map to: {new_kv_map_path}")
+                            color_match_image = None
+                            if should_color_correct:
+                                # self.cropped_face is BGR numpy array
+                                target_face_np_rgb = self.cropped_face[..., ::-1].copy()
+                                color_match_image = torch.from_numpy(target_face_np_rgb).permute(2, 0, 1).to(main_window.models_processor.device)
 
-                            input_face_button.kv_map = new_kv_map_path
+                            kv_map = models_processor.kv_extractor.extract_kv(
+                                pil_img,
+                                color_match_image=color_match_image
+                            )
+                            
+                            # Cache the generated map and its state on the input face button
+                            input_face_button.kv_map = kv_map
+                            input_face_button.kv_map_color_transferred = should_color_correct
+                            
+                            # Assign to the target face
                             self.assigned_kv_map = kv_map
+                            self.kv_data_color_transferred = should_color_correct
+                            print(f"Generated and cached K/V map. Color corrected: {should_color_correct}")
                         else:
                             print("KV Extractor not available, cannot generate K/V map.")
-                            self.assigned_kv_map = None
-                            input_face_button.kv_map = None
-
                     except Exception as e:
                         print(f"Error generating K/V map: {e}")
                         traceback.print_exc()
-                        self.assigned_kv_map = None
-                        input_face_button.kv_map = None
                     finally:
-                        main_window.models_processor.unload_kv_extractor()
-            else:
-                self.assigned_kv_map = None
-        else:
-            self.assigned_kv_map = None
+                        if not main_window.control.get('DenoiserUNetModelSelection'):
+                             main_window.models_processor.unload_kv_extractor()
 
         if main_window.selected_target_face_id == self.face_id:
             main_window.current_kv_tensors_map = self.assigned_kv_map
@@ -633,7 +638,8 @@ class InputFaceCardButton(CardButton):
         self.cropped_face = cropped_face
         self.embedding_store = embedding_store  # Key: embedding_swap_model, Value: embedding
         self.media_path = media_path
-        self.kv_map: str | None = None
+        self.kv_map: Dict | None = None
+        self.kv_map_color_transferred = False
 
         self.setCheckable(True)
         self.setToolTip(media_path)
