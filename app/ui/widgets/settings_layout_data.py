@@ -81,7 +81,7 @@ SETTINGS_LAYOUT_DATA: LayoutDictTypes = {
         },
         'SwapOnlyBestMatchEnableToggle': {
             'level': 1,
-            'label': 'Swap only best match',
+            'label': 'Swap Input Face only once',
             'default': False,           
             'help': 'only swap highest face match per face (not every match above treshold)'
         },
@@ -382,7 +382,7 @@ SETTINGS_LAYOUT_DATA: LayoutDictTypes = {
         'original_face_512TypeSelection': {
             'level': 2,
             'label': 'original_512',
-            'options': ['NEAREST', 'BILINEAR', 'BICUBIC'],
+            'options': ['NEAREST', 'BILINEAR'],
             'default': 'BILINEAR',
             'parentToggle': 'ActivateexperimentalsettingsEnableToggle',
             'requiredToggleValue': True,

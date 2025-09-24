@@ -261,7 +261,7 @@ class FrameWorker(threading.Thread):
                 kps_all_for_editor_on_crop = kps_all_for_editor_list[0] if kps_all_for_editor_list.shape[0] > 0 else None
                 if kps_all_for_editor_on_crop is not None and kps_all_for_editor_on_crop.size > 0:
                     processed_crop_torch_rgb_uint8 = self.swap_edit_face_core(processed_crop_torch_rgb_uint8, kps_all_for_editor_on_crop, parameters_for_face, control_global)
-                    if any(parameters_for_face.get(f, False) for f in ('FaceMakeupEnableToggle', 'HairMakeupEnableToggle', 'EyeBrowsMakeupEnableToggle', 'LipsMakeupEnableToggle', 'EyesMakeupEnableToggle')):
+                    if any(parameters_for_face.get(f, False) for f in ('FaceMakeupEnableToggle', 'HairMakeupEnableToggle', 'EyeBrowsMakeupEnableToggle', 'LipsMakeupEnableToggle')): #, 'EyesMakeupEnableToggle')):
                         processed_crop_torch_rgb_uint8 = self.swap_edit_face_core_makeup(
                             processed_crop_torch_rgb_uint8,
                             kps_all_for_editor_on_crop,
@@ -387,25 +387,39 @@ class FrameWorker(threading.Thread):
                         for _, target_face in self.main_window.target_faces.items():
                             params = ParametersDict(self.parameters[target_face.face_id], self.main_window.default_parameters)
 
-                            best_fface, best_sim = None, -1.0
+                            best_fface, best_score = None, -1.0
                             for fface in det_faces_data_for_display:
-                                sim = self.models_processor.findCosineDistance(fface['embedding'], target_face.get_embedding(control['RecognitionModelSelection']))
-                                if sim >= params['SimilarityThresholdSlider'] and sim > best_sim: best_sim, best_fface = sim, fface
-                            if best_fface:
+                                # benutze die EXISTIERENDE Matching-Logik
+                                tgt, tgt_params, score = self._find_best_target_match(fface['embedding'], control)
+                                # nur wenn dieser Face-Detection auch wirklich zu genau diesem target_face gehört:
+                                if tgt and tgt.face_id == target_face.face_id:
+                                    if score >= tgt_params['SimilarityThresholdSlider'] and score > best_score:
+                                        best_score = score
+                                        best_fface = fface
+
+                            if best_fface is not None:
                                 denoiser_on = control.get('DenoiserUNetEnableBeforeRestorersToggle', False) or \
                                               control.get('DenoiserAfterFirstRestorerToggle', False) or \
                                               control.get('DenoiserAfterRestorersToggle', False)
-                                print(f"[DEBUG] Denoiser check for target {target_face.face_id}: denoiser_on={denoiser_on}, assigned_kv_map is None={target_face.assigned_kv_map is None}, assigned_input_faces={target_face.assigned_input_faces.keys()}")
                                 if denoiser_on and target_face.assigned_kv_map is None and target_face.assigned_input_faces:
                                     target_face.calculate_assigned_input_embedding()
 
-                                s_e = None; arcface_model = self.models_processor.get_arcface_model(params['SwapModelSelection'])
-                                if swap_button_is_checked_global and params['SwapModelSelection'] != 'DeepFaceLive (DFM)': s_e = target_face.assigned_input_embedding.get(arcface_model)
-                                if s_e is not None and np.isnan(s_e).any(): s_e = None
-                                
+                                s_e = None
+                                arcface_model = self.models_processor.get_arcface_model(params['SwapModelSelection'])
+                                if swap_button_is_checked_global and params['SwapModelSelection'] != 'DeepFaceLive (DFM)':
+                                    s_e = target_face.assigned_input_embedding.get(arcface_model)
+                                    if s_e is not None and np.isnan(s_e).any():
+                                        s_e = None
+
                                 kv_map_for_swap = target_face.assigned_kv_map
-                                img, best_fface['original_face'], best_fface['swap_mask'] = self.swap_core(img, best_fface['kps_5'], best_fface['kps_all'], s_e=s_e, t_e=target_face.get_embedding(arcface_model), parameters=params, control=control, dfm_model_name=params['DFMModelSelection'], kv_map=kv_map_for_swap)
-                                if edit_button_is_checked_global and any(params[f] for f in ('FaceMakeupEnableToggle', 'HairMakeupEnableToggle', 'EyeBrowsMakeupEnableToggle', 'LipsMakeupEnableToggle')):
+                                img, best_fface['original_face'], best_fface['swap_mask'] = self.swap_core(
+                                    img, best_fface['kps_5'], best_fface['kps_all'],
+                                    s_e=s_e, t_e=target_face.get_embedding(arcface_model),
+                                    parameters=params, control=control,
+                                    dfm_model_name=params['DFMModelSelection'],
+                                    kv_map=kv_map_for_swap
+                                )
+                                if edit_button_is_checked_global and any(params[f] for f in ('FaceMakeupEnableToggle','HairMakeupEnableToggle','EyeBrowsMakeupEnableToggle','LipsMakeupEnableToggle')):
                                     img = self.swap_edit_face_core_makeup(img, best_fface['kps_all'], params, control)
                     else:
                         for fface in det_faces_data_for_display:
@@ -962,8 +976,8 @@ class FrameWorker(threading.Thread):
         border_mask, border_mask_calc = self.get_border_mask(parameters)
         swap_mask = torch.ones((128, 128), dtype=torch.float32, device=self.models_processor.device)
         swap_mask = torch.unsqueeze(swap_mask,0)
-        calc_mask = torch.ones((256, 256), dtype=torch.float32, device=self.models_processor.device)
-        calc_mask = torch.unsqueeze(calc_mask,0)
+        #calc_mask = torch.ones((256, 256), dtype=torch.float32, device=self.models_processor.device)
+        #calc_mask = torch.unsqueeze(calc_mask,0)
         
         BgExclude = torch.ones((512, 512), dtype=torch.float32, device=self.models_processor.device)
         BgExclude = torch.unsqueeze(BgExclude,0)
@@ -1192,9 +1206,6 @@ class FrameWorker(threading.Thread):
         if control.get('DenoiserAfterFirstRestorerToggle', False):
             swap = self._apply_denoiser_pass(swap, control, "AfterFirst", kv_map)
 
-        swap_backup = swap.clone()
-
-        # Second Restorer - Before Diff / Texture Transfer and AutoColor
         if parameters["FaceRestorerEnable2Toggle"] and not parameters["FaceRestorerEnable2EndToggle"]:
             swap_original2 = swap.clone()
 
@@ -1304,13 +1315,15 @@ class FrameWorker(threading.Thread):
                 # Ausschluss invertieren -> Erlauben
                 mask_final_512 = (1.0 - m).clamp(0,1) + (mask_calc)
                 mask_final_512 = mask_final_512.clamp(0,1)
-                if parameters.get("FaceParserBlendTextureSlider", 0) > 0:
-                    mask_final_512 = (mask_final_512 + parameters["FaceParserBlendTextureSlider"]/100.0).clamp(0,1)
-                mask_128_for_vgg = v2.Resize((128,128), interpolation=v2.InterpolationMode.BILINEAR, antialias=False)(mask_final_512)
+                #if parameters.get("FaceParserBlendTextureSlider", 0) != 0:
+                #    mask_final_512 = (mask_final_512 + parameters["FaceParserBlendTextureSlider"]/100.0).clamp(0,1)
+                #mask_128_for_vgg = v2.Resize((128,128), interpolation=v2.InterpolationMode.BILINEAR, antialias=False)(mask_final_512)
+            elif parameters.get("ExcludeOriginalVGGMaskEnableToggle", False):
+                mask_final_512 = calc_mask.clone() #mask_calc #torch.ones((512, 512), dtype=torch.uint8, device=self.models_processor.device)
             else:
-                mask_final_512 = calc_mask.clone()
-                mask_128_for_vgg = v2.Resize((128,128), interpolation=v2.InterpolationMode.BILINEAR, antialias=False)(mask_final_512)
-                mask_final_512 = 1-calc_mask.clone()
+                mask_final_512 = (1 - calc_mask.clone()) + mask_calc
+                #mask_128_for_vgg = v2.Resize((128,128), interpolation=v2.InterpolationMode.BILINEAR, antialias=False)(mask_final_512)
+                #mask_final_512 = 1-calc_mask.clone()
                 
 
             # ggf. auf 128er für VGG-Diff (falls dein apply_perceptual_diff_onnx das erwartet)
@@ -1350,38 +1363,55 @@ class FrameWorker(threading.Thread):
 
             # Optional VGG-Exclude (du hast beides kombiniert: VGG + Exclude)
             if parameters.get("ExcludeOriginalVGGMaskEnableToggle", False):
-                swapped_face_resized   = swap.clone()
-                original_face_resized  = original_face_512.clone()
-                mask_input = mask_128_for_vgg
-                lower = parameters['TextureLowerLimitThreshSlider']/100.0
-                upper = parameters['TextureUpperLimitThreshSlider']/100.0
-                upper_v = parameters['TextureUpperLimitValueSlider']/100.0
-                middle_v = parameters['TextureMiddleLimitValueSlider']/100.0
-
-                mask_vgg, diff_norm_texture = self.models_processor.apply_perceptual_diff_onnx(
-                    swapped_face_resized, original_face_resized, mask_input,
-                    lower, 0, upper, upper_v, middle_v,
-                    TextureFeatureLayerTypeSelection,
-                    parameters.get('ExcludeVGGMaskEnableToggle', False)
+                mask_input = t128_mask(calc_mask.clone())
+                # NEU: zwei Slider
+                thr = parameters['VGGMaskThresholdSlider']     # 0..100
+                soft = 100 #parameters['VGGMaskSoftnessSlider']     # 0..100
+                #gamma = parameters['VGGMaskGammaSlider']     # 0..100
+                upper_thresh = parameters['TextureUpperLimitSlider']/100
+                if parameters['ExcludeVGGMaskSmoothEnableToggle']:
+                    mode='smooth'
+                else:
+                    mode='linear'
+                
+                mask_vgg_512, diff_norm_texture = self.models_processor.apply_vgg_mask_simple(
+                    swap, original_face_512, mask_input,
+                    center_pct=thr, softness_pct=soft,
+                    feature_layer=TextureFeatureLayerTypeSelection,
+                    mode=mode  # oder 'linear'
                 )
-                # Wenn ExcludeVGGMaskEnableToggle==False -> mask_vgg = diff_norm_texture
+                # mask_vgg_512: [1,512,512] in [0..1]
+                 #Wenn ExcludeVGGMaskEnableToggle==False -> mask_vgg_512 = diff_norm_texture
                 if not parameters.get('ExcludeVGGMaskEnableToggle', False):
-                    mask_vgg = diff_norm_texture
+                    diff_norm_texture = torch.nn.functional.interpolate(
+                        diff_norm_texture.unsqueeze(0),
+                        size=(512, 512),
+                        mode='bilinear',
+                        align_corners=True
+                    ).squeeze(0)
+                    mask_vgg_512 = diff_norm_texture
+
+                mask_vgg_512 = torch.where(mask_vgg_512 >= upper_thresh, upper_thresh, mask_vgg_512)
+                mask_vgg_512 = mask_vgg_512 + mask_calc
 
                 if parameters.get('TextureBlendAmountSlider', 0) > 0:
                     b = parameters['TextureBlendAmountSlider']
                     gauss = transforms.GaussianBlur(b*2+1, (b+1)*0.2)
-                    mask_vgg = gauss(mask_vgg.float())
-
+                    mask_vgg_512 = gauss(mask_vgg_512.float())
+                    
+                # Boost (Gamma < 1 macht härter, >1 macht softer)
+                #gamma = 0.9 + 0.6 * (1.0 - gamma/100.0)  # bei geringer Softness etwas härter
+                #mask_vgg_512 = mask_vgg_512.clamp(1e-6,1).pow(gamma)
+                
                 # VGG-Maske als weiteres Limit: 512
-                mask_vgg_512 = t512_mask(mask_vgg)
-                # final erlauben = mask_final_512 * (1 - (1 - mask_vgg)) = mask_final_512 * mask_vgg
+                mask_vgg_512 = t512_mask(mask_vgg_512)
+                # final erlauben = mask_final_512 * (1 - (1 - mask_vgg_512)) = mask_final_512 * mask_vgg
                 mask_final_512 = (mask_final_512 * mask_vgg_512).clamp(0,1)
-                mask_final_512 = (mask_final_512 + mask_calc).clamp(0,1)
+                mask_final_512 = (mask_final_512 + mask_calc).clamp(0,1)                
 
             # Mischen:  w = alpha*(1 - mask_final_512)
             alpha_t = parameters['TransferTextureBlendAmountSlider']/100.0
-            w = alpha_t * (1.0 - mask_final_512)# + (1-calc_mask)
+            w = alpha_t * (1.0 - mask_final_512)# + (calc_mask)
             w = w.clamp(0,1)
             swap = (swap_texture_backup * (1.0 - w) + gradient_texture * w).clamp(0,255)
 
@@ -1431,7 +1461,7 @@ class FrameWorker(threading.Thread):
                 mask512 = gauss(mask512.float())
 
             # mit calc_mask kombinieren
-            mask512 = (mask512 * calc_mask).clamp(0,1)
+            mask512 = (mask512 + mask_calc).clamp(0,1)
 
             swap = (swap * mask512 + original_face_512 * (1.0 - mask512)).clamp(0,255)
             diff_mask = 1-mask512.clone()  # falls du später "diff" anzeigen willst
@@ -2109,7 +2139,7 @@ class FrameWorker(threading.Thread):
         return img
         
     def swap_edit_face_core_makeup(self, img, kps, parameters, control, **kwargs): # img = RGB
-        if parameters['FaceMakeupEnableToggle'] or parameters['HairMakeupEnableToggle'] or parameters['EyeBrowsMakeupEnableToggle'] or parameters['LipsMakeupEnableToggle'] or parameters['EyesMakeupEnableToggle']:
+        if parameters['FaceMakeupEnableToggle'] or parameters['HairMakeupEnableToggle'] or parameters['EyeBrowsMakeupEnableToggle'] or parameters['LipsMakeupEnableToggle']: #or parameters['EyesMakeupEnableToggle']:
         
             _, lmk_crop, _ = self.models_processor.run_detect_landmark( img, bbox=[], det_kpss=kps, detect_mode='203', score=0.5, from_points=True)
 

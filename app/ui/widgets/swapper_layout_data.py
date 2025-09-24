@@ -884,6 +884,17 @@ SWAPPER_LAYOUT_DATA: LayoutDictTypes = {
             'parentToggle': 'TransferTextureEnableToggle',
             'requiredToggleValue': True,            
             'help': 'Original Exclude Mask with VGG Model (without lower limit / upper limit / strenght  manipulation)'
+        },       
+        'TextureUpperLimitSlider': {
+            'level': 3,
+            'label': 'Upper Limit',
+            'min_value': '0',
+            'max_value': '100',
+            'default': '100',
+            'step': 1,
+            'parentToggle': 'TransferTextureEnableToggle & ExcludeOriginalVGGMaskEnableToggle',
+            'requiredToggleValue': True,
+            'help': 'Defines the strenght of parts over "Face Features Upper Limit" in transfer mask. Check "View Face Mask" with "mask show -> texture" to see effect.'
         },    
         'TextureBlendAmountSlider': {
             'level': 3,
@@ -904,50 +915,47 @@ SWAPPER_LAYOUT_DATA: LayoutDictTypes = {
             'requiredToggleValue': True,            
             'help': 'Exclude Mask with VGG Model and lower limit / upper limit / strenght'
         }, 
-        'TextureLowerLimitThreshSlider': {
+        #'ExcludeVGGMaskSmoothEnableToggle': {
+        #    'level': 3,
+        #    'label': 'VGG Mask Smooth Mode',
+        #    'default': False,
+        #    'parentToggle': 'TransferTextureEnableToggle & ExcludeOriginalVGGMaskEnableToggle',
+        #    'requiredToggleValue': True,            
+        #    'help': '.'
+        #}, 
+        'VGGMaskThresholdSlider': {
             'level': 3,
-            'label': 'Face Features Lower Limit',
+            'label': 'Threshold',
             'min_value': '0',
             'max_value': '100',
-            'default': '30',
+            'default': '35',
             'step': 1,
             'parentToggle': 'TransferTextureEnableToggle & ExcludeOriginalVGGMaskEnableToggle & ExcludeVGGMaskEnableToggle',
             'requiredToggleValue': True,
-            'help': 'Defines lower Limit for transfer mask. Check "View Face Mask" with "mask show -> texture" to see effect.'
+            'help': 'Defines Limit for vgg transfer mask. Check "View Face Mask" with "mask show -> texture" to see effect.'
         },   
-        'TextureUpperLimitThreshSlider': {
-            'level': 3,
-            'label': 'Face Features Upper Limit',
-            'min_value': '0',
-            'max_value': '100',
-            'default': '50',
-            'step': 1,
-            'parentToggle': 'TransferTextureEnableToggle & ExcludeOriginalVGGMaskEnableToggle & ExcludeVGGMaskEnableToggle',
-            'requiredToggleValue': True,
-            'help': 'Defines upper Limit for transfer mask. Check "View Face Mask" with "mask show -> texture" to see effect.'
-        },                                     
-        'TextureMiddleLimitValueSlider': {
-            'level': 3,
-            'label': 'Lower Strength',
-            'min_value': '0',
-            'max_value': '100',
-            'default': '0',
-            'step': 1,
-            'parentToggle': 'TransferTextureEnableToggle & ExcludeOriginalVGGMaskEnableToggle & ExcludeVGGMaskEnableToggle',
-            'requiredToggleValue': True,
-            'help': 'Defines the strenght of parts under "Face Features Lower Limit" in transfer mask. Check "View Face Mask" with "mask show -> texture" to see effect.'
-        },       
-        'TextureUpperLimitValueSlider': {
-            'level': 3,
-            'label': 'Upper Strength',
-            'min_value': '0',
-            'max_value': '100',
-            'default': '100',
-            'step': 1,
-            'parentToggle': 'TransferTextureEnableToggle & ExcludeOriginalVGGMaskEnableToggle & ExcludeVGGMaskEnableToggle',
-            'requiredToggleValue': True,
-            'help': 'Defines the strenght of parts over "Face Features Upper Limit" in transfer mask. Check "View Face Mask" with "mask show -> texture" to see effect.'
-        },
+        #'VGGMaskSoftnessSlider': {
+        #    'level': 3,
+        #    'label': 'Softness',
+        #    'min_value': '0',
+        #    'max_value': '100',
+        #    'default': '50',
+        #    'step': 1,
+        #    'parentToggle': 'TransferTextureEnableToggle & ExcludeOriginalVGGMaskEnableToggle & ExcludeVGGMaskEnableToggle',
+        #    'requiredToggleValue': True,
+        #    'help': 'Defines upper Limit for transfer mask. Check "View Face Mask" with "mask show -> texture" to see effect.'
+        #},                                     
+        #'VGGMaskGammaSlider': {
+        #    'level': 3,
+        #    'label': 'Gamma',
+        #    'min_value': '0',
+        #    'max_value': '100',
+        #    'default': '0',
+        #    'step': 1,
+        #    'parentToggle': 'TransferTextureEnableToggle & ExcludeOriginalVGGMaskEnableToggle & ExcludeVGGMaskEnableToggle',
+        #    'requiredToggleValue': True,
+        #    'help': 'Defines the strenght of parts under "Face Features Lower Limit" in transfer mask. Check "View Face Mask" with "mask show -> texture" to see effect.'
+        #},
         'ExcludeMaskEnableToggle': {
             'level': 2,
             'label': 'Mask Features Exclude',
