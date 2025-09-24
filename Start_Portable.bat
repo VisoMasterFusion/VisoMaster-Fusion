@@ -24,7 +24,7 @@ set "UV_ZIP=%PORTABLE_DIR%\uv.zip"
 set "GIT_URL=https://github.com/git-for-windows/git/releases/download/v2.51.0.windows.1/PortableGit-2.51.0-64-bit.7z.exe"
 set "GIT_ZIP=%PORTABLE_DIR%\PortableGit.exe"
 set "CONFIG_FILE=%BASE_DIR%portable.cfg"
-set "DOWNLOAD_PY=%APP_DIR%\download.py"
+set "DOWNLOAD_PY=%APP_DIR%\download_models.py"
 set "MAIN_PY=%APP_DIR%\main.py"
 
 :: --- Step 0: User Configuration ---
@@ -211,15 +211,15 @@ if /I "!NEEDS_INSTALL!"=="true" (
 :: --- Step 7: Run downloader ---
 if /I "!DOWNLOAD_RUN!"=="false" (
     if exist "%DOWNLOAD_PY%" (
-        echo Running download.py...
+        echo Running download_models.py...
         "%VENV_DIR%\Scripts\python.exe" "%DOWNLOAD_PY%"
         if !ERRORLEVEL! neq 0 (
-            echo ERROR: download.py failed.
+            echo ERROR: download_models.py failed.
             exit /b 1
         )
         powershell -Command "(Get-Content '%CONFIG_FILE%') -replace 'set \"DOWNLOAD_RUN=false\"', 'set \"DOWNLOAD_RUN=true\"' | Set-Content '%CONFIG_FILE%'"
     ) else (
-        echo WARNING: download.py not found. Skipping.
+        echo WARNING: download_models.py not found. Skipping.
         powershell -Command "(Get-Content '%CONFIG_FILE%') -replace 'set \"DOWNLOAD_RUN=false\"', 'set \"DOWNLOAD_RUN=true\"' | Set-Content '%CONFIG_FILE%'"
     )
 )
