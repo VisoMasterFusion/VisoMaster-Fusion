@@ -499,6 +499,65 @@ class ModelsProcessor(QtCore.QObject):
                     torch.cuda.empty_cache()
                 print("KV Extractor unloaded.")
 
+    def apply_vgg_mask_simple(
+        self,
+        swapped_face: torch.Tensor,          # [3,512,512] uint8
+        original_face: torch.Tensor,         # [3,512,512] uint8
+        swap_mask_128: torch.Tensor,         # [1,128,128] float mask (0..1)
+        center_pct: float,                    # 0..100, z.B. parameters['VGGMaskThresholdSlider']
+        softness_pct: float,                  # 0..100, z.B. parameters['VGGMaskSoftnessSlider']
+        feature_layer: str = 'combo_relu3_3_relu3_1',
+        mode: str = 'smooth'                  # 'smooth' (smoothstep) oder 'linear'
+    ):
+        """
+        Liefert:
+          mask_vgg: [1,512,512] float 0..1 (weiche Diff-Maske)
+          diff_norm_texture: [1,128,128] float 0..1 (normalisierte Roh-Diff in 128er Auflösung)
+        """
+        # 1) Roh-Diff per bestehender ONNX-Pipeline in 128x128 holen (ohne Mapping):
+        #    Wir nutzen apply_perceptual_diff_onnx mit „Durchreich“-Modus (ExcludeVGGMaskEnableToggle=False),
+        #    und ignorieren die komplexen Threshold-Parameter (werden unten ersetzt).
+        dummy_lower = 0.0
+        dummy_upper = 1.0
+        dummy_upper_v = 1.0
+        dummy_middle_v = 0.5
+
+        diff_mapped_128, diff_norm_128 = self.apply_perceptual_diff_onnx(
+            swapped_face, original_face, swap_mask_128,
+            dummy_lower, 0.0, dummy_upper, dummy_upper_v, dummy_middle_v,
+            feature_layer, ExcludeVGGMaskEnableToggle=False
+        )
+        # diff_norm_128: [1,128,128] in [0..1]
+        d = diff_mapped_128.squeeze(0)  # [128,128]
+
+        # 2) Two-slider-Mapping -> untere/obere Schwelle aus (center,softness)
+        center   = float(center_pct)   / 100.0   # 0..1
+        softness = float(softness_pct) / 100.0   # 0..1
+
+        # Breite des Übergangsbandes (angenehme Praxis-Werte):
+        #  - Mindestbreite 0.04, Maxbreite 0.40 (gefühlt gut kontrollierbar)
+        band = 0.04 + 0.36 * softness
+        lo = max(0.0, center - band * 0.5)
+        hi = min(1.0, center + band * 0.5)
+
+        # 3) Kurvenform
+        x = (d - lo) / max(1e-6, (hi - lo))
+        x = x.clamp(0.0, 1.0)
+        if mode == 'smooth':
+            # Smoothstep
+            x = x * x * (3.0 - 2.0 * x)
+        # else: 'linear' -> x bleibt linear
+
+        # 4) Auf 512x512 hochskalieren (bilinear) – du arbeitest später meist in 512
+        x_512 = torch.nn.functional.interpolate(
+            x.unsqueeze(0).unsqueeze(0),
+            size=(512, 512),
+            mode='bilinear',
+            align_corners=True
+        ).squeeze(0)
+
+        return x_512.clamp(0,1), diff_norm_128  # ([1,512,512], [1,128,128])
+
     def load_inswapper_iss_emap(self, model_name):
         with self.model_lock:
             if not self.models[model_name]:
