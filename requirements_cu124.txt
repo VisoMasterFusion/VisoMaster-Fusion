@@ -7,7 +7,7 @@ onnxruntime-gpu==1.22.0
 onnxsim
 opencv-python==4.10.0.84
 packaging==24.1
-pillow==9.5.0
+pillow
 protobuf==6.31.1
 psutil==6.0.0
 pyqtdarktheme
