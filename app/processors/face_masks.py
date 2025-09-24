@@ -388,12 +388,18 @@ class FaceMasks:
                     if d > 0:
                         m_s = self._dilate_binary(m_s, d)
                         m_o = self._dilate_binary(m_o, d)
+                        if parameters.get("FaceParserBlendTextureSlider", 0) != 0:
+                            m_s = (m_s + parameters["FaceParserBlendTextureSlider"]/100.0).clamp(0,1)
+                            m_o = (m_o + parameters["FaceParserBlendTextureSlider"]/100.0).clamp(0,1)
                         tex  = torch.maximum(tex,  m_s)
                         tex_o = torch.maximum(tex_o, m_o)
                     if d <= 0:
                         # negative => “abziehen”
                         m_s = self._dilate_binary(m_s, d)
                         m_o = self._dilate_binary(m_o, d)
+                        if parameters.get("FaceParserBlendTextureSlider", 0) != 0:
+                            m_s = (m_s + parameters["FaceParserBlendTextureSlider"]/100.0).clamp(0,1)
+                            m_o = (m_o + parameters["FaceParserBlendTextureSlider"]/100.0).clamp(0,1)
                         sub = torch.maximum(m_s, m_o)
                         tex  = (tex  - sub).clamp_min(0)
                         tex_o = (tex_o - sub).clamp_min(0)
@@ -690,16 +696,16 @@ class FaceMasks:
         # ### 1) Channels & Shape je Backbone/Layer definieren ###
         feature_shapes = {
             # VGG16
-            'relu2_2':               (1, 128, 128, 128),
-            'relu3_1':               (1, 256, 128, 128),
-            'relu3_3':               (1, 256, 128, 128),
-            'relu4_1':               (1, 512, 128, 128),
-            'combo_relu3_3_relu2_2': (1, 384, 128, 128),
+            #'relu2_2':               (1, 128, 128, 128),
+            #'relu3_1':               (1, 256, 128, 128),
+            #'relu3_3':               (1, 256, 128, 128),
+            #'relu4_1':               (1, 512, 128, 128),
+            #'combo_relu3_3_relu2_2': (1, 384, 128, 128),
             'combo_relu3_3_relu3_1': (1, 512, 128, 128),
             # EfficientNet-B0 (Layer 2 = C=24, Layer 3 = C=40, Layer 4 = C=80)
-            'efficientnetb0_layer2': (1, 24, 128, 128),
-            'efficientnetb0_layer3': (1, 40, 128, 128),
-            'efficientnetb0_layer4': (1, 80, 128, 128),
+            #'efficientnetb0_layer2': (1, 24, 128, 128),
+            #'efficientnetb0_layer3': (1, 40, 128, 128),
+            #'efficientnetb0_layer4': (1, 80, 128, 128),
         }
 
         # ### 2) Modell laden (oder aus Cache ziehen) ###

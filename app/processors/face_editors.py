@@ -465,202 +465,153 @@ class FaceEditors:
 
         return out
     
-    def face_parser_makeup_direct_rgb(self, img, parsing, part=(17,), color=None, blend_factor=0.2):
+    def _get_faceparser_labels_via_facemasks(self, img_uint8_3x512x512: torch.Tensor) -> torch.Tensor:
+        """
+        img_uint8_3x512x512: [3,512,512] uint8 (0..255)
+        returns labels: [512,512] long
+        """
+        fm = getattr(self.models_processor, "face_masks", None)
+        if fm is None or not hasattr(fm, "_faceparser_labels"):
+            raise RuntimeError("models_processor.face_masks._faceparser_labels nicht verfügbar.")
+        return fm._faceparser_labels(img_uint8_3x512x512)
+
+
+    # --- maskiertes RGB-Blending (fehlte in deinem Code) ---
+    def face_parser_makeup_direct_rgb_masked(self, img: torch.Tensor, mask: torch.Tensor,
+                                             color=None, blend_factor: float = 0.2) -> torch.Tensor:
+        """
+        img:  [3,H,W] uint8
+        mask: [H,W] bool oder float (0..1)
+        color: [R,G,B] 0..255
+        """
+        device = img.device
         color = color or [230, 50, 20]
-        device = img.device  # Ensure we use the same device
+        blend_factor = float(max(0.0, min(1.0, blend_factor)))
 
-        # Clamp blend factor to ensure it stays between 0 and 1
-        blend_factor = min(max(blend_factor, 0.0), 1.0)
+        # Farbe in [0,1]
+        r, g, b = [c / 255.0 for c in color]
+        tar_color = torch.tensor([r, g, b], dtype=torch.float32, device=device).view(3, 1, 1)
 
-        # Normalize the target RGB color to [0, 1]
-        r, g, b = [x / 255.0 for x in color]
-        tar_color = torch.tensor([r, g, b], dtype=torch.float32).view(3, 1, 1).to(device)
-
-        #print(f"Target RGB color: {tar_color}")
-
-        # Create hair mask based on parsing for multiple parts
-        if isinstance(part, tuple):
-            hair_mask = torch.zeros_like(parsing, dtype=torch.bool)
-            for p in part:
-                hair_mask |= (parsing == p)  # Accumulate masks for all parts in the tuple
+        # Maske in float [0,1]
+        if mask.dtype == torch.bool:
+            m = mask.float()
         else:
-            hair_mask = (parsing == part)
+            m = mask.clamp(0.0, 1.0).float()
+        m = m.unsqueeze(0)  # [1,H,W]
 
-        #print(f"Hair mask shape: {hair_mask.shape}, Non-zero elements in mask: {hair_mask.sum().item()}")
+        img_f = img.float() / 255.0
+        w = m * blend_factor
+        out = img_f * (1.0 - w) + tar_color * w
+        out = (out * 255.0).clamp(0, 255).to(torch.uint8)
+        return out
 
-        # Expand mask to match the image dimensions
-        mask = hair_mask.unsqueeze(0).expand_as(img)
-        #print(f"Expanded mask shape: {mask.shape}, Non-zero elements: {mask.sum().item()}")
 
-        # Ensure that the image is normalized to [0, 1]
-        image_normalized = img.float() / 255.0
+    def face_parser_makeup_direct_rgb(self, img, parsing, part=(17,), color=None, blend_factor=0.2):
+        """
+        img:     [3,H,W] uint8
+        parsing: [H,W] Labels ODER [1,19,H,W] Logits (robust)
+        """
+        device = img.device
+        color = color or [230, 50, 20]
+        blend_factor = float(max(0.0, min(1.0, blend_factor)))
 
-        # Perform the color blending for the target region
-        # (1 - blend_factor) * original + blend_factor * target_color
-        changed = torch.where(
-            mask,
-            (1 - blend_factor) * image_normalized + blend_factor * tar_color,
-            image_normalized
+        # Parsing -> Labels [H,W]
+        if parsing.dim() == 2:
+            labels = parsing.to(torch.long)
+        elif parsing.dim() == 4 and parsing.shape[0] == 1 and parsing.shape[1] == 19:
+            labels = parsing.argmax(dim=1).squeeze(0).to(torch.long)
+        else:
+            raise ValueError(f"Unsupported parsing tensor shape: {tuple(parsing.shape)}")
+
+        # Zielmaske (bool [H,W])
+        if isinstance(part, tuple):
+            m = torch.zeros_like(labels, dtype=torch.bool, device=device)
+            for p in part:
+                m |= (labels == int(p))
+        else:
+            m = (labels == int(part))
+
+        return self.face_parser_makeup_direct_rgb_masked(
+            img=img, mask=m, color=color, blend_factor=blend_factor
         )
 
-        # Scale back to [0, 255] for final output
-        changed = torch.clamp(changed * 255, 0, 255).to(torch.uint8)
-
-        return changed
 
     def apply_face_makeup(self, img, parameters):
-        # atts = [1 'skin', 2 'l_brow', 3 'r_brow', 4 'l_eye', 5 'r_eye', 6 'eye_g', 7 'l_ear', 8 'r_ear', 9 'ear_r', 10 'nose', 11 'mouth', 12 'u_lip', 13 'l_lip', 14 'neck', 15 'neck_l', 16 'cloth', 17 'hair', 18 'hat']
+        """
+        img: [3,512,512] uint8
+        returns: out_img [3,512,512] uint8, combined_mask [1,512,512] float
+        """
+        device = img.device
 
-        # Normalize the image and perform parsing
-        temp = torch.div(img, 255)
-        temp = v2.functional.normalize(temp, (0.485, 0.456, 0.406), (0.229, 0.224, 0.225))
-        temp = torch.reshape(temp, (1, 3, 512, 512))
-        outpred = torch.empty((1, 19, 512, 512), dtype=torch.float32, device=self.models_processor.device).contiguous()
+        # 1) Labels via face_masks (schnell + konsistent)
+        labels = self._get_faceparser_labels_via_facemasks(img)  # [512,512] long
 
-        self.models_processor.run_faceparser(temp, outpred)
-
-        # Perform parsing prediction
-        outpred = torch.squeeze(outpred)
-        outpred = torch.argmax(outpred, 0)
-
-        # Clone the image for modifications
+        # 2) Arbeitskopie
         out = img.clone()
 
-        # Apply makeup for each face part
-        if parameters['FaceMakeupEnableToggle']:
+        # 3) Je Bereich einfärben (optional)
+        if parameters.get('FaceMakeupEnableToggle', False):
             color = [parameters['FaceMakeupRedSlider'], parameters['FaceMakeupGreenSlider'], parameters['FaceMakeupBlueSlider']]
-            out = self.face_parser_makeup_direct_rgb(img=out, parsing=outpred, part=(1, 7, 8, 10), color=color, blend_factor=parameters['FaceMakeupBlendAmountDecimalSlider'])
-        
-        if parameters['EyesMakeupEnableToggle']:
-            print("eyes")
+            out = self.face_parser_makeup_direct_rgb(out, labels, part=(1, 7, 8, 10),
+                                                     color=color,
+                                                     blend_factor=parameters['FaceMakeupBlendAmountDecimalSlider'])
+        '''
+        if parameters.get('EyesMakeupEnableToggle', False):
             color = [parameters['EyesMakeupRedSlider'], parameters['EyesMakeupGreenSlider'], parameters['EyesMakeupBlueSlider']]
-            
-            # Ausgangsmaske für Augen (Labels 4 & 5)
-            eye_mask = (outpred == 4) | (outpred == 5)  # shape: (512, 512)
-            print("outpred, eye_mask_pre (512,512): ", outpred.shape, eye_mask.shape)
-            eye_mask = eye_mask.unsqueeze(0).unsqueeze(0).float()  # shape: (1, 1, H, W)
-            print("eye_mask_post (1,1,H,W): ", eye_mask.shape)
-
-            # Pupille isolieren: erzeuge kleinere zentrale Maske mit max_pool2d
-            pupil_mask = 1 - torch.nn.functional.max_pool2d(1 - eye_mask, kernel_size=5, stride=1, padding=2)
-            pupil_mask = pupil_mask.squeeze(0).squeeze(0)  # zurück zu (H, W)
-
-            # Optional: Ränder glätten
-            if parameters['EyesMakeupBlurSlider'] > 0:
-                blur_kernel = parameters['EyesMakeupBlurSlider'] * 2 + 1
-                blur = transforms.GaussianBlur(blur_kernel, sigma=(parameters['EyesMakeupBlurSlider'] + 1) * 0.2)
+            # Augen (4 & 5)
+            eye_mask = ((labels == 4) | (labels == 5)).float().unsqueeze(0).unsqueeze(0)  # [1,1,512,512]
+            # „Pupille“ enger (Erosion via max_pool auf invertierter Maske)
+            pupil_mask = 1.0 - torch.nn.functional.max_pool2d(1.0 - eye_mask, kernel_size=5, stride=1, padding=2)
+            pupil_mask = pupil_mask.squeeze(0).squeeze(0)  # [512,512]
+            # ggf. blur
+            blur_k = int(parameters.get('EyesMakeupBlurSlider', 0)) * 2 + 1
+            if blur_k > 1:
+                blur = transforms.GaussianBlur(blur_k, sigma=(parameters['EyesMakeupBlurSlider'] + 1) * 0.2)
                 pupil_mask = blur(pupil_mask.unsqueeze(0)).squeeze(0)
-
-            # Übergebe Pupillenmaske direkt an RGB-Blending-Funktion
             out = self.face_parser_makeup_direct_rgb_masked(
-                img=out,
-                mask=pupil_mask,
-                color=color,
+                img=out, mask=pupil_mask, color=color,
                 blend_factor=parameters['EyesMakeupBlendAmountDecimalSlider']
             )
-
-        if parameters['HairMakeupEnableToggle']:
+        '''
+        
+        if parameters.get('HairMakeupEnableToggle', False):
             color = [parameters['HairMakeupRedSlider'], parameters['HairMakeupGreenSlider'], parameters['HairMakeupBlueSlider']]
-            out = self.face_parser_makeup_direct_rgb(img=out, parsing=outpred, part=17, color=color, blend_factor=parameters['HairMakeupBlendAmountDecimalSlider'])
+            out = self.face_parser_makeup_direct_rgb(out, labels, part=17,
+                                                     color=color,
+                                                     blend_factor=parameters['HairMakeupBlendAmountDecimalSlider'])
 
-        if parameters['EyeBrowsMakeupEnableToggle']:
+        if parameters.get('EyeBrowsMakeupEnableToggle', False):
             color = [parameters['EyeBrowsMakeupRedSlider'], parameters['EyeBrowsMakeupGreenSlider'], parameters['EyeBrowsMakeupBlueSlider']]
-            out = self.face_parser_makeup_direct_rgb(img=out, parsing=outpred, part=(2, 3), color=color, blend_factor=parameters['EyeBrowsMakeupBlendAmountDecimalSlider'])
+            out = self.face_parser_makeup_direct_rgb(out, labels, part=(2, 3),
+                                                     color=color,
+                                                     blend_factor=parameters['EyeBrowsMakeupBlendAmountDecimalSlider'])
 
-        if parameters['LipsMakeupEnableToggle']:
+        if parameters.get('LipsMakeupEnableToggle', False):
             color = [parameters['LipsMakeupRedSlider'], parameters['LipsMakeupGreenSlider'], parameters['LipsMakeupBlueSlider']]
-            out = self.face_parser_makeup_direct_rgb(img=out, parsing=outpred, part=(12, 13), color=color, blend_factor=parameters['LipsMakeupBlendAmountDecimalSlider'])
+            out = self.face_parser_makeup_direct_rgb(out, labels, part=(12, 13),
+                                                     color=color,
+                                                     blend_factor=parameters['LipsMakeupBlendAmountDecimalSlider'])
 
-        # Define the different face attributes to apply makeup on
+        # 4) Kombinierte Maske (für Rückgabe/Debug)
         face_attributes = {
-            1: parameters['FaceMakeupEnableToggle'],  # Face
-            2: parameters['EyeBrowsMakeupEnableToggle'],  # Left Eyebrow
-            3: parameters['EyeBrowsMakeupEnableToggle'],  # Right Eyebrow
-            4: parameters['EyesMakeupEnableToggle'],  # Left Eye
-            5: parameters['EyesMakeupEnableToggle'],  # Right Eye
-            7: parameters['FaceMakeupEnableToggle'],  # Left Ear
-            8: parameters['FaceMakeupEnableToggle'],  # Right Ear
-            10: parameters['FaceMakeupEnableToggle'],  # Nose
-            12: parameters['LipsMakeupEnableToggle'],  # Upper Lip
-            13: parameters['LipsMakeupEnableToggle'],  # Lower Lip
-            17: parameters['HairMakeupEnableToggle'],  # Hair
+            1: parameters.get('FaceMakeupEnableToggle', False),
+            2: parameters.get('EyeBrowsMakeupEnableToggle', False),
+            3: parameters.get('EyeBrowsMakeupEnableToggle', False),
+            4: parameters.get('EyesMakeupEnableToggle', False),
+            5: parameters.get('EyesMakeupEnableToggle', False),
+            7: parameters.get('FaceMakeupEnableToggle', False),
+            8: parameters.get('FaceMakeupEnableToggle', False),
+            10: parameters.get('FaceMakeupEnableToggle', False),
+            12: parameters.get('LipsMakeupEnableToggle', False),
+            13: parameters.get('LipsMakeupEnableToggle', False),
+            17: parameters.get('HairMakeupEnableToggle', False),
         }
 
-        # Pre-calculated kernel per dilatazione (kernel 3x3)
-        kernel = torch.ones((1, 1, 3, 3), dtype=torch.float32, device=self.models_processor.device)
+        combined_mask = torch.zeros((512, 512), dtype=torch.float32, device=device)
+        for attr, enabled in face_attributes.items():
+            if not enabled:
+                continue
+            combined_mask = torch.max(combined_mask, (labels == int(attr)).float())
 
-        # Apply blur if blur kernel size is greater than 1
-        blur_kernel_size = parameters['FaceEditorBlurAmountSlider'] * 2 + 1
-        if blur_kernel_size > 1:
-            gauss = transforms.GaussianBlur(blur_kernel_size, (parameters['FaceEditorBlurAmountSlider'] + 1) * 0.2)
-
-        # Generate masks for each face attribute
-        face_parses = []
-        for attribute, attribute_value in face_attributes.items():
-            if attribute_value:  # Se l'attributo è abilitato
-                attribute_idxs = torch.tensor([attribute], device=self.models_processor.device)
-
-                # Create the mask: white for the part, black for the rest
-                attribute_parse = torch.isin(outpred, attribute_idxs).float()
-                attribute_parse = torch.clamp(attribute_parse, 0, 1)  # Manteniamo i valori tra 0 e 1
-                attribute_parse = torch.reshape(attribute_parse, (1, 1, 512, 512))
-
-                # Dilate the mask (if necessary)
-                for _ in range(1):  # One pass, modify if needed
-                    attribute_parse = torch.nn.functional.conv2d(attribute_parse, kernel, padding=(1, 1))
-                    attribute_parse = torch.clamp(attribute_parse, 0, 1)
-
-                # Squeeze to restore dimensions
-                attribute_parse = torch.squeeze(attribute_parse)
-
-                # Apply blur if required
-                if blur_kernel_size > 1:
-                    attribute_parse = gauss(attribute_parse.unsqueeze(0)).squeeze(0)
-
-            else:
-                # If the attribute is not enabled, use a black mask
-                attribute_parse = torch.zeros((512, 512), dtype=torch.float32, device=self.models_processor.device)
-            
-            # Add the mask to the list
-            face_parses.append(attribute_parse)
-
-        # Create a final mask to combine all the individual masks
-        combined_mask = torch.zeros((512, 512), dtype=torch.float32, device=self.models_processor.device)
-        for face_parse in face_parses:
-            # Add batch and channel dimensions for interpolation
-            face_parse = face_parse.unsqueeze(0).unsqueeze(0)  # From (512, 512) to (1, 1, 512, 512)
-            
-            # Apply bilinear interpolation for anti-aliasing
-            face_parse = torch.nn.functional.interpolate(face_parse, size=(512, 512), mode='bilinear', align_corners=True)
-            
-            # Remove the batch and channel dimensions
-            face_parse = face_parse.squeeze(0).squeeze(0)  # Back to (512, 512)
-            combined_mask = torch.max(combined_mask, face_parse)  # Combine the masks
-
-        # Final application of the makeup mask on the original image
-        out = img * (1 - combined_mask.unsqueeze(0)) + out * combined_mask.unsqueeze(0)
-
-        return out, combined_mask.unsqueeze(0)
-        
-    def face_parser_makeup_direct_rgb_masked(self, img, mask, color, blend_factor=0.2):
-        device = img.device
-        blend_factor = min(max(blend_factor, 0.0), 1.0)
-        r, g, b = [x / 255.0 for x in color]
-        tar_color = torch.tensor([r, g, b], dtype=torch.float32).view(3, 1, 1).to(device)
-
-        # Normalisiere Bild
-        image_normalized = img.float() / 255.0
-
-        # Maske auf 3 Kanäle bringen
-        mask_3ch = mask.unsqueeze(0).expand_as(img)
-
-        # Farbmischung
-        changed = torch.where(
-            mask_3ch > 0.01,  # Optional: Schwelle gegen weiche Maskenränder
-            (1 - blend_factor) * image_normalized + blend_factor * tar_color,
-            image_normalized
-        )
-
-        # Skaliere zurück auf 0–255
-        changed = torch.clamp(changed * 255, 0, 255).to(torch.uint8)
-        return changed
+        out_final = out.to(torch.uint8)
+        return out_final, combined_mask.unsqueeze(0)
