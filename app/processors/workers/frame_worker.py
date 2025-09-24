@@ -1369,11 +1369,11 @@ class FrameWorker(threading.Thread):
                 soft = 100 #parameters['VGGMaskSoftnessSlider']     # 0..100
                 #gamma = parameters['VGGMaskGammaSlider']     # 0..100
                 upper_thresh = parameters['TextureUpperLimitSlider']/100
-                if parameters['ExcludeVGGMaskSmoothEnableToggle']:
-                    mode='smooth'
-                else:
-                    mode='linear'
-                
+                #if parameters['ExcludeVGGMaskSmoothEnableToggle']:
+                #    mode='smooth'
+                #else:
+                #    mode='linear'
+                mode='smooth'
                 mask_vgg_512, diff_norm_texture = self.models_processor.apply_vgg_mask_simple(
                     swap, original_face_512, mask_input,
                     center_pct=thr, softness_pct=soft,
