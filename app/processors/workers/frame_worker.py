@@ -1197,8 +1197,7 @@ class FrameWorker(threading.Thread):
 
         # Face editor After First Restorer
         if parameters['FaceEditorEnableToggle'] and self.main_window.editFacesButton.isChecked() and parameters['FaceEditorBeforeTypeSelection'] == 'After First Restorer':
-            #editor_mask = t512_mask(swap_mask).clone()
-            editor_mask = t512_mask(calc_mask).clone()
+            editor_mask = t512_mask(swap_mask).clone()
             swap = swap * editor_mask + original_face_512 * (1 - editor_mask)
             swap = self.swap_edit_face_core(swap, kps, parameters, control)
 
@@ -1250,8 +1249,7 @@ class FrameWorker(threading.Thread):
 
         # Face editor After Second Restorer
         if parameters['FaceEditorEnableToggle'] and self.main_window.editFacesButton.isChecked() and parameters['FaceEditorBeforeTypeSelection'] == 'After Second Restorer':
-            #editor_mask = t512_mask(swap_mask).clone()
-            editor_mask = t512_mask(calc_mask).clone()
+            editor_mask = t512_mask(swap_mask).clone()
             swap = swap * editor_mask + original_face_512 * (1 - editor_mask)
             swap = self.swap_edit_face_core(swap, kps, parameters, control)
 
