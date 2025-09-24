@@ -138,6 +138,7 @@ class FaceMasks:
             #print("outpred, outpred2, mouth: ", outpred.shape, outpred2.shape, mouth.shape)
             #outpred2_autocolor = outpred2.clone()
             outpred[background > 0.01] = outpred2[background > 0.01]
+            outpred_noFP = outpred.clone()
             outpred[mouth > 0.01] = outpred2[mouth > 0.01]
 
             #outpred2_autocolor = torch.reshape(outpred2_autocolor, (1, 256, 256))
@@ -162,7 +163,7 @@ class FaceMasks:
                 outpred_calc_dill = 1 - outpred_calc_dill
                 outpred_calc_dill = outpred_calc_dill.clamp(0,1)  
                 
-        return outpred, outpred_calc, outpred_calc_dill
+        return outpred, outpred_calc, outpred_calc_dill, outpred_noFP
 
     def run_dfl_xseg(self, image, output):
         if not self.models_processor.models['XSeg']:

@@ -987,6 +987,7 @@ class FrameWorker(threading.Thread):
         texture_mask = BgExclude.clone()
         mask_forcalc = BgExclude.clone()
         mask_calc_dill = BgExclude.clone()
+        swap_mask_noFP = swap_mask.clone()  # unveränderte 128er Basismaske für Editor-End
         
         swap = torch.clamp(swap, 0.0, 255.0)   
 
@@ -1019,6 +1020,7 @@ class FrameWorker(threading.Thread):
             swap_mask = torch.mul(swap_mask, mask)
             gauss = transforms.GaussianBlur(parameters['OccluderXSegBlurSlider']*2+1, (parameters['OccluderXSegBlurSlider']+1)*0.2)
             swap_mask = gauss(swap_mask)
+            swap_mask_noFP *= swap_mask
 
         # -------------------------------
         # MASKEN: Parser / CLIPs / Restore
@@ -1026,8 +1028,6 @@ class FrameWorker(threading.Thread):
         t512_mask = v2.Resize((512, 512), interpolation=v2.InterpolationMode.BILINEAR, antialias=False)
         t256_near = v2.Resize((256, 256), interpolation=v2.InterpolationMode.NEAREST,  antialias=False)
         t128_bi   = v2.Resize((128, 128), interpolation=v2.InterpolationMode.BILINEAR, antialias=False)
-
-        swap_mask_noFP = swap_mask.clone()  # unveränderte 128er Basismaske für Editor-End
 
         need_any_parser = (
             parameters.get("FaceParserEnableToggle", False)
@@ -1105,7 +1105,7 @@ class FrameWorker(threading.Thread):
                 img_swap_mask = gauss(img_swap_mask)
 
             mask_128 = t128_bi(img_swap_mask)
-            swap_mask_noFP = swap_mask_noFP * mask_128
+            #swap_mask_noFP = swap_mask_noFP * mask_128
             swap_mask      = swap_mask      * mask_128
         
         # -------------------------------
@@ -1127,7 +1127,7 @@ class FrameWorker(threading.Thread):
                 mouth_256 = t256_near(mouth_512.unsqueeze(0))  # [1,256,256]
 
             # apply_dfl_xseg liefert: img_mask(256), mask_forcalc(256), mask_calc_dill(256)
-            img_mask_256, mask_forcalc_256, mask_calc_dill_256 = self.models_processor.apply_dfl_xseg(
+            img_mask_256, mask_forcalc_256, mask_calc_dill_256, outpred_noFP_256 = self.models_processor.apply_dfl_xseg(
                 img_xseg_256,
                 -parameters["DFLXSegSizeSlider"],
                 0,                               # BgExcludeOccluder war nicht genutzt
@@ -1139,6 +1139,7 @@ class FrameWorker(threading.Thread):
             img_mask_512       = t512_mask(img_mask_256)
             mask_forcalc_512   = t512_mask(mask_forcalc_256)
             mask_calc_dill_512 = t512_mask(mask_calc_dill_256)
+            outpred_noFP_128 = t128_bi(outpred_noFP_256)
 
             # Deine Logik: invertiert als Erlaubnis-/Calc-Masken
             calc_mask      = (1.0 - mask_forcalc_512).clamp(0,1)          # [1,512,512]
@@ -1146,7 +1147,7 @@ class FrameWorker(threading.Thread):
 
             # swap_mask reduzieren (128er)
             img_mask_128 = t128_bi(img_mask_512)
-            swap_mask_noFP = swap_mask_noFP * (1.0 - img_mask_128)
+            swap_mask_noFP = swap_mask_noFP * (1.0 - outpred_noFP_128)
             swap_mask      = swap_mask      * (1.0 - img_mask_128)
         else:
             # kein XSeg -> calc_mask aus FaceParser/Basis
@@ -1197,10 +1198,10 @@ class FrameWorker(threading.Thread):
 
         # Face editor After First Restorer
         if parameters['FaceEditorEnableToggle'] and self.main_window.editFacesButton.isChecked() and parameters['FaceEditorBeforeTypeSelection'] == 'After First Restorer':
-            #editor_mask = t512_mask(swap_mask).clone()
-            editor_mask = t512_mask(calc_mask).clone()
+            editor_mask = t512_mask(swap_mask).clone()
             swap = swap * editor_mask + original_face_512 * (1 - editor_mask)
             swap = self.swap_edit_face_core(swap, kps, parameters, control)
+            swap_mask = swap_mask_noFP
 
         # Second Denoiser pass - After First Restorer
         if control.get('DenoiserAfterFirstRestorerToggle', False):
@@ -1250,10 +1251,10 @@ class FrameWorker(threading.Thread):
 
         # Face editor After Second Restorer
         if parameters['FaceEditorEnableToggle'] and self.main_window.editFacesButton.isChecked() and parameters['FaceEditorBeforeTypeSelection'] == 'After Second Restorer':
-            #editor_mask = t512_mask(swap_mask).clone()
-            editor_mask = t512_mask(calc_mask).clone()
+            editor_mask = t512_mask(swap_mask).clone()
             swap = swap * editor_mask + original_face_512 * (1 - editor_mask)
             swap = self.swap_edit_face_core(swap, kps, parameters, control)
+            swap_mask = swap_mask_noFP
 
         # Textures and Color pass begins
         if parameters["TransferTextureEnableToggle"] or parameters["DifferencingEnableToggle"] or parameters["AutoColorEnableToggle"]:          
@@ -1369,11 +1370,11 @@ class FrameWorker(threading.Thread):
                 soft = 100 #parameters['VGGMaskSoftnessSlider']     # 0..100
                 #gamma = parameters['VGGMaskGammaSlider']     # 0..100
                 upper_thresh = parameters['TextureUpperLimitSlider']/100
-                if parameters['ExcludeVGGMaskSmoothEnableToggle']:
-                    mode='smooth'
-                else:
-                    mode='linear'
-                
+                #if parameters['ExcludeVGGMaskSmoothEnableToggle']:
+                #    mode='smooth'
+                #else:
+                #    mode='linear'
+                mode='smooth'
                 mask_vgg_512, diff_norm_texture = self.models_processor.apply_vgg_mask_simple(
                     swap, original_face_512, mask_input,
                     center_pct=thr, softness_pct=soft,
@@ -1485,6 +1486,13 @@ class FrameWorker(threading.Thread):
             swap = v2.functional.adjust_hue(swap, parameters['ColorHueDecimalSlider'])
 
             swap = swap * 255.0
+
+        # Face editor After Second Restorer
+        if parameters['FaceEditorEnableToggle'] and self.main_window.editFacesButton.isChecked() and parameters['FaceEditorBeforeTypeSelection'] == 'After Texture Transfer':
+            editor_mask = t512_mask(swap_mask).clone()
+            swap = swap * editor_mask + original_face_512 * (1 - editor_mask)
+            swap = self.swap_edit_face_core(swap, kps, parameters, control)
+            swap_mask = swap_mask_noFP
 
         # Second Restorer - After Diff / Texture Transfer and AutoColor
         if parameters["FaceRestorerEnable2Toggle"] and parameters["FaceRestorerEnable2EndToggle"]:
