@@ -1,4 +1,5 @@
-@echo off
+# start_portable.bat
+@echo on
 setlocal EnableDelayedExpansion
 
 :: --- Basic Setup ---
@@ -24,14 +25,14 @@ set "UV_ZIP=%PORTABLE_DIR%\uv.zip"
 set "GIT_URL=https://github.com/git-for-windows/git/releases/download/v2.51.0.windows.1/PortableGit-2.51.0-64-bit.7z.exe"
 set "GIT_ZIP=%PORTABLE_DIR%\PortableGit.exe"
 set "CONFIG_FILE=%BASE_DIR%portable.cfg"
-set "DOWNLOAD_PY=%APP_DIR%\download_models.py"
+set "DOWNLOAD_PY=download_models.py"
 set "MAIN_PY=main.py"
 
 :: --- Step 0: User Configuration ---
 :: Read config or prompt user for the first time
 if exist "%CONFIG_FILE%" (
     echo Loading configuration from portable.cfg...
-    call "%CONFIG_FILE%"
+    for /f "usebackq delims=" %%i in ("%CONFIG_FILE%") do %%i
 ) else (
     echo.
     echo Welcome! Please select the environment to install.
@@ -54,7 +55,6 @@ if exist "%CONFIG_FILE%" (
 
     :: Write to config file in a safe format
     (
-        echo @echo off
         echo set "REQUIREMENTS=!REQUIREMENTS!"
         echo set "DOWNLOAD_RUN=false"
     )>"%CONFIG_FILE%"
@@ -151,9 +151,9 @@ if not exist "%PYTHON_DIR%\python.exe" (
     powershell -Command "Expand-Archive -Path '%PYTHON_ZIP%' -DestinationPath '%PYTHON_DIR%' -Force"
     del "%PYTHON_ZIP%"
 
-    set "PTH_FILE=%PYTHON_DIR%\python313._pth"
+    set "PTH_FILE=%PYTHON_DIR%\python310._pth"
     if exist "%PTH_FILE%" (
-        echo Enabling pip...
+        echo Enabling site packages in PTH file...
         powershell -Command "(Get-Content '%PTH_FILE%') -replace '#import site', 'import site' | Set-Content '%PTH_FILE%'"
     )
 
@@ -191,16 +191,15 @@ if not exist "%VENV_DIR%\Scripts\python.exe" (
 
 :: --- Step 6: Install dependencies (if needed) ---
 if /I "!NEEDS_INSTALL!"=="true" (
-    echo Installing/updating dependencies using uv and pyproject.toml...
+    echo Installing/updating dependencies...
 
-    :: Install using uv. It will automatically find pyproject.toml in the app directory.
     pushd "%APP_DIR%"
-    "%UV_DIR%\uv.exe" pip install --python "%VENV_DIR%\Scripts\python.exe" -r "!REQUIREMENTS!"
+    "%UV_DIR%\uv.exe" pip install -r "!REQUIREMENTS!" --python "%VENV_DIR%\Scripts\python.exe"
     set "INSTALL_ERROR=!ERRORLEVEL!"
     popd
 
     if !INSTALL_ERROR! neq 0 (
-        echo ERROR: Dependency installation failed. Check pyproject.toml and requirements files.
+        echo ERROR: Dependency installation failed. Check your requirements file.
         exit /b 1
     )
     echo Dependencies installed successfully.
@@ -210,8 +209,9 @@ if /I "!NEEDS_INSTALL!"=="true" (
 
 :: --- Step 7: Run downloader ---
 if /I "!DOWNLOAD_RUN!"=="false" (
-    if exist "%DOWNLOAD_PY%" (
+    if exist "%APP_DIR%\%DOWNLOAD_PY%" (
         echo Running download_models.py...
+        cd /d "%APP_DIR%"
         "%VENV_DIR%\Scripts\python.exe" "%DOWNLOAD_PY%"
         if !ERRORLEVEL! neq 0 (
             echo ERROR: download_models.py failed.
@@ -227,7 +227,7 @@ if /I "!DOWNLOAD_RUN!"=="false" (
 :: --- Step 8: Run main application ---
 if exist "%APP_DIR%\%MAIN_PY%" (
     echo Starting main.py...
-    "cd %APP_DIR%"
+    cd /d "%APP_DIR%"
     "%VENV_DIR%\Scripts\python.exe" "%MAIN_PY%"
 ) else (
     echo ERROR: main.py not found in "%APP_DIR%".
