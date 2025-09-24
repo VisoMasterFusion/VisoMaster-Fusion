@@ -976,15 +976,15 @@ class FrameWorker(threading.Thread):
         
         swap = torch.clamp(swap, 0.0, 255.0)   
 
+        # Expression Restorer beginning
+        if parameters['FaceExpressionEnableToggleBoth'] and (parameters['FaceExpressionLipsToggle'] or parameters['FaceExpressionEyesToggle']) and parameters['FaceExpressionBeforeTypeSelection'] == 'Beginning':
+            swap = self.apply_face_expression_restorer(original_face_512, swap, parameters)
+
         # Face editor beginning
         if parameters['FaceEditorEnableToggle'] and self.main_window.editFacesButton.isChecked() and parameters['FaceEditorBeforeTypeSelection'] == 'Beginning':
             editor_mask = t512_mask(swap_mask).clone()
             swap = swap * editor_mask + original_face_512 * (1 - editor_mask)
             swap = self.swap_edit_face_core(swap, kps, parameters, control)
-
-        # Expression Restorer beginning
-        if parameters['FaceExpressionEnableToggleBoth'] and (parameters['FaceExpressionLipsToggle'] or parameters['FaceExpressionEyesToggle']) and parameters['FaceExpressionBeforeTypeSelection'] == 'Beginning':
-            swap = self.apply_face_expression_restorer(original_face_512, swap, parameters)
 
         # First Denoiser pass - Before Restorers
         if control.get('DenoiserUNetEnableBeforeRestorersToggle', False):
@@ -1177,22 +1177,23 @@ class FrameWorker(threading.Thread):
             alpha_restorer = float(parameters["FaceRestorerBlendSlider"])/100.0
             swap = torch.add(torch.mul(swap_restorecalc, alpha_restorer), torch.mul(swap_original, 1 - alpha_restorer))                             
 
-        # Face editor After First Restorer
-        if parameters['FaceEditorEnableToggle'] and self.main_window.editFacesButton.isChecked() and parameters['FaceEditorBeforeTypeSelection'] == 'After First Restorer':
-            editor_mask = t512_mask(swap_mask).clone()
-            swap = swap * editor_mask + original_face_512 * (1 - editor_mask)
-            swap = self.swap_edit_face_core(swap, kps, parameters, control)
-            
         # Expression Restorer After First Restorer
         if parameters['FaceExpressionEnableToggleBoth'] and (parameters['FaceExpressionLipsToggle'] or parameters['FaceExpressionEyesToggle']) and parameters['FaceExpressionBeforeTypeSelection'] == 'After First Restorer':
             swap = self.apply_face_expression_restorer(original_face_512, swap, parameters)
+
+        # Face editor After First Restorer
+        if parameters['FaceEditorEnableToggle'] and self.main_window.editFacesButton.isChecked() and parameters['FaceEditorBeforeTypeSelection'] == 'After First Restorer':
+            #editor_mask = t512_mask(swap_mask).clone()
+            editor_mask = t512_mask(calc_mask).clone()
+            swap = swap * editor_mask + original_face_512 * (1 - editor_mask)
+            swap = self.swap_edit_face_core(swap, kps, parameters, control)
 
         # Second Denoiser pass - After First Restorer
         if control.get('DenoiserAfterFirstRestorerToggle', False):
             swap = self._apply_denoiser_pass(swap, control, "AfterFirst", kv_map)
 
         swap_backup = swap.clone()
-        
+
         # Second Restorer - Before Diff / Texture Transfer and AutoColor
         if parameters["FaceRestorerEnable2Toggle"] and not parameters["FaceRestorerEnable2EndToggle"]:
             swap_original2 = swap.clone()
@@ -1232,16 +1233,16 @@ class FrameWorker(threading.Thread):
                 alpha_restorer2 = float(parameters["FaceRestorerBlend2Slider"])/100.0
                 swap = torch.add(torch.mul(swap2, alpha_restorer2), torch.mul(swap_original2, 1 - alpha_restorer2))
 
-        # Face editor After Second Restorer
-        if parameters['FaceEditorEnableToggle'] and self.main_window.editFacesButton.isChecked() and parameters['FaceEditorBeforeTypeSelection'] == 'After Second Restorer':
-            editor_mask = t512_mask(swap_mask).clone()
-            swap = swap * editor_mask + original_face_512 * (1 - editor_mask)
-            swap = self.swap_edit_face_core(swap, kps, parameters, control)
-            swap_mask = swap_mask_noFP
-  
         # Expression Restorer After Second Restorer
         if parameters['FaceExpressionEnableToggleBoth'] and (parameters['FaceExpressionLipsToggle'] or parameters['FaceExpressionEyesToggle']) and parameters['FaceExpressionBeforeTypeSelection'] == 'After Second Restorer':
             swap = self.apply_face_expression_restorer(original_face_512, swap, parameters)
+
+        # Face editor After Second Restorer
+        if parameters['FaceEditorEnableToggle'] and self.main_window.editFacesButton.isChecked() and parameters['FaceEditorBeforeTypeSelection'] == 'After Second Restorer':
+            #editor_mask = t512_mask(swap_mask).clone()
+            editor_mask = t512_mask(calc_mask).clone()
+            swap = swap * editor_mask + original_face_512 * (1 - editor_mask)
+            swap = self.swap_edit_face_core(swap, kps, parameters, control)
 
         # Textures and Color pass begins
         if parameters["TransferTextureEnableToggle"] or parameters["DifferencingEnableToggle"] or parameters["AutoColorEnableToggle"]:          
