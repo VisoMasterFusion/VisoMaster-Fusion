@@ -1,0 +1,41 @@
+# This file configures the uv tool to find packages in special indexes.
+# It maps specific packages to specific URLs, so the requirements.txt files
+# can be clean and simple.
+
+[tool.uv]
+
+# Define the NVIDIA index for TensorRT packages.
+[[tool.uv.index]]
+name = "nvidia"
+url = "https://pypi.nvidia.com"
+packages = [
+    "tensorrt",
+    "tensorrt-cu11",
+    "tensorrt-cu12",
+    "tensorrt-cu12_bindings",
+    "tensorrt-cu12_libs"
+]
+
+# Define the PyTorch index for CUDA 11.8.
+[[tool.uv.index]]
+name = "pytorch-cu118"
+url = "https://download.pytorch.org/whl/cu118"
+packages = ["torch", "torchaudio", "torchvision"]
+
+# Define the PyTorch index for CUDA 12.4.
+[[tool.uv.index]]
+name = "pytorch-cu124"
+url = "https://download.pytorch.org/whl/cu124"
+packages = ["torch", "torchaudio", "torchvision"]
+
+# Define the PyTorch index for CUDA 12.8.
+[[tool.uv.index]]
+name = "pytorch-cu128"
+url = "https://download.pytorch.org/whl/cu128"
+packages = ["torch", "torchaudio", "torchvision"]
+
+# Define the PyTorch index for CUDA 12.9 (for RTX 50xx).
+[[tool.uv.index]]
+name = "pytorch-cu129"
+url = "https://download.pytorch.org/whl/cu129"
+packages = ["torch", "torchaudio", "torchvision"]
