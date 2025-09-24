@@ -1,0 +1,13 @@
+# This file configures the uv tool to find packages in special indexes.
+# It uses the preferred tool.uv.pip.extra-index-url format for multiple indices.
+
+[tool.uv.pip]
+index-strategy = "unsafe-best-match"
+extra-index-url = [
+    "https://pypi.org/simple",
+    "https://pypi.nvidia.com",
+    "https://download.pytorch.org/whl/cu118",
+    "https://download.pytorch.org/whl/cu124",
+    "https://download.pytorch.org/whl/cu128",
+    "https://download.pytorch.org/whl/cu129"
+]

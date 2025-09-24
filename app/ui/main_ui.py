@@ -170,9 +170,6 @@ class MainWindow(QtWidgets.QMainWindow, Ui_MainWindow):
         self.videoSeekSlider.sliderReleased.connect(partial(video_control_actions.on_slider_released, self))
         video_control_actions.set_up_video_seek_slider(self)
         self.frameAdvanceButton.clicked.connect(partial(video_control_actions.advance_video_slider_by_n_frames, self))
-        # Audio toggle
-        self.liveSoundButton.toggled.connect(partial(video_control_actions.toggle_live_sound, self))
-
         self.frameRewindButton.clicked.connect(partial(video_control_actions.rewind_video_slider_by_n_frames, self))
 
         # JOB MANAGER changes addMarkerButton connection
@@ -217,7 +214,9 @@ class MainWindow(QtWidgets.QMainWindow, Ui_MainWindow):
         self.parametersPanelCheckBox.toggled.connect(partial(layout_actions.show_hide_parameters_panel, self))
         self.facesPanelCheckBox.toggled.connect(partial(layout_actions.show_hide_faces_panel, self))
         self.facesPanelCheckBox.toggled.connect(self._on_faces_panel_toggled)
-        self.mediaPanelCheckBox.toggled.connect(partial(layout_actions.show_hide_input_target_media_panel, self))
+        self.TargetMediaCheckBox.toggled.connect(partial(layout_actions.show_hide_input_target_media_panel, self))
+        self.InputFacesCheckBox.toggled.connect(partial(layout_actions.show_hide_input_faces_panel, self))
+        self.JobsCheckBox.toggled.connect(partial(layout_actions.show_hide_input_jobs_panel, self))
 
         self.faceMaskCheckBox.clicked.connect(partial(video_control_actions.process_compare_checkboxes, self))
         self.faceCompareCheckBox.clicked.connect(partial(video_control_actions.process_compare_checkboxes, self))

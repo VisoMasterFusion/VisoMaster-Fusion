@@ -61,7 +61,7 @@ COMMON_LAYOUT_DATA: LayoutDictTypes = {
         },
         'FaceRestorerAutoSharpAdjustSlider': {
             'level': 3,
-            'label': 'adjust sharpness',
+            'label': 'Adjust Sharpness',
             'min_value': '-60',
             'max_value': '60',
             'default': '0',
@@ -71,22 +71,22 @@ COMMON_LAYOUT_DATA: LayoutDictTypes = {
             'help': 'Adjust sharp calc. mostly needed for over 0, which makes the swap sharper. depends on swap model, restorer model, resolution, face size,...'
         },        
         'FaceRestorerAutoMaskEnableToggle': {
-            'level': 2,
+            'level': 3,
             'label': 'Sharpness Mask',
             'default': False,
-            'parentToggle': 'FaceRestorerEnableToggle',
+            'parentToggle': 'FaceRestorerEnableToggle & FaceRestorerAutoEnableToggle',
             'requiredToggleValue': True,
             'help': 'Auto Adjust Restorer Blend Amount with sharpness Map'
         },      
         'FaceRestorerAutoSharpMaskAdjustDecimalSlider': {
-            'level': 3,
+            'level': 4,
             'label': 'Mask Adjust',
             'min_value': '0.00',
             'max_value': '1.00',
             'default': '1.00',
             'decimals': 2,
             'step': 0.05,
-            'parentToggle': 'FaceRestorerEnableToggle',
+            'parentToggle': 'FaceRestorerEnableToggle & FaceRestorerAutoEnableToggle & FaceRestorerAutoMaskEnableToggle',
             'requiredToggleValue': True,
             'help': 'Adjust Min/Max Blend value change from base auto Blend value'
         },                                                   
@@ -165,22 +165,22 @@ COMMON_LAYOUT_DATA: LayoutDictTypes = {
             'help': 'Adjust sharp calc. mostly needed for over 0, which makes the swap sharper. depends on swap model, restorer model, resolution, face size,...'
         },
         'FaceRestorerAutoMask2EnableToggle': {
-            'level': 2,
+            'level': 3,
             'label': 'Sharpness Mask',
             'default': False,
-            'parentToggle': 'FaceRestorerEnable2Toggle',
+            'parentToggle': 'FaceRestorerEnable2Toggle & FaceRestorerAutoEnable2Toggle',
             'requiredToggleValue': True,
             'help': 'Auto Adjust Restorer Blend Amount with sharpness Map'
         },      
         'FaceRestorerAutoSharpMask2AdjustDecimalSlider': {
-            'level': 3,
+            'level': 4,
             'label': 'Mask Adjust',
             'min_value': '0.00',
             'max_value': '1.00',
-            'default': '0',
+            'default': '1.00',
             'decimals': 2,
             'step': 0.05,
-            'parentToggle': 'FaceRestorerEnable2Toggle',
+            'parentToggle': 'FaceRestorerEnable2Toggle & FaceRestorerAutoEnable2Toggle & FaceRestorerAutoMask2EnableToggle',
             'requiredToggleValue': True,
             'help': 'Adjust Min/Max Blend value change from base auto Blend value'
         },      
@@ -189,7 +189,7 @@ COMMON_LAYOUT_DATA: LayoutDictTypes = {
         'FaceExpressionBeforeTypeSelection': {
             'level': 1,
             'label': 'Pipeline Position',
-            'options': ['Beginning', 'After First Restorer', 'After Second Restorer', 'End'],
+            'options': ['Beginning', 'After First Restorer', 'After Second Restorer'],
             'default': 'Beginning',
             'help': 'Select the Face Expression Restorer Editor position in the pipeline.'
         },

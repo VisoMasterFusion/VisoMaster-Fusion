@@ -1,5 +1,3 @@
---extra-index-url https://download.pytorch.org/whl/cu129
---extra-index-url https://pypi.nvidia.com/
 numpy
 opencv-python
 pillow
@@ -11,7 +9,7 @@ onnxruntime-gpu==1.22.0
 packaging
 PySide6 
 kornia
-tensorrt==10.13.2.6
+tensorrt-cu12
 tensorrt-cu12_libs==10.13.2.6
 tensorrt-cu12_bindings==10.13.2.6
 torch==2.8.0+cu129
@@ -27,3 +25,7 @@ requests
 pyqt-toast-notification
 qdarkstyle
 pyqtdarktheme
+omegaconf
+einops
+lightning
+send2trash

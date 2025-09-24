@@ -1101,7 +1101,7 @@ SWAPPER_LAYOUT_DATA: LayoutDictTypes = {
             'help': 'Select the AutoColor transfer method type. Hans Method could have some artefacts sometimes.'
         },
         'AutoColorBlendAmountSlider': {
-            'level': 1,
+            'level': 2,
             'label': 'Blend Amount',
             'min_value': '0',
             'max_value': '100',
@@ -1110,6 +1110,14 @@ SWAPPER_LAYOUT_DATA: LayoutDictTypes = {
             'parentToggle': 'AutoColorEnableToggle',
             'requiredToggleValue': True,
             'help': 'Adjust the blend value.'
+        },
+        'AutoColorEndEnableToggle': {
+            'level': 2,
+            'label': 'Ending AutoColor Pass',
+            'default': False,
+            'parentToggle': 'AutoColorEnableToggle',
+            'requiredToggleValue': True,
+            'help': 'Make a second AutoColor pass at the end.'
         },
         'ColorEnableToggle': {
             'level': 1,
@@ -1466,7 +1474,7 @@ SWAPPER_LAYOUT_DATA: LayoutDictTypes = {
             'parentToggle': 'LandmarksPositionAdjEnableToggle',
             'requiredToggleValue': True,
             'help': 'Shifts the mouth Right detection point up and down.'
-        },
+        }
     },
     'Blend Adjustments':{
         'FinalBlendAdjEnableToggle': {
@@ -1494,41 +1502,6 @@ SWAPPER_LAYOUT_DATA: LayoutDictTypes = {
             'default': '0',
             'step': 1,
             'help': 'Combined masks blending distance. It is not applied to the border masks.'
-        },
-    },
-    'Experimental Settings (very experimental, better don´t touch)': {                          
-        'ActivateexperimentalsettingsEnableToggle': {
-            'level': 1,
-            'label': 'Experimental settings',
-            'default': False,
-            'help': 'Enable AutoColor Transfer: 1. Hans Test without mask, 2. Hans Test with mask, 3. DFL Method without mask, 4. DFL Original Method.'
-        },
-        'AnalyseImageEnableToggle': {
-            'level': 2,
-            'label': 'Analyse Image',
-            'default': False,
-            'parentToggle': 'ActivateexperimentalsettingsEnableToggle',
-            'requiredToggleValue': True, 
-            'help': 'Image analysis'
-        },        
-        'DFLXSegBGEnableToggle': {
-            'level': 2,
-            'label': 'Xseg 2 Background',
-            'default': False,
-            'parentToggle': 'DFLXSeg2EnableToggle & ActivateexperimentalsettingsEnableToggle',
-            'requiredToggleValue': True,            
-            'help': 'Enable second XSeg Mask for Inside the Face. not working well atm. (uses Faceparser on swap)'
-        },
-        'OccluderMaskBgSlider': {
-            'level': 3,
-            'label': 'Xseg 2 Background Adjust',
-            'min_value': '-40',
-            'max_value': '40',
-            'default': '-10',
-            'step': 1,
-            'parentToggle': 'DFLXSegBGEnableToggle',
-            'requiredToggleValue': True,
-            'help': 'Adjust where the second Xseg Mask gets applied.'
-        },        
-    },
+        }
+    }
 }

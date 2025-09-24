@@ -257,7 +257,7 @@ class FaceMasks:
 
         result = {"swap_formask": swap_restorecalc}
 
-        need_bg = parameters.get("DFLXSegEnableToggle", False) and parameters.get("DFLXSegBGEnableToggle", False)
+        #need_bg = parameters.get("DFLXSegEnableToggle", False) and parameters.get("DFLXSegBGEnableToggle", False)
         need_parser = (
             parameters.get("FaceParserEnableToggle", False)
             or (parameters.get("DFLXSegEnableToggle", False)
@@ -272,7 +272,8 @@ class FaceMasks:
         labels_swap = None
         labels_orig = None
 
-        if need_bg or need_parser:
+        #if need_bg or need_parser:
+        if need_parser:
             labels_swap = self._faceparser_labels(swap_restorecalc)
 
         # Nur wenn Orig gebraucht wird (FaceParserEnable oder ExcludeMaske)

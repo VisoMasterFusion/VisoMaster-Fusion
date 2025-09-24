@@ -41,6 +41,7 @@ def update_graphics_view(main_window: 'MainWindow', pixmap: QtGui.QPixmap, curre
         pixmap_item_new = QtWidgets.QGraphicsPixmapItem(pixmap) # Create a new pixmap item only if it doesn't exist
         scene.addItem(pixmap_item_new)
         pixmap_item = pixmap_item_new # Use the newly created item for fitting view
+        pixmap_item.setTransformationMode(QtCore.Qt.TransformationMode.SmoothTransformation)
 
     # Set the scene rectangle to the bounding rectangle of the pixmap
     scene_rect = pixmap_item.boundingRect()

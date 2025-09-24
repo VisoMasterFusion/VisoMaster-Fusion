@@ -172,9 +172,14 @@ def load_saved_workspace(main_window: 'MainWindow', data_filename: str|bool = Fa
             for face_id, input_face_data in data['input_faces_data'].items():
                 if face_id in main_window.input_faces:
                     input_face_button = main_window.input_faces[face_id]
-                    kv_map_loaded = input_face_data.get('kv_map')
-                    if kv_map_loaded:
-                        input_face_button.kv_map = kv_map_loaded
+                    kv_map_path = input_face_data.get('kv_map')
+                    if kv_map_path and os.path.exists(kv_map_path):
+                        try:
+                            payload = torch.load(kv_map_path, map_location='cpu')
+                            input_face_button.kv_map = payload.get('kv_map')
+                            input_face_button.kv_map_color_transferred = payload.get('kv_data_color_transferred', False)
+                        except Exception as e:
+                            print(f"Error loading K/V map from {kv_map_path}: {e}")
 
             # Add embeddings
             embeddings_data = data['embeddings_data']
@@ -205,7 +210,17 @@ def load_saved_workspace(main_window: 'MainWindow', data_filename: str|bool = Fa
                 # Set assigned input embedding (Input face + merged embeddings)
                 assigned_input_embedding = {embed_model: np.array(embedding) for embed_model, embedding in target_face_data['assigned_input_embedding'].items()}
                 main_window.target_faces[face_id].assigned_input_embedding = assigned_input_embedding
-                # main_window.control = target_face_data['control']
+                
+                kv_map_filename = target_face_data.get('assigned_kv_map_filename')
+                if kv_map_filename:
+                    kv_file_path = main_window.actual_models_dir_path / "reference_kv_data" / kv_map_filename
+                    if kv_file_path.exists():
+                        try:
+                            payload = torch.load(kv_file_path, map_location='cpu')
+                            main_window.target_faces[face_id].assigned_kv_map = payload.get('kv_map')
+                            main_window.target_faces[face_id].kv_data_color_transferred = payload.get('kv_data_color_transferred', False)
+                        except Exception as e:
+                            print(f"Error loading assigned K/V map from {kv_file_path}: {e}")
 
             # Load control (settings)
             control = data['control']
@@ -276,23 +291,23 @@ def save_current_workspace(main_window: 'MainWindow', data_filename:str|bool = F
 
     # --- Serialize Input Faces ---
     for face_id, input_face in main_window.input_faces.items():
-        kv_map_serializable = None
-        if is_denoiser_enabled and input_face.kv_map:
-            if isinstance(input_face.kv_map, str): # Already a path
-                kv_map_serializable = input_face.kv_map
-            else: # It's the actual tensor data, save it to a .pt file
-                kv_data_dir = "model_assets/reference_kv_data"
-                os.makedirs(kv_data_dir, exist_ok=True)
-                new_kv_map_path = os.path.join(kv_data_dir, f"{input_face.face_id}.pt")
-                try:
-                    torch.save(input_face.kv_map, new_kv_map_path)
-                    kv_map_serializable = new_kv_map_path
-                except Exception as e:
-                    print(f"Error saving K/V map to {new_kv_map_path}: {e}")
-                    kv_map_serializable = None
+        kv_map_path = None
+        if is_denoiser_enabled and hasattr(input_face, 'kv_map') and input_face.kv_map:
+            kv_data_dir = os.path.join("model_assets", "reference_kv_data")
+            os.makedirs(kv_data_dir, exist_ok=True)
+            kv_map_path = os.path.join(kv_data_dir, f"input_{input_face.face_id}.pt")
+            try:
+                payload = {
+                    'kv_map': input_face.kv_map,
+                    'kv_data_color_transferred': getattr(input_face, 'kv_map_color_transferred', False)
+                }
+                torch.save(payload, kv_map_path)
+            except Exception as e:
+                print(f"Error saving K/V map for input face {input_face.face_id} to {kv_map_path}: {e}")
+                kv_map_path = None
         input_faces_data[face_id] = {
             'media_path': input_face.media_path,
-            'kv_map': kv_map_serializable
+            'kv_map': kv_map_path
         }
     
     # --- Serialize Target Faces & Parameters ---

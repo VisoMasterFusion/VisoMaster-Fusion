@@ -1,8 +1,10 @@
 # pylint: disable=keyword-arg-before-vararg
 import os
+import traceback
 from functools import partial
 import uuid
 from typing import TYPE_CHECKING, Dict
+from send2trash import send2trash
 import torch
 
 from PySide6 import QtWidgets, QtGui, QtCore
@@ -311,11 +313,71 @@ class TargetMediaCardButton(CardButton):
 
         self.deleteLater()
 
+    def delete_target_media_to_trash(self):
+        main_window = self.main_window
+
+        # Deselect the currently selected video
+        if main_window.selected_video_button == self:
+            self.reset_media_state()
+        
+            # Reset the frame counter
+            main_window.video_processor.current_frame_number = 0
+            main_window.video_processor.media_path = False
+            main_window.parameters = {}
+            main_window.selected_target_face_id = False
+
+            main_window.video_processor.media_capture = False
+            main_window.video_processor.current_frame = []
+            main_window.video_processor.fps = 0
+            main_window.video_processor.max_frame_number = 0
+
+            self.main_window.scene.clear()
+
+            self.reset_related_widgets_and_values()
+
+            main_window.videoSeekSlider.blockSignals(True)  # Block signals to prevent unnecessary updates
+            main_window.videoSeekSlider.setMaximum(1)
+            main_window.videoSeekSlider.setValue(0)  # Set the slider to 0 for the new video
+            main_window.videoSeekSlider.blockSignals(False)  # Unblock signals
+            # Append the selected video button to the list
+            main_window.selected_video_button = False
+
+
+            # Update the graphics frame after the reset
+            main_window.graphicsViewFrame.update()
+
+            main_window.video_processor.file_type = None
+
+            if self.media_capture:
+                self.media_capture.release()
+                self.media_capture = False
+
+        i = self.get_item_position()
+        main_window.targetVideosList.takeItem(i)   
+        main_window.target_videos.pop(self.media_id)
+
+        # Send the file to the trash
+        if os.path.exists(self.media_path):  
+            send2trash(self.media_path.replace('/','\\'))  
+            print(f"{self.media_path} has been sent to the trash.")  
+        else:  
+            print(f"{self.media_path} does not exist.") 
+
+        # If the target media list is empty, show the placeholder text
+        if not main_window.target_videos:
+            main_window.placeholder_update_signal.emit(self.main_window.targetVideosList, False)
+
+        self.deleteLater()
+
     def create_context_menu(self):
         self.popMenu = QtWidgets.QMenu(self)
         remove_action = QtGui.QAction('Remove from list', self)
         remove_action.triggered.connect(self.remove_target_media_from_list)
         self.popMenu.addAction(remove_action)
+
+        delete_action = QtGui.QAction('Delete file to recycle bin', self)
+        delete_action.triggered.connect(self.delete_target_media_to_trash)
+        self.popMenu.addAction(delete_action)
 
     def on_context_menu(self, point):
         # show context menu
@@ -338,6 +400,7 @@ class TargetFaceCardButton(CardButton):
         self.assigned_merged_embeddings: Dict[str, Dict[str, np.ndarray]] = {}  # Key: embedding_swap_model, Value: EmbeddingCardButton.embedding_store
         self.assigned_input_embedding = {}  # Key: embedding_swap_model, Value: np.ndarray
         self.assigned_kv_map: Dict | None = None
+        self.kv_data_color_transferred = False
         
         self.setCheckable(True)
         self.clicked.connect(self.load_target_face)
@@ -433,23 +496,25 @@ class TargetFaceCardButton(CardButton):
                       control.get('DenoiserAfterFirstRestorerToggle', False) or \
                       control.get('DenoiserAfterRestorersToggle', False)
 
+        self.assigned_kv_map = None
+        self.kv_data_color_transferred = False
+
         if denoiser_on and self.assigned_input_faces:
             first_input_face_id = list(self.assigned_input_faces.keys())[0]
             input_face_button = main_window.input_faces.get(first_input_face_id)
 
             if input_face_button:
-                kv_map_path = input_face_button.kv_map
+                should_color_correct = main_window.control.get('KVDataAutoColorToggle', False)
                 
-                if isinstance(kv_map_path, str) and os.path.exists(kv_map_path):
-                    try:
-                        print(f"Loading K/V map from: {kv_map_path}")
-                        self.assigned_kv_map = torch.load(kv_map_path)
-                    except Exception as e:
-                        print(f"Error loading K/V map from {kv_map_path}: {e}")
-                        self.assigned_kv_map = None
-                        input_face_button.kv_map = None
+                # If the input face has a map and its color correction state matches, use it.
+                if (hasattr(input_face_button, 'kv_map') and input_face_button.kv_map is not None and
+                    getattr(input_face_button, 'kv_map_color_transferred', False) == should_color_correct):
+                    print(f"Using cached K/V map for input face: {input_face_button.media_path}")
+                    self.assigned_kv_map = input_face_button.kv_map
+                    self.kv_data_color_transferred = input_face_button.kv_map_color_transferred
                 else:
-                    print(f"Generating K/V map for input face: {input_face_button.media_path}")
+                    # Otherwise, generate a new one
+                    print(f"Generating K/V map for input face: {input_face_button.media_path} (Color Correct: {should_color_correct})")
                     try:
                         from PIL import Image
                         models_processor = main_window.models_processor
@@ -462,32 +527,33 @@ class TargetFaceCardButton(CardButton):
                             if pil_img.size != (512, 512):
                                 pil_img = pil_img.resize((512, 512), Image.Resampling.LANCZOS)
 
-                            kv_map = models_processor.kv_extractor.extract_kv(pil_img)
-                            
-                            kv_data_dir = "model_assets/reference_kv_data"
-                            os.makedirs(kv_data_dir, exist_ok=True)
-                            new_kv_map_path = os.path.join(kv_data_dir, f"{input_face_button.face_id}.pt")
-                            torch.save(kv_map, new_kv_map_path)
-                            print(f"Saved K/V map to: {new_kv_map_path}")
+                            color_match_image = None
+                            if should_color_correct:
+                                # self.cropped_face is BGR numpy array
+                                target_face_np_rgb = self.cropped_face[..., ::-1].copy()
+                                color_match_image = torch.from_numpy(target_face_np_rgb).permute(2, 0, 1).to(main_window.models_processor.device)
 
-                            input_face_button.kv_map = new_kv_map_path
+                            kv_map = models_processor.kv_extractor.extract_kv(
+                                pil_img,
+                                color_match_image=color_match_image
+                            )
+                            
+                            # Cache the generated map and its state on the input face button
+                            input_face_button.kv_map = kv_map
+                            input_face_button.kv_map_color_transferred = should_color_correct
+                            
+                            # Assign to the target face
                             self.assigned_kv_map = kv_map
+                            self.kv_data_color_transferred = should_color_correct
+                            print(f"Generated and cached K/V map. Color corrected: {should_color_correct}")
                         else:
                             print("KV Extractor not available, cannot generate K/V map.")
-                            self.assigned_kv_map = None
-                            input_face_button.kv_map = None
-
                     except Exception as e:
                         print(f"Error generating K/V map: {e}")
                         traceback.print_exc()
-                        self.assigned_kv_map = None
-                        input_face_button.kv_map = None
                     finally:
-                        main_window.models_processor.unload_kv_extractor()
-            else:
-                self.assigned_kv_map = None
-        else:
-            self.assigned_kv_map = None
+                        if not main_window.control.get('DenoiserUNetModelSelection'):
+                             main_window.models_processor.unload_kv_extractor()
 
         if main_window.selected_target_face_id == self.face_id:
             main_window.current_kv_tensors_map = self.assigned_kv_map
@@ -572,7 +638,8 @@ class InputFaceCardButton(CardButton):
         self.cropped_face = cropped_face
         self.embedding_store = embedding_store  # Key: embedding_swap_model, Value: embedding
         self.media_path = media_path
-        self.kv_map: str | None = None
+        self.kv_map: Dict | None = None
+        self.kv_map_color_transferred = False
 
         self.setCheckable(True)
         self.setToolTip(media_path)
@@ -683,6 +750,43 @@ class InputFaceCardButton(CardButton):
         if not main_window.input_faces:
             main_window.placeholder_update_signal.emit(self.main_window.inputFacesList, False)
 
+    def delete_input_face_to_trash(self):
+        main_window = self.main_window
+        
+        if isinstance(self.kv_map, str) and self.kv_map.endswith('.pt'):
+            try:
+                if os.path.exists(self.kv_map):
+                    os.remove(self.kv_map)
+                    print(f"Removed K/V data file: {self.kv_map}")
+            except Exception as e:
+                print(f"Error removing K/V data file {self.kv_map}: {e}")
+
+        if isinstance(self.kv_map, str) and os.path.exists(self.kv_map):
+            try:
+                os.remove(self.kv_map)
+                print(f"Removed K/V data file: {self.kv_map}")
+            except Exception as e:
+                print(f"Error removing K/V data file {self.kv_map}: {e}")
+
+        i = self.get_item_position()
+        main_window.inputFacesList.takeItem(i)   
+        main_window.input_faces.pop(self.face_id)
+        for target_face_id in main_window.target_faces:
+            main_window.target_faces[target_face_id].remove_assigned_input_face(self.face_id)
+
+        # Send the file to the trash
+        if os.path.exists(self.media_path):  
+            send2trash(self.media_path.replace('/','\\'))  
+            print(f"{self.media_path} has been sent to the trash.")  
+        else:  
+            print(f"{self.media_path} does not exist.") 
+
+        common_widget_actions.refresh_frame(self.main_window)
+        self.deleteLater()
+        # If the input faces list is empty, show the placeholder text
+        if not main_window.input_faces:
+            main_window.placeholder_update_signal.emit(self.main_window.inputFacesList, False)
+
     def create_context_menu(self):
         # create context menu
         self.popMenu = QtWidgets.QMenu(self)
@@ -693,6 +797,10 @@ class InputFaceCardButton(CardButton):
         remove_action = QtGui.QAction('Remove from list', self)
         remove_action.triggered.connect(self.remove_input_face_from_list)
         self.popMenu.addAction(remove_action)
+
+        delete_action = QtGui.QAction('Delete file to recycle bin', self)
+        delete_action.triggered.connect(self.delete_input_face_to_trash)
+        self.popMenu.addAction(delete_action)
     def on_context_menu(self, point):
         # show context menu
         self.popMenu.exec_(self.mapToGlobal(point))
@@ -1535,3 +1643,4 @@ class FormGroupBox(QtWidgets.QGroupBox):
         self.main_window = main_window
         self.setSizePolicy(QtWidgets.QSizePolicy.Minimum, QtWidgets.QSizePolicy.Preferred)
         self.setFlat(True)
+
