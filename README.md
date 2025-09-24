@@ -70,8 +70,8 @@ VisoMaster-Fusion includes all the great features of the original plus major enh
 
 ### **Portable version**
 
-Download only the Run_Portable.bat file in this repo from link below and put it in a new directory were you want to run VisoMaster from. Then just execute the bat file to run VisoMaster. Portable dependencies will be installed on the first run to portable-files directory. Select your installed CUDA version on the initial run.
-- [Download - Run_Portable.bat](Run_Portable.bat)
+Download only the Run_Portable.bat file from this repo (you don't need to clone the whole repo) from link below and put it in a new directory were you want to run VisoMaster from. Then just execute the bat file to run VisoMaster. Portable dependencies will be installed on the first run to portable-files directory. Select your installed CUDA version on the initial run.
+- [Download - Start_Portable.bat](Start_Portable.bat)
 
 You don't need any other steps from below for the portable version.
 

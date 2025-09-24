@@ -1,7 +1,7 @@
 ftfy
 kornia
 numexpr
-numpy==1.26.4
+numpy
 onnx==1.18.0
 onnxruntime-gpu==1.22.0
 onnxsim
