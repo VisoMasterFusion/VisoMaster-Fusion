@@ -25,7 +25,7 @@ set "GIT_URL=https://github.com/git-for-windows/git/releases/download/v2.51.0.wi
 set "GIT_ZIP=%PORTABLE_DIR%\PortableGit.exe"
 set "CONFIG_FILE=%BASE_DIR%portable.cfg"
 set "DOWNLOAD_PY=%APP_DIR%\download_models.py"
-set "MAIN_PY=%APP_DIR%\main.py"
+set "MAIN_PY=main.py"
 
 :: --- Step 0: User Configuration ---
 :: Read config or prompt user for the first time
@@ -225,8 +225,9 @@ if /I "!DOWNLOAD_RUN!"=="false" (
 )
 
 :: --- Step 8: Run main application ---
-if exist "%MAIN_PY%" (
+if exist "%APP_DIR%\%MAIN_PY%" (
     echo Starting main.py...
+    "cd %APP_DIR%"
     "%VENV_DIR%\Scripts\python.exe" "%MAIN_PY%"
 ) else (
     echo ERROR: main.py not found in "%APP_DIR%".
