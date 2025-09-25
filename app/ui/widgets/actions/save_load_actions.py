@@ -176,8 +176,10 @@ def load_saved_workspace(main_window: 'MainWindow', data_filename: str|bool = Fa
                     if kv_map_path and os.path.exists(kv_map_path):
                         try:
                             payload = torch.load(kv_map_path, map_location='cpu')
-                            input_face_button.kv_map = payload.get('kv_map')
-                            input_face_button.kv_map_color_transferred = payload.get('kv_data_color_transferred', False)
+                            if isinstance(payload, dict):
+                                input_face_button.kv_map = payload.get('kv_map')
+                            else: # Backwards compatibility
+                                input_face_button.kv_map = payload
                         except Exception as e:
                             print(f"Error loading K/V map from {kv_map_path}: {e}")
 
@@ -210,17 +212,6 @@ def load_saved_workspace(main_window: 'MainWindow', data_filename: str|bool = Fa
                 # Set assigned input embedding (Input face + merged embeddings)
                 assigned_input_embedding = {embed_model: np.array(embedding) for embed_model, embedding in target_face_data['assigned_input_embedding'].items()}
                 main_window.target_faces[face_id].assigned_input_embedding = assigned_input_embedding
-                
-                kv_map_filename = target_face_data.get('assigned_kv_map_filename')
-                if kv_map_filename:
-                    kv_file_path = main_window.actual_models_dir_path / "reference_kv_data" / kv_map_filename
-                    if kv_file_path.exists():
-                        try:
-                            payload = torch.load(kv_file_path, map_location='cpu')
-                            main_window.target_faces[face_id].assigned_kv_map = payload.get('kv_map')
-                            main_window.target_faces[face_id].kv_data_color_transferred = payload.get('kv_data_color_transferred', False)
-                        except Exception as e:
-                            print(f"Error loading assigned K/V map from {kv_file_path}: {e}")
 
             # Load control (settings)
             control = data['control']
@@ -258,6 +249,10 @@ def load_saved_workspace(main_window: 'MainWindow', data_filename: str|bool = Fa
             # Set output folder
             common_widget_actions.create_control(main_window, 'OutputMediaFolder', control['OutputMediaFolder'])
             main_window.outputFolderLineEdit.setText(control['OutputMediaFolder'])
+
+            # Recalculate assigned embeddings and K/V maps for all target faces
+            for target_face_button in main_window.target_faces.values():
+                target_face_button.calculate_assigned_input_embedding()
 
             layout_actions.fit_image_to_view_onchange(main_window)
 
@@ -298,8 +293,7 @@ def save_current_workspace(main_window: 'MainWindow', data_filename:str|bool = F
             kv_map_path = os.path.join(kv_data_dir, f"input_{input_face.face_id}.pt")
             try:
                 payload = {
-                    'kv_map': input_face.kv_map,
-                    'kv_data_color_transferred': getattr(input_face, 'kv_map_color_transferred', False)
+                    'kv_map': input_face.kv_map
                 }
                 torch.save(payload, kv_map_path)
             except Exception as e:

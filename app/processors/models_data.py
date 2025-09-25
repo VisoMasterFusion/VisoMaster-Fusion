@@ -566,13 +566,13 @@ models_list = [
     {
         "model_name": "RefLdm",
         "local_path": f"{models_dir}/ref-ldm_embedding/ckpts/refldm.ckpt",
-        "hash": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+        "hash": "ad953ba72b52ed32dd280232ff0070bc6cb097a71dce250318730c884e38b778",
         "url": "https://github.com/ChiWeiHsiao/ref-ldm/releases/download/1.0.0/refldm.ckpt"
     },
     {
         "model_name": "VQGAN",
         "local_path": f"{models_dir}/ref-ldm_embedding/ckpts/vqgan.ckpt",
-        "hash": "70b0a9a0c7fd49bd1442c479ab16f3bf728008ed1fd7659c1a9987ef4b753b51",
+        "hash": "7b08407b454f5328aaaf1eda35418a5a53dcc68caaf3bcf12ab88b8f21ec1a5d",
         "url": "https://github.com/ChiWeiHsiao/ref-ldm/releases/download/1.0.0/vqgan.ckpt"
     }
 ]
