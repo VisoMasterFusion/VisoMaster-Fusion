@@ -113,7 +113,8 @@ class FaceMasks:
             outpred = outpred.clamp(0,1)
 
         gauss = transforms.GaussianBlur(parameters['OccluderXSegBlurSlider']*2+1, (parameters['OccluderXSegBlurSlider']+1)*0.2)
-        outpred = gauss(outpred)  
+        outpred = gauss(outpred) 
+        outpred_noFP = outpred.clone()        
         if amount2 != amount:
             if amount2 > 0:
                 r2 = int(amount2)
@@ -138,7 +139,7 @@ class FaceMasks:
             #print("outpred, outpred2, mouth: ", outpred.shape, outpred2.shape, mouth.shape)
             #outpred2_autocolor = outpred2.clone()
             outpred[background > 0.01] = outpred2[background > 0.01]
-            outpred_noFP = outpred.clone()
+            outpred_noFP = outpred
             outpred[mouth > 0.01] = outpred2[mouth > 0.01]
 
             #outpred2_autocolor = torch.reshape(outpred2_autocolor, (1, 256, 256))
@@ -741,10 +742,10 @@ class FaceMasks:
         diff_map = diff_map * swap_mask.squeeze(0)
 
         # Quantile clipping
-        sample   = diff_map.reshape(-1)
-        sample   = sample[torch.randint(0, diff_map.numel(), (50_000,), device=diff_map.device)]
-        diff_max = torch.quantile(sample, 0.99)
-        diff_map = torch.clamp(diff_map, max=diff_max)
+        #sample   = diff_map.reshape(-1)
+        #sample   = sample[torch.randint(0, diff_map.numel(), (50_000,), device=diff_map.device)]
+        #diff_max = torch.quantile(sample, 0.99)
+        #diff_map = torch.clamp(diff_map, max=diff_max)
 
         # 1) Normalisierung
         diff_min, diff_max = diff_map.amin(), diff_map.amax()

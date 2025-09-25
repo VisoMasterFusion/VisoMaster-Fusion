@@ -1227,7 +1227,7 @@ class FrameWorker(threading.Thread):
                 automasktoggle2 = parameters["FaceRestorerAutoMask2EnableToggle"]
                 automaskadjust2 = parameters["FaceRestorerAutoSharpMask2AdjustDecimalSlider"]
                 automaskblur2 = 2 #parameters["FaceRestorerAutoSharpMask2BlurSlider"]
-                restore_mask = calc_mask.clone()
+                restore_mask = mask_calc_dill.clone()
                 
                 alpha_auto2, blur_value2 = self.face_restorer_auto(original_face_512_autorestore2, swap_original_autorestore2, swap2, alpha_restorer2, adjust_sharpness2, scale_factor2, debug, restore_mask, automasktoggle2, automaskadjust2, automaskblur2)#, parameters["FaceRestorerMaskSlider"], parameters["AutoRestorerTenengradTreshSlider"]/100, parameters["AutoRestorerCombWeightSlider"]/100)
 
@@ -1514,7 +1514,7 @@ class FrameWorker(threading.Thread):
                 automasktoggle2 = parameters["FaceRestorerAutoMask2EnableToggle"]
                 automaskadjust2 = parameters["FaceRestorerAutoSharpMask2AdjustDecimalSlider"]
                 automaskblur2 = 2 #parameters["FaceRestorerAutoSharpMask2BlurSlider"]
-                restore_mask = calc_mask.clone()
+                restore_mask = mask_calc_dill.clone()
                 
                 alpha_auto2, blur_value2 = self.face_restorer_auto(original_face_512_autorestore2, swap_original_autorestore2, swap2, alpha_restorer2, adjust_sharpness2, scale_factor2, debug, restore_mask, automasktoggle2, automaskadjust2, automaskblur2)#, parameters["FaceRestorerMaskSlider"], parameters["AutoRestorerTenengradTreshSlider"]/100, parameters["AutoRestorerCombWeightSlider"]/100)
 
