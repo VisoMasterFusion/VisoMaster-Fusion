@@ -742,10 +742,10 @@ class FaceMasks:
         diff_map = diff_map * swap_mask.squeeze(0)
 
         # Quantile clipping
-        #sample   = diff_map.reshape(-1)
-        #sample   = sample[torch.randint(0, diff_map.numel(), (50_000,), device=diff_map.device)]
-        #diff_max = torch.quantile(sample, 0.99)
-        #diff_map = torch.clamp(diff_map, max=diff_max)
+        sample   = diff_map.reshape(-1)
+        sample   = sample[torch.randint(0, diff_map.numel(), (50_000,), device=diff_map.device)]
+        diff_max = torch.quantile(sample, 0.99)
+        diff_map = torch.clamp(diff_map, max=diff_max)
 
         # 1) Normalisierung
         diff_min, diff_max = diff_map.amin(), diff_map.amax()
