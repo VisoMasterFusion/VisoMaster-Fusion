@@ -435,8 +435,8 @@ models_list = [
     {
         "model_name": "combo_relu3_3_relu3_1",
         "local_path": f"{models_dir}/vgg_combo_relu3_3_relu3_1.onnx",
-        "hash": "1068EE41E3C67DCFBBECCBC93E539EB06F89BBA08618951BB33E9BE2C1FBC986",
-        "url": f"{assets_repo}/v0.1.0_lp/vgg_combo_relu3_3_relu3_1.onnx"
+        "hash": "1068ee41e3c67dcfbbeccbc93e539eb06f89bba08618951bb33e9be2c1fbc986",
+        "url": "https://github.com/asdf31jsa/VisoMaster-Experimental/raw/refs/heads/ALL_Working/model_assets/vgg_combo_relu3_3_relu3_1.onnx"
 
     },   
     {
