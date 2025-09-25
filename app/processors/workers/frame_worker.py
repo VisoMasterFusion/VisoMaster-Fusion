@@ -317,6 +317,12 @@ class FrameWorker(threading.Thread):
                     best_target_button_vr, best_params_for_target_vr, _ = self._find_best_target_match(face_emb_crop, control)
                     
                     if best_target_button_vr:
+                        denoiser_on = control.get('DenoiserUNetEnableBeforeRestorersToggle', False) or \
+                                      control.get('DenoiserAfterFirstRestorerToggle', False) or \
+                                      control.get('DenoiserAfterRestorersToggle', False)
+                        if denoiser_on and best_target_button_vr.assigned_kv_map is None and best_target_button_vr.assigned_input_faces:
+                            best_target_button_vr.calculate_assigned_input_embedding()
+
                         analyzed_faces_for_vr.append({
                             'theta': theta, 'phi': phi, 'original_eye_side': original_eye_side, 
                             'face_crop_tensor': face_crop_tensor, 'kps_on_crop': kps_on_crop, 
