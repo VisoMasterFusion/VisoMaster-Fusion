@@ -684,4 +684,4 @@ class MainWindow(QtWidgets.QMainWindow, Ui_MainWindow):
     def open_embedding_editor(self):
         if self.embedding_editor_window is None:
             self.embedding_editor_window = EmbeddingGUI()
-        self.embedding_editor_window.showMaximized()
+        self.embedding_editor_window.show()
