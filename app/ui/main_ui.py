@@ -20,6 +20,8 @@ from app.ui.widgets.actions import list_view_actions
 from app.ui.widgets.actions import graphics_view_actions
 from app.ui.widgets.actions import job_manager_actions
 from app.ui.widgets.actions import control_actions
+from app.ui.widgets.actions import preset_actions
+from app.ui.widgets.advanced_embedding_editor import EmbeddingGUI
 
 from app.processors.video_processor import VideoProcessor
 from app.processors.models_processor import ModelsProcessor
@@ -117,6 +119,7 @@ class MainWindow(QtWidgets.QMainWindow, Ui_MainWindow):
         self.model_loaded_signal.connect(partial(common_widget_actions.hide_model_loading_dialog, self))
         self.display_messagebox_signal.connect(partial(common_widget_actions.create_and_show_messagebox, self))
         self.last_seek_read_failed = False
+        self.embedding_editor_window = None
         
     def initialize_widgets(self):
         # Initialize QListWidget for target media
@@ -201,6 +204,7 @@ class MainWindow(QtWidgets.QMainWindow, Ui_MainWindow):
 
         self.inputFacesSearchBox.textChanged.connect(partial(filter_actions.filter_input_faces, self))
         self.inputEmbeddingsSearchBox.textChanged.connect(partial(filter_actions.filter_merged_embeddings, self))
+        self.openEditorButton.clicked.connect(self.open_embedding_editor)
         self.openEmbeddingButton.clicked.connect(partial(save_load_actions.open_embeddings_from_file, self))
         self.saveEmbeddingButton.clicked.connect(partial(save_load_actions.save_embeddings_to_file, self))
         self.saveEmbeddingAsButton.clicked.connect(partial(save_load_actions.save_embeddings_to_file, self, True))
@@ -248,6 +252,14 @@ class MainWindow(QtWidgets.QMainWindow, Ui_MainWindow):
         # Set up output folder select button (It is inside the settings tab Widget)
         self.outputFolderButton.clicked.connect(partial(list_view_actions.select_output_media_folder, self))
         common_widget_actions.create_control(self, 'OutputMediaFolder', '')
+        
+        # Initialize presets list and buttons
+        preset_actions.refresh_presets_list(self)
+        preset_actions.setup_preset_list_context_menu(self)
+        self.applyPresetButton.clicked.connect(partial(preset_actions.apply_selected_preset, self))
+        self.savePresetButton.clicked.connect(partial(preset_actions.save_current_as_preset, self))
+        self.overwritePresetButton.clicked.connect(partial(preset_actions.overwrite_selected_preset, self))
+        self.presetsList.itemDoubleClicked.connect(partial(preset_actions.handle_preset_double_click, self))
 
         # Initialize current_widget_parameters with default values
         self.current_widget_parameters = ParametersDict(copy.deepcopy(self.default_parameters), self.default_parameters)
@@ -668,3 +680,8 @@ class MainWindow(QtWidgets.QMainWindow, Ui_MainWindow):
         # Tabs/Strip-Stretches optional neutralisieren (nicht zwingend)
         self.gridLayout_5.setRowStretch(1, 0)
         self.gridLayout_5.setRowStretch(2, 0)
+        
+    def open_embedding_editor(self):
+        if self.embedding_editor_window is None:
+            self.embedding_editor_window = EmbeddingGUI()
+        self.embedding_editor_window.showMaximized()
