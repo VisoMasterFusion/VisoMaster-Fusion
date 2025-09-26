@@ -21,9 +21,9 @@ scikit-image
 tensorrt-cu12
 tensorrt-cu12_libs==10.13.3.9
 tensorrt-cu12_bindings==10.13.3.9
-torch==2.5.1+cu128
-torchaudio==2.5.1+cu128
-torchvision==0.20.1+cu128
+torch==2.7.0+cu128
+torchaudio==2.7.0+cu128
+torchvision==0.22.0+cu128
 tqdm
 omegaconf
 einops
