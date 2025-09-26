@@ -628,7 +628,7 @@
              </size>
             </property>
             <property name="toolTip">
-             <string>Save Embedding</string>
+             <string>Saved Embedding</string>
             </property>
             <property name="verticalScrollBarPolicy">
              <enum>Qt::ScrollBarPolicy::ScrollBarAlwaysOff</enum>
@@ -679,6 +679,22 @@
              <widget class="QLineEdit" name="inputEmbeddingsSearchBox">
               <property name="placeholderText">
                <string>Search Embeddings</string>
+              </property>
+             </widget>
+            </item>
+			<item>
+             <widget class="QPushButton" name="openEditorButton">
+              <property name="toolTip">
+               <string>Open Embedding Editor</string>
+              </property>
+              <property name="text">
+               <string>Embedding Editor</string>
+              </property>
+              <property name="checkable">
+                <bool>false</bool>
+              </property>
+              <property name="flat">
+               <bool>true</bool>
               </property>
              </widget>
             </item>
@@ -1195,6 +1211,48 @@
                </property>
                <property name="flat">
                 <bool>false</bool>
+               </property>
+              </widget>
+             </item>
+            </layout>
+           </item>
+		   <item>
+            <widget class="QLabel" name="labelp">
+             <property name="text">
+              <string>Presets</string>
+             </property>
+            </widget>
+           </item>
+		   <item>
+            <widget class="QListWidget" name="presetsList">
+             <property name="sizePolicy">
+              <sizepolicy hsizetype="Expanding" vsizetype="Minimum">
+               <horstretch>0</horstretch>
+               <verstretch>0</verstretch>
+              </sizepolicy>
+			 </property>
+            </widget>
+           </item>
+           <item>
+            <layout class="QHBoxLayout" name="presetsButtonsLayout">
+             <item>
+              <widget class="QPushButton" name="applyPresetButton">
+               <property name="text">
+                <string>Apply</string>
+               </property>
+              </widget>
+             </item>
+             <item>
+              <widget class="QPushButton" name="savePresetButton">
+               <property name="text">
+                <string>Save Current as Preset</string>
+               </property>
+              </widget>
+             </item>
+             <item>
+              <widget class="QPushButton" name="overwritePresetButton">
+               <property name="text">
+                <string>Overwrite Selected</string>
                </property>
               </widget>
              </item>

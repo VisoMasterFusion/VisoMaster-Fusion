@@ -263,7 +263,6 @@ class FaceMasks:
         need_parser = (
             parameters.get("FaceParserEnableToggle", False)
             or (parameters.get("DFLXSegEnableToggle", False)
-                and parameters.get("DFLXSeg2EnableToggle", False)
                 and parameters.get("XSegMouthEnableToggle", False)
                 and parameters.get("DFLXSegSizeSlider", 0) != parameters.get("DFLXSeg2SizeSlider", 0))
             or ((parameters.get("TransferTextureEnableToggle", False)

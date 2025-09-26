@@ -251,52 +251,35 @@ SWAPPER_LAYOUT_DATA: LayoutDictTypes = {
             'requiredToggleValue': True,
             'help': 'Blend value for Occluder and XSeg.'
         },
-        'DFLXSeg2EnableToggle': {
-            'level': 1,
-            'label': 'Xseg 2',
-            'default': False,
-            'help': 'Enable second XSeg Mask for special regions.'
-        },
-        'DFLXSeg2SizeSlider': {
-            'level': 2,
-            'label': 'Size2',
-            'min_value': '-50',
-            'max_value': '50',
-            'default': '-1',
-            'step': 1,
-            'parentToggle': 'DFLXSeg2EnableToggle',
-            'requiredToggleValue': True,
-            'help': 'Grows or shrinks the occluded region of second Xseg Mask (for BG and mouth).'
-        },
-        'XSeg2BlurSlider': {
-            'level': 2,
-            'label': 'XSeg2 Blur',
-            'min_value': '0',
-            'max_value': '100',
-            'default': '4',
-            'step': 1,
-            'parentToggle': 'DFLXSeg2EnableToggle',
-            'requiredToggleValue': True,
-            'help': 'Blur for second XSeg Mask'
-        },
         'XSegMouthEnableToggle': {
             'level': 2,
             'label': 'Xseg Mouth',
             'default': False,
-            'parentToggle': 'DFLXSeg2EnableToggle',
+            'parentToggle': 'DFLXSegEnableToggle',
             'requiredToggleValue': True,
             'help': 'Use second Xseg Mask on mouth region.'
-        },       
-        'XsegUpperLipParserSlider': {
+        },
+        'DFLXSeg2SizeSlider': {
             'level': 3,
-            'label': 'Upper Lip',
-            'min_value': '0',
-            'max_value': '30',
-            'default': '2',
+            'label': 'Size',
+            'min_value': '-50',
+            'max_value': '50',
+            'default': '-1',
             'step': 1,
-            'parentToggle': 'DFLXSeg2EnableToggle & XSegMouthEnableToggle',
+            'parentToggle': 'DFLXSegEnableToggle & XSegMouthEnableToggle',
             'requiredToggleValue': True,
-            'help': 'Grow Upper Lip Region (uses Faceparser on swap)'
+            'help': 'Grows or shrinks the occluded mouth region Xseg Mask.'
+        },
+        'XSeg2BlurSlider': {
+            'level': 3,
+            'label': 'Blur',
+            'min_value': '0',
+            'max_value': '100',
+            'default': '4',
+            'step': 1,
+            'parentToggle': 'DFLXSegEnableToggle & XSegMouthEnableToggle',
+            'requiredToggleValue': True,
+            'help': 'Blur for mouth XSeg Mask'
         },
         'XsegMouthParserSlider': {
             'level': 3,
@@ -305,9 +288,20 @@ SWAPPER_LAYOUT_DATA: LayoutDictTypes = {
             'max_value': '30',
             'default': '2',
             'step': 1,
-            'parentToggle': 'DFLXSeg2EnableToggle & XSegMouthEnableToggle',
+            'parentToggle': 'DFLXSegEnableToggle & XSegMouthEnableToggle',
             'requiredToggleValue': True,
             'help': 'Grow Mouth Region (uses Faceparser on swap)'
+        },
+        'XsegUpperLipParserSlider': {
+            'level': 3,
+            'label': 'Upper Lip',
+            'min_value': '0',
+            'max_value': '30',
+            'default': '2',
+            'step': 1,
+            'parentToggle': 'DFLXSegEnableToggle & XSegMouthEnableToggle',
+            'requiredToggleValue': True,
+            'help': 'Grow Upper Lip Region (uses Faceparser on swap)'
         },
         'XsegLowerLipParserSlider': {
             'level': 3,
@@ -316,7 +310,7 @@ SWAPPER_LAYOUT_DATA: LayoutDictTypes = {
             'max_value': '30',
             'default': '10',
             'step': 1,
-            'parentToggle': 'DFLXSeg2EnableToggle & XSegMouthEnableToggle',
+            'parentToggle': 'DFLXSegEnableToggle & XSegMouthEnableToggle',
             'requiredToggleValue': True,
             'help': 'Grow Lower Lip Region (uses Faceparser on swap)'
         },
