@@ -37,6 +37,8 @@ def rename_preset(main_window: 'MainWindow', item: 'QListWidgetItem'):
     if ok and new_name and new_name != old_name:
         old_path = Path("presets") / f"{old_name}.json"
         new_path = Path("presets") / f"{new_name}.json"
+        old_path_ctl = Path("presets") / f"{old_name}_ctl.json"
+        new_path_ctl = Path("presets") / f"{new_name}_ctl.json"
 
         if new_path.exists():
             QtWidgets.QMessageBox.warning(
@@ -49,6 +51,7 @@ def rename_preset(main_window: 'MainWindow', item: 'QListWidgetItem'):
 
         try:
             old_path.rename(new_path)
+            old_path_ctl.rename(new_path_ctl)
             refresh_presets_list(main_window)
             common_widget_actions.create_and_show_toast_message(
                 main_window,
@@ -68,9 +71,12 @@ def delete_preset(main_window: 'MainWindow', item: 'QListWidgetItem'):
     delete_preset = item.text()
     delete_path = Path("presets") / f"{delete_preset}.json"
     delete_path = str(delete_path).replace('/','\\')
+    delete_path_ctl = Path("presets") / f"{delete_preset}_ctl.json"
+    delete_path_ctl = str(delete_path_ctl).replace('/','\\')
 
     try:
-        send2trash(delete_path)  
+        send2trash(delete_path)
+        send2trash(delete_path_ctl)
         print(f"{delete_preset} has been sent to the trash.")  
         refresh_presets_list(main_window)
         
@@ -125,27 +131,33 @@ def overwrite_selected_preset(main_window: 'MainWindow'):
     )
 
     if result == QtWidgets.QMessageBox.Yes:
-        preset_path = Path("presets") / f"{current_item.text()}.json"
+        name = str(current_item.text())
+        preset_path = Path("presets") / f"{name}.json"
         preset_path.parent.mkdir(exist_ok=True)
+        preset_path_ctl = Path("presets") / f"{name}_ctl.json"
+        preset_path_ctl.parent.mkdir(exist_ok=True)
 
         # Get current parameters but exclude input/output paths
         current_params = {}
         if main_window.selected_target_face_id:
             params = main_window.parameters[main_window.selected_target_face_id].data.copy()
-            control = main_window.control.copy()
+            # Remove any input/output specific settings
             params.pop('InputFolder', None)
             params.pop('OutputFolder', None)
-            current_params = params | control
+            current_params = params
         else:
             params = main_window.current_widget_parameters.data.copy()
-            control = main_window.control.copy()
-            params.pop('InputFolder', None)
+            params.pop('InputFolder', None) 
             params.pop('OutputFolder', None)
-            current_params = params | control
-
+            current_params = params
+        current_ctl = {}
+        control = main_window.control.copy()
+        current_ctl = control
         # Save to file
         with open(preset_path, 'w') as f:
             json.dump(current_params, f, indent=4)
+        with open(preset_path_ctl, 'w') as c:
+            json.dump(current_ctl, c, indent=4)
 
         common_widget_actions.create_and_show_toast_message(
             main_window,
@@ -161,7 +173,8 @@ def refresh_presets_list(main_window: 'MainWindow'):
         presets_dir.mkdir(exist_ok=True)
 
     for json_file in presets_dir.glob("*.json"):
-        main_window.presetsList.addItem(json_file.stem)
+        if not json_file.name.endswith("_ctl.json"):
+            main_window.presetsList.addItem(json_file.stem)
 
 def save_current_as_preset(main_window: 'MainWindow'):
     """Save current parameters as a preset JSON file"""
@@ -169,27 +182,30 @@ def save_current_as_preset(main_window: 'MainWindow'):
     if ok and name:
         preset_path = Path("presets") / f"{name}.json"
         preset_path.parent.mkdir(exist_ok=True)
+        preset_path_ctl = Path("presets") / f"{name}_ctl.json"
+        preset_path_ctl.parent.mkdir(exist_ok=True)
 
         # Get current parameters but exclude input/output paths
         current_params = {}
         if main_window.selected_target_face_id:
             params = main_window.parameters[main_window.selected_target_face_id].data.copy()
-            control = main_window.control.copy()
             # Remove any input/output specific settings
             params.pop('InputFolder', None)
             params.pop('OutputFolder', None)
-            current_params = params | control
+            current_params = params
         else:
             params = main_window.current_widget_parameters.data.copy()
-            control = main_window.control.copy()
             params.pop('InputFolder', None) 
             params.pop('OutputFolder', None)
-            current_params = params | control
-
+            current_params = params
+        current_ctl = {}
+        control = main_window.control.copy()
+        current_ctl = control
         # Save to file
         with open(preset_path, 'w') as f:
             json.dump(current_params, f, indent=4)
-
+        with open(preset_path_ctl, 'w') as c:
+            json.dump(current_ctl, c, indent=4)
         refresh_presets_list(main_window)
         common_widget_actions.create_and_show_toast_message(
             main_window, 
@@ -209,7 +225,13 @@ def apply_selected_preset(main_window: 'MainWindow'):
 
     with open(preset_path, 'r') as f:
         preset_params = json.load(f)
+    
+    preset_path_ctl = Path("presets") / f"{current_item.text()}_ctl.json"
+    if not preset_path_ctl.exists():
+        return
 
+    with open(preset_path_ctl, 'r') as c:
+        preset_ctl = json.load(c)
     # Preserve current input/output directories
     if main_window.selected_target_face_id:
         current_params = main_window.parameters[main_window.selected_target_face_id]
@@ -240,11 +262,11 @@ def apply_selected_preset(main_window: 'MainWindow'):
 
         main_window.current_widget_parameters = ParametersDict(new_params, main_window.default_parameters)
         common_widget_actions.set_widgets_values_using_face_id_parameters(main_window, False)
+
+    new_ctl = preset_ctl.copy()
+    main_window.control.update(new_ctl)
+    common_widget_actions.set_control_widgets_values(main_window)
     
-    # Controls are globaly
-    current_controls = main_window.control
-    new_controls = preset_params.copy()
-    main_window.control = ParametersDict(new_controls, main_window.control)
     # Refresh the frame to show changes
     common_widget_actions.refresh_frame(main_window)
     common_widget_actions.create_and_show_toast_message(
