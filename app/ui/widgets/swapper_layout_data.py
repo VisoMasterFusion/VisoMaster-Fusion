@@ -960,7 +960,7 @@ SWAPPER_LAYOUT_DATA: LayoutDictTypes = {
         },        
         'FaceParserTextureSlider': {
             'level': 3,
-            'label': 'Face (is also Blend value)',
+            'label': 'Face Blend',
             'min_value': '0',
             'max_value': '10',
             'default': '0',
@@ -969,6 +969,17 @@ SWAPPER_LAYOUT_DATA: LayoutDictTypes = {
             'requiredToggleValue': True,
             'help': 'Blend amount of rest of Face (without features)'
         },           
+        'FaceParserBlendTextureSlider': {
+            'level': 3,
+            'label': 'Excluded Features Blend',
+            'min_value': '-100',
+            'max_value': '0',
+            'default': '0',
+            'step': 1,
+            'parentToggle': 'TransferTextureEnableToggle & ExcludeMaskEnableToggle',
+            'requiredToggleValue': True,
+            'help': 'Blend Amount of Excluded Feature Areas'
+        },       
         'EyebrowParserTextureSlider': {
             'level': 3,
             'label': 'Eyebrows',
@@ -1023,18 +1034,7 @@ SWAPPER_LAYOUT_DATA: LayoutDictTypes = {
             'parentToggle': 'TransferTextureEnableToggle & ExcludeMaskEnableToggle',
             'requiredToggleValue': True,
             'help': 'Exclude Faceparts (Eyes, Eyebrows, Nose, Mouth, Lips, Neck), 0=whole face is used, 1= Parts not included, 1+ = increase Parts size. Most of the time should be 1/1+. try 0 on low quality/artefacted targets'
-        },
-        'FaceParserBlendTextureSlider': {
-            'level': 3,
-            'label': 'Excluded Texture Blend adjust',
-            'min_value': '-100',
-            'max_value': '0',
-            'default': '0',
-            'step': 1,
-            'parentToggle': 'TransferTextureEnableToggle & ExcludeMaskEnableToggle',
-            'requiredToggleValue': True,
-            'help': 'Blend Amount of Excluded Feature Areas'
-        },          
+        },   
         'FaceParserBlurTextureSlider': {
             'level': 2,
             'label': 'Texture Mask Blur',

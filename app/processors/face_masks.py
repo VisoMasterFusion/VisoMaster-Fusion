@@ -190,19 +190,19 @@ class FaceMasks:
 
     def _faceparser_labels(self, img_uint8_3x512x512: torch.Tensor) -> torch.Tensor:
         """
-        img_uint8: [3,512,512] uint8 0..255
-        returns labels: [512,512] long (0..18)
+        Nimmt [3,512,512] uint8, ruft das 512er-Parser-Modell,
+        gibt aber **[256,256]** Labels (long, 0..18) zurück.
         """
         if not self.models_processor.models['FaceParser']:
             self.models_processor.models['FaceParser'] = self.models_processor.load_model('FaceParser')
 
         x = img_uint8_3x512x512.float().div(255.0)
         x = v2.functional.normalize(x, (0.485,0.456,0.406), (0.229,0.224,0.225))
-        x = x.unsqueeze(0).contiguous()                       # [1,3,512,512]
+        x = x.unsqueeze(0).contiguous()  # [1,3,512,512]
 
         out = torch.empty((1,19,512,512), device=self.models_processor.device)
-        io = self.models_processor.models['FaceParser'].io_binding()
-        io.bind_input('input',  self.models_processor.device, 0, np.float32, (1,3,512,512), x.data_ptr())
+        io  = self.models_processor.models['FaceParser'].io_binding()
+        io.bind_input ('input',  self.models_processor.device, 0, np.float32, (1,3,512,512), x.data_ptr())
         io.bind_output('output', self.models_processor.device, 0, np.float32, (1,19,512,512), out.data_ptr())
 
         if self.models_processor.device == "cuda":
@@ -211,93 +211,72 @@ class FaceMasks:
             self.models_processor.syncvec.cpu()
         self.models_processor.models['FaceParser'].run_with_iobinding(io)
 
-        labels = out.argmax(dim=1).squeeze(0).to(torch.long)  # [512,512]
-        return labels
+        labels_512 = out.argmax(dim=1).squeeze(0).to(torch.long)  # [512,512]
+        # auf 256x256 mit NEAREST (keine Mischklassen)
+        labels_256 = F.interpolate(
+            labels_512.unsqueeze(0).unsqueeze(0).float(),  # [1,1,512,512] als float
+            size=(256,256), mode='nearest'
+        ).squeeze(0).squeeze(0).to(torch.long)            # [256,256]
+        return labels_256
+
 
     def _get_circle_kernel(self, r: int, device: str) -> torch.Tensor:
-        """
-        Liefert einen kreisförmigen Struktur-Kernel der Größe (2r+1)² als Float-Tensor [1,1,K,K].
-        Nutzt Cache je (r, device).
-        """
         key = (int(r), str(device))
         k = self._morph_kernels.get(key)
         if k is not None:
             return k
-
         rr = int(r)
-        K = 2 * rr + 1
+        K = 2*rr + 1
         ys, xs = torch.meshgrid(
-            torch.arange(-rr, rr + 1, device=device),
-            torch.arange(-rr, rr + 1, device=device),
+            torch.arange(-rr, rr+1, device=device),
+            torch.arange(-rr, rr+1, device=device),
             indexing="ij"
         )
-        kernel = ((xs**2 + ys**2) <= rr*rr).float().unsqueeze(0).unsqueeze(0)  # [1,1,K,K]
+        kernel = ((xs*xs + ys*ys) <= rr*rr).float().unsqueeze(0).unsqueeze(0)  # [1,1,K,K]
         self._morph_kernels[key] = kernel
         return kernel
 
     def _dilate_binary(self, m: torch.Tensor, r: int, mode: str = "conv") -> torch.Tensor:
         """
-        Morphologische Dilatation/Erosion auf Binärmaske.
-
-        Args:
-            m:  float in {0,1}
-            r:  >0 => Dilatation um r Pixel, <0 => Erosion um |r| Pixel
-            mode:
-                - "conv"      : runde Dilatation mit kreisförmigem Kernel (empfohlen)
-                - "pool"      : einmaliges max_pool2d mit Kernel=2r+1 (schnell, aber eckig)
-                - "iter_pool" : r Schritte 3x3 max_pool2d (runder, langsamer)
+        Binärmaske dilatieren/erosion (r>0 / r<0). Erwartet [H,W] oder [1,1,H,W], arbeitet
+        jetzt problemlos mit H=W=256. "conv" nutzt kreisförmigen Kernel (präzise & schnell).
         """
-
-        if r == 0:
-            return m        
-        if r == 1:
+        if r == 0 or r == 1:
             return m
-            
-        # Original-Form merken
         squeeze_back = False
         if m.dim() == 2:
-            m_in = m.unsqueeze(0).unsqueeze(0)  # [1,1,H,W]
+            m_in = m.unsqueeze(0).unsqueeze(0)
             squeeze_back = True
         elif m.dim() == 4:
             m_in = m
         else:
-            raise ValueError(f"_dilate_binary: unsupported shape {m.shape}; expected [H,W] or [1,1,H,W]")
-            
-        if abs(r) > 0:
-            rr = int(abs(r))
+            raise ValueError(f"_dilate_binary: unsupported shape {m.shape}")
+
+        rr = abs(int(r))
+        if rr == 0:
+            out = m_in
+        else:
             if mode == "pool":
-                # Achsenrechteck – sehr schnell
                 out = F.max_pool2d(m_in, kernel_size=2*rr+1, stride=1, padding=rr)
                 out = (out > 0).float()
             elif mode == "iter_pool":
-                # Mehrere kleine Schritte (3x3), r Runden
                 out = m_in
                 for _ in range(rr):
                     out = F.max_pool2d(out, kernel_size=3, stride=1, padding=1)
                 out = (out > 0).float()
             else:
-                # "conv" – runder Kreis-Kernel via Faltung
                 kernel = self._get_circle_kernel(rr, m_in.device)
-                # Faltung zählt Treffer im Kreis; >0 => mind. 1 gesetztes Pixel im Umkreis
                 hits = F.conv2d(m_in, kernel, padding=rr)
                 out = (hits > 0).float()
-                
-        if squeeze_back:
-            return out.squeeze(0).squeeze(0)
-        return out
+
+        return out.squeeze(0).squeeze(0) if squeeze_back else out
 
     def _mask_from_labels_lut(self, labels: torch.Tensor, classes: list[int]) -> torch.Tensor:
-        """
-        labels: [H,W] long (0..18)
-        classes: list von ints
-        returns float mask [H,W] in {0,1}
-        -> LUT (19) statt torch.isin, sehr schnell
-        """
+        # labels jetzt [256,256]
         lut = torch.zeros(19, device=labels.device, dtype=torch.float32)
         if classes:
             lut[torch.tensor(classes, device=labels.device, dtype=torch.long)] = 1.0
-        return lut[labels]  # [H,W] float
-
+        return lut[labels]  # [256,256] float {0,1}
 
     def process_masks_and_masks(
             self,
@@ -307,76 +286,59 @@ class FaceMasks:
             control: dict
         ) -> dict:
         """
-        Liefert:
-          - FaceParser_mask: [1,128,128] float 0..1  (für dein swap_mask *= FaceParser_mask)
-          - mouth:           [512,512] float 0..1    (falls XSeg-Mouth etc.)
-          - texture_mask:    [1,512,512] float 0..1  (Ausschluss-Kombi swap/orig)
-          - swap_formask:    passt 1:1 (durchgereicht)
-        Minimaler Parser-Einsatz: nur wenn benötigt.
+        Arbeitet intern mit 256×256:
+          - FaceParser_mask: [1,128,128] (aus 256 heruntergerechnet)
+          - mouth:           [256,256]
+          - texture_mask:    [1,256,256]
         """
-        device = self.models_processor.device
-        t128_bi = v2.Resize((128,128), interpolation=v2.InterpolationMode.BILINEAR, antialias=False)
-        mode = control["DilatationTypeSelection"]
+        device   = self.models_processor.device
+        mode     = control.get("DilatationTypeSelection", "conv")
         result = {"swap_formask": swap_restorecalc}
+        to128_bi = v2.Resize((128,128), interpolation=v2.InterpolationMode.BILINEAR, antialias=False)
+        to512_bi = v2.Resize((512,512), interpolation=v2.InterpolationMode.BILINEAR, antialias=False)
 
-        #need_bg = parameters.get("DFLXSegEnableToggle", False) and parameters.get("DFLXSegBGEnableToggle", False)
+
         need_parser = (
             parameters.get("FaceParserEnableToggle", False)
-            or (parameters.get("DFLXSegEnableToggle", False)
-                and parameters.get("XSegMouthEnableToggle", False)
-                and parameters.get("DFLXSegSizeSlider", 0) != parameters.get("DFLXSeg2SizeSlider", 0))
             or ((parameters.get("TransferTextureEnableToggle", False)
                  or parameters.get("DifferencingEnableToggle", False))
                 and parameters.get("ExcludeMaskEnableToggle", False))
         )
+        need_parser_mouth = (
+            parameters.get("DFLXSegEnableToggle", False)
+            and parameters.get("XSegMouthEnableToggle", False)
+            and parameters.get("DFLXSegSizeSlider", 0) != parameters.get("DFLXSeg2SizeSlider", 0)
+        )
 
         labels_swap = None
         labels_orig = None
-
-        #if need_bg or need_parser:
-        if need_parser:
-            labels_swap = self._faceparser_labels(swap_restorecalc)
-
-        # Nur wenn Orig gebraucht wird (FaceParserEnable oder ExcludeMaske)
+        if need_parser or need_parser_mouth:
+            labels_swap = self._faceparser_labels(swap_restorecalc)      # -> [256,256]
         if need_parser and (parameters.get("FaceParserEnableToggle", False) or parameters.get("ExcludeMaskEnableToggle", False)):
-            labels_orig = self._faceparser_labels(original_face_512)
+            labels_orig = self._faceparser_labels(original_face_512)     # -> [256,256]
 
-        # ---------- MOUTH ----------
-        mouth = None
-        if need_parser:
-            mouth = torch.zeros((512,512), device=device, dtype=torch.float32)
-            mouth_specs = {
-                11: 'XsegMouthParserSlider',
-                12: 'XsegUpperLipParserSlider',
-                13: 'XsegLowerLipParserSlider'
-            }
+        # ---------- MOUTH (256) ----------
+        if need_parser_mouth:
+            mouth = torch.zeros((256,256), device=device, dtype=torch.float32)
+            mouth_specs = {11:'XsegMouthParserSlider', 12:'XsegUpperLipParserSlider', 13:'XsegLowerLipParserSlider'}
             for cls, pname in mouth_specs.items():
                 d = int(parameters.get(pname, 0))
-                if d != 0:
+                if d:
                     m = self._mask_from_labels_lut(labels_swap, [cls])
                     m = self._dilate_binary(m, d, mode)
                     mouth = torch.maximum(mouth, m)
-            result["mouth"] = mouth.clamp(0,1)
+            mouth = (to512_bi(mouth.unsqueeze(0)))
+            result["mouth"] = (mouth.clamp(0,1)).squeeze()
 
-        # ---------- FACEPARSER MASK (128) ----------
+        # ---------- FACEPARSER MASK (intern 256 -> out 128) ----------
         if parameters.get("FaceParserEnableToggle", False):
-            # Welche Klassen?
+            fp = torch.zeros((256,256), device=device, dtype=torch.float32)
             face_classes = {
-                1: 'FaceParserSlider',
-                2: 'LeftEyebrowParserSlider',
-                3: 'RightEyebrowParserSlider',
-                4: 'LeftEyeParserSlider',
-                5: 'RightEyeParserSlider',
-                6: 'EyeGlassesParserSlider',
-                10: 'NoseParserSlider',
-                11: 'MouthParserSlider',
-                12: 'UpperLipParserSlider',
-                13: 'LowerLipParserSlider',
-                14: 'NeckParserSlider',
-                17: 'HairParserSlider'
+                1:'FaceParserSlider', 2:'LeftEyebrowParserSlider', 3:'RightEyebrowParserSlider',
+                4:'LeftEyeParserSlider', 5:'RightEyeParserSlider', 6:'EyeGlassesParserSlider',
+                10:'NoseParserSlider', 11:'MouthParserSlider', 12:'UpperLipParserSlider',
+                13:'LowerLipParserSlider', 14:'NeckParserSlider', 17:'HairParserSlider'
             }
-
-            fp = torch.zeros((512,512), device=device, dtype=torch.float32)
             for cls, pname in face_classes.items():
                 d = int(parameters.get(pname, 0))
                 if d == 0:
@@ -384,58 +346,37 @@ class FaceMasks:
                 m1 = self._mask_from_labels_lut(labels_swap, [cls])
                 m1 = self._dilate_binary(m1, d, mode)
 
-                if labels_orig is not None:
-                    m2 = self._mask_from_labels_lut(labels_orig, [cls])
-                else:
-                    m2 = torch.zeros_like(m1)
-
-                if parameters.get('MouthParserInsideToggle', False) and cls == 11:
-                    comb = torch.minimum(m1, m2)
-                else:
-                    comb = torch.maximum(m1, m2)
-
+                m2 = self._mask_from_labels_lut(labels_orig, [cls]) if labels_orig is not None else torch.zeros_like(m1)
+                comb = torch.minimum(m1, m2) if (parameters.get('MouthParserInsideToggle', False) and cls == 11) else torch.maximum(m1, m2)
                 fp = torch.maximum(fp, comb)
 
             if parameters.get('FaceBlurParserSlider', 0) > 0:
-                blur = parameters['FaceBlurParserSlider']
-                k = 2*blur + 1
-                gauss = transforms.GaussianBlur(k, (blur+1)*0.2)
+                b = parameters['FaceBlurParserSlider']
+                gauss = transforms.GaussianBlur(b*2+1, (b+1)*0.2)
                 fp = gauss(fp.unsqueeze(0).unsqueeze(0)).squeeze()
 
-            # Deine Logik nutzt (1-fp) ↓ auf 128 und optional Blend
-            mask128 = t128_bi((1.0 - fp).unsqueeze(0))   # [1,128,128]
+            # (1 - Maske) und runterskalieren auf 128
+            mask128 = to128_bi((1.0 - fp).unsqueeze(0))   # [1,128,128]
             if parameters.get('FaceParserBlendSlider', 0) > 0:
                 mask128 = (mask128 + parameters['FaceParserBlendSlider']/100.0).clamp(0,1)
-
             result["FaceParser_mask"] = mask128
 
-        # ---------- TEXTURE / DIFFERENCING EXCLUDE-MASKE ----------
-        # Wenn benötigt, baue “tex” (swap) und “tex_o” (orig), kombiniere sie in einer 512er Ausschlussmaske.
+        # ---------- TEXTURE / DIFFERENCING EXCLUDE (256) ----------
         if (parameters.get("TransferTextureEnableToggle", False) or parameters.get("DifferencingEnableToggle", False)) \
            and parameters.get("ExcludeMaskEnableToggle", False):
 
-            tex     = torch.zeros((512,512), device=device, dtype=torch.float32)
-            tex_o   = torch.zeros((512,512), device=device, dtype=torch.float32)
+            tex   = torch.zeros((256,256), device=device, dtype=torch.float32)
+            tex_o = torch.zeros((256,256), device=device, dtype=torch.float32)
             tex_specs = {
-                1: 'FaceParserTextureSlider',
-                2: 'EyebrowParserTextureSlider',
-                3: 'EyebrowParserTextureSlider',
-                4: 'EyeParserTextureSlider',
-                5: 'EyeParserTextureSlider',
-                10: 'NoseParserTextureSlider',
-                11: 'MouthParserTextureSlider',
-                12: 'MouthParserTextureSlider',
-                13: 'MouthParserTextureSlider',
-                14: 'NeckParserTextureSlider'
+                1:'FaceParserTextureSlider', 2:'EyebrowParserTextureSlider', 3:'EyebrowParserTextureSlider',
+                4:'EyeParserTextureSlider', 5:'EyeParserTextureSlider', 10:'NoseParserTextureSlider',
+                11:'MouthParserTextureSlider', 12:'MouthParserTextureSlider', 13:'MouthParserTextureSlider',
+                14:'NeckParserTextureSlider'
             }
 
             for cls, pname in tex_specs.items():
                 d = int(parameters.get(pname, 0))
-                #if d == 0:
-                #    continue
-
                 if cls == 1 and d > 0:
-                    # spezieller Blend für “Face”
                     blend = parameters.get("FaceParserTextureSlider", 0) / 10.0
                     m_s = self._mask_from_labels_lut(labels_swap, [cls]) * blend
                     tex  = torch.maximum(tex, m_s)
@@ -445,48 +386,29 @@ class FaceMasks:
                 else:
                     m_s = self._mask_from_labels_lut(labels_swap, [cls])
                     m_o = self._mask_from_labels_lut(labels_orig, [cls]) if labels_orig is not None else torch.zeros_like(m_s)
-
                     if d > 0:
                         m_s = self._dilate_binary(m_s, d, mode)
                         m_o = self._dilate_binary(m_o, d, mode)
-                        if parameters.get("FaceParserBlendTextureSlider", 0) != 0:
-                            m_s = (m_s + parameters["FaceParserBlendTextureSlider"]/100.0).clamp(0,1)
-                            m_o = (m_o + parameters["FaceParserBlendTextureSlider"]/100.0).clamp(0,1)
+                        if parameters.get("FaceParserBlendTextureSlider", 0):
+                            bl = parameters["FaceParserBlendTextureSlider"]/100.0
+                            m_s = (m_s + bl).clamp(0,1)
+                            m_o = (m_o + bl).clamp(0,1)
                         tex  = torch.maximum(tex,  m_s)
                         tex_o = torch.maximum(tex_o, m_o)
-                    if d <= 0:
-                        # negative => “abziehen”
+                    elif d < 0:
                         m_s = self._dilate_binary(m_s, d, mode)
                         m_o = self._dilate_binary(m_o, d, mode)
-                        if parameters.get("FaceParserBlendTextureSlider", 0) != 0:
-                            m_s = (m_s + parameters["FaceParserBlendTextureSlider"]/100.0).clamp(0,1)
-                            m_o = (m_o + parameters["FaceParserBlendTextureSlider"]/100.0).clamp(0,1)
+                        if parameters.get("FaceParserBlendTextureSlider", 0):
+                            bl = parameters["FaceParserBlendTextureSlider"]/100.0
+                            m_s = (m_s + bl).clamp(0,1)
+                            m_o = (m_o + bl).clamp(0,1)
                         sub = torch.maximum(m_s, m_o)
                         tex  = (tex  - sub).clamp_min(0)
                         tex_o = (tex_o - sub).clamp_min(0)
 
-            '''
-            # optional BG texture exclusion in ORIG
-            if parameters['BgExcludeEnableToggle'] and labels_swap is not None:
-                bg_ex_d = int(parameters.get("BackgroundParserTextureSlider", 0))
-                bg = self._mask_from_labels_lut(labels_swap, [0,14,15,16,17,18])
-                bg_dill = bg.clone()
-                bg_dill = self._dilate_binary(bg_dill, -bg_ex_d, mode)  # dein Code hatte “-param“ -> (negativ = Erosion)
-                #tex = torch.maximum(tex, bg)
-                bg = 1.0 - bg.clamp(0,1)
-                result["bg_mask"] = bg.unsqueeze(0)
-                bg_dill = bg_dill.unsqueeze(0)
-                if parameters['BGExcludeBlurAmountSlider'] > 0:
-                    orig = bg_dill.clone()
-                    gauss = transforms.GaussianBlur(parameters['BGExcludeBlurAmountSlider']*2+1, (parameters['BGExcludeBlurAmountSlider']+1)*0.2)
-                    bg_dill = gauss(bg_dill.type(torch.float32))
-                    bg_dill = torch.max(bg_dill, orig)
-                bg_dill = 1.0 - bg_dill.clamp(0,1)
-                result["bg_mask_dill"] = bg_dill
-            '''
-            # kombiniere swap+orig zu Ausschluss (deine Logik: min(1-tex, 1-tex_o))
-            comb = torch.minimum(1.0 - tex.clamp(0,1), 1.0 - tex_o.clamp(0,1))
-            result["texture_mask"] = comb.unsqueeze(0)  # [1,512,512]
+            comb = torch.minimum(1.0 - tex.clamp(0,1), 1.0 - tex_o.clamp(0,1))  # [256,256]
+            comb = (to512_bi(comb.unsqueeze(0))).clamp(0,1)
+            result["texture_mask"] = comb  # [1,512,512]
 
         return result
         
