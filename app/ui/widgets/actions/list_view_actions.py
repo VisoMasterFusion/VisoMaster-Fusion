@@ -242,3 +242,6 @@ def select_output_media_folder(main_window: 'MainWindow'):
     if folder_name:
         main_window.outputFolderLineEdit.setText(folder_name)
         common_widget_actions.create_control(main_window, 'OutputMediaFolder', folder_name)
+
+def show_shortcuts(main_window: 'MainWindow'):
+    main_window.display_messagebox_signal.emit('Shortcuts', ' F11 : View fullscreen.\n V : Advance by 1 frame.\n C : Rewind by 1 frame.\n D : Advance by 30 frames.\n A : Rewind by 30 frames.\n Z : Seek to start.\n Space : Play start/stop.\n R : Record start/stop.\n F : Add video marker.\n ALT+F : Remove video marker.\n W : Move to next marker.\n Q : Move to previous marker.\n S : Swap face.', main_window)
