@@ -1327,9 +1327,16 @@
     </property>
     <addaction name="actionView_Fullscreen_F11"/>
    </widget>
+   <widget class="QMenu" name="menuHelp">
+    <property name="title">
+     <string>Help</string>
+    </property>
+    <addaction name="actionView_Help_Shortcuts"/>
+   </widget>
    <addaction name="menuFile"/>
    <addaction name="menuEdit"/>
    <addaction name="menuView"/>
+   <addaction name="menuHelp"/>
   </widget>
   <action name="actionExit">
    <property name="text">
@@ -1374,6 +1381,11 @@
   <action name="actionView_Fullscreen_F11">
    <property name="text">
     <string>View Fullscreen (F11)</string>
+   </property>
+  </action>
+  <action name="actionView_Help_Shortcuts">
+   <property name="text">
+    <string>View Shortcuts</string>
    </property>
   </action>
   <action name="actionTest">

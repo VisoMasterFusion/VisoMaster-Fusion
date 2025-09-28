@@ -322,6 +322,7 @@ def set_up_menu_actions(main_window: 'MainWindow'):
     main_window.actionSave_Embeddings.triggered.connect(partial(save_load_actions.save_embeddings_to_file, main_window))
     main_window.actionSave_Embeddings_As.triggered.connect(partial(save_load_actions.save_embeddings_to_file, main_window))
     main_window.actionView_Fullscreen_F11.triggered.connect(partial(video_control_actions.view_fullscreen, main_window))
+    main_window.actionView_Help_Shortcuts.triggered.connect(partial(list_view_actions.show_shortcuts, main_window))
 
 def disable_all_parameters_and_control_widget(main_window: 'MainWindow'):
     # Disable all bottom buttons
