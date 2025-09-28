@@ -16,6 +16,7 @@ if TYPE_CHECKING:
 class FaceMasks:
     def __init__(self, models_processor: 'ModelsProcessor'):
         self.models_processor = models_processor
+        self._morph_kernels = {}
 
     def apply_occlusion(self, img, amount):
         img = torch.div(img, 255)
@@ -67,10 +68,10 @@ class FaceMasks:
             self.models_processor.syncvec.cpu()
         self.models_processor.models['Occluder'].run_with_iobinding(io_binding)
 
-    def apply_dfl_xseg(self, img, amount, background, mouth, parameters):
+    def apply_dfl_xseg(self, img, amount, mouth, parameters):
         amount2 = -parameters["DFLXSeg2SizeSlider"]
-        amount_calc = -parameters["DFLXSeg3SizeSlider"]
-
+        amount_calc = -parameters["BackgroundParserTextureSlider"]
+        
         img = img.type(torch.float32)
         img = torch.div(img, 255)
         img = torch.unsqueeze(img, 0).contiguous()
@@ -138,15 +139,13 @@ class FaceMasks:
             
             #print("outpred, outpred2, mouth: ", outpred.shape, outpred2.shape, mouth.shape)
             #outpred2_autocolor = outpred2.clone()
-            outpred[background > 0.01] = outpred2[background > 0.01]
-            outpred_noFP = outpred
             outpred[mouth > 0.01] = outpred2[mouth > 0.01]
 
             #outpred2_autocolor = torch.reshape(outpred2_autocolor, (1, 256, 256))
             #outpred_autocolor[mouth > 0.1] = outpred2_autocolor[mouth > 0.1]
 
         outpred = torch.reshape(outpred, (1, 256, 256))
-
+        
         if parameters["BgExcludeEnableToggle"] and amount_calc != 0:
             if amount_calc > 0:
                 r2 = int(amount_calc)
@@ -154,7 +153,12 @@ class FaceMasks:
                 # Dilatation um Radius r2
                 outpred_calc_dill = F.max_pool2d(outpred_calc_dill, kernel_size=k2, stride=1, padding=r2)
                 outpred_calc_dill = outpred_calc_dill.clamp(0,1)
-
+                if parameters['BGExcludeBlurAmountSlider'] > 0:
+                    #orig = outpred_calc_dill.clone()
+                    gauss = transforms.GaussianBlur(parameters['BGExcludeBlurAmountSlider']*2+1, (parameters['BGExcludeBlurAmountSlider']+1)*0.2)
+                    outpred_calc_dill = gauss(outpred_calc_dill.type(torch.float32))
+                    #outpred_calc_dill = torch.max(outpred_calc_dill, orig)
+                outpred_calc_dill = outpred_calc_dill.clamp(0,1) 
             elif amount_calc < 0:
                 r2 = int(-amount_calc)
                 k2 = 2*r2 + 1
@@ -162,8 +166,12 @@ class FaceMasks:
                 outpred_calc_dill = 1 - outpred_calc_dill
                 outpred_calc_dill = F.max_pool2d(outpred_calc_dill, kernel_size=k2, stride=1, padding=r2)
                 outpred_calc_dill = 1 - outpred_calc_dill
+                if parameters['BGExcludeBlurAmountSlider'] > 0:
+                    orig = outpred_calc_dill.clone()
+                    gauss = transforms.GaussianBlur(parameters['BGExcludeBlurAmountSlider']*2+1, (parameters['BGExcludeBlurAmountSlider']+1)*0.2)
+                    outpred_calc_dill = gauss(outpred_calc_dill.type(torch.float32))
+                    outpred_calc_dill = torch.max(outpred_calc_dill, orig)
                 outpred_calc_dill = outpred_calc_dill.clamp(0,1)  
-                
         return outpred, outpred_calc, outpred_calc_dill, outpred_noFP
 
     def run_dfl_xseg(self, image, output):
@@ -206,26 +214,77 @@ class FaceMasks:
         labels = out.argmax(dim=1).squeeze(0).to(torch.long)  # [512,512]
         return labels
 
+    def _get_circle_kernel(self, r: int, device: str) -> torch.Tensor:
+        """
+        Liefert einen kreisförmigen Struktur-Kernel der Größe (2r+1)² als Float-Tensor [1,1,K,K].
+        Nutzt Cache je (r, device).
+        """
+        key = (int(r), str(device))
+        k = self._morph_kernels.get(key)
+        if k is not None:
+            return k
 
-    def _dilate_binary(self, m: torch.Tensor, r: int) -> torch.Tensor:
+        rr = int(r)
+        K = 2 * rr + 1
+        ys, xs = torch.meshgrid(
+            torch.arange(-rr, rr + 1, device=device),
+            torch.arange(-rr, rr + 1, device=device),
+            indexing="ij"
+        )
+        kernel = ((xs**2 + ys**2) <= rr*rr).float().unsqueeze(0).unsqueeze(0)  # [1,1,K,K]
+        self._morph_kernels[key] = kernel
+        return kernel
+
+    def _dilate_binary(self, m: torch.Tensor, r: int, mode: str = "conv") -> torch.Tensor:
         """
-        m: [H,W] float {0,1}
-        r>0: Dilatation um r Pixel (Chebyshev-Kugel)
-        r<0: Erosion um |r| Pixel   (über Komplement + Dilatation)
+        Morphologische Dilatation/Erosion auf Binärmaske.
+
+        Args:
+            m:  float in {0,1}
+            r:  >0 => Dilatation um r Pixel, <0 => Erosion um |r| Pixel
+            mode:
+                - "conv"      : runde Dilatation mit kreisförmigem Kernel (empfohlen)
+                - "pool"      : einmaliges max_pool2d mit Kernel=2r+1 (schnell, aber eckig)
+                - "iter_pool" : r Schritte 3x3 max_pool2d (runder, langsamer)
         """
+
         if r == 0:
             return m        
         if r == 1:
             return m
+            
+        # Original-Form merken
+        squeeze_back = False
+        if m.dim() == 2:
+            m_in = m.unsqueeze(0).unsqueeze(0)  # [1,1,H,W]
+            squeeze_back = True
+        elif m.dim() == 4:
+            m_in = m
+        else:
+            raise ValueError(f"_dilate_binary: unsupported shape {m.shape}; expected [H,W] or [1,1,H,W]")
+            
         if abs(r) > 0:
-            # Erosion(m, |r|) = 1 - Dilate(1-m, |r|)
-            #return 1.0 - self._dilate_binary(1.0 - m, -r)
-            k = 2*abs(r) + 1
-            mm = m.unsqueeze(0).unsqueeze(0)             # [1,1,H,W]
-            # max_pool2d als schnelle Dilatation
-            d = F.max_pool2d(mm, kernel_size=k, stride=1, padding=abs(r))
-        return d.squeeze(0).squeeze(0)
-
+            rr = int(abs(r))
+            if mode == "pool":
+                # Achsenrechteck – sehr schnell
+                out = F.max_pool2d(m_in, kernel_size=2*rr+1, stride=1, padding=rr)
+                out = (out > 0).float()
+            elif mode == "iter_pool":
+                # Mehrere kleine Schritte (3x3), r Runden
+                out = m_in
+                for _ in range(rr):
+                    out = F.max_pool2d(out, kernel_size=3, stride=1, padding=1)
+                out = (out > 0).float()
+            else:
+                # "conv" – runder Kreis-Kernel via Faltung
+                kernel = self._get_circle_kernel(rr, m_in.device)
+                # Faltung zählt Treffer im Kreis; >0 => mind. 1 gesetztes Pixel im Umkreis
+                hits = F.conv2d(m_in, kernel, padding=rr)
+                out = (hits > 0).float()
+                
+        if squeeze_back:
+            return out.squeeze(0).squeeze(0)
+        return out
 
     def _mask_from_labels_lut(self, labels: torch.Tensor, classes: list[int]) -> torch.Tensor:
         """
@@ -244,7 +303,8 @@ class FaceMasks:
             self,
             swap_restorecalc: torch.Tensor,     # [3,512,512] uint8
             original_face_512: torch.Tensor,    # [3,512,512] uint8
-            parameters: dict
+            parameters: dict,
+            control: dict
         ) -> dict:
         """
         Liefert:
@@ -256,7 +316,7 @@ class FaceMasks:
         """
         device = self.models_processor.device
         t128_bi = v2.Resize((128,128), interpolation=v2.InterpolationMode.BILINEAR, antialias=False)
-
+        mode = control["DilatationTypeSelection"]
         result = {"swap_formask": swap_restorecalc}
 
         #need_bg = parameters.get("DFLXSegEnableToggle", False) and parameters.get("DFLXSegBGEnableToggle", False)
@@ -295,7 +355,7 @@ class FaceMasks:
                 d = int(parameters.get(pname, 0))
                 if d != 0:
                     m = self._mask_from_labels_lut(labels_swap, [cls])
-                    m = self._dilate_binary(m, d)
+                    m = self._dilate_binary(m, d, mode)
                     mouth = torch.maximum(mouth, m)
             result["mouth"] = mouth.clamp(0,1)
 
@@ -323,7 +383,7 @@ class FaceMasks:
                 if d == 0:
                     continue
                 m1 = self._mask_from_labels_lut(labels_swap, [cls])
-                m1 = self._dilate_binary(m1, d)
+                m1 = self._dilate_binary(m1, d, mode)
 
                 if labels_orig is not None:
                     m2 = self._mask_from_labels_lut(labels_orig, [cls])
@@ -388,8 +448,8 @@ class FaceMasks:
                     m_o = self._mask_from_labels_lut(labels_orig, [cls]) if labels_orig is not None else torch.zeros_like(m_s)
 
                     if d > 0:
-                        m_s = self._dilate_binary(m_s, d)
-                        m_o = self._dilate_binary(m_o, d)
+                        m_s = self._dilate_binary(m_s, d, mode)
+                        m_o = self._dilate_binary(m_o, d, mode)
                         if parameters.get("FaceParserBlendTextureSlider", 0) != 0:
                             m_s = (m_s + parameters["FaceParserBlendTextureSlider"]/100.0).clamp(0,1)
                             m_o = (m_o + parameters["FaceParserBlendTextureSlider"]/100.0).clamp(0,1)
@@ -397,8 +457,8 @@ class FaceMasks:
                         tex_o = torch.maximum(tex_o, m_o)
                     if d <= 0:
                         # negative => “abziehen”
-                        m_s = self._dilate_binary(m_s, d)
-                        m_o = self._dilate_binary(m_o, d)
+                        m_s = self._dilate_binary(m_s, d, mode)
+                        m_o = self._dilate_binary(m_o, d, mode)
                         if parameters.get("FaceParserBlendTextureSlider", 0) != 0:
                             m_s = (m_s + parameters["FaceParserBlendTextureSlider"]/100.0).clamp(0,1)
                             m_o = (m_o + parameters["FaceParserBlendTextureSlider"]/100.0).clamp(0,1)
@@ -406,13 +466,25 @@ class FaceMasks:
                         tex  = (tex  - sub).clamp_min(0)
                         tex_o = (tex_o - sub).clamp_min(0)
 
+            '''
             # optional BG texture exclusion in ORIG
-            bg_ex_d = int(parameters.get("BackgroundParserTextureSlider", 0))
-            if bg_ex_d != 0 and labels_orig is not None:
-                bg = self._mask_from_labels_lut(labels_orig, [0,14,15,16,17,18])
-                bg = self._dilate_binary(bg, -bg_ex_d)  # dein Code hatte “-param“ -> (negativ = Erosion)
-                tex_o = torch.maximum(tex_o, bg)
-
+            if parameters['BgExcludeEnableToggle'] and labels_swap is not None:
+                bg_ex_d = int(parameters.get("BackgroundParserTextureSlider", 0))
+                bg = self._mask_from_labels_lut(labels_swap, [0,14,15,16,17,18])
+                bg_dill = bg.clone()
+                bg_dill = self._dilate_binary(bg_dill, -bg_ex_d, mode)  # dein Code hatte “-param“ -> (negativ = Erosion)
+                #tex = torch.maximum(tex, bg)
+                bg = 1.0 - bg.clamp(0,1)
+                result["bg_mask"] = bg.unsqueeze(0)
+                bg_dill = bg_dill.unsqueeze(0)
+                if parameters['BGExcludeBlurAmountSlider'] > 0:
+                    orig = bg_dill.clone()
+                    gauss = transforms.GaussianBlur(parameters['BGExcludeBlurAmountSlider']*2+1, (parameters['BGExcludeBlurAmountSlider']+1)*0.2)
+                    bg_dill = gauss(bg_dill.type(torch.float32))
+                    bg_dill = torch.max(bg_dill, orig)
+                bg_dill = 1.0 - bg_dill.clamp(0,1)
+                result["bg_mask_dill"] = bg_dill
+            '''
             # kombiniere swap+orig zu Ausschluss (deine Logik: min(1-tex, 1-tex_o))
             comb = torch.minimum(1.0 - tex.clamp(0,1), 1.0 - tex_o.clamp(0,1))
             result["texture_mask"] = comb.unsqueeze(0)  # [1,512,512]

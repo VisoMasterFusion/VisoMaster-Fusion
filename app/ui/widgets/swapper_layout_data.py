@@ -1029,23 +1029,12 @@ SWAPPER_LAYOUT_DATA: LayoutDictTypes = {
             'parentToggle': 'TransferTextureEnableToggle & ExcludeMaskEnableToggle',
             'requiredToggleValue': True,
             'help': 'Exclude Faceparts (Eyes, Eyebrows, Nose, Mouth, Lips, Neck), 0=whole face is used, 1= Parts not included, 1+ = increase Parts size. Most of the time should be 1/1+. try 0 on low quality/artefacted targets'
-        },        
-        'BackgroundParserTextureSlider': {
-            'level': 3,
-            'label': 'Background',
-            'min_value': '-20',
-            'max_value': '0',
-            'default': '0',
-            'step': 1,
-            'parentToggle': 'TransferTextureEnableToggle & ExcludeMaskEnableToggle',
-            'requiredToggleValue': True,
-            'help': 'Decrease Background Area for Texture Transfer.'
-        },  
+        },
         'FaceParserBlendTextureSlider': {
             'level': 3,
             'label': 'Excluded Texture Blend adjust',
             'min_value': '-100',
-            'max_value': '100',
+            'max_value': '0',
             'default': '0',
             'step': 1,
             'parentToggle': 'TransferTextureEnableToggle & ExcludeMaskEnableToggle',
@@ -1053,13 +1042,13 @@ SWAPPER_LAYOUT_DATA: LayoutDictTypes = {
             'help': 'Blend Amount of Excluded Feature Areas'
         },          
         'FaceParserBlurTextureSlider': {
-            'level': 3,
+            'level': 2,
             'label': 'Texture Mask Blur',
             'min_value': '0',
-            'max_value': '10',
+            'max_value': '20',
             'default': '4',
             'step': 1,
-            'parentToggle': 'TransferTextureEnableToggle & ExcludeMaskEnableToggle',
+            'parentToggle': 'TransferTextureEnableToggle',
             'requiredToggleValue': True,
             'help': 'Mask Blur on excluded Area Edges.'
         },      
@@ -1070,18 +1059,18 @@ SWAPPER_LAYOUT_DATA: LayoutDictTypes = {
             'parentToggle': 'TransferTextureEnableToggle',
             'requiredToggleValue': True,   
             'help': 'Background reduce for Texture Transfer Mask, usefull if xseg > 0'
-        },
-        'DFLXSeg3SizeSlider': {
+        },    
+        'BackgroundParserTextureSlider': {
             'level': 3,
-            'label': 'BG XSeg Adjust',
-            'min_value': '-30',
+            'label': 'Background',
+            'min_value': '-20',
             'max_value': '0',
             'default': '0',
             'step': 1,
             'parentToggle': 'TransferTextureEnableToggle & BgExcludeEnableToggle',
             'requiredToggleValue': True,
-            'help': 'Background reduce based on XSEG model on original face'
-        },
+            'help': 'Background reduce based on XSEG model on original face and faceparser background on swap face'
+        },  
         'BGExcludeBlurAmountSlider': {
             'level': 3,
             'label': 'BG Blur',

@@ -325,7 +325,14 @@ SETTINGS_LAYOUT_DATA: LayoutDictTypes = {
             'label': 'Auto Save Workspace',
             'default': False,
             'help': 'Auto Saves Workspace .json in output folder at end of recording (only the status at end of recording)'
-        }
+        },
+        'DilatationTypeSelection': {
+            'level': 1,
+            'label': 'Mask Dilatation Type',
+            'options': ['conv', 'pool', 'iter_pool'],
+            'default': 'conv',
+            'help': 'Max_Pool2d is faster but conv2d is more precise (especially on higher dilatation values)'
+        },         
     },
    'Experimental Settings (very experimental, better don´t touch)': {                          
         'ActivateexperimentalsettingsEnableToggle': {
