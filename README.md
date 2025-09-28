@@ -56,7 +56,12 @@ VisoMaster-Fusion includes all the great features of the original plus major enh
 ---
 
 ### **Prerequisites**
-- All versions require CUDA https://developer.nvidia.com/cuda-toolkit-archive()
+- All versions require 
+  - CUDA - https://developer.nvidia.com/cuda-toolkit-archive
+    Currently supported versions: 11.8 / 12.4 / 12.8 / 12.9
+    Some newer GPUs (like rtx 50xx cards) need the newer CUDA version 12.9. Check the minimum supported cuda version for your GPU. Beside that you can choose any supported version.
+  - CuDNN - https://developer.nvidia.com/cudnn
+    Check the version support matrix and choose version based on your installed CUDA version (https://docs.nvidia.com/deeplearning/cudnn/backend/latest/reference/support-matrix.html)
 
 - Portable Version: No other pre-requirements
 - Non-Portable Version:
@@ -65,7 +70,6 @@ VisoMaster-Fusion includes all the great features of the original plus major enh
         <br> or
     -   **uv** ([Installation choices])(https://docs.astral.sh/uv/getting-started/installation/)
 
-
 ## **Installation Guide (VisoMaster-Fusion)**
 
 ### **Portable version**
@@ -73,7 +77,7 @@ VisoMaster-Fusion includes all the great features of the original plus major enh
 Download only the Run_Portable.bat file from this repo (you don't need to clone the whole repo) from link below and put it in a new directory were you want to run VisoMaster from. Then just execute the bat file to run VisoMaster. Portable dependencies will be installed on the first run to portable-files directory. Select your installed CUDA version on the initial run.
 - [Download - Start_Portable.bat](Start_Portable.bat)
 
-You don't need any other steps from below for the portable version.
+You don't need any other steps from below for the portable version. Always start visomaster with Start_Portable.bat
 
 ### **Non-Portable - Installation Steps**
 
@@ -124,7 +128,7 @@ uv pip install -r requirements_cu124.txt
 # for CUDA 12.8
 uv pip install -r requirements_cu128.txt
 
-# for RTX50xx series and CUDA 12.9
+# for CUDA 12.9 (minimum version for rtx 50xx cards)
 uv pip install -r requirements_rtx50.txt
 ```
 
@@ -135,7 +139,22 @@ python download_models.py
 
 **5. Run the Application**
 
-Once everything is set up, start the application by opening the **Start.bat** file or `python main.py` in a visomaster conda shell. On Linux, use `python main.py`.
+Once everything is set up, start the application: 
+- by opening the **Start.bat** file (for Windows)
+or 
+Activate conda or uv environment in a terminal in the visomaster directory:
+
+```
+# If you use Anaconda
+conda activate visomaster
+
+# If you use uv only
+.venv\Scripts\activate
+
+# Start visomaster
+python main.py
+```
+
 
 **5.1 Update to latest code state**
 ```sh

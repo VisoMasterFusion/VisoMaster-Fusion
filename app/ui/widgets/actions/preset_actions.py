@@ -1,0 +1,254 @@
+import json
+from pathlib import Path
+from PySide6 import QtWidgets, QtCore
+from typing import TYPE_CHECKING
+from functools import partial
+from send2trash import send2trash
+
+from app.ui.widgets.actions import common_actions as common_widget_actions
+from app.helpers.miscellaneous import ParametersDict
+
+if TYPE_CHECKING:
+    from app.ui.main_ui import MainWindow
+    from PySide6.QtWidgets import QListWidgetItem
+
+def handle_preset_double_click(main_window: 'MainWindow', item: 'QListWidgetItem'):
+    """Handle double click on preset item by showing confirmation dialog"""
+    result = QtWidgets.QMessageBox.question(
+        main_window,
+        'Apply Preset',
+        f'Do you want to apply preset: {item.text()}?',
+        QtWidgets.QMessageBox.Yes | QtWidgets.QMessageBox.No
+    )
+
+    if result == QtWidgets.QMessageBox.Yes:
+        apply_selected_preset(main_window)
+
+def rename_preset(main_window: 'MainWindow', item: 'QListWidgetItem'):
+    """Rename the selected preset"""
+    old_name = item.text()
+    new_name, ok = QtWidgets.QInputDialog.getText(
+        main_window, 
+        "Rename Preset", 
+        "Enter new name:", 
+        text=old_name
+    )
+
+    if ok and new_name and new_name != old_name:
+        old_path = Path("presets") / f"{old_name}.json"
+        new_path = Path("presets") / f"{new_name}.json"
+
+        if new_path.exists():
+            QtWidgets.QMessageBox.warning(
+                main_window,
+                "Name Exists",
+                f"A preset named '{new_name}' already exists.",
+                QtWidgets.QMessageBox.Ok
+            )
+            return
+
+        try:
+            old_path.rename(new_path)
+            refresh_presets_list(main_window)
+            common_widget_actions.create_and_show_toast_message(
+                main_window,
+                'Preset Renamed',
+                f'Renamed preset: {old_name} to {new_name}'
+            )
+        except Exception as e:
+            QtWidgets.QMessageBox.critical(
+                main_window,
+                "Error",
+                f"Failed to rename preset: {str(e)}",
+                QtWidgets.QMessageBox.Ok
+            )
+
+def delete_preset(main_window: 'MainWindow', item: 'QListWidgetItem'):
+    """Rename the selected preset"""
+    delete_preset = item.text()
+    delete_path = Path("presets") / f"{delete_preset}.json"
+    delete_path = str(delete_path).replace('/','\\')
+
+    try:
+        send2trash(delete_path)  
+        print(f"{delete_preset} has been sent to the trash.")  
+        refresh_presets_list(main_window)
+        
+    except Exception as e:
+        QtWidgets.QMessageBox.critical(
+            main_window,
+            "Error",
+            f"Failed to delete preset: {str(e)}",
+            QtWidgets.QMessageBox.Ok
+        )
+            
+def show_preset_context_menu(main_window: 'MainWindow', position):
+    """Show context menu for preset list items"""
+    item = main_window.presetsList.itemAt(position)
+    if item:
+        menu = QtWidgets.QMenu()
+        rename_action = menu.addAction("Rename")
+        delete_action = menu.addAction("Delete")
+        action = menu.exec_(main_window.presetsList.viewport().mapToGlobal(position))
+
+        if action == rename_action:
+            rename_preset(main_window, item)
+        
+        if action == delete_action:
+            delete_preset(main_window, item)
+
+def setup_preset_list_context_menu(main_window: 'MainWindow'):
+    """Set up the context menu for the presets list"""
+    main_window.presetsList.setContextMenuPolicy(QtCore.Qt.CustomContextMenu)
+    main_window.presetsList.customContextMenuRequested.connect(
+        partial(show_preset_context_menu, main_window)
+    )
+
+def overwrite_selected_preset(main_window: 'MainWindow'):
+    """Overwrite the selected preset with current parameters"""
+    current_item = main_window.presetsList.currentItem()
+    if not current_item:
+        common_widget_actions.create_and_show_messagebox(
+            main_window,
+            'No Preset Selected',
+            'Please select a preset to overwrite',
+            parent_widget=main_window
+        )
+        return
+
+    # Get confirmation
+    result = QtWidgets.QMessageBox.question(
+        main_window,
+        'Confirm Overwrite',
+        f'Are you sure you want to overwrite preset: {current_item.text()}?',
+        QtWidgets.QMessageBox.Yes | QtWidgets.QMessageBox.No
+    )
+
+    if result == QtWidgets.QMessageBox.Yes:
+        preset_path = Path("presets") / f"{current_item.text()}.json"
+        preset_path.parent.mkdir(exist_ok=True)
+
+        # Get current parameters but exclude input/output paths
+        current_params = {}
+        if main_window.selected_target_face_id:
+            params = main_window.parameters[main_window.selected_target_face_id].data.copy()
+            control = main_window.control.copy()
+            params.pop('InputFolder', None)
+            params.pop('OutputFolder', None)
+            current_params = params | control
+        else:
+            params = main_window.current_widget_parameters.data.copy()
+            control = main_window.control.copy()
+            params.pop('InputFolder', None)
+            params.pop('OutputFolder', None)
+            current_params = params | control
+
+        # Save to file
+        with open(preset_path, 'w') as f:
+            json.dump(current_params, f, indent=4)
+
+        common_widget_actions.create_and_show_toast_message(
+            main_window,
+            'Preset Updated',
+            f'Overwritten preset: {current_item.text()}'
+        )
+
+def refresh_presets_list(main_window: 'MainWindow'):
+    """Refresh the presets list with all JSON files in the presets directory"""
+    main_window.presetsList.clear()
+    presets_dir = Path("presets")
+    if not presets_dir.exists():
+        presets_dir.mkdir(exist_ok=True)
+
+    for json_file in presets_dir.glob("*.json"):
+        main_window.presetsList.addItem(json_file.stem)
+
+def save_current_as_preset(main_window: 'MainWindow'):
+    """Save current parameters as a preset JSON file"""
+    name, ok = QtWidgets.QInputDialog.getText(main_window, "Save Preset", "Enter preset name:")
+    if ok and name:
+        preset_path = Path("presets") / f"{name}.json"
+        preset_path.parent.mkdir(exist_ok=True)
+
+        # Get current parameters but exclude input/output paths
+        current_params = {}
+        if main_window.selected_target_face_id:
+            params = main_window.parameters[main_window.selected_target_face_id].data.copy()
+            control = main_window.control.copy()
+            # Remove any input/output specific settings
+            params.pop('InputFolder', None)
+            params.pop('OutputFolder', None)
+            current_params = params | control
+        else:
+            params = main_window.current_widget_parameters.data.copy()
+            control = main_window.control.copy()
+            params.pop('InputFolder', None) 
+            params.pop('OutputFolder', None)
+            current_params = params | control
+
+        # Save to file
+        with open(preset_path, 'w') as f:
+            json.dump(current_params, f, indent=4)
+
+        refresh_presets_list(main_window)
+        common_widget_actions.create_and_show_toast_message(
+            main_window, 
+            'Preset Saved', 
+            f'Saved preset: {name}'
+        )
+
+def apply_selected_preset(main_window: 'MainWindow'):
+    """Apply the selected preset while preserving input/output directories"""
+    current_item = main_window.presetsList.currentItem()
+    if not current_item:
+        return
+
+    preset_path = Path("presets") / f"{current_item.text()}.json"
+    if not preset_path.exists():
+        return
+
+    with open(preset_path, 'r') as f:
+        preset_params = json.load(f)
+
+    # Preserve current input/output directories
+    if main_window.selected_target_face_id:
+        current_params = main_window.parameters[main_window.selected_target_face_id]
+        
+        input_folder = current_params.get('InputFolder')
+        output_folder = current_params.get('OutputFolder')
+
+        # Update parameters with preset while preserving paths
+        new_params = preset_params.copy()
+        if input_folder:
+            new_params['InputFolder'] = input_folder
+        if output_folder:
+            new_params['OutputFolder'] = output_folder
+
+        main_window.parameters[main_window.selected_target_face_id] = ParametersDict(new_params, main_window.default_parameters)
+        if main_window.selected_target_face_id == main_window.selected_target_face_id:
+            common_widget_actions.set_widgets_values_using_face_id_parameters(main_window, main_window.selected_target_face_id)
+        else:
+            # Handle case when no face is selected
+            current_input = main_window.current_widget_parameters.get('InputFolder', '')
+            current_output = main_window.current_widget_parameters.get('OutputFolder', '')
+
+            new_params = preset_params.copy()
+            if current_input:
+                new_params['InputFolder'] = current_input
+            if current_output:
+                new_params['OutputFolder'] = current_output
+
+        main_window.current_widget_parameters = ParametersDict(new_params, main_window.default_parameters)
+        common_widget_actions.set_widgets_values_using_face_id_parameters(main_window, False)
+    
+    # Controls are globaly
+    current_controls = main_window.control
+    new_controls = preset_params.copy()
+    main_window.control = ParametersDict(new_controls, main_window.control)
+    # Refresh the frame to show changes
+    common_widget_actions.refresh_frame(main_window)
+    common_widget_actions.create_and_show_toast_message(
+        main_window,
+        'Preset Applied',
+        f'Applied preset: {current_item.text()}'
+    )

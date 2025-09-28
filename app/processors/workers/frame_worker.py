@@ -1036,7 +1036,6 @@ class FrameWorker(threading.Thread):
         need_any_parser = (
             parameters.get("FaceParserEnableToggle", False)
             or (parameters.get("DFLXSegEnableToggle", False)
-                and parameters.get("DFLXSeg2EnableToggle", False)
                 and parameters.get("XSegMouthEnableToggle", False)
                 and parameters.get("DFLXSegSizeSlider", 0) != parameters.get("DFLXSeg2SizeSlider", 0))
             or (parameters.get("TransferTextureEnableToggle", False)
@@ -1124,7 +1123,7 @@ class FrameWorker(threading.Thread):
 
             # Mouth ggf. auf 256 mappen
             mouth_256 = None
-            if parameters.get("DFLXSeg2EnableToggle", False) and parameters.get("XSegMouthEnableToggle", False) \
+            if parameters.get("DFLXSegEnableToggle", False) and parameters.get("XSegMouthEnableToggle", False) \
                and parameters.get("DFLXSegSizeSlider", 0) != parameters.get("DFLXSeg2SizeSlider", 0) \
                and mouth_512 is not None:
                 mouth_256 = t256_near(mouth_512.unsqueeze(0))  # [1,256,256]

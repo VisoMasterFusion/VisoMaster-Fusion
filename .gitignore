@@ -39,3 +39,4 @@ startup_parameters*.json
 tensorrt-engines/
 test_frames*/
 test_videos*/
+presets/
