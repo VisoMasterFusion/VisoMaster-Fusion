@@ -707,7 +707,7 @@ class InputFaceCardButton(CardButton):
         # Send the file to the trash
         self.media_path = self.media_path.replace('/','\\')
         if os.path.exists(self.media_path):
-            send2trash(self.media_path)  
+            send2trash(self.media_path)
             print(f"{self.media_path} has been sent to the trash.")
         else:
             print(f"{self.media_path} does not exist.")
@@ -1511,11 +1511,11 @@ class ParameterLineDecimalEdit(QtWidgets.QLineEdit):
 
 class ParameterText(QtWidgets.QLineEdit, ParametersWidget):
     def __init__(self, default_value: str, fixed_width: int = 130, max_length: int = 500, alignment: int = 0, *args, **kwargs):
-        super()。__init__(*args, **kwargs)
+        super().__init__(*args, **kwargs)
         ParametersWidget.__init__(self, *args, **kwargs)
         self.data_type = kwargs.get('data_type')
         self.exec_function = kwargs.get('exec_function')
-        self.exec_function_args = kwargs.get('exec_function_args'， [])
+        self.exec_function_args = kwargs.get('exec_function_args', [])
 
         self.setFixedWidth(fixed_width)  # Make the line edit narrower
         self.setMaxLength(max_length)
@@ -1523,9 +1523,9 @@ class ParameterText(QtWidgets.QLineEdit, ParametersWidget):
 
         # Optional: Align text to the right for better readability
         if alignment == 0:
-            self.setAlignment(QtGui.Qt。AlignLeft)
+            self.setAlignment(QtGui.Qt.AlignLeft)
         elif alignment == 1:
-            self.setAlignment(QtGui.Qt。AlignCenter)
+            self.setAlignment(QtGui.Qt.AlignCenter)
         else:
             self.setAlignment(QtGui.Qt.AlignRight)
 
@@ -1548,13 +1548,13 @@ class ParameterText(QtWidgets.QLineEdit, ParametersWidget):
             common_widget_actions.update_control(self.main_window, self.widget_name, self.text(), exec_function=self.exec_function, exec_function_args=self.exec_function_args)
 
         # Call the base class method to ensure normal behavior
-        super()。focusOutEvent(event)
+        super().focusOutEvent(event)
 
     def set_value(self, value):
         self.setText(value)
 class ParameterResetDefaultButton(QtWidgets.QPushButton):
     def __init__(self, related_widget: ParameterSlider | ParameterDecimalSlider | SelectionBox, *args, **kwargs):
-        super()。__init__(*args, **kwargs)
+        super().__init__(*args, **kwargs)
         self.related_widget = related_widget
         button_icon = QtGui.QIcon(QtGui.QPixmap(':/media/media/reset_default.png'))
         self.setIcon(button_icon)
