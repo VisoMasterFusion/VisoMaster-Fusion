@@ -264,13 +264,11 @@ class TargetMediaCardButton(CardButton):
 
         # list_view_actions.find_target_faces(main_window)
 
-    def remove_target_media_from_list(self):
-        main_window = self.main_window
-
+    def deselect_currently_selected_video(self,main_window):
         # Deselect the currently selected video
         if main_window.selected_video_button == self:
             self.reset_media_state()
-        
+
             # Reset the frame counter
             main_window.video_processor.current_frame_number = 0
             main_window.video_processor.media_path = False
@@ -293,7 +291,6 @@ class TargetMediaCardButton(CardButton):
             # Append the selected video button to the list
             main_window.selected_video_button = False
 
-
             # Update the graphics frame after the reset
             main_window.graphicsViewFrame.update()
 
@@ -304,68 +301,29 @@ class TargetMediaCardButton(CardButton):
                 self.media_capture = False
 
         i = self.get_item_position()
-        main_window.targetVideosList.takeItem(i)   
+        main_window.targetVideosList.takeItem(i)
         main_window.target_videos.pop(self.media_id)
 
         # If the target media list is empty, show the placeholder text
         if not main_window.target_videos:
             main_window.placeholder_update_signal.emit(self.main_window.targetVideosList, False)
 
+    def remove_target_media_from_list(self):
+        main_window = self.main_window
+        self.deselect_currently_selected_video(main_window)
         self.deleteLater()
 
     def delete_target_media_to_trash(self):
         main_window = self.main_window
-
-        # Deselect the currently selected video
-        if main_window.selected_video_button == self:
-            self.reset_media_state()
-        
-            # Reset the frame counter
-            main_window.video_processor.current_frame_number = 0
-            main_window.video_processor.media_path = False
-            main_window.parameters = {}
-            main_window.selected_target_face_id = False
-
-            main_window.video_processor.media_capture = False
-            main_window.video_processor.current_frame = []
-            main_window.video_processor.fps = 0
-            main_window.video_processor.max_frame_number = 0
-
-            self.main_window.scene.clear()
-
-            self.reset_related_widgets_and_values()
-
-            main_window.videoSeekSlider.blockSignals(True)  # Block signals to prevent unnecessary updates
-            main_window.videoSeekSlider.setMaximum(1)
-            main_window.videoSeekSlider.setValue(0)  # Set the slider to 0 for the new video
-            main_window.videoSeekSlider.blockSignals(False)  # Unblock signals
-            # Append the selected video button to the list
-            main_window.selected_video_button = False
-
-
-            # Update the graphics frame after the reset
-            main_window.graphicsViewFrame.update()
-
-            main_window.video_processor.file_type = None
-
-            if self.media_capture:
-                self.media_capture.release()
-                self.media_capture = False
-
-        i = self.get_item_position()
-        main_window.targetVideosList.takeItem(i)   
-        main_window.target_videos.pop(self.media_id)
+        self.deselect_currently_selected_video(main_window)
 
         # Send the file to the trash
-        if os.path.exists(self.media_path):  
-            send2trash(self.media_path.replace('/','\\'))  
+        self.media_path = self.media_path.replace('/','\\')
+        if os.path.exists(self.media_path):
+            send2trash(self.media_path)
             print(f"{self.media_path} has been sent to the trash.")  
         else:  
-            print(f"{self.media_path} does not exist.") 
-
-        # If the target media list is empty, show the placeholder text
-        if not main_window.target_videos:
-            main_window.placeholder_update_signal.emit(self.main_window.targetVideosList, False)
+            print(f"{self.media_path} does not exist.")
 
         self.deleteLater()
 
@@ -704,10 +662,8 @@ class InputFaceCardButton(CardButton):
                         input_face_button.setChecked(False)
 
         common_widget_actions.refresh_frame(main_window)
-        
-    def remove_input_face_from_list(self):
-        main_window = self.main_window
-        
+
+    def remove_kv_data_file(self):
         if isinstance(self.kv_map, str) and self.kv_map.endswith('.pt'):
             try:
                 if os.path.exists(self.kv_map):
@@ -723,54 +679,40 @@ class InputFaceCardButton(CardButton):
             except Exception as e:
                 print(f"Error removing K/V data file {self.kv_map}: {e}")
 
+    def deselect_currently_selected_face(self,main_window):
         i = self.get_item_position()
-        main_window.inputFacesList.takeItem(i)   
+        main_window.inputFacesList.takeItem(i)
         main_window.input_faces.pop(self.face_id)
         for target_face_id in main_window.target_faces:
             main_window.target_faces[target_face_id].remove_assigned_input_face(self.face_id)
 
         common_widget_actions.refresh_frame(self.main_window)
-        self.deleteLater()
+
         # If the input faces list is empty, show the placeholder text
         if not main_window.input_faces:
             main_window.placeholder_update_signal.emit(self.main_window.inputFacesList, False)
+
+    def remove_input_face_from_list(self):
+        main_window = self.main_window
+        self.remove_kv_data_file()
+        self.deselect_currently_selected_face(main_window)
+        self.deleteLater()
+
 
     def delete_input_face_to_trash(self):
         main_window = self.main_window
-        
-        if isinstance(self.kv_map, str) and self.kv_map.endswith('.pt'):
-            try:
-                if os.path.exists(self.kv_map):
-                    os.remove(self.kv_map)
-                    print(f"Removed K/V data file: {self.kv_map}")
-            except Exception as e:
-                print(f"Error removing K/V data file {self.kv_map}: {e}")
-
-        if isinstance(self.kv_map, str) and os.path.exists(self.kv_map):
-            try:
-                os.remove(self.kv_map)
-                print(f"Removed K/V data file: {self.kv_map}")
-            except Exception as e:
-                print(f"Error removing K/V data file {self.kv_map}: {e}")
-
-        i = self.get_item_position()
-        main_window.inputFacesList.takeItem(i)   
-        main_window.input_faces.pop(self.face_id)
-        for target_face_id in main_window.target_faces:
-            main_window.target_faces[target_face_id].remove_assigned_input_face(self.face_id)
+        self.remove_kv_data_file()
+        self.deselect_currently_selected_face(main_window)
 
         # Send the file to the trash
-        if os.path.exists(self.media_path):  
-            send2trash(self.media_path.replace('/','\\'))  
-            print(f"{self.media_path} has been sent to the trash.")  
-        else:  
-            print(f"{self.media_path} does not exist.") 
+        self.media_path = self.media_path.replace('/','\\')
+        if os.path.exists(self.media_path):
+            send2trash(self.media_path)  
+            print(f"{self.media_path} has been sent to the trash.")
+        else:
+            print(f"{self.media_path} does not exist.")
 
-        common_widget_actions.refresh_frame(self.main_window)
         self.deleteLater()
-        # If the input faces list is empty, show the placeholder text
-        if not main_window.input_faces:
-            main_window.placeholder_update_signal.emit(self.main_window.inputFacesList, False)
 
     def create_context_menu(self):
         # create context menu
@@ -1569,11 +1511,11 @@ class ParameterLineDecimalEdit(QtWidgets.QLineEdit):
 
 class ParameterText(QtWidgets.QLineEdit, ParametersWidget):
     def __init__(self, default_value: str, fixed_width: int = 130, max_length: int = 500, alignment: int = 0, *args, **kwargs):
-        super().__init__(*args, **kwargs)
+        super()。__init__(*args, **kwargs)
         ParametersWidget.__init__(self, *args, **kwargs)
         self.data_type = kwargs.get('data_type')
         self.exec_function = kwargs.get('exec_function')
-        self.exec_function_args = kwargs.get('exec_function_args', [])
+        self.exec_function_args = kwargs.get('exec_function_args'， [])
 
         self.setFixedWidth(fixed_width)  # Make the line edit narrower
         self.setMaxLength(max_length)
@@ -1581,9 +1523,9 @@ class ParameterText(QtWidgets.QLineEdit, ParametersWidget):
 
         # Optional: Align text to the right for better readability
         if alignment == 0:
-            self.setAlignment(QtGui.Qt.AlignLeft)
+            self.setAlignment(QtGui.Qt。AlignLeft)
         elif alignment == 1:
-            self.setAlignment(QtGui.Qt.AlignCenter)
+            self.setAlignment(QtGui.Qt。AlignCenter)
         else:
             self.setAlignment(QtGui.Qt.AlignRight)
 
@@ -1606,13 +1548,13 @@ class ParameterText(QtWidgets.QLineEdit, ParametersWidget):
             common_widget_actions.update_control(self.main_window, self.widget_name, self.text(), exec_function=self.exec_function, exec_function_args=self.exec_function_args)
 
         # Call the base class method to ensure normal behavior
-        super().focusOutEvent(event)
+        super()。focusOutEvent(event)
 
     def set_value(self, value):
         self.setText(value)
 class ParameterResetDefaultButton(QtWidgets.QPushButton):
     def __init__(self, related_widget: ParameterSlider | ParameterDecimalSlider | SelectionBox, *args, **kwargs):
-        super().__init__(*args, **kwargs)
+        super()。__init__(*args, **kwargs)
         self.related_widget = related_widget
         button_icon = QtGui.QIcon(QtGui.QPixmap(':/media/media/reset_default.png'))
         self.setIcon(button_icon)
