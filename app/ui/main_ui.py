@@ -258,8 +258,9 @@ class MainWindow(QtWidgets.QMainWindow, Ui_MainWindow):
         preset_actions.setup_preset_list_context_menu(self)
         self.applyPresetButton.clicked.connect(partial(preset_actions.apply_selected_preset, self))
         self.savePresetButton.clicked.connect(partial(preset_actions.save_current_as_preset, self))
-        self.overwritePresetButton.clicked.connect(partial(preset_actions.overwrite_selected_preset, self))
+        self.controlPresetButton.clicked.connect(partial(preset_actions.control_preset_toggle, self))
         self.presetsList.itemDoubleClicked.connect(partial(preset_actions.handle_preset_double_click, self))
+        self.presetsList.setSelectionMode(QtWidgets.QAbstractItemView.ExtendedSelection)
 
         # Initialize current_widget_parameters with default values
         self.current_widget_parameters = ParametersDict(copy.deepcopy(self.default_parameters), self.default_parameters)

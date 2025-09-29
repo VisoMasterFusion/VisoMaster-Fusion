@@ -12,6 +12,9 @@ if TYPE_CHECKING:
     from app.ui.main_ui import MainWindow
     from PySide6.QtWidgets import QListWidgetItem
 
+def control_preset_toggle(main_window: 'MainWindow'):
+    return
+
 def handle_preset_double_click(main_window: 'MainWindow', item: 'QListWidgetItem'):
     """Handle double click on preset item by showing confirmation dialog"""
     result = QtWidgets.QMessageBox.question(
@@ -77,7 +80,7 @@ def delete_preset(main_window: 'MainWindow', item: 'QListWidgetItem'):
     try:
         send2trash(delete_path)
         send2trash(delete_path_ctl)
-        print(f"{delete_preset} has been sent to the trash.")  
+        print(f"Preset: {delete_preset} has been sent to the trash.")  
         refresh_presets_list(main_window)
         
     except Exception as e:
@@ -110,61 +113,6 @@ def setup_preset_list_context_menu(main_window: 'MainWindow'):
         partial(show_preset_context_menu, main_window)
     )
 
-def overwrite_selected_preset(main_window: 'MainWindow'):
-    """Overwrite the selected preset with current parameters"""
-    current_item = main_window.presetsList.currentItem()
-    if not current_item:
-        common_widget_actions.create_and_show_messagebox(
-            main_window,
-            'No Preset Selected',
-            'Please select a preset to overwrite',
-            parent_widget=main_window
-        )
-        return
-
-    # Get confirmation
-    result = QtWidgets.QMessageBox.question(
-        main_window,
-        'Confirm Overwrite',
-        f'Are you sure you want to overwrite preset: {current_item.text()}?',
-        QtWidgets.QMessageBox.Yes | QtWidgets.QMessageBox.No
-    )
-
-    if result == QtWidgets.QMessageBox.Yes:
-        name = str(current_item.text())
-        preset_path = Path("presets") / f"{name}.json"
-        preset_path.parent.mkdir(exist_ok=True)
-        preset_path_ctl = Path("presets") / f"{name}_ctl.json"
-        preset_path_ctl.parent.mkdir(exist_ok=True)
-
-        # Get current parameters but exclude input/output paths
-        current_params = {}
-        if main_window.selected_target_face_id:
-            params = main_window.parameters[main_window.selected_target_face_id].data.copy()
-            # Remove any input/output specific settings
-            params.pop('InputFolder', None)
-            params.pop('OutputFolder', None)
-            current_params = params
-        else:
-            params = main_window.current_widget_parameters.data.copy()
-            params.pop('InputFolder', None) 
-            params.pop('OutputFolder', None)
-            current_params = params
-        current_ctl = {}
-        control = main_window.control.copy()
-        current_ctl = control
-        # Save to file
-        with open(preset_path, 'w') as f:
-            json.dump(current_params, f, indent=4)
-        with open(preset_path_ctl, 'w') as c:
-            json.dump(current_ctl, c, indent=4)
-
-        common_widget_actions.create_and_show_toast_message(
-            main_window,
-            'Preset Updated',
-            f'Overwritten preset: {current_item.text()}'
-        )
-
 def refresh_presets_list(main_window: 'MainWindow'):
     """Refresh the presets list with all JSON files in the presets directory"""
     main_window.presetsList.clear()
@@ -178,7 +126,47 @@ def refresh_presets_list(main_window: 'MainWindow'):
 
 def save_current_as_preset(main_window: 'MainWindow'):
     """Save current parameters as a preset JSON file"""
-    name, ok = QtWidgets.QInputDialog.getText(main_window, "Save Preset", "Enter preset name:")
+    preset_list = main_window.presetsList
+    selected_count = len(preset_list.selectedItems()) if preset_list else 0
+    preset_name_list = []
+    for i in range(preset_list.count()):
+        item = preset_list.item(i)
+        preset_name_list.append(item.text())
+    if selected_count > 1: 
+        QtWidgets.QMessageBox.warning(
+            main_window,
+            "Selection error.",
+            "Select only one preset to overwrite or deselect all to create a new preset.",
+            QtWidgets.QMessageBox.Ok
+        )
+        return
+    
+    if selected_count == 0:
+        while True:
+            name, ok = QtWidgets.QInputDialog.getText(main_window, "Save Preset", "Enter preset name:")
+            if not ok or not name: return
+            if name in preset_name_list: 
+                ok = QtWidgets.QMessageBox.question(
+                main_window,
+                'Confirm Overwrite',
+                f'Preset: {name} already exists, overwrite ?',
+                QtWidgets.QMessageBox.Yes | QtWidgets.QMessageBox.No)
+                if ok == QtWidgets.QMessageBox.Yes: 
+                    ok = True
+                    break
+                if ok == QtWidgets.QMessageBox.No: continue
+            else: break
+    else:
+        current_item = main_window.presetsList.currentItem()
+        name = current_item.text()
+        ok = QtWidgets.QMessageBox.question(
+        main_window,
+        'Confirm Overwrite',
+        f'Are you sure you want to overwrite preset: {name}?',
+        QtWidgets.QMessageBox.Yes | QtWidgets.QMessageBox.No)
+        if ok == QtWidgets.QMessageBox.Yes: ok = True
+        if ok == QtWidgets.QMessageBox.No: return
+        
     if ok and name:
         preset_path = Path("presets") / f"{name}.json"
         preset_path.parent.mkdir(exist_ok=True)
@@ -263,9 +251,10 @@ def apply_selected_preset(main_window: 'MainWindow'):
         main_window.current_widget_parameters = ParametersDict(new_params, main_window.default_parameters)
         common_widget_actions.set_widgets_values_using_face_id_parameters(main_window, False)
 
-    new_ctl = preset_ctl.copy()
-    main_window.control.update(new_ctl)
-    common_widget_actions.set_control_widgets_values(main_window)
+    if main_window.controlPresetButton.isChecked():
+        new_ctl = preset_ctl.copy()
+        main_window.control.update(new_ctl)
+        common_widget_actions.set_control_widgets_values(main_window)
     
     # Refresh the frame to show changes
     common_widget_actions.refresh_frame(main_window)
