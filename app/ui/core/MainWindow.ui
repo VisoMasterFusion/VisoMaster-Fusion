@@ -38,7 +38,7 @@
          <item>
           <widget class="QCheckBox" name="TargetMediaCheckBox">
            <property name="text">
-            <string>Target Videos/Images Panel</string>
+            <string>Target Videos/Images</string>
            </property>
            <property name="checked">
             <bool>true</bool>
@@ -48,7 +48,7 @@
 		 <item>
           <widget class="QCheckBox" name="InputFacesCheckBox">
            <property name="text">
-            <string>Input Faces Panel</string>
+            <string>Input Faces</string>
            </property>
            <property name="checked">
             <bool>true</bool>
@@ -58,7 +58,7 @@
 		 <item>
           <widget class="QCheckBox" name="JobsCheckBox">
            <property name="text">
-            <string>Jobs Panel</string>
+            <string>Jobs</string>
            </property>
            <property name="checked">
             <bool>true</bool>
@@ -68,7 +68,7 @@
          <item>
           <widget class="QCheckBox" name="facesPanelCheckBox">
            <property name="text">
-            <string>Faces Panel</string>
+            <string>Faces</string>
            </property>
            <property name="checked">
             <bool>true</bool>
@@ -78,7 +78,7 @@
          <item>
           <widget class="QCheckBox" name="parametersPanelCheckBox">
            <property name="text">
-            <string>Parameters Panel</string>
+            <string>Parameters</string>
            </property>
            <property name="checked">
             <bool>true</bool>
@@ -101,14 +101,14 @@
          <item>
           <widget class="QCheckBox" name="faceCompareCheckBox">
            <property name="text">
-            <string>View Face Compare</string>
+            <string>Face Compare</string>
            </property>
           </widget>
          </item>
          <item>
           <widget class="QCheckBox" name="faceMaskCheckBox">
            <property name="text">
-            <string>View Face Mask</string>
+            <string>Face Mask</string>
            </property>
           </widget>
          </item>
@@ -1231,6 +1231,9 @@
                <verstretch>0</verstretch>
               </sizepolicy>
 			 </property>
+			 <property name="sortingEnabled">
+			  <bool>true</bool>
+			 </property>
             </widget>
            </item>
            <item>
@@ -1250,9 +1253,15 @@
               </widget>
              </item>
              <item>
-              <widget class="QPushButton" name="overwritePresetButton">
+              <widget class="QPushButton" name="controlPresetButton">
                <property name="text">
-                <string>Overwrite Selected</string>
+                <string>Apply controls</string>
+               </property>
+			   <property name="checkable">
+                <bool>true</bool>
+               </property>
+			   <property name="flat">
+                <bool>true</bool>
                </property>
               </widget>
              </item>
