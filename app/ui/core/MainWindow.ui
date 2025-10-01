@@ -6,8 +6,8 @@
    <rect>
     <x>0</x>
     <y>0</y>
-    <width>1376</width>
-    <height>585</height>
+    <width>1548</width>
+    <height>768</height>
    </rect>
   </property>
   <property name="font">
@@ -778,8 +778,8 @@
    </property>
    <property name="minimumSize">
     <size>
-     <width>340</width>
-     <height>369</height>
+     <width>324</width>
+     <height>230</height>
     </size>
    </property>
    <property name="features">
@@ -936,8 +936,8 @@
    </property>
    <property name="minimumSize">
     <size>
-     <width>340</width>
-     <height>369</height>
+     <width>324</width>
+     <height>230</height>
     </size>
    </property>
    <property name="features">
@@ -1025,6 +1025,12 @@
    </widget>
   </widget>
   <widget class="QDockWidget" name="jobManagerDockWidget">
+   <property name="minimumSize">
+    <size>
+     <width>324</width>
+     <height>230</height>
+    </size>
+   </property>
    <property name="windowTitle">
     <string>Job Manager</string>
    </property>

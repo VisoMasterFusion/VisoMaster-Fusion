@@ -250,6 +250,12 @@ SETTINGS_LAYOUT_DATA: LayoutDictTypes = {
             'label': 'Frame resize to 1920*1080',
             'default': False,
             'help': 'Select to resize the video to 1920*1080 (only on 16/9 format)'
+        },
+        'HDREncodeToggle':{
+            'level': 1,
+            'label': 'HDR Encoding - Use on HDR videos only (CPU)',
+            'default': False,
+            'help': 'Encode the video file in HDR, uses CPU and libx256, slower processing.'
         }
     },
     'Webcam and Virtualcam Settings': {
@@ -326,13 +332,19 @@ SETTINGS_LAYOUT_DATA: LayoutDictTypes = {
             'default': False,
             'help': 'Auto Saves Workspace .json in output folder at end of recording (only the status at end of recording)'
         },
+        'AutoLoadWorkspaceToggle':{
+            'level': 1,
+            'label': 'Auto Load Last Workspace',
+            'default': False,
+            'help': 'Do not show the "load last workspace" dialog when open then app, always load last workspace.'
+        },
         'DilatationTypeSelection': {
             'level': 1,
             'label': 'Mask Dilatation Type',
             'options': ['conv', 'pool', 'iter_pool'],
             'default': 'conv',
             'help': 'Max_Pool2d is faster but conv2d is more precise (especially on higher dilatation values)'
-        },         
+        }
     },
    'Experimental Settings (very experimental, better don´t touch)': {                          
         'ActivateexperimentalsettingsEnableToggle': {
