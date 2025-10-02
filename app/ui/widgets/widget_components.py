@@ -5,6 +5,8 @@ from functools import partial
 import uuid
 from typing import TYPE_CHECKING, Dict
 from send2trash import send2trash
+import subprocess
+import sys
 import torch
 
 from PySide6 import QtWidgets, QtGui, QtCore
@@ -92,7 +94,7 @@ class TargetMediaCardButton(CardButton):
         super().__init__(*args, **kwargs)
         self.media_id = media_id
         self.file_type = file_type
-        self.media_path = media_path
+        self.media_path = media_path.replace('/','\\')
         self.is_webcam = is_webcam
         self.webcam_index = webcam_index
         self.webcam_backend = webcam_backend
@@ -318,7 +320,6 @@ class TargetMediaCardButton(CardButton):
         self.deselect_currently_selected_video(main_window)
 
         # Send the file to the trash
-        self.media_path = self.media_path.replace('/','\\')
         if os.path.exists(self.media_path):
             send2trash(self.media_path)
             print(f"{self.media_path} has been sent to the trash.")  
@@ -326,6 +327,19 @@ class TargetMediaCardButton(CardButton):
             print(f"{self.media_path} does not exist.")
 
         self.deleteLater()
+
+    def open_target_path_by_explorer(self):
+        if os.path.exists(self.media_path):
+            if sys.platform == 'win32':
+                # Windows
+                subprocess.run(f'explorer /select,"{self.media_path}"', shell=True)
+            elif sys.platform == 'darwin':
+                # macOS
+                subprocess.run(['open', '-R', self.media_path])
+            else:
+                # Linux
+                directory = os.path.dirname(os.path.abspath(self.media_path))
+                subprocess.run(['xdg-open', directory])
 
     def create_context_menu(self):
         self.popMenu = QtWidgets.QMenu(self)
@@ -336,6 +350,10 @@ class TargetMediaCardButton(CardButton):
         delete_action = QtGui.QAction('Delete file to recycle bin', self)
         delete_action.triggered.connect(self.delete_target_media_to_trash)
         self.popMenu.addAction(delete_action)
+
+        open_path_action = QtGui.QAction('Open file location', self)
+        open_path_action.triggered.connect(self.open_target_path_by_explorer)
+        self.popMenu.addAction(open_path_action)
 
     def on_context_menu(self, point):
         # show context menu
@@ -705,7 +723,6 @@ class InputFaceCardButton(CardButton):
         self.deselect_currently_selected_face(main_window)
 
         # Send the file to the trash
-        self.media_path = self.media_path.replace('/','\\')
         if os.path.exists(self.media_path):
             send2trash(self.media_path)
             print(f"{self.media_path} has been sent to the trash.")
@@ -713,6 +730,19 @@ class InputFaceCardButton(CardButton):
             print(f"{self.media_path} does not exist.")
 
         self.deleteLater()
+
+    def open_target_path_by_explorer(self):
+        if os.path.exists(self.media_path):
+            if sys.platform == 'win32':
+                # Windows
+                subprocess.run(f'explorer /select,"{self.media_path}"', shell=True)
+            elif sys.platform == 'darwin':
+                # macOS
+                subprocess.run(['open', '-R', self.media_path])
+            else:
+                # Linux
+                directory = os.path.dirname(os.path.abspath(self.media_path))
+                subprocess.run(['xdg-open', directory])
 
     def create_context_menu(self):
         # create context menu
@@ -728,6 +758,11 @@ class InputFaceCardButton(CardButton):
         delete_action = QtGui.QAction('Delete file to recycle bin', self)
         delete_action.triggered.connect(self.delete_input_face_to_trash)
         self.popMenu.addAction(delete_action)
+
+        open_path_action = QtGui.QAction('Open file location', self)
+        open_path_action.triggered.connect(self.open_target_path_by_explorer)
+        self.popMenu.addAction(open_path_action)
+
     def on_context_menu(self, point):
         # show context menu
         self.popMenu.exec_(self.mapToGlobal(point))

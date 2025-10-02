@@ -661,15 +661,16 @@ class VideoProcessor(QObject):
         # Added option to resize video frame to 1920*1080
         frame_height_down = frame_height
         frame_width_down = frame_width
-        frame_height_down_mult = frame_height / 1080
+        #frame_height_down_mult = frame_height / 1080
         frame_width_down_mult = frame_width / 1920
           
         if control['FrameEnhancerDownToggle']:
-            if (frame_width / frame_height == 16 / 9) and (frame_width != 1920 or frame_height != 1080):
-                frame_height_down = math.ceil(frame_height / frame_height_down_mult)
-                frame_width_down = math.ceil(frame_width / frame_width_down_mult)
+            if (frame_width != 1920 or frame_height != 1080):
+                frame_height_down = math.ceil(frame_height / frame_width_down_mult)
+                #frame_width_down = math.ceil(frame_width / frame_width_down_mult)
+                frame_width_down = 1920
             else:
-                print('Not 16/9 ratio or already 1920*1080')
+                print("Already 1920*1080")
                 
         date_and_time = datetime.now().strftime(r'%Y_%m_%d_%H_%M_%S')
         # Use a temporary directory within the project root
@@ -710,32 +711,57 @@ class VideoProcessor(QObject):
             "-i", "pipe:0", # Read from stdin (pipe:0 is more explicit)
         ]
         # Merged settings from experimental and vr180 patches
-        if control['FrameEnhancerDownToggle']:
-            args.extend([
-                "-c:v", "hevc_nvenc",
-                "-preset", "p5",
-                "-cq", "18", # Higher quality setting from experimental patch
-                "-vf", f"scale={frame_width_down}x{frame_height_down}:flags=lanczos+accurate_rnd+full_chroma_int",
-                "-pix_fmt", output_pix_fmt,
-                "-colorspace", output_colorspace,
-                "-color_primaries", output_color_primaries,
-                "-color_trc", output_color_trc,
-                "-tag:v", "hvc1",
-                self.temp_file
-            ])
+        if control['HDREncodeToggle']:
+            if control['FrameEnhancerDownToggle']:
+                args.extend([
+                    # Video Codec: Use NVIDIA HEVC encoder
+                    "-c:v", "libx265",
+                    "-vf", f"scale={frame_width_down}x{frame_height_down}:flags=lanczos+accurate_rnd+full_chroma_int",
+                    "-profile:v", "main10",
+                    "-preset", "slow",
+                    "-pix_fmt", "yuv420p10le",
+                    "-x265-params", f"crf=18:vbv-bufsize=10000:vbv-maxrate=8000:selective-sao=0:no-sao=1:strong-intra-smoothing=0:rect=0:aq-mode=1:hdr-opt=1:repeat-headers=1:colorprim=bt2020:range=limited:transfer=smpte2084:colormatrix=bt2020nc:range=limited:master-display='G(13250,34500)B(7500,3000)R(34000,16000)WP(15635,16450)L(10000000,1)':max-cll=1000,1000",
+                    # Output File
+                    output_filename
+                ])
+            else:
+                args.extend([
+                    # Video Codec: Use NVIDIA HEVC encoder
+                    "-c:v", "libx265",
+                    "-profile:v", "main10",
+                    "-preset", "slow",
+                    "-pix_fmt", "yuv420p10le",
+                    "-x265-params", "crf=18:vbv-bufsize=10000:vbv-maxrate=8000:selective-sao=0:no-sao=1:strong-intra-smoothing=0:rect=0:aq-mode=1:hdr-opt=1:repeat-headers=1:colorprim=bt2020:range=limited:transfer=smpte2084:colormatrix=bt2020nc:range=limited:master-display='G(13250,34500)B(7500,3000)R(34000,16000)WP(15635,16450)L(10000000,1)':max-cll=1000,1000",
+                    #Output File
+                    output_filename
+                ])
         else:
-            
-            args.extend([
-                "-c:v", "hevc_nvenc",
-                "-preset", "p5",
-                "-cq", "18", # Higher quality setting from experimental patch
-                "-pix_fmt", output_pix_fmt,
-                "-colorspace", output_colorspace,
-                "-color_primaries", output_color_primaries,
-                "-color_trc", output_color_trc,
-                "-tag:v", "hvc1",
-                self.temp_file
-            ])
+            if control['FrameEnhancerDownToggle']:
+                args.extend([
+                    "-c:v", "hevc_nvenc",
+                    "-preset", "p5",
+                    "-cq", "18", # Higher quality setting from experimental patch
+                    "-vf", f"scale={frame_width_down}x{frame_height_down}:flags=lanczos+accurate_rnd+full_chroma_int",
+                    "-pix_fmt", output_pix_fmt,
+                    "-colorspace", output_colorspace,
+                    "-color_primaries", output_color_primaries,
+                    "-color_trc", output_color_trc,
+                    "-tag:v", "hvc1",
+                    self.temp_file
+                ])
+            else:
+                
+                args.extend([
+                    "-c:v", "hevc_nvenc",
+                    "-preset", "p5",
+                    "-cq", "18", # Higher quality setting from experimental patch
+                    "-pix_fmt", output_pix_fmt,
+                    "-colorspace", output_colorspace,
+                    "-color_primaries", output_color_primaries,
+                    "-color_trc", output_color_trc,
+                    "-tag:v", "hvc1",
+                    self.temp_file
+                ])
         try:
             # bufsize=-1 uses system default, often buffered which might be better for video
             self.recording_sp = subprocess.Popen(args, stdin=subprocess.PIPE, bufsize=-1)
@@ -1019,15 +1045,16 @@ class VideoProcessor(QObject):
         # Added option to resize video frame to 1920*1080
         frame_height_down = frame_height
         frame_width_down = frame_width
-        frame_height_down_mult = frame_height / 1080
+        #frame_height_down_mult = frame_height / 1080
         frame_width_down_mult = frame_width / 1920
           
         if control['FrameEnhancerDownToggle']:
-            if (frame_width / frame_height == 16 / 9) and (frame_width != 1920 or frame_height != 1080):
-                frame_height_down = math.ceil(frame_height / frame_height_down_mult)
-                frame_width_down = math.ceil(frame_width / frame_width_down_mult)
+            if (frame_width != 1920 or frame_height != 1080):
+                frame_height_down = math.ceil(frame_height / frame_width_down_mult)
+                #frame_width_down = math.ceil(frame_width / frame_width_down_mult)
+                frame_width_down = 1920
             else:
-                print("Not 16/9 ratio or already 1920*1080")
+                print("Already 1920*1080")
                 
         segment_num = self.current_segment_index + 1
         print(f"Creating FFmpeg (Segment {segment_num}): Video Dim={frame_width}x{frame_height}, FPS={self.fps}, Output='{output_filename}'")
@@ -1067,47 +1094,72 @@ class VideoProcessor(QObject):
             "-shortest", # Stop when shortest input (audio segment) ends
         ]
         # Video Codec & Options (Pad and format for compatibility)
-        if control['FrameEnhancerDownToggle']:
-            args.extend([
-                # Video Codec: Use NVIDIA HEVC encoder
-                "-c:v", "hevc_nvenc",
-                # Quality Setting: NVENC uses -cq (Constant Quality scale, lower=better, ~18-28 is common range)
-                # Or use -qp (Constant Quantization Parameter)
-                # Or target bitrate: -b:v 60M
-                "-cq", "18", # Experiment with this value
-                # Preset: Controls speed vs quality trade-off for NVENC (e.g., p1-p7, default is p4/p5)
-                # p5=medium, p6=slow, p7=slower (higher quality)
-                "-preset", "p5",
-                # Set color properties (NVENC should respect these)
-                "-vf", f"scale={frame_width_down}x{frame_height_down}:flags=lanczos+accurate_rnd+full_chroma_int",
-                "-pix_fmt", output_pix_fmt,
-                "-colorspace", output_colorspace,
-                "-color_primaries", output_color_primaries,
-                "-color_trc", output_color_trc,
-                "-tag:v", "hvc1",
-                # Output File
-                output_filename
-            ])
+        if control['HDREncodeToggle']:
+            if control['FrameEnhancerDownToggle']:
+                args.extend([
+                    # Video Codec: Use NVIDIA HEVC encoder
+                    "-c:v", "libx265",
+                    "-vf", f"scale={frame_width_down}x{frame_height_down}:flags=lanczos+accurate_rnd+full_chroma_int",
+                    "-profile:v", "main10",
+                    "-preset", "slow",
+                    "-pix_fmt", "yuv420p10le",
+                    "-x265-params", f"crf=18:vbv-bufsize=10000:vbv-maxrate=8000:selective-sao=0:no-sao=1:strong-intra-smoothing=0:rect=0:aq-mode=1:hdr-opt=1:repeat-headers=1:colorprim=bt2020:range=limited:transfer=smpte2084:colormatrix=bt2020nc:range=limited:master-display='G(13250,34500)B(7500,3000)R(34000,16000)WP(15635,16450)L(10000000,1)':max-cll=1000,1000",
+                    # Output File
+                    output_filename
+                ])
+            else:
+                args.extend([
+                    # Video Codec: Use NVIDIA HEVC encoder
+                    "-c:v", "libx265",
+                    "-profile:v", "main10",
+                    "-preset", "slow",
+                    "-pix_fmt", "yuv420p10le",
+                    "-x265-params", "crf=18:vbv-bufsize=10000:vbv-maxrate=8000:selective-sao=0:no-sao=1:strong-intra-smoothing=0:rect=0:aq-mode=1:hdr-opt=1:repeat-headers=1:colorprim=bt2020:range=limited:transfer=smpte2084:colormatrix=bt2020nc:range=limited:master-display='G(13250,34500)B(7500,3000)R(34000,16000)WP(15635,16450)L(10000000,1)':max-cll=1000,1000",
+                    #Output File
+                    output_filename
+                ])
         else:
-            args.extend([
-                # Video Codec: Use NVIDIA HEVC encoder
-                "-c:v", "hevc_nvenc",
-                # Quality Setting: NVENC uses -cq (Constant Quality scale, lower=better, ~18-28 is common range)
-                # Or use -qp (Constant Quantization Parameter)
-                # Or target bitrate: -b:v 60M
-                "-cq", "18", # Experiment with this value
-                # Preset: Controls speed vs quality trade-off for NVENC (e.g., p1-p7, default is p4/p5)
-                # p5=medium, p6=slow, p7=slower (higher quality)
-                "-preset", "p5",
-                # Set color properties (NVENC should respect these)
-                "-pix_fmt", output_pix_fmt,
-                "-colorspace", output_colorspace,
-                "-color_primaries", output_color_primaries,
-                "-color_trc", output_color_trc,
-                "-tag:v", "hvc1",
-                # Output File
-                output_filename
-            ])
+            if control['FrameEnhancerDownToggle']:
+                args.extend([
+                    # Video Codec: Use NVIDIA HEVC encoder
+                    "-c:v", "hevc_nvenc",
+                    # Quality Setting: NVENC uses -cq (Constant Quality scale, lower=better, ~18-28 is common range)
+                    # Or use -qp (Constant Quantization Parameter)
+                    # Or target bitrate: -b:v 60M
+                    "-cq", "18", # Experiment with this value
+                    # Preset: Controls speed vs quality trade-off for NVENC (e.g., p1-p7, default is p4/p5)
+                    # p5=medium, p6=slow, p7=slower (higher quality)
+                    "-preset", "p5",
+                    # Set color properties (NVENC should respect these)
+                    "-vf", f"scale={frame_width_down}x{frame_height_down}:flags=lanczos+accurate_rnd+full_chroma_int",
+                    "-pix_fmt", output_pix_fmt,
+                    "-colorspace", output_colorspace,
+                    "-color_primaries", output_color_primaries,
+                    "-color_trc", output_color_trc,
+                    "-tag:v", "hvc1",
+                    # Output File
+                    output_filename
+                ])
+            else:
+                args.extend([
+                    # Video Codec: Use NVIDIA HEVC encoder
+                    "-c:v", "hevc_nvenc",
+                    # Quality Setting: NVENC uses -cq (Constant Quality scale, lower=better, ~18-28 is common range)
+                    # Or use -qp (Constant Quantization Parameter)
+                    # Or target bitrate: -b:v 60M
+                    "-cq", "18", # Experiment with this value
+                    # Preset: Controls speed vs quality trade-off for NVENC (e.g., p1-p7, default is p4/p5)
+                    # p5=medium, p6=slow, p7=slower (higher quality)
+                    "-preset", "p5",
+                    # Set color properties (NVENC should respect these)
+                    "-pix_fmt", output_pix_fmt,
+                    "-colorspace", output_colorspace,
+                    "-color_primaries", output_color_primaries,
+                    "-color_trc", output_color_trc,
+                    "-tag:v", "hvc1",
+                    # Output File
+                    output_filename
+                ])
         
         try:
             self.recording_sp = subprocess.Popen(args, stdin=subprocess.PIPE, bufsize=-1)

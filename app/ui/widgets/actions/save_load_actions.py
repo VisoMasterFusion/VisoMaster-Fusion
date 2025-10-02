@@ -125,6 +125,18 @@ def load_parameters_and_settings(main_window: 'MainWindow', face_id, load_settin
                 common_widget_actions.set_control_widgets_values(main_window)
             common_widget_actions.refresh_frame(main_window)
 
+def get_auto_load_workspace_toggle(main_window: 'MainWindow', data_filename: str | bool = False):
+    if not data_filename:
+        data_filename, _ = QtWidgets.QFileDialog.getOpenFileName(main_window, filter='JSON (*.json)')
+    # Check if File exists (In cases when filename is passed as function argument instead of from the file picker)
+    if not Path(data_filename).is_file():
+        data_filename = False
+    if data_filename:
+        with open(data_filename, 'r') as data_file:  # pylint: disable=unspecified-encoding
+            data = json.load(data_file)
+            control = data['control']
+            return control.get('AutoLoadWorkspaceToggle', False)
+
 def load_saved_workspace(main_window: 'MainWindow', data_filename: str|bool = False):
     if not data_filename:
         data_filename, _ = QtWidgets.QFileDialog.getOpenFileName(main_window, filter='JSON (*.json)')
