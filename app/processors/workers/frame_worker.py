@@ -283,16 +283,16 @@ class FrameWorker(threading.Thread):
                 # --- VR180 Path ---
                 original_equirect_tensor_for_vr = processed_tensor_rgb_uint8.clone()
                 equirect_converter = EquirectangularConverter(img_numpy_rgb_uint8, device=self.models_processor.device)
-                bboxes_eq_np, kpss_5_eq_np, kpss_all_eq_np = self.models_processor.run_detect(
+                bboxes_eq_np, _, _ = self.models_processor.run_detect(
                     original_equirect_tensor_for_vr, control['DetectorModelSelection'], max_num=control['MaxFacesToDetectSlider'],
                     score=control['DetectorScoreSlider']/100.0, input_size=(512, 512),
-                    use_landmark_detection=control['LandmarkDetectToggle'], landmark_detect_mode=control['LandmarkDetectModelSelection'],
-                    landmark_score=control["LandmarkDetectScoreSlider"]/100.0, from_points=control["DetectFromPointsToggle"],
+                    use_landmark_detection=False, landmark_detect_mode=control['LandmarkDetectModelSelection'],
+                    landmark_score=control["LandmarkDetectScoreSlider"]/100.0, from_points=False,
                     rotation_angles=[0] if not control["AutoRotationToggle"] else [0, 90, 180, 270]
                 )
                 processed_perspective_crops_details = {}
                 analyzed_faces_for_vr = []
-                for i, bbox_eq_single in enumerate(bboxes_eq_np):
+                for bbox_eq_single in bboxes_eq_np:
                     theta, phi = equirect_converter.calculate_theta_phi_from_bbox(bbox_eq_single)
                     original_eye_side = "L" if (bbox_eq_single[0] + bbox_eq_single[2]) / 2 < equirect_converter.width / 2 else "R"
                     angular_width_deg = (bbox_eq_single[2] - bbox_eq_single[0]) / equirect_converter.width * 360.0
@@ -301,18 +301,18 @@ class FrameWorker(threading.Thread):
                     face_crop_tensor = equirect_converter.get_perspective_crop(dynamic_fov_for_crop, theta, phi, self.VR_PERSPECTIVE_RENDER_SIZE, self.VR_PERSPECTIVE_RENDER_SIZE)
                     if face_crop_tensor is None or face_crop_tensor.numel() == 0: continue
                     
-                    _, kps_on_crop_list, kps_all_on_crop_list = self.models_processor.run_detect(
+                    _, kpss_5_crop, kpss_crop = self.models_processor.run_detect(
                         face_crop_tensor, control['DetectorModelSelection'], max_num=1, score=control['DetectorScoreSlider']/100.0,
                         input_size=(self.VR_PERSPECTIVE_RENDER_SIZE, self.VR_PERSPECTIVE_RENDER_SIZE), use_landmark_detection=True,
                         landmark_detect_mode="203", landmark_score=control["LandmarkDetectScoreSlider"]/100.0,
                         from_points=False, rotation_angles=[0]
                     )
 
-                    if not (isinstance(kps_on_crop_list, np.ndarray) and kps_on_crop_list.any()) and not kps_on_crop_list:
+                    if not (isinstance(kpss_5_crop, np.ndarray) and kpss_5_crop.shape[0] > 0 or isinstance(kpss_5_crop, list) and len(kpss_5_crop) > 0):
                         del face_crop_tensor; continue
 
-                    kps_on_crop = kps_on_crop_list[0]
-                    kps_all_on_crop = kps_all_on_crop_list[0] if isinstance(kps_all_on_crop_list, np.ndarray) and kps_all_on_crop_list.size > 0 else None
+                    kps_on_crop = kpss_5_crop[0]
+                    kps_all_on_crop = kpss_crop[0] if isinstance(kpss_crop, np.ndarray) and kpss_crop.shape[0] > 0 else None
                     face_emb_crop, _ = self.models_processor.run_recognize_direct(face_crop_tensor, kps_on_crop, control['SimilarityTypeSelection'], control['RecognitionModelSelection'])
                     best_target_button_vr, best_params_for_target_vr, _ = self._find_best_target_match(face_emb_crop, control)
                     
@@ -383,7 +383,8 @@ class FrameWorker(threading.Thread):
                     rotation_angles=[0] if not control["AutoRotationToggle"] else [0, 90, 180, 270]
                 )
 
-                if kpss_5.shape[0] > 0:
+                if isinstance(kpss_5, np.ndarray) and kpss_5.shape[0] > 0 or isinstance(kpss_5, list) and len(kpss_5) > 0:
+                #if kpss_5.shape[0] > 0:
                     for i in range(kpss_5.shape[0]):
                         face_emb, _ = self.models_processor.run_recognize_direct(img, kpss_5[i], control['SimilarityTypeSelection'], control['RecognitionModelSelection'])
                         det_faces_data_for_display.append({'kps_5': kpss_5[i], 'kps_all': kpss[i], 'embedding': face_emb, 'bbox': bboxes[i], 'original_face': None, 'swap_mask': None})

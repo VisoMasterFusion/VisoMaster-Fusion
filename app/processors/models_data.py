@@ -544,18 +544,22 @@ models_list = [
 
     },
     {
-        "model_name": "CanonSwapDenseMotionNetwork",
-        "local_path": f"{models_dir}/canonswap/dense_motion_network.onnx",
-        "hash": "48c8abd0cb9d0e2204b65f794d781213ffed0899668cccf84921f202abca584e",
-        "url": "https://github.com/Glat0s/CanonSwap-onnx/releases/download/v0.1/dense_motion_network.onnx"
-
+        "model_name": "CanonSwapDenseMotionPart1",
+        "local_path": f"{models_dir}/canonswap/dense_motion_part1.onnx",
+        "hash": "194d2cdac97236bf862f670c5b40d337146ae2036cb82cde668f4904def74381",
+        "url": "https://github.com/Glat0s/CanonSwap-onnx/releases/download/v0.1/dense_motion_part1.onnx"
+    },
+    {
+        "model_name": "CanonSwapDenseMotionPart2",
+        "local_path": f"{models_dir}/canonswap/dense_motion_part2.onnx",
+        "hash": "ba6a03038a4971961dc519159f714460390ac28086f6297058ec4eb4e03ea940",
+        "url": "https://github.com/Glat0s/CanonSwap-onnx/releases/download/v0.1/dense_motion_part2.onnx"
     },
     {
         "model_name": "CanonSwapWarpingDecoder",
         "local_path": f"{models_dir}/canonswap/warping_decoder.onnx",
         "hash": "c06e4edc10b510fe7b3a245999d6528f4c504dd24b87ef9e16d43161bfb7577a",
         "url": "https://github.com/Glat0s/CanonSwap-onnx/releases/download/v0.1/warping_decoder.onnx"
-
     },
     {
         "model_name": "CanonSwapSpadeGenerator",

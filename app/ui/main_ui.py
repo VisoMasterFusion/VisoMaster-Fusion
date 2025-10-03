@@ -135,9 +135,6 @@ class MainWindow(QtWidgets.QMainWindow, Ui_MainWindow):
         # Set up Menu Actions
         layout_actions.set_up_menu_actions(self)
 
-        # VR180 Adds actionVR180Mode connection
-        self.actionVR180Mode.triggered.connect(self.toggle_vr180_mode)
-
         # Set up placeholder texts in ListWidgets (Target Videos and Input Faces)
         list_view_actions.set_up_list_widget_placeholder(self, self.targetVideosList)
         list_view_actions.set_up_list_widget_placeholder(self, self.inputFacesList)
@@ -224,24 +221,6 @@ class MainWindow(QtWidgets.QMainWindow, Ui_MainWindow):
 
         self.faceMaskCheckBox.clicked.connect(partial(video_control_actions.process_compare_checkboxes, self))
         self.faceCompareCheckBox.clicked.connect(partial(video_control_actions.process_compare_checkboxes, self))
-
-        '''
-        # VR180 splits COMMON_LAYOUT_DATA
-        common_parameters_layout_data = {}
-        common_controls_layout_data = {}
-        
-        for group_name, widgets_in_group in COMMON_LAYOUT_DATA.items():
-            # UNet Denoiser group now contains mostly controls
-            if group_name == 'ReF-LDM Denoiser':
-                common_controls_layout_data[group_name] = widgets_in_group
-            else: # Other groups like 'Face Restorer' are parameters
-                common_parameters_layout_data[group_name] = widgets_in_group
-        
-        if common_parameters_layout_data:
-            layout_actions.add_widgets_to_tab_layout(self, LAYOUT_DATA=common_parameters_layout_data, layoutWidget=self.commonWidgetsLayout, data_type='parameter')
-        if common_controls_layout_data:
-            layout_actions.add_widgets_to_tab_layout(self, LAYOUT_DATA=common_controls_layout_data, layoutWidget=self.commonWidgetsLayout, data_type='control')
-        '''
         
         layout_actions.add_widgets_to_tab_layout(self, LAYOUT_DATA=COMMON_LAYOUT_DATA, layoutWidget=self.commonWidgetsLayout, data_type='parameter')
         layout_actions.add_widgets_to_tab_layout(self, LAYOUT_DATA=DENOISER_LAYOUT_DATA, layoutWidget=self.denoiserWidgetsLayout, data_type='control')
@@ -483,11 +462,6 @@ class MainWindow(QtWidgets.QMainWindow, Ui_MainWindow):
             case QtCore.Qt.Key_S:
                 self.swapfacesButton.click()
 
-    def toggle_vr180_mode(self):
-        self.control['VR180ModeEnableToggle'] = self.actionVR180Mode.isChecked()
-        # Potentially refresh frame or update UI state if needed
-        common_widget_actions.refresh_frame(self)
-
     def closeEvent(self, event):
         print("MainWindow: closeEvent called.")
 
@@ -508,8 +482,7 @@ class MainWindow(QtWidgets.QMainWindow, Ui_MainWindow):
             else:
                 load_dialog = widget_components.LoadLastWorkspaceDialog(self)
                 load_dialog.exec_()
-            if self.control.get('VR180ModeEnableToggle', False): self.actionVR180Mode.setChecked(True)
-            else: self.actionVR180Mode.setChecked(False)
+
             # Re-populate and set current selection for dynamic widgets like DenoiserUNetModelSelection
             self._populate_denoiser_unet_models()
             self._populate_reference_kv_tensors()
