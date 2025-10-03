@@ -501,6 +501,11 @@ class FaceEditors:
 
         img_f = img.float() / 255.0
         w = m * blend_factor
+        
+        t512_mask =  v2.Resize((512, 512), interpolation=v2.InterpolationMode.BILINEAR, antialias=False)
+        w = t512_mask(w)
+        w = w.clamp(0, 255)
+        
         out = img_f * (1.0 - w) + tar_color * w
         out = (out * 255.0).clamp(0, 255).to(torch.uint8)
         return out
@@ -607,11 +612,16 @@ class FaceEditors:
             17: parameters.get('HairMakeupEnableToggle', False),
         }
 
-        combined_mask = torch.zeros((512, 512), dtype=torch.float32, device=device)
+        combined_mask = torch.zeros((256, 256), dtype=torch.float32, device=device)
         for attr, enabled in face_attributes.items():
             if not enabled:
                 continue
+            
             combined_mask = torch.max(combined_mask, (labels == int(attr)).float())
-
+        
+        t512_mask =  v2.Resize((512, 512), interpolation=v2.InterpolationMode.BILINEAR, antialias=False)
+        combined_mask = t512_mask(combined_mask.unsqueeze(0))
+        combined_mask = combined_mask.clamp(0, 255)
+        
         out_final = out.to(torch.uint8)
-        return out_final, combined_mask.unsqueeze(0)
+        return out_final, combined_mask
