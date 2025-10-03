@@ -14,6 +14,21 @@ if TYPE_CHECKING:
     from app.processors.models_processor import ModelsProcessor
 from app.helpers.downloader import download_file
 from app.helpers.miscellaneous import is_file_exists
+
+
+def _debug_print_tensor(tensor: torch.Tensor, name: str):
+    """Helper function to print tensor statistics for debugging."""
+    if not isinstance(tensor, torch.Tensor):
+        print(f"[CanonSwap Debug] {name}: Not a tensor, but type {type(tensor)}")
+        return
+    print(f"[CanonSwap Debug] {name}: "
+          f"shape={tuple(tensor.shape)}, "
+          f"dtype={tensor.dtype}, "
+          f"device={tensor.device}, "
+          f"min={tensor.min().item():.6f}, "
+          f"max={tensor.max().item():.6f}, "
+          f"mean={tensor.mean().item():.6f}")
+
 class FaceSwappers:
     def __init__(self, models_processor: 'ModelsProcessor'):
         self.models_processor = models_processor
@@ -295,8 +310,37 @@ class FaceSwappers:
         ghostfaceswap_model.run_with_iobinding(io_binding)
 
     def calc_swapper_latent_canonswap(self, source_embedding):
-        latent = source_embedding.reshape((1,-1))
+        # The ID embedding must be L2 normalized to be a unit vector.
+        n_e = source_embedding / np.linalg.norm(source_embedding)
+        latent = n_e.reshape((1, -1))
         return latent
+
+    def _canonswap_create_deformed_feature(self, feature: Tensor, sparse_motions: Tensor) -> Tensor:
+        """Replicates the internal grid_sample from DenseMotionNetwork using PyTorch."""
+        bs, _, d, h, w = feature.shape
+        num_kp = 21  # Constant for CanonSwap model
+        
+        feature_repeat = feature.unsqueeze(1).unsqueeze(1).repeat(1, num_kp + 1, 1, 1, 1, 1, 1)
+        feature_repeat = feature_repeat.view(bs * (num_kp + 1), -1, d, h, w)
+        sparse_motions = sparse_motions.view((bs * (num_kp + 1), d, h, w, -1))
+
+        sparse_deformed = F.grid_sample(feature_repeat, sparse_motions, align_corners=False)
+        sparse_deformed = sparse_deformed.view((bs, num_kp + 1, -1, d, h, w))
+        
+        return sparse_deformed
+
+    def _canonswap_calculate_deformation(self, sparse_motion: Tensor, mask: Tensor) -> Tensor:
+        """Calculates the final deformation field manually using PyTorch."""
+        # sparse_motion: (bs, 1+num_kp, d, h, w, 3)
+        # mask: (bs, 1+num_kp, d, h, w)
+        
+        mask_unsqueezed = mask.unsqueeze(2) # -> (bs, 1+num_kp, 1, d, h, w)
+        sparse_motion_permuted = sparse_motion.permute(0, 1, 5, 2, 3, 4) # -> (bs, 1+num_kp, 3, d, h, w)
+
+        deformation_permuted = (sparse_motion_permuted * mask_unsqueezed).sum(dim=1) # -> (bs, 3, d, h, w)
+        deformation = deformation_permuted.permute(0, 2, 3, 4, 1) # -> (bs, d, h, w, 3)
+
+        return deformation
 
     def _canonswap_headpose_pred_to_degree(self, pred: Tensor) -> Tensor:
         """Converts headpose prediction to degrees. Tensor version."""
@@ -370,10 +414,20 @@ class FaceSwappers:
         """
         device = self.models_processor.device
 
+        if isinstance(embedding, np.ndarray):
+            embedding = torch.from_numpy(embedding).to(device)
+        
+        embedding = embedding.contiguous()
+
+        image_norm = image.to(torch.float32)
+        if image_norm.dim() == 3:
+            image_norm = image_norm.unsqueeze(0)
+        image_norm = image_norm.contiguous()
+
         # Load models if not already loaded
         model_names = [
             'CanonSwapMotionExtractor', 'CanonSwapAppearanceFeatureExtractor',
-            'CanonSwapDenseMotionNetwork', 'CanonSwapSwapModule',
+            'CanonSwapDenseMotionPart1', 'CanonSwapDenseMotionPart2', 'CanonSwapSwapModule',
             'CanonSwapRefineModule', 'CanonSwapWarpingDecoder', 'CanonSwapSpadeGenerator'
         ]
         models = {}
@@ -384,89 +438,175 @@ class FaceSwappers:
 
         # --- 1. Motion Extraction ---
         kp_info_tensors = {
-            'pitch': torch.empty((1, 66), dtype=torch.float32, device=device),
-            'yaw': torch.empty((1, 66), dtype=torch.float32, device=device),
-            'roll': torch.empty((1, 66), dtype=torch.float32, device=device),
-            't': torch.empty((1, 3), dtype=torch.float32, device=device),
-            'exp': torch.empty((1, 63), dtype=torch.float32, device=device),
-            'scale': torch.empty((1, 1), dtype=torch.float32, device=device),
-            'kp': torch.empty((1, 63), dtype=torch.float32, device=device),
+            'pitch': torch.empty((1, 66), dtype=torch.float32, device=device).contiguous(), 'yaw': torch.empty((1, 66), dtype=torch.float32, device=device).contiguous(),
+            'roll': torch.empty((1, 66), dtype=torch.float32, device=device).contiguous(), 't': torch.empty((1, 3), dtype=torch.float32, device=device).contiguous(),
+            'exp': torch.empty((1, 63), dtype=torch.float32, device=device).contiguous(), 'scale': torch.empty((1, 1), dtype=torch.float32, device=device).contiguous(),
+            'kp': torch.empty((1, 63), dtype=torch.float32, device=device).contiguous(),
         }
         io_binding_motion = models['CanonSwapMotionExtractor'].io_binding()
-        io_binding_motion.bind_input(name='input_image', device_type=device, device_id=0, element_type=np.float32, shape=image.shape, buffer_ptr=image.data_ptr())
+        io_binding_motion.bind_input(name='input_image', device_type=device, device_id=0, element_type=np.float32, shape=image_norm.shape, buffer_ptr=image_norm.data_ptr())
         for name, tensor in kp_info_tensors.items():
             io_binding_motion.bind_output(name=name, device_type=device, device_id=0, element_type=np.float32, shape=tensor.shape, buffer_ptr=tensor.data_ptr())
-        models['CanonSwapMotionExtractor'].run_with_iobinding(io_binding_motion)
+        
+        if self.models_processor.device == "cuda":
+            torch.cuda.synchronize()
+        elif self.models_processor.device != "cpu":
+            self.models_processor.syncvec.cpu()
+        with self.models_processor.model_lock:
+           models['CanonSwapMotionExtractor'].run_with_iobinding(io_binding_motion)
 
         bs = kp_info_tensors['kp'].shape[0]
         kp_info_tensors['kp'] = kp_info_tensors['kp'].reshape(bs, 21, 3)
         kp_info_tensors['exp'] = kp_info_tensors['exp'].reshape(bs, 21, 3)
 
         # --- 2. Transform Keypoints ---
-        x_t = self._canonswap_transform_keypoint(kp_info_tensors)
-        x_can = kp_info_tensors['scale'].reshape(bs, 1, 1) * kp_info_tensors['kp']
+        x_t = self._canonswap_transform_keypoint(kp_info_tensors).contiguous()
+        x_can = (kp_info_tensors['scale'].reshape(bs, 1, 1) * kp_info_tensors['kp']).contiguous()
 
         # --- 3. Appearance Feature Extraction ---
-        feature_volume = torch.empty((1, 32, 16, 64, 64), dtype=torch.float32, device=device)
+        feature_volume = torch.empty((1, 32, 16, 64, 64), dtype=torch.float32, device=device).contiguous()
         io_binding_app = models['CanonSwapAppearanceFeatureExtractor'].io_binding()
-        io_binding_app.bind_input(name='input_image', device_type=device, device_id=0, element_type=np.float32, shape=image.shape, buffer_ptr=image.data_ptr())
+        io_binding_app.bind_input(name='input_image', device_type=device, device_id=0, element_type=np.float32, shape=image_norm.shape, buffer_ptr=image_norm.data_ptr())
         io_binding_app.bind_output(name='feature_volume', device_type=device, device_id=0, element_type=np.float32, shape=feature_volume.shape, buffer_ptr=feature_volume.data_ptr())
-        models['CanonSwapAppearanceFeatureExtractor'].run_with_iobinding(io_binding_app)
+
+        if self.models_processor.device == "cuda":
+            torch.cuda.synchronize()
+        elif self.models_processor.device != "cpu":
+            self.models_processor.syncvec.cpu()
+        with self.models_processor.model_lock:
+            models['CanonSwapAppearanceFeatureExtractor'].run_with_iobinding(io_binding_app)
 
         # --- 4. First Warp (Driving -> Canonical) ---
-        deformation_initial = torch.empty((1, 16, 64, 64, 3), dtype=torch.float32, device=device)
-        occlusion_map_initial = torch.empty((1, 1, 64, 64), dtype=torch.float32, device=device)
-        io_binding_dense1 = models['CanonSwapDenseMotionNetwork'].io_binding()
-        io_binding_dense1.bind_input(name='feature', device_type=device, device_id=0, element_type=np.float32, shape=feature_volume.shape, buffer_ptr=feature_volume.data_ptr())
-        io_binding_dense1.bind_input(name='kp_driving', device_type=device, device_id=0, element_type=np.float32, shape=x_t.shape, buffer_ptr=x_t.data_ptr())
-        io_binding_dense1.bind_input(name='kp_source', device_type=device, device_id=0, element_type=np.float32, shape=x_can.shape, buffer_ptr=x_can.data_ptr())
-        io_binding_dense1.bind_output(name='deformation', device_type=device, device_id=0, element_type=np.float32, shape=deformation_initial.shape, buffer_ptr=deformation_initial.data_ptr())
-        io_binding_dense1.bind_output(name='occlusion_map', device_type=device, device_id=0, element_type=np.float32, shape=occlusion_map_initial.shape, buffer_ptr=occlusion_map_initial.data_ptr())
-        models['CanonSwapDenseMotionNetwork'].run_with_iobinding(io_binding_dense1)
-        f_can = F.grid_sample(feature_volume, deformation_initial, align_corners=False)
+        compressed_feature = torch.empty((1, 4, 16, 64, 64), dtype=torch.float32, device=device).contiguous()
+        heatmap = torch.empty((1, 22, 1, 16, 64, 64), dtype=torch.float32, device=device).contiguous()
+        sparse_motion = torch.empty((1, 22, 16, 64, 64, 3), dtype=torch.float32, device=device).contiguous()
+        io_binding_dense1 = models['CanonSwapDenseMotionPart1'].io_binding()
+        io_binding_dense1.bind_input(name='feature_3d', device_type=device, device_id=0, element_type=np.float32, shape=feature_volume.shape, buffer_ptr=feature_volume.data_ptr())
+        io_binding_dense1.bind_input(name='kp_driving', device_type=device, device_id=0, element_type=np.float32, shape=x_can.shape, buffer_ptr=x_can.data_ptr())
+        io_binding_dense1.bind_input(name='kp_source', device_type=device, device_id=0, element_type=np.float32, shape=x_t.shape, buffer_ptr=x_t.data_ptr())
+        io_binding_dense1.bind_output(name='compressed_feature', device_type=device, device_id=0, element_type=np.float32, shape=compressed_feature.shape, buffer_ptr=compressed_feature.data_ptr())
+        io_binding_dense1.bind_output(name='heatmap', device_type=device, device_id=0, element_type=np.float32, shape=heatmap.shape, buffer_ptr=heatmap.data_ptr())
+        io_binding_dense1.bind_output(name='sparse_motion', device_type=device, device_id=0, element_type=np.float32, shape=sparse_motion.shape, buffer_ptr=sparse_motion.data_ptr())
 
+        if self.models_processor.device == "cuda":
+            torch.cuda.synchronize()
+        elif self.models_processor.device != "cpu":
+            self.models_processor.syncvec.cpu()
+        with self.models_processor.model_lock:
+            models['CanonSwapDenseMotionPart1'].run_with_iobinding(io_binding_dense1)
+        
+        deformed_feature = self._canonswap_create_deformed_feature(compressed_feature, sparse_motion).contiguous()
+
+        mask = torch.empty((1, 22, 16, 64, 64), dtype=torch.float32, device=device).contiguous()
+        occlusion_map_initial = torch.empty((1, 1, 64, 64), dtype=torch.float32, device=device).contiguous()
+        io_binding_dense2 = models['CanonSwapDenseMotionPart2'].io_binding()
+        io_binding_dense2.bind_input(name='heatmap', device_type=device, device_id=0, element_type=np.float32, shape=heatmap.shape, buffer_ptr=heatmap.data_ptr())
+        io_binding_dense2.bind_input(name='deformed_feature', device_type=device, device_id=0, element_type=np.float32, shape=deformed_feature.shape, buffer_ptr=deformed_feature.data_ptr())
+        io_binding_dense2.bind_output(name='mask', device_type=device, device_id=0, element_type=np.float32, shape=mask.shape, buffer_ptr=mask.data_ptr())
+        io_binding_dense2.bind_output(name='occlusion_map', device_type=device, device_id=0, element_type=np.float32, shape=occlusion_map_initial.shape, buffer_ptr=occlusion_map_initial.data_ptr())
+
+        if self.models_processor.device == "cuda":
+            torch.cuda.synchronize()
+        elif self.models_processor.device != "cpu":
+            self.models_processor.syncvec.cpu()
+        with self.models_processor.model_lock:
+            models['CanonSwapDenseMotionPart2'].run_with_iobinding(io_binding_dense2)
+        
+        deformation_initial = self._canonswap_calculate_deformation(sparse_motion, mask)
+        f_can = F.grid_sample(feature_volume, deformation_initial, align_corners=False).contiguous()
+        
         # --- 5. Swap and Refine in Canonical Space ---
-        f_can_swapped = torch.empty_like(f_can)
+        f_can_swapped = torch.empty_like(f_can).contiguous()
         io_binding_swap = models['CanonSwapSwapModule'].io_binding()
         io_binding_swap.bind_input(name='feature_volume', device_type=device, device_id=0, element_type=np.float32, shape=f_can.shape, buffer_ptr=f_can.data_ptr())
         io_binding_swap.bind_input(name='id_embedding', device_type=device, device_id=0, element_type=np.float32, shape=embedding.shape, buffer_ptr=embedding.data_ptr())
         io_binding_swap.bind_output(name='swapped_feature_volume', device_type=device, device_id=0, element_type=np.float32, shape=f_can_swapped.shape, buffer_ptr=f_can_swapped.data_ptr())
-        models['CanonSwapSwapModule'].run_with_iobinding(io_binding_swap)
 
-        f_can_swapped_refined = torch.empty_like(f_can_swapped)
+        if self.models_processor.device == "cuda":
+            torch.cuda.synchronize()
+        elif self.models_processor.device != "cpu":
+            self.models_processor.syncvec.cpu()
+        with self.models_processor.model_lock:
+            models['CanonSwapSwapModule'].run_with_iobinding(io_binding_swap)
+
+        f_can_swapped_refined = torch.empty_like(f_can_swapped).contiguous()
         io_binding_refine = models['CanonSwapRefineModule'].io_binding()
         io_binding_refine.bind_input(name='feature_volume', device_type=device, device_id=0, element_type=np.float32, shape=f_can_swapped.shape, buffer_ptr=f_can_swapped.data_ptr())
         io_binding_refine.bind_output(name='refined_feature_volume', device_type=device, device_id=0, element_type=np.float32, shape=f_can_swapped_refined.shape, buffer_ptr=f_can_swapped_refined.data_ptr())
-        models['CanonSwapRefineModule'].run_with_iobinding(io_binding_refine)
+
+        if self.models_processor.device == "cuda":
+            torch.cuda.synchronize()
+        elif self.models_processor.device != "cpu":
+            self.models_processor.syncvec.cpu()
+        with self.models_processor.model_lock:
+            models['CanonSwapRefineModule'].run_with_iobinding(io_binding_refine)
 
         # --- 6. Second Warp (Canonical -> Driving) ---
-        deformation_final = torch.empty_like(deformation_initial)
-        occlusion_map_final = torch.empty((1, 1, 64, 64), dtype=torch.float32, device=device)
-        io_binding_dense2 = models['CanonSwapDenseMotionNetwork'].io_binding()
-        io_binding_dense2.bind_input(name='feature', device_type=device, device_id=0, element_type=np.float32, shape=f_can_swapped_refined.shape, buffer_ptr=f_can_swapped_refined.data_ptr())
-        io_binding_dense2.bind_input(name='kp_driving', device_type=device, device_id=0, element_type=np.float32, shape=x_t.shape, buffer_ptr=x_t.data_ptr())
-        io_binding_dense2.bind_input(name='kp_source', device_type=device, device_id=0, element_type=np.float32, shape=x_can.shape, buffer_ptr=x_can.data_ptr())
-        io_binding_dense2.bind_output(name='deformation', device_type=device, device_id=0, element_type=np.float32, shape=deformation_final.shape, buffer_ptr=deformation_final.data_ptr())
-        io_binding_dense2.bind_output(name='occlusion_map', device_type=device, device_id=0, element_type=np.float32, shape=occlusion_map_final.shape, buffer_ptr=occlusion_map_final.data_ptr())
-        models['CanonSwapDenseMotionNetwork'].run_with_iobinding(io_binding_dense2)
-        warped_3d_volume = F.grid_sample(f_can_swapped_refined, deformation_final, align_corners=False)
+        compressed_feature_final = torch.empty_like(compressed_feature).contiguous()
+        heatmap_final = torch.empty_like(heatmap).contiguous()
+        sparse_motion_final = torch.empty_like(sparse_motion).contiguous()
+        io_binding_dense3 = models['CanonSwapDenseMotionPart1'].io_binding()
+        io_binding_dense3.bind_input(name='feature_3d', device_type=device, device_id=0, element_type=np.float32, shape=f_can_swapped_refined.shape, buffer_ptr=f_can_swapped_refined.data_ptr())
+        io_binding_dense3.bind_input(name='kp_driving', device_type=device, device_id=0, element_type=np.float32, shape=x_t.shape, buffer_ptr=x_t.data_ptr())
+        io_binding_dense3.bind_input(name='kp_source', device_type=device, device_id=0, element_type=np.float32, shape=x_can.shape, buffer_ptr=x_can.data_ptr())
+        io_binding_dense3.bind_output(name='compressed_feature', device_type=device, device_id=0, element_type=np.float32, shape=compressed_feature_final.shape, buffer_ptr=compressed_feature_final.data_ptr())
+        io_binding_dense3.bind_output(name='heatmap', device_type=device, device_id=0, element_type=np.float32, shape=heatmap_final.shape, buffer_ptr=heatmap_final.data_ptr())
+        io_binding_dense3.bind_output(name='sparse_motion', device_type=device, device_id=0, element_type=np.float32, shape=sparse_motion_final.shape, buffer_ptr=sparse_motion_final.data_ptr())
+
+        if self.models_processor.device == "cuda":
+            torch.cuda.synchronize()
+        elif self.models_processor.device != "cpu":
+            self.models_processor.syncvec.cpu()
+        with self.models_processor.model_lock:
+            models['CanonSwapDenseMotionPart1'].run_with_iobinding(io_binding_dense3)
+        
+        deformed_feature_final = self._canonswap_create_deformed_feature(compressed_feature_final, sparse_motion_final).contiguous()
+
+        mask_final = torch.empty_like(mask).contiguous()
+        occlusion_map_final = torch.empty_like(occlusion_map_initial).contiguous()
+        io_binding_dense4 = models['CanonSwapDenseMotionPart2'].io_binding()
+        io_binding_dense4.bind_input(name='heatmap', device_type=device, device_id=0, element_type=np.float32, shape=heatmap_final.shape, buffer_ptr=heatmap_final.data_ptr())
+        io_binding_dense4.bind_input(name='deformed_feature', device_type=device, device_id=0, element_type=np.float32, shape=deformed_feature_final.shape, buffer_ptr=deformed_feature_final.data_ptr())
+        io_binding_dense4.bind_output(name='mask', device_type=device, device_id=0, element_type=np.float32, shape=mask_final.shape, buffer_ptr=mask_final.data_ptr())
+        io_binding_dense4.bind_output(name='occlusion_map', device_type=device, device_id=0, element_type=np.float32, shape=occlusion_map_final.shape, buffer_ptr=occlusion_map_final.data_ptr())
+
+        if self.models_processor.device == "cuda":
+            torch.cuda.synchronize()
+        elif self.models_processor.device != "cpu":
+            self.models_processor.syncvec.cpu()
+        with self.models_processor.model_lock:
+            models['CanonSwapDenseMotionPart2'].run_with_iobinding(io_binding_dense4)
+        
+        deformation_final = self._canonswap_calculate_deformation(sparse_motion_final, mask_final)
+        warped_3d_volume = F.grid_sample(f_can_swapped_refined, deformation_final, align_corners=False).contiguous()
 
         # --- 7. Decode to 2D Feature and then to Image ---
-        warped_feature_2d = torch.empty((1, 256, 64, 64), dtype=torch.float32, device=device)
+        warped_feature_2d = torch.empty((1, 256, 64, 64), dtype=torch.float32, device=device).contiguous()
         io_binding_warpdec = models['CanonSwapWarpingDecoder'].io_binding()
         io_binding_warpdec.bind_input(name='warped_3d_volume', device_type=device, device_id=0, element_type=np.float32, shape=warped_3d_volume.shape, buffer_ptr=warped_3d_volume.data_ptr())
         io_binding_warpdec.bind_input(name='occlusion_map', device_type=device, device_id=0, element_type=np.float32, shape=occlusion_map_final.shape, buffer_ptr=occlusion_map_final.data_ptr())
         io_binding_warpdec.bind_output(name='warped_feature_2d', device_type=device, device_id=0, element_type=np.float32, shape=warped_feature_2d.shape, buffer_ptr=warped_feature_2d.data_ptr())
-        models['CanonSwapWarpingDecoder'].run_with_iobinding(io_binding_warpdec)
 
-        output_image_norm = torch.empty((1, 3, 512, 512), dtype=torch.float32, device=device)
+        if self.models_processor.device == "cuda":
+            torch.cuda.synchronize()
+        elif self.models_processor.device != "cpu":
+            self.models_processor.syncvec.cpu()
+        with self.models_processor.model_lock:
+            models['CanonSwapWarpingDecoder'].run_with_iobinding(io_binding_warpdec)
+
+        output_image_norm = torch.empty((1, 3, 512, 512), dtype=torch.float32, device=device).contiguous()
         io_binding_spade = models['CanonSwapSpadeGenerator'].io_binding()
         io_binding_spade.bind_input(name='warped_feature_2d', device_type=device, device_id=0, element_type=np.float32, shape=warped_feature_2d.shape, buffer_ptr=warped_feature_2d.data_ptr())
         io_binding_spade.bind_output(name='output_image', device_type=device, device_id=0, element_type=np.float32, shape=output_image_norm.shape, buffer_ptr=output_image_norm.data_ptr())
-        models['CanonSwapSpadeGenerator'].run_with_iobinding(io_binding_spade)
+
+        if self.models_processor.device == "cuda":
+            torch.cuda.synchronize()
+        elif self.models_processor.device != "cpu":
+            self.models_processor.syncvec.cpu()
+        with self.models_processor.model_lock:
+            models['CanonSwapSpadeGenerator'].run_with_iobinding(io_binding_spade)
         
         # --- 8. Format Output ---
-        # The model output is already in the [0,1] range, so we just need to scale it to [0,255]
         output_frame = torch.mul(output_image_norm.squeeze(0), 255)
 
         return output_frame

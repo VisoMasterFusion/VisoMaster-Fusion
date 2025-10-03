@@ -2,7 +2,7 @@
 ################################################################################
 ## Form generated from reading UI file 'MainWindow.ui'
 ##
-## Created by: Qt User Interface Compiler version 6.9.2
+## Created by: Qt User Interface Compiler version 6.8.2
 ##
 ## WARNING
 ################################################################################
@@ -64,9 +64,6 @@ class Ui_MainWindow(object):
         self.actionLoad_SavedWorkspace.setObjectName(u"actionLoad_SavedWorkspace")
         self.actionSave_CurrentWorkspace = QAction(MainWindow)
         self.actionSave_CurrentWorkspace.setObjectName(u"actionSave_CurrentWorkspace")
-        self.actionVR180Mode = QAction(MainWindow)
-        self.actionVR180Mode.setObjectName(u"actionVR180Mode")
-        self.actionVR180Mode.setCheckable(True)
         self.centralwidget = QWidget(MainWindow)
         self.centralwidget.setObjectName(u"centralwidget")
         self.horizontalLayout = QHBoxLayout(self.centralwidget)
@@ -656,7 +653,6 @@ class Ui_MainWindow(object):
         self.menuFile.addAction(self.actionSave_Embeddings)
         self.menuFile.addAction(self.actionSave_Embeddings_As)
         self.menuEdit.addAction(self.actionTest_2)
-        self.menuEdit.addAction(self.actionVR180Mode)
         self.menuView.addAction(self.actionView_Fullscreen_F11)
         self.menuHelp.addAction(self.actionView_Help_Shortcuts)
         self.retranslateUi(MainWindow)
@@ -682,7 +678,6 @@ class Ui_MainWindow(object):
         self.actionTest_2.setText(QCoreApplication.translate("MainWindow", u"Test", None))
         self.actionLoad_SavedWorkspace.setText(QCoreApplication.translate("MainWindow", u"Load Saved Workspace", None))
         self.actionSave_CurrentWorkspace.setText(QCoreApplication.translate("MainWindow", u"Save Current Workspace", None))
-        self.actionVR180Mode.setText(QCoreApplication.translate("MainWindow", u"VR180 Mode", None))
         self.TargetMediaCheckBox.setText(QCoreApplication.translate("MainWindow", u"Target Videos/Images", None))
         self.InputFacesCheckBox.setText(QCoreApplication.translate("MainWindow", u"Input Faces", None))
         self.JobsCheckBox.setText(QCoreApplication.translate("MainWindow", u"Jobs", None))
