@@ -132,12 +132,17 @@ uv pip install -r requirements_cu128.txt
 uv pip install -r requirements_rtx50.txt
 ```
 
-**4. Download required models**
+**4. Download and install ffmpeg 7.1.1**
+```sh
+winget install -e --id Gyan.FFmpeg --version 7.1.1
+```
+
+**5. Download required models**
 ```sh
 python download_models.py
 ```
 
-**5. Run the Application**
+**6. Run the Application**
 
 Once everything is set up, start the application: 
 - by opening the **Start.bat** file (for Windows)
@@ -156,7 +161,7 @@ python main.py
 ```
 
 
-**5.1 Update to latest code state**
+**6.1 Update to latest code state**
 ```sh
 cd VisoMaster
 git pull
