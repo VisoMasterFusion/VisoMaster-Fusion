@@ -720,9 +720,9 @@ class VideoProcessor(QObject):
                     "-profile:v", "main10",
                     "-preset", "slow",
                     "-pix_fmt", "yuv420p10le",
-                    "-x265-params", f"crf=18:vbv-bufsize=10000:vbv-maxrate=8000:selective-sao=0:no-sao=1:strong-intra-smoothing=0:rect=0:aq-mode=1:hdr-opt=1:repeat-headers=1:colorprim=bt2020:range=limited:transfer=smpte2084:colormatrix=bt2020nc:range=limited:master-display='G(13250,34500)B(7500,3000)R(34000,16000)WP(15635,16450)L(10000000,1)':max-cll=1000,1000",
+                    "-x265-params", f"crf=18:vbv-bufsize=10000:vbv-maxrate=8000:selective-sao=0:no-sao=1:strong-intra-smoothing=0:rect=0:aq-mode=1:hdr-opt=1:repeat-headers=1:colorprim=bt2020:range=limited:transfer=smpte2084:colormatrix=bt2020nc:range=limited:master-display='G(13250,34500)B(7500,3000)R(34000,16000)WP(15635,16450)L(10000000,1)':max-cll=1000,400",
                     # Output File
-                    output_filename
+                    self.temp_file
                 ])
             else:
                 args.extend([
@@ -731,9 +731,9 @@ class VideoProcessor(QObject):
                     "-profile:v", "main10",
                     "-preset", "slow",
                     "-pix_fmt", "yuv420p10le",
-                    "-x265-params", "crf=18:vbv-bufsize=10000:vbv-maxrate=8000:selective-sao=0:no-sao=1:strong-intra-smoothing=0:rect=0:aq-mode=1:hdr-opt=1:repeat-headers=1:colorprim=bt2020:range=limited:transfer=smpte2084:colormatrix=bt2020nc:range=limited:master-display='G(13250,34500)B(7500,3000)R(34000,16000)WP(15635,16450)L(10000000,1)':max-cll=1000,1000",
+                    "-x265-params", "crf=18:vbv-bufsize=10000:vbv-maxrate=8000:selective-sao=0:no-sao=1:strong-intra-smoothing=0:rect=0:aq-mode=1:hdr-opt=1:repeat-headers=1:colorprim=bt2020:range=limited:transfer=smpte2084:colormatrix=bt2020nc:range=limited:master-display='G(13250,34500)B(7500,3000)R(34000,16000)WP(15635,16450)L(10000000,1)':max-cll=1000,400",
                     #Output File
-                    output_filename
+                    self.temp_file
                 ])
         else:
             if control['FrameEnhancerDownToggle']:
@@ -1103,7 +1103,7 @@ class VideoProcessor(QObject):
                     "-profile:v", "main10",
                     "-preset", "slow",
                     "-pix_fmt", "yuv420p10le",
-                    "-x265-params", f"crf=18:vbv-bufsize=10000:vbv-maxrate=8000:selective-sao=0:no-sao=1:strong-intra-smoothing=0:rect=0:aq-mode=1:hdr-opt=1:repeat-headers=1:colorprim=bt2020:range=limited:transfer=smpte2084:colormatrix=bt2020nc:range=limited:master-display='G(13250,34500)B(7500,3000)R(34000,16000)WP(15635,16450)L(10000000,1)':max-cll=1000,1000",
+                    "-x265-params", f"crf=18:vbv-bufsize=10000:vbv-maxrate=8000:selective-sao=0:no-sao=1:strong-intra-smoothing=0:rect=0:aq-mode=1:hdr-opt=1:repeat-headers=1:colorprim=bt2020:range=limited:transfer=smpte2084:colormatrix=bt2020nc:range=limited:master-display='G(13250,34500)B(7500,3000)R(34000,16000)WP(15635,16450)L(10000000,1)':max-cll=1000,400",
                     # Output File
                     output_filename
                 ])
@@ -1114,7 +1114,7 @@ class VideoProcessor(QObject):
                     "-profile:v", "main10",
                     "-preset", "slow",
                     "-pix_fmt", "yuv420p10le",
-                    "-x265-params", "crf=18:vbv-bufsize=10000:vbv-maxrate=8000:selective-sao=0:no-sao=1:strong-intra-smoothing=0:rect=0:aq-mode=1:hdr-opt=1:repeat-headers=1:colorprim=bt2020:range=limited:transfer=smpte2084:colormatrix=bt2020nc:range=limited:master-display='G(13250,34500)B(7500,3000)R(34000,16000)WP(15635,16450)L(10000000,1)':max-cll=1000,1000",
+                    "-x265-params", "crf=18:vbv-bufsize=10000:vbv-maxrate=8000:selective-sao=0:no-sao=1:strong-intra-smoothing=0:rect=0:aq-mode=1:hdr-opt=1:repeat-headers=1:colorprim=bt2020:range=limited:transfer=smpte2084:colormatrix=bt2020nc:range=limited:master-display='G(13250,34500)B(7500,3000)R(34000,16000)WP(15635,16450)L(10000000,1)':max-cll=1000,400",
                     #Output File
                     output_filename
                 ])

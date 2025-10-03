@@ -1229,6 +1229,7 @@ SWAPPER_LAYOUT_DATA: LayoutDictTypes = {
             'default': '0.00',
             'step': 1.00,
             'decimals': 2,
+            'parentToggle': 'ColorEnableToggle',
             'help': 'Add noise to swapped face.'
         },
         'JPEGCompressionEnableToggle': {

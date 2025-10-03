@@ -1334,7 +1334,6 @@
      <string>Edit</string>
     </property>
     <addaction name="actionTest_2"/>
-    <addaction name="actionVR180Mode"/>
    </widget>
    <widget class="QMenu" name="menuView">
     <property name="title">
@@ -1431,14 +1430,6 @@
   <action name="actionSave_CurrentWorkspace">
    <property name="text">
     <string>Save Current Workspace</string>
-   </property>
-  </action>
-  <action name="actionVR180Mode">
-   <property name="checkable">
-    <bool>true</bool>
-   </property>
-   <property name="text">
-    <string>VR180 Mode</string>
    </property>
   </action>
  </widget>
