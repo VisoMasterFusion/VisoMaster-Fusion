@@ -230,10 +230,49 @@ class FaceDetectors:
         scores_tensor = torch.from_numpy(np.vstack(scores_list)).to(self.models_processor.device).squeeze() # Shape: [N]
         bboxes_tensor = torch.from_numpy(np.vstack(bboxes_list)).to(self.models_processor.device) # Shape: [N, 4]
         kpss_tensor = torch.from_numpy(np.vstack(kpss_list)).to(self.models_processor.device) # Shape: [N, 5, 2]
+        
+        bboxes_tensor = torch.as_tensor(bboxes_tensor)  # or torch.tensor(bboxes_np, dtype=torch.float32)
+        scores_tensor = torch.as_tensor(scores_tensor)
 
+        # Early exit when nothing to do
+        if bboxes_tensor.numel() == 0:
+            # Return the same empty types your function expects elsewhere
+            return [], None, None  # or (np.empty((0, 4)), None, None), etc.
+
+        # Ensure correct dtypes
+        bboxes_tensor = bboxes_tensor.to(dtype=torch.float32)
+        scores_tensor = scores_tensor.to(dtype=torch.float32)
+
+        # Ensure shapes: boxes [N,4], scores [N]
+        if bboxes_tensor.dim() == 1 and bboxes_tensor.numel() == 4:
+            # Single box came in as shape [4] -> make it [1,4]
+            bboxes_tensor = bboxes_tensor.unsqueeze(0)
+
+        # Avoid squeeze()-all which can create 0D. Force 1-D score vector.
+        scores_tensor = scores_tensor.reshape(-1)
+
+        # If someone did .item() earlier, scores_tensor would be 0-D.
+        if scores_tensor.dim() == 0:
+            scores_tensor = scores_tensor.unsqueeze(0)
+
+        # Sanity check: lengths must match
+        if bboxes_tensor.size(0) != scores_tensor.size(0):
+            # Optional: log and bail out gracefully rather than crash
+            # print(f"Mismatch: {bboxes_tensor.size(0)} boxes vs {scores_tensor.size(0)} scores")
+            return [], None, None
+
+        # Make sure devices match for nms (CPU or CUDA, but the same)
+        if bboxes_tensor.device != scores_tensor.device:
+            scores_tensor = scores_tensor.to(bboxes_tensor.device)
+
+        # (Optional) ensure contiguous memory
+        bboxes_tensor = bboxes_tensor.contiguous()
+        scores_tensor = scores_tensor.contiguous()
+       
         # Perform NMS on GPU
         nms_thresh = 0.4
-        keep_indices = nms(bboxes_tensor, scores_tensor, nms_thresh)
+        #keep_indices = nms(bboxes_tensor, scores_tensor, nms_thresh)
+        keep_indices = nms(bboxes_tensor, scores_tensor, iou_threshold=nms_thresh)
 
         # Filter based on NMS results
         det_boxes = bboxes_tensor[keep_indices]
