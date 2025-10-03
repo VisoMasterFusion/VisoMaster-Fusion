@@ -143,15 +143,29 @@ class PerspectiveConverter:
             erosion_kernel_size=(2 * feather_radius_val + 1)
         )
 
-        target_equirect_float = target_equirect_torch_cxhxw_rgb_uint8.float() / 255.0
-        equirect_component_float = equirect_component_torch.float() / 255.0
+        # Memory-efficient blending
+        # uses in-place operations to reduce peak memory usage.
+        # The logic is equivalent to: target = target + (component - target) * mask
+        
+        # 1. Convert tensors to float for calculation.
+        target_float = target_equirect_torch_cxhxw_rgb_uint8.float()
+        component_float = equirect_component_torch.float()
 
-        final_blended_float = target_equirect_float * (1.0 - feathered_mask_torch_float_1hw) + \
-                              equirect_component_float * feathered_mask_torch_float_1hw
+        # 2. Calculate the difference between component and target.
+        #    This can be done in-place on component_float to save one allocation.
+        component_float.sub_(target_float)
 
-        target_equirect_torch_cxhxw_rgb_uint8[:] = (torch.clamp(final_blended_float * 255.0, 0, 255)).byte()
+        # 3. Multiply the difference by the mask (in-place).
+        component_float.mul_(feathered_mask_torch_float_1hw)
+
+        # 4. Add the weighted difference to the target (in-place).
+        target_float.add_(component_float)
+
+        # 5. Clamp and convert back to uint8, writing back to the original tensor.
+        target_equirect_torch_cxhxw_rgb_uint8[:] = target_float.clamp_(0, 255).byte()
 
         del p2e_instance, equirect_component_torch, mask_torch_original_shape
         del eye_region_mask, eye_specific_mask_torch_original_shape 
         del feathered_mask_torch_float_1hw
-        del target_equirect_float, equirect_component_float, final_blended_float
+        # Manually clear large temporary float tensors to help the garbage collector
+        del target_float, component_float
