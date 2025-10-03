@@ -14,13 +14,13 @@ from torchvision.transforms import v2
 
 from app.processors.utils import faceutil
 
-# --- NEW KORNIA IMPORT ---
+# KORNIA IMPORT
 try:
     import kornia.color as K
 except ImportError:
     K = None # Fallback if Kornia is not installed, can add error handling or power-law
     print("Warning: Kornia library not found. Color space conversions will use power-law approximation.")
-# --- END NEW KORNIA IMPORT ---
+
 from PySide6 import QtCore
 try:
     import tensorrt as trt
@@ -54,14 +54,22 @@ lock = threading.Lock()
 SRGB_GAMMA = 2.2 # More precise sRGB gamma handling is complex, this is an approximation
 
 def gamma_encode_linear_rgb_to_srgb(linear_rgb: torch.Tensor, gamma=SRGB_GAMMA):
-    # Assumes input is float in [0,1], linear RGB
-    # linear_rgb -> srgb
-    return torch.pow(linear_rgb.clamp(0.0, 1.0), 1.0 / gamma)
+    """Converts linear RGB to sRGB. Uses Kornia if available for better accuracy."""
+    if K is not None:
+        # Kornia expects input in range [0, 1] and handles tensor dimensions correctly.
+        return K.linear_rgb_to_srgb(linear_rgb.clamp(0.0, 1.0))
+    else:
+        # Fallback to the original power-law approximation
+        return torch.pow(linear_rgb.clamp(0.0, 1.0), 1.0 / gamma)
 
 def gamma_decode_srgb_to_linear_rgb(srgb: torch.Tensor, gamma=SRGB_GAMMA):
-    # Assumes input is float in [0,1], sRGB
-    # srgb -> linear_rgb
-    return torch.pow(srgb.clamp(0.0, 1.0), gamma)
+    """Converts sRGB to linear RGB. Uses Kornia if available for better accuracy."""
+    if K is not None:
+        # Kornia expects input in range [0, 1]
+        return K.srgb_to_linear_rgb(srgb.clamp(0.0, 1.0))
+    else:
+        # Fallback to the original power-law approximation
+        return torch.pow(srgb.clamp(0.0, 1.0), gamma)
 
 class ModelsProcessor(QtCore.QObject):
     processing_complete = QtCore.Signal()

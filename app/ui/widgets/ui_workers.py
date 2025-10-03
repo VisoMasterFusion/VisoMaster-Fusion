@@ -114,6 +114,8 @@ class InputFacesLoaderWorker(qtc.QThread):
     # Define signals to emit when loading is done or if there are updates
     thumbnail_ready = qtc.Signal(str, numpy.ndarray, object, QPixmap, str)
     finished = qtc.Signal()  # Signal to indicate completion
+    unload_models_request = qtc.Signal(list)
+
     def __init__(self, main_window: 'MainWindow', media_path=False, folder_name=False, files_list=None, face_ids=None,  parent=None):
         super().__init__(parent)
         self.main_window = main_window
@@ -122,6 +124,7 @@ class InputFacesLoaderWorker(qtc.QThread):
         self.face_ids = face_ids or []
         self._running = True  # Flag to control the running state
         self.was_playing = True
+        self.models_to_unload = []
         self.pre_load_detection_recognition_models()
         
     def pre_load_detection_recognition_models(self):
@@ -144,11 +147,31 @@ class InputFacesLoaderWorker(qtc.QThread):
         if was_playing:
             self.main_window.buttonMediaPlay.click()
 
+        # Track which models are being loaded for this specific task
+        models_to_load = []
+        if not models_processor.models.get(detect_model):
+            models_to_load.append(detect_model)
+        
+        if control['LandmarkDetectToggle'] and not models_processor.models.get(landmark_detect_model):
+            models_to_load.append(landmark_detect_model)
+            
+        recognition_models = ['Inswapper128ArcFace', 'SimSwapArcFace', 'GhostArcFace', 'CSCSArcFace', 'CSCSIDArcFace', 'CanonSwapArcFace']
+        for recognition_model in recognition_models:
+            if not models_processor.models.get(recognition_model):
+                models_to_load.append(recognition_model)
+        
+        for model_name in models_to_load:
+            models_processor.models[model_name] = models_processor.load_model(model_name)
+            self.models_to_unload.append(model_name) # Add to list of models to unload later
+
     def run(self):
         if self.folder_name or self.files_list:
             self.main_window.placeholder_update_signal.emit(self.main_window.inputFacesList, True)
             self.load_faces(self.folder_name, self.files_list)
             self.main_window.placeholder_update_signal.emit(self.main_window.inputFacesList, False)
+
+        # After all processing is done, request to unload the temporarily loaded models
+        self.unload_models_request.emit(self.models_to_unload)
 
     def load_faces(self, folder_name=False, files_list=None):
         control = self.main_window.control.copy()
