@@ -5,6 +5,35 @@ import torch.nn.functional as F
 from functools import lru_cache
 
 
+# calculates the 3D coordinate grid for an equirectangular output.
+# It is decorated with @lru_cache to ensure it only runs once for a given
+# height, width, and device, caching the result for all subsequent calls.
+@lru_cache(maxsize=None)
+def _get_equirect_xyz_grid_cached(height: int, width: int, device_str: str) -> torch.Tensor:
+    """
+    Generates and caches a grid of 3D Cartesian unit vectors corresponding to
+    pixels in an equirectangular projection.
+    """
+    print(f"[VR Grid Cache] Generating new equirectangular XYZ grid for {width}x{height} on {device_str}...")
+    device = torch.device(device_str)
+
+    # Create equirectangular grid
+    equ_lon_coords = torch.linspace(-180, 180, width, device=device, dtype=torch.float32)
+    equ_lat_coords = torch.linspace(90, -90, height, device=device, dtype=torch.float32)
+    equ_lon_grid, equ_lat_grid = torch.meshgrid(equ_lon_coords, equ_lat_coords, indexing='xy')
+
+    # Convert equirectangular (lon, lat) to 3D Cartesian unit vectors
+    lon_rad = torch.deg2rad(equ_lon_grid)
+    lat_rad = torch.deg2rad(equ_lat_grid)
+
+    x_3d = torch.cos(lat_rad) * torch.cos(lon_rad)
+    y_3d = torch.cos(lat_rad) * torch.sin(lon_rad)
+    z_3d = torch.sin(lat_rad)
+    xyz_equ_norm = torch.stack((x_3d, y_3d, z_3d), dim=2)  # Shape: H, W, 3
+
+    return xyz_equ_norm
+
+
 # This function should be at the module level
 @lru_cache(maxsize=None) # Cache based on THETA_deg, PHI_deg, device_str
 def _get_rotation_matrices_cached(THETA_deg: float, PHI_deg: float, device_str: str):
@@ -75,25 +104,14 @@ class Perspective:
         self._init_params(FOV, THETA, PHI)
 
     def GetEquirec(self, height: int, width: int) -> tuple[torch.Tensor, torch.Tensor]:
-        # Create equirectangular grid
-        equ_lon_coords = torch.linspace(-180, 180, width, device=self.device, dtype=torch.float32)
-        equ_lat_coords = torch.linspace(90, -90, height, device=self.device, dtype=torch.float32)
-        equ_lon_grid, equ_lat_grid = torch.meshgrid(equ_lon_coords, equ_lat_coords, indexing='xy') # Note: meshgrid indexing
-
-        # Convert equirectangular (lon, lat) to 3D Cartesian unit vectors
-        lon_rad = torch.deg2rad(equ_lon_grid)
-        lat_rad = torch.deg2rad(equ_lat_grid)
-        
-        x_3d = torch.cos(lat_rad) * torch.cos(lon_rad)
-        y_3d = torch.cos(lat_rad) * torch.sin(lon_rad)
-        z_3d = torch.sin(lat_rad)
-        xyz_equ_norm = torch.stack((x_3d, y_3d, z_3d), dim=2) # H, W, 3
+        # Call the cached function to get the 3D coordinate grid.
+        # This grid is now computed only once for this resolution and device.
+        xyz_equ_norm = _get_equirect_xyz_grid_cached(height, width, str(self.device))
 
         # Rotate these 3D points (from equirect space to perspective camera's view space)
         xyz_flat = xyz_equ_norm.reshape(-1, 3).T # (3, H*W)
         # R1, R2 are inverse rotations from _calc_rotation_matrices
-        rotated_xyz_flat = self.R1 @ self.R2 @ xyz_flat  # Order might need R2 @ R1 depending on convention
-        #rotated_xyz_flat = self.R2 @ self.R1 @ xyz_flat # Order might need R2 @ R1 depending on convention
+        rotated_xyz_flat = self.R1 @ self.R2 @ xyz_flat
         rotated_xyz_persp_view = rotated_xyz_flat.T.reshape(height, width, 3) # H, W, 3
 
         # Perspective projection: u = x'/z', v = y'/z'
