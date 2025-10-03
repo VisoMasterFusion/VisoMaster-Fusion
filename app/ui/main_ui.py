@@ -421,6 +421,28 @@ class MainWindow(QtWidgets.QMainWindow, Ui_MainWindow):
         self.initialize_widgets()
         self.load_last_workspace()
 
+    @QtCore.Slot(list)
+    def handle_unload_request(self, model_names: list):
+        """Unloads models requested by a worker thread, keeping essential ones."""
+        current_swapper = self.control.get('FaceSwapperTypeSelection', 'Inswapper128')
+        active_arcface_model = self.models_processor.get_arcface_model(current_swapper)
+        
+        print(f"Unload request for: {model_names}")
+        print(f"Keeping active model: {active_arcface_model}")
+
+        for model_name in model_names:
+            # Do not unload the recognition model for the currently selected swapper
+            if model_name == active_arcface_model:
+                continue
+            # Special case: CSCS uses two models, keep both if it's active
+            if model_name == 'CSCSIDArcFace' and active_arcface_model == 'CSCSArcFace':
+                continue
+            
+            self.models_processor.unload_model(model_name)
+        
+        # After unloading, refresh the VRAM display
+        common_widget_actions.update_gpu_memory_progressbar(self)
+
     def resizeEvent(self, event: QtGui.QResizeEvent):
         # print("Called resizeEvent()")
         super().resizeEvent(event)

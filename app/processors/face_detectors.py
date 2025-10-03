@@ -2,6 +2,7 @@ from typing import TYPE_CHECKING
 
 import torch
 from torchvision.transforms import v2
+from torchvision.ops import nms
 import numpy as np
 
 if TYPE_CHECKING:
@@ -224,75 +225,56 @@ class FaceDetectors:
         if len(bboxes_list) == 0:
             return [], [], []
 
-        scores = np.vstack(scores_list)
-        scores_ravel = scores.ravel()
-        order = scores_ravel.argsort()[::-1]
+        # GPU-Accelerated NMS Replacement
+        # Convert lists of numpy arrays to single tensors on the correct device
+        scores_tensor = torch.from_numpy(np.vstack(scores_list)).to(self.models_processor.device).squeeze() # Shape: [N]
+        bboxes_tensor = torch.from_numpy(np.vstack(bboxes_list)).to(self.models_processor.device) # Shape: [N, 4]
+        kpss_tensor = torch.from_numpy(np.vstack(kpss_list)).to(self.models_processor.device) # Shape: [N, 5, 2]
 
-        det_scale = det_scale.numpy()###
+        # Perform NMS on GPU
+        nms_thresh = 0.4
+        keep_indices = nms(bboxes_tensor, scores_tensor, nms_thresh)
 
-        bboxes = np.vstack(bboxes_list) / det_scale
+        # Filter based on NMS results
+        det_boxes = bboxes_tensor[keep_indices]
+        det_kpss = kpss_tensor[keep_indices]
+        det_scores = scores_tensor[keep_indices]
 
-        kpss = np.vstack(kpss_list) / det_scale
-        pre_det = np.hstack((bboxes, scores)).astype(np.float32, copy=False)
-        pre_det = pre_det[order, :]
+        # Sort remaining detections by score
+        sorted_indices = torch.argsort(det_scores, descending=True)
+        det_boxes = det_boxes[sorted_indices]
+        det_kpss = det_kpss[sorted_indices]
+        det_scores = det_scores[sorted_indices]
 
-        dets = pre_det
-        thresh = 0.4
-        x1 = dets[:, 0]
-        y1 = dets[:, 1]
-        x2 = dets[:, 2]
-        y2 = dets[:, 3]
-        scoresb = dets[:, 4]
+        # Apply max_num logic (area and centrality) on GPU
+        if max_num > 0 and det_boxes.shape[0] > max_num:
+            if det_boxes.shape[0] > 1:
+                area = (det_boxes[:, 2] - det_boxes[:, 0]) * (det_boxes[:, 3] - det_boxes[:, 1])
+                det_img_center_y, det_img_center_x = img_height / det_scale, img_width / det_scale
+                
+                center_x = (det_boxes[:, 0] + det_boxes[:, 2]) / 2 - det_img_center_x
+                center_y = (det_boxes[:, 1] + det_boxes[:, 3]) / 2 - det_img_center_y
+                
+                offset_dist_squared = center_x**2 + center_y**2
+                
+                values = area - offset_dist_squared * 2.0
+                
+                bindex = torch.argsort(values, descending=True)[:max_num]
+            else:
+                bindex = torch.arange(det_boxes.shape[0], device=self.models_processor.device)[:max_num]
 
-        areas = (x2 - x1 + 1) * (y2 - y1 + 1)
-        orderb = scoresb.argsort()[::-1]
+            det_boxes = det_boxes[bindex]
+            det_kpss = det_kpss[bindex]
+            det_scores = det_scores[bindex]
 
-        keep = []
-        while orderb.size > 0:
-            i = orderb[0]
-            keep.append(i)
-            xx1 = np.maximum(x1[i], x1[orderb[1:]])
-            yy1 = np.maximum(y1[i], y1[orderb[1:]])
-            xx2 = np.minimum(x2[i], x2[orderb[1:]])
-            yy2 = np.minimum(y2[i], y2[orderb[1:]])
-
-            w = np.maximum(0.0, xx2 - xx1 + 1)
-            h = np.maximum(0.0, yy2 - yy1 + 1)
-
-            inter = w * h
-            ovr = inter / (areas[i] + areas[orderb[1:]] - inter)
-
-            inds = np.where(ovr <= thresh)[0]
-            orderb = orderb[inds + 1]
-
-        det = pre_det[keep, :]
-
-        kpss = kpss[order,:,:]
-        kpss = kpss[keep,:,:]
-
-        #if max_num > 0 and det.shape[0] > max_num:
-        if max_num > 0 and det.shape[0] > 1:
-            area = (det[:, 2] - det[:, 0]) * (det[:, 3] - det[:, 1])
-            det_img_center = img_height // 2, img_width // 2
-            offsets = np.vstack([
-                (det[:, 0] + det[:, 2]) / 2 - det_img_center[1],
-                (det[:, 1] + det[:, 3]) / 2 - det_img_center[0]
-            ])
-            offset_dist_squared = np.sum(np.power(offsets, 2.0), 0)
-
-            values = area - offset_dist_squared * 2.0  # some extra weight on the centering
-            bindex = np.argsort(values)[::-1]  # some extra weight on the centering
-            bindex = bindex[0:max_num]
-
-            det = det[bindex, :]
-            if kpss is not None:
-                kpss = kpss[bindex, :]
-
-        score_values = det[:, 4]
-        # delete score column
-        det = np.delete(det, 4, 1)
-
-        kpss_5 = kpss.copy()
+        # Transfer final results to CPU and scale
+        det_scale_val = det_scale.cpu().item()
+        det = det_boxes.cpu().numpy() / det_scale_val
+        kpss_5 = det_kpss.cpu().numpy() / det_scale_val
+        score_values = det_scores.cpu().numpy()
+        # --- END: GPU-Accelerated NMS Replacement ---
+        
+        kpss = kpss_5.copy()
         if use_landmark_detection and len(kpss_5) > 0:
             kpss = []
             for i in range(kpss_5.shape[0]):

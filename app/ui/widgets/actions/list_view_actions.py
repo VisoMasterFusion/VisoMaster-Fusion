@@ -206,6 +206,7 @@ def select_input_face_images(main_window: 'MainWindow', source_type='folder', fo
     card_actions.clear_input_faces(main_window)
     main_window.input_faces_loader_worker = ui_workers.InputFacesLoaderWorker(main_window=main_window, folder_name=folder_name, files_list=files_list)
     main_window.input_faces_loader_worker.thumbnail_ready.connect(partial(add_media_thumbnail_to_source_faces_list, main_window))
+    main_window.input_faces_loader_worker.unload_models_request.connect(main_window.handle_unload_request)  
     main_window.input_faces_loader_worker.start()
 
 def set_up_list_widget_placeholder(main_window: 'MainWindow', list_widget: QtWidgets.QListWidget):
