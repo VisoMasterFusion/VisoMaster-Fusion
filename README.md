@@ -62,7 +62,7 @@ VisoMaster-Fusion includes all the great features of the original plus major enh
     Some newer GPUs (like rtx 50xx cards) need the newer CUDA version 12.9. Check the minimum supported cuda version for your GPU. Beside that you can choose any supported version.
   - CuDNN - https://developer.nvidia.com/cudnn
     Check the version support matrix and choose version based on your installed CUDA version (https://docs.nvidia.com/deeplearning/cudnn/backend/latest/reference/support-matrix.html)
-  - FFmpeg 7.1 - ([see installation below](https://github.com/asdf31jsa/VisoMaster-Experimental/edit/patch-1/README.md?pr=%2Fasdf31jsa%2FVisoMaster-Experimental%2Fpull%2F20#4-download-and-install-ffmpeg-711-method-1))
+  - FFmpeg 7.1 - ([see installation below]([https://github.com/asdf31jsa/VisoMaster-Experimental?tab=readme-ov-file#4-download-and-install-ffmpeg-711-method-1)))
 
 - Portable Version: No other pre-requirements
 - Non-Portable Version:
