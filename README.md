@@ -62,6 +62,7 @@ VisoMaster-Fusion includes all the great features of the original plus major enh
     Some newer GPUs (like rtx 50xx cards) need the newer CUDA version 12.9. Check the minimum supported cuda version for your GPU. Beside that you can choose any supported version.
   - CuDNN - https://developer.nvidia.com/cudnn
     Check the version support matrix and choose version based on your installed CUDA version (https://docs.nvidia.com/deeplearning/cudnn/backend/latest/reference/support-matrix.html)
+  - FFmpeg 7.1 - ([see installation below](https://github.com/asdf31jsa/VisoMaster-Experimental/edit/patch-1/README.md?pr=%2Fasdf31jsa%2FVisoMaster-Experimental%2Fpull%2F20#4-download-and-install-ffmpeg-711-method-1))
 
 - Portable Version: No other pre-requirements
 - Non-Portable Version:
@@ -132,10 +133,37 @@ uv pip install -r requirements_cu128.txt
 uv pip install -r requirements_rtx50.txt
 ```
 
-**4. Download and install ffmpeg 7.1.1**
+#### **4. Download and install ffmpeg 7.1.1 [Method 1]**
+  - FFmpeg is required for video processing and to be able to record and save your swapped results.
+  - **You won't be able to save any of your swapped videos without installing FFmpeg!**
 ```sh
 winget install -e --id Gyan.FFmpeg --version 7.1.1
 ```
+
+***4.1** Alternatively if you prefer it in your environment only [OPTIONAL Method 2]*
+  - ***Not needed if you used winget to install it***
+  - *Might be not as reliably found from installed Packages or VisoMaster itself.*
+  - *If you chose this method and are getting errors about missing FFmpeg, I'd suggest using winget. But you have a third option below too.*
+  - *Make sure your VisoMaster environment is active.*
+```sh
+conda activate visomaster
+conda install -c conda-forge ffmpeg
+```
+
+***4.2** Manual Installation [OPTIONAL Method 3]*
+  - ***Also not needed if you used winget or chose to install it into your environment
+  - *If option one and two didn't work for you for whatever reason, you can install it manually.*
+  - *Download the .zip from [here](https://github.com/BtbN/FFmpeg-Builds/releases/download/latest/ffmpeg-n7.1-latest-win64-gpl-7.1.zip)*
+  - *Extract the `bin` folder from the FFmpeg archive to `C:\Tools\ffmpeg\` (or wherever want, just remember it).*
+  - *Add `C:\Tools\ffmpeg\bin` to PATH automatically using PowerShell. (the bin folder with its content is the important part here!)*
+    > ***Note:** REMEMBER If you chose a different location to extract to, adjust the path accordingly, or this will have no effect!*
+    
+    *Open ***PowerShell as Administrator*** and run:*
+```sh
+[Environment]::SetEnvironmentVariable("Path", $env:Path + ";C:\ffmpeg\bin", "Machine")
+```
+
+
 
 **5. Download required models**
 ```sh
