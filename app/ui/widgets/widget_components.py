@@ -330,16 +330,26 @@ class TargetMediaCardButton(CardButton):
 
     def open_target_path_by_explorer(self):
         if os.path.exists(self.media_path):
-            if sys.platform == 'win32':
-                # Windows
-                subprocess.run(f'explorer /select,"{self.media_path}"', shell=True)
-            elif sys.platform == 'darwin':
+            # Normalize path
+            normalized_path = os.path.normpath(os.path.abspath(self.media_path))
+            print(normalized_path)
+            if sys.platform == "win32":
+                # Windows - use full path to explorer.exe to avoid PATH issues
+                try:
+                    # Method 1: Using subprocess without shell (more secure and reliable)
+                    subprocess.Popen(["explorer", "/select,", normalized_path])
+                except FileNotFoundError:
+                    # Fallback: Use full path to explorer.exe
+                    subprocess.Popen(
+                        [r"C:\Windows\explorer.exe", "/select,", normalized_path]
+                    )
+            elif sys.platform == "darwin":
                 # macOS
-                subprocess.run(['open', '-R', self.media_path])
+                subprocess.run(["open", "-R", self.media_path])
             else:
                 # Linux
                 directory = os.path.dirname(os.path.abspath(self.media_path))
-                subprocess.run(['xdg-open', directory])
+                subprocess.run(["xdg-open", directory])
 
     def create_context_menu(self):
         self.popMenu = QtWidgets.QMenu(self)
@@ -733,16 +743,26 @@ class InputFaceCardButton(CardButton):
 
     def open_target_path_by_explorer(self):
         if os.path.exists(self.media_path):
-            if sys.platform == 'win32':
-                # Windows
-                subprocess.run(f'explorer /select,"{self.media_path}"', shell=True)
-            elif sys.platform == 'darwin':
+            # Normalize path
+            normalized_path = os.path.normpath(os.path.abspath(self.media_path))
+
+            if sys.platform == "win32":
+                # Windows - use full path to explorer.exe to avoid PATH issues
+                try:
+                    # Method 1: Using subprocess without shell (more secure and reliable)
+                    subprocess.Popen(["explorer", "/select,", normalized_path])
+                except FileNotFoundError:
+                    # Fallback: Use full path to explorer.exe
+                    subprocess.Popen(
+                        [r"C:\Windows\explorer.exe", "/select,", normalized_path]
+                    )
+            elif sys.platform == "darwin":
                 # macOS
-                subprocess.run(['open', '-R', self.media_path])
+                subprocess.run(["open", "-R", self.media_path])
             else:
                 # Linux
                 directory = os.path.dirname(os.path.abspath(self.media_path))
-                subprocess.run(['xdg-open', directory])
+                subprocess.run(["xdg-open", directory])
 
     def create_context_menu(self):
         # create context menu

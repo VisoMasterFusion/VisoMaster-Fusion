@@ -3,10 +3,10 @@ setlocal enabledelayedexpansion
 
 
 :: Define relative paths
-set "UI_FILE=app\ui\core\MainWindow.ui"
-set "PY_FILE=app\ui\core\main_window.py"
-set "QRC_FILE=app\ui\core\media.qrc"
-set "RCC_PY_FILE=app\ui\core\media_rc.py"
+set "UI_FILE=MainWindow.ui"
+set "PY_FILE=main_window.py"
+set "QRC_FILE=media.qrc"
+set "RCC_PY_FILE=media_rc.py"
 
 :: Run PySide6 commands
 pyside6-uic "%UI_FILE%" -o "%PY_FILE%"
