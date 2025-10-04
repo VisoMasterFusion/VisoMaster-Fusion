@@ -765,7 +765,6 @@ class VideoProcessor(QObject):
                 ])
         try:
             # bufsize=-1 uses system default, often buffered which might be better for video
-            print(args)
             self.recording_sp = subprocess.Popen(args, stdin=subprocess.PIPE, bufsize=-1)
             return True
         except FileNotFoundError:
