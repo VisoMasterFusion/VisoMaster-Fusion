@@ -2,7 +2,7 @@
 ################################################################################
 ## Form generated from reading UI file 'MainWindow.ui'
 ##
-## Created by: Qt User Interface Compiler version 6.8.2
+## Created by: Qt User Interface Compiler version 6.9.2
 ##
 ## WARNING
 ################################################################################
@@ -430,7 +430,7 @@ class Ui_MainWindow(object):
         self.input_Faces_DockWidget.setObjectName(u"input_Faces_DockWidget")
         sizePolicy6.setHeightForWidth(self.input_Faces_DockWidget.sizePolicy().hasHeightForWidth())
         self.input_Faces_DockWidget.setSizePolicy(sizePolicy6)
-        self.input_Faces_DockWidget.setMinimumSize(QSize(324, 230))
+        self.input_Faces_DockWidget.setMinimumSize(QSize(340, 230))
         self.input_Faces_DockWidget.setFeatures(QDockWidget.DockWidgetFeature.DockWidgetFloatable|QDockWidget.DockWidgetFeature.DockWidgetMovable)
         self.dockWidgetContents_Faces = QWidget()
         self.dockWidgetContents_Faces.setObjectName(u"dockWidgetContents_Faces")
@@ -581,6 +581,10 @@ class Ui_MainWindow(object):
         self.outputFolderButton.setObjectName(u"outputFolderButton")
         self.outputFolderButton.setFlat(False)
         self.outputFolderSelectionLayout.addWidget(self.outputFolderButton)
+        self.outputOpenButton = QPushButton(self.settings_tab)
+        self.outputOpenButton.setObjectName(u"outputOpenButton")
+        self.outputOpenButton.setFlat(False)
+        self.outputFolderSelectionLayout.addWidget(self.outputOpenButton)
         self.settingsWidgetsLayout.addLayout(self.outputFolderSelectionLayout)
         self.labelp = QLabel(self.settings_tab)
         self.labelp.setObjectName(u"labelp")
@@ -784,6 +788,7 @@ class Ui_MainWindow(object):
         self.tabWidget.setTabText(self.tabWidget.indexOf(self.denoiser_tab), QCoreApplication.translate("MainWindow", u"Denoiser", None))
         self.label.setText(QCoreApplication.translate("MainWindow", u"Output Directory", None))
         self.outputFolderButton.setText(QCoreApplication.translate("MainWindow", u"Browse Folder", None))
+        self.outputOpenButton.setText(QCoreApplication.translate("MainWindow", u"Open Folder", None))
         self.labelp.setText(QCoreApplication.translate("MainWindow", u"Presets", None))
         self.applyPresetButton.setText(QCoreApplication.translate("MainWindow", u"Apply", None))
         self.savePresetButton.setText(QCoreApplication.translate("MainWindow", u"Save Current as Preset", None))

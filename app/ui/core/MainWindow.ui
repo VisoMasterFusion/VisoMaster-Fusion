@@ -936,7 +936,7 @@
    </property>
    <property name="minimumSize">
     <size>
-     <width>324</width>
+     <width>340</width>
      <height>230</height>
     </size>
    </property>
@@ -1214,6 +1214,16 @@
               <widget class="QPushButton" name="outputFolderButton">
                <property name="text">
                 <string>Browse Folder</string>
+               </property>
+               <property name="flat">
+                <bool>false</bool>
+               </property>
+              </widget>
+             </item>
+			 <item>
+              <widget class="QPushButton" name="outputOpenButton">
+               <property name="text">
+                <string>Open Folder</string>
                </property>
                <property name="flat">
                 <bool>false</bool>

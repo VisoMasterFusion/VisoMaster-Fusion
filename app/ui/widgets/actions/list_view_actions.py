@@ -1,6 +1,9 @@
 import time
 from functools import partial
 from typing import TYPE_CHECKING
+import subprocess
+import sys
+import os
 
 from PySide6 import QtWidgets, QtGui, QtCore
 
@@ -243,6 +246,31 @@ def select_output_media_folder(main_window: 'MainWindow'):
     if folder_name:
         main_window.outputFolderLineEdit.setText(folder_name)
         common_widget_actions.create_control(main_window, 'OutputMediaFolder', folder_name)
+
+def open_output_media_folder(main_window: 'MainWindow'):
+    folder_name = main_window.control['OutputMediaFolder']
+    if folder_name is not None:
+        if os.path.exists(folder_name):
+            # Normalize path
+            normalized_path = os.path.normpath(os.path.abspath(folder_name))
+
+            if sys.platform == "win32":
+                # Windows - use full path to explorer.exe to avoid PATH issues
+                try:
+                    # Method 1: Using subprocess without shell (more secure and reliable)
+                    subprocess.Popen(["explorer", normalized_path])
+                except FileNotFoundError:
+                    # Fallback: Use full path to explorer.exe
+                    subprocess.Popen(
+                        [r"C:\Windows\explorer.exe", normalized_path]
+                    )
+            elif sys.platform == "darwin":
+                # macOS
+                subprocess.run(["open", "-R", folder_name])
+            else:
+                # Linux
+                directory = os.path.dirname(os.path.abspath(folder_name))
+                subprocess.run(["xdg-open", directory])
 
 def show_shortcuts(main_window: 'MainWindow'):
     main_window.display_messagebox_signal.emit('Shortcuts', ' F11 : View fullscreen.\n V : Advance by 1 frame.\n C : Rewind by 1 frame.\n D : Advance by 30 frames.\n A : Rewind by 30 frames.\n Z : Seek to start.\n Space : Play start/stop.\n R : Record start/stop.\n F : Add video marker.\n ALT+F : Remove video marker.\n W : Move to next marker.\n Q : Move to previous marker.\n S : Swap face.', main_window)

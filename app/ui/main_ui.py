@@ -231,6 +231,7 @@ class MainWindow(QtWidgets.QMainWindow, Ui_MainWindow):
         # Set up output folder select button (It is inside the settings tab Widget)
         self.outputFolderButton.clicked.connect(partial(list_view_actions.select_output_media_folder, self))
         common_widget_actions.create_control(self, 'OutputMediaFolder', '')
+        self.outputOpenButton.clicked.connect(partial(list_view_actions.open_output_media_folder, self))
         
         # Initialize presets list and buttons
         preset_actions.refresh_presets_list(self)

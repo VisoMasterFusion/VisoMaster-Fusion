@@ -25,6 +25,7 @@ from app.ui.widgets.actions import common_actions as common_widget_actions
 from app.ui.widgets.actions import video_control_actions
 from app.ui.widgets.actions import layout_actions
 from app.ui.widgets.actions import save_load_actions
+from app.ui.widgets.actions import list_view_actions
 import app.helpers.miscellaneous as misc_helpers
 import warnings
 
@@ -956,7 +957,10 @@ class VideoProcessor(QObject):
         try: self.disable_virtualcam()
         except Exception: pass
         print("default-style recording finalized.")
-
+        
+        if self.main_window.control['OpenOutputToggle']:
+            try: list_view_actions.open_output_media_folder(self.main_window)
+            except Exception: pass
 
     # --- Virtual Camera Methods ---
 
@@ -1591,6 +1595,10 @@ class VideoProcessor(QObject):
             layout_actions.enable_all_parameters_and_control_widget(self.main_window)
             video_control_actions.reset_media_buttons(self.main_window)
             print("Multi-segment processing flow finished.")
+            
+            if self.main_window.control['OpenOutputToggle']:
+                try: list_view_actions.open_output_media_folder(self.main_window)
+                except Exception: pass
 
     def _cleanup_temp_dir(self):
         """Safely removes the temporary directory used for segments."""
