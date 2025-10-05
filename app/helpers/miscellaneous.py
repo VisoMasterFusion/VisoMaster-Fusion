@@ -12,6 +12,9 @@ from torchvision.transforms import v2
 import threading
 lock = threading.Lock()
 
+# scaling transforms cache dictionary at the module level
+_transform_cache = {}
+
 image_extensions = ('.jpg', '.jpeg', '.jpe', '.png', '.webp', '.tif', '.tiff', '.jp2', '.exr', '.hdr', '.ras', '.pnm', '.ppm', '.pgm', '.pbm', '.pfm')
 video_extensions = ('.mp4', '.avi', '.mkv', '.mov', '.wmv', '.flv', '.webm', '.m4v', '.3gp', '.gif')
 
@@ -35,6 +38,24 @@ class ParametersDict(UserDict):
             return self._default_parameters[key]     
 
 def get_scaling_transforms(control_params):
+    # Create a unique key for the current configuration
+    config_key = (
+        control_params.get("get_cropped_face_kpsTypeSelection", "BILINEAR"),
+        control_params.get("original_face_128_384TypeSelection", "BILINEAR"),
+        control_params.get("original_face_512TypeSelection", "BILINEAR"),
+        control_params.get("UntransformTypeSelection", "BILINEAR"),
+        control_params.get("ScalebackFrameTypeSelection", "BILINEAR"),
+        control_params.get("expression_faceeditor_t256TypeSelection", "BILINEAR"),
+        control_params.get("expression_faceeditor_backTypeSelection", "BILINEAR"),
+        control_params.get("block_shiftTypeSelection", "NEAREST"),
+        control_params.get("AntialiasTypeSelection", "False")
+    )
+
+    # Check if the configuration is already cached
+    if config_key in _transform_cache:
+        return _transform_cache[config_key]
+
+    # If not cached, create the transforms
     interpolation_map = {
         'NEAREST': v2.InterpolationMode.NEAREST,
         'BILINEAR': v2.InterpolationMode.BILINEAR,
@@ -59,7 +80,11 @@ def get_scaling_transforms(control_params):
     t256 = v2.Resize((256, 256), interpolation=interpolation_original_face_128_384, antialias=antialias_method)
     t128 = v2.Resize((128, 128), interpolation=interpolation_original_face_128_384, antialias=antialias_method)
     
-    return t512, t384, t256, t128, interpolation_get_cropped_face_kps, interpolation_original_face_128_384, interpolation_original_face_512, interpolation_Untransform, interpolation_scaleback, t256_face, interpolation_expression_faceeditor_back, interpolation_block_shift
+    # Store the results in the cache
+    result = (t512, t384, t256, t128, interpolation_get_cropped_face_kps, interpolation_original_face_128_384, interpolation_original_face_512, interpolation_Untransform, interpolation_scaleback, t256_face, interpolation_expression_faceeditor_back, interpolation_block_shift)
+    _transform_cache[config_key] = result
+    
+    return result
 
 def absoluteFilePaths(directory: str, include_subfolders=False):
     if include_subfolders:

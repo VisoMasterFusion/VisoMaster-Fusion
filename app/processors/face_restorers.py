@@ -12,13 +12,19 @@ if TYPE_CHECKING:
 class FaceRestorers:
     def __init__(self, models_processor: 'ModelsProcessor'):
         self.models_processor = models_processor
+        self.resize_transforms = {
+            512: v2.Resize((512, 512), antialias=True),
+            256: v2.Resize((256, 256), antialias=False),
+            1024: v2.Resize((1024, 1024), antialias=False),
+            2048: v2.Resize((2048, 2048), antialias=False)
+        }
 
     def apply_facerestorer(self, swapped_face_upscaled, restorer_det_type, restorer_type, restorer_blend, fidelity_weight, detect_score):
         temp = swapped_face_upscaled
-        t512 = v2.Resize((512, 512), antialias=True)
-        t256 = v2.Resize((256, 256), antialias=False)
-        t1024 = v2.Resize((1024, 1024), antialias=False)
-        t2048 = v2.Resize((2048, 2048), antialias=False)
+        t512 = self.resize_transforms[512]
+        t256 = self.resize_transforms[256]
+        t1024 = self.resize_transforms[1024]
+        t2048 = self.resize_transforms[2048]
 
         # If using a separate detection mode
         if restorer_det_type == 'Blend' or restorer_det_type == 'Reference':

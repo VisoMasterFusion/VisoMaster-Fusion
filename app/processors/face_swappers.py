@@ -32,6 +32,7 @@ def _debug_print_tensor(tensor: torch.Tensor, name: str):
 class FaceSwappers:
     def __init__(self, models_processor: 'ModelsProcessor'):
         self.models_processor = models_processor
+        self.resize_112 = v2.Resize((112, 112), interpolation=v2.InterpolationMode.BILINEAR, antialias=False)
 
     def run_recognize_direct(self, img, kps, similarity_type='Opal', arcface_model='Inswapper128ArcFace'):
         if not self.models_processor.models[arcface_model]:
@@ -124,7 +125,7 @@ class FaceSwappers:
         temp = v2.functional.affine(img, tform.rotation*57.2958, (tform.translation[0], tform.translation[1]) , tform.scale, 0, center = (0,0) )
         temp = v2.functional.crop(temp, 0,0, 512, 512)
         
-        image = v2.Resize((112, 112), interpolation=v2.InterpolationMode.BILINEAR, antialias=False)(temp)
+        image = self.resize_112(temp)
         
         cropped_image = image.permute(1, 2, 0).clone()
         if image.dtype == torch.uint8:

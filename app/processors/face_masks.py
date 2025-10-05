@@ -13,10 +13,16 @@ from app.processors.models_data import models_dir
 if TYPE_CHECKING:
     from app.processors.models_processor import ModelsProcessor
 
+_VGG_MEAN = torch.tensor([0.485, 0.456, 0.406]).view(3, 1, 1)
+_VGG_STD = torch.tensor([0.229, 0.224, 0.225]).view(3, 1, 1)
+
 class FaceMasks:
     def __init__(self, models_processor: 'ModelsProcessor'):
         self.models_processor = models_processor
         self._morph_kernels = {}
+        self._kernel_cache = {}
+        self._meshgrid_cache = {}
+        self._blur_cache = {}
 
     def apply_occlusion(self, img, amount):
         img = torch.div(img, 255)
@@ -30,7 +36,9 @@ class FaceMasks:
         outpred = torch.unsqueeze(outpred, 0).type(torch.float32)
 
         if amount >0:
-            kernel = torch.ones((1,1,3,3), dtype=torch.float32, device=self.models_processor.device)
+            if '3x3' not in self._kernel_cache:
+                self._kernel_cache['3x3'] = torch.ones((1,1,3,3), dtype=torch.float32, device=self.models_processor.device)
+            kernel = self._kernel_cache['3x3']
 
             for _ in range(int(amount)):
                 outpred = torch.nn.functional.conv2d(outpred, kernel, padding=(1, 1))
@@ -113,8 +121,16 @@ class FaceMasks:
             outpred = 1 - outpred
             outpred = outpred.clamp(0,1)
 
-        gauss = transforms.GaussianBlur(parameters['OccluderXSegBlurSlider']*2+1, (parameters['OccluderXSegBlurSlider']+1)*0.2)
-        outpred = gauss(outpred) 
+        blur_amount = parameters['OccluderXSegBlurSlider']
+        if blur_amount > 0:
+            blur_key = (blur_amount, (blur_amount + 1) * 0.2)
+            if blur_key not in self._blur_cache:
+                kernel_size = blur_amount * 2 + 1
+                sigma = (blur_amount + 1) * 0.2
+                self._blur_cache[blur_key] = transforms.GaussianBlur(kernel_size, sigma)
+            gauss = self._blur_cache[blur_key]
+            outpred = gauss(outpred)
+
         outpred_noFP = outpred.clone()        
         if amount2 != amount:
             if amount2 > 0:
@@ -134,8 +150,15 @@ class FaceMasks:
                 outpred2 = outpred2.clamp(0,1)
             #outpred2_autocolor = outpred2.clone()
             
-            gauss = transforms.GaussianBlur(parameters['XSeg2BlurSlider']*2+1, (parameters['XSeg2BlurSlider']+1)*0.2)
-            outpred2 = gauss(outpred2) 
+            blur_amount2 = parameters['XSeg2BlurSlider']
+            if blur_amount2 > 0:
+                blur_key2 = (blur_amount2, (blur_amount2 + 1) * 0.2)
+                if blur_key2 not in self._blur_cache:
+                    kernel_size2 = blur_amount2 * 2 + 1
+                    sigma2 = (blur_amount2 + 1) * 0.2
+                    self._blur_cache[blur_key2] = transforms.GaussianBlur(kernel_size2, sigma2)
+                gauss2 = self._blur_cache[blur_key2]
+                outpred2 = gauss2(outpred2)
             
             #print("outpred, outpred2, mouth: ", outpred.shape, outpred2.shape, mouth.shape)
             #outpred2_autocolor = outpred2.clone()
@@ -510,8 +533,13 @@ class FaceMasks:
         if feather_radius is None:
             feather_radius = max(radius_x, radius_y) // 2  # Integer division
 
-        # Calculating the normalized distance from the center
-        y, x = torch.meshgrid(torch.arange(height), torch.arange(width), indexing='ij')
+        cache_key = (height, width)
+        if cache_key in self._meshgrid_cache:
+            y, x = self._meshgrid_cache[cache_key]
+        else:
+            # Calculating the normalized distance from the center
+            y, x = torch.meshgrid(torch.arange(height), torch.arange(width), indexing='ij')
+            self._meshgrid_cache[cache_key] = (y, x)
 
         # Calculating the normalized distance from the center
         normalized_distance = torch.sqrt(((x - center[0]) / radius_x) ** 2 + ((y - center[1]) / radius_y) ** 2)
@@ -713,9 +741,9 @@ class FaceMasks:
         # ### 3) Preprocessing (identisch für alle Backbones) ###
         def preprocess(img):
             img = img.clone().float() / 255.0
-            mean = torch.tensor([0.485,0.456,0.406], device=img.device).view(3,1,1)
-            std  = torch.tensor([0.229,0.224,0.225], device=img.device).view(3,1,1)
-            return ((img - mean) / std).unsqueeze(0).contiguous()  # [1,3,H,W]
+            mean = _VGG_MEAN.to(img.device)
+            std = _VGG_STD.to(img.device)
+            return ((img - mean) / std).unsqueeze(0).contiguous()
 
         swapped  = preprocess(swapped_face)
         original = preprocess(original_face)

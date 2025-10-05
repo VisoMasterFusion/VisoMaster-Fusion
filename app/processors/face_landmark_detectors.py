@@ -15,6 +15,10 @@ from app.processors.utils import faceutil
 class FaceLandmarkDetectors:
     def __init__(self, models_processor: 'ModelsProcessor'):
         self.models_processor = models_processor
+        # cache for landmark anchors
+        self.landmark_5_anchors = []
+        self.landmark_5_scale1_cache = {}
+        self.landmark_5_priors = None
 
     def run_detect_landmark(self, img, bbox, det_kpss, detect_mode='203', score=0.5, from_points=False):
         kpss_5 = []
@@ -22,15 +26,12 @@ class FaceLandmarkDetectors:
         scores = []
 
         if detect_mode=='5':
-            if not self.models_processor.models['FaceLandmark5']:
-                self.models_processor.models['FaceLandmark5'] = self.models_processor.load_model('FaceLandmark5')
-
+            # Moved anchor generation to a persistent cache
+            if not self.landmark_5_anchors:
                 feature_maps = [[64, 64], [32, 32], [16, 16]]
                 min_sizes = [[16, 32], [64, 128], [256, 512]]
                 steps = [8, 16, 32]
                 image_size = 512
-                # re-initialize self.models_processor.anchors due to clear_mem function
-                self.models_processor.anchors  = []
 
                 for k, f in enumerate(feature_maps):
                     min_size_array = min_sizes[k]
@@ -41,7 +42,7 @@ class FaceLandmarkDetectors:
                             dense_cx = [x * steps[k] / image_size for x in [j + 0.5]]
                             dense_cy = [y * steps[k] / image_size for y in [i + 0.5]]
                             for cy, cx in product(dense_cy, dense_cx):
-                                self.models_processor.anchors += [cx, cy, s_kx, s_ky]
+                                self.landmark_5_anchors += [cx, cy, s_kx, s_ky]
 
             kpss_5, kpss, scores = self.detect_face_landmark_5(img, bbox=bbox, det_kpss=det_kpss, from_points=from_points)
 
@@ -123,8 +124,12 @@ class FaceLandmarkDetectors:
         image = torch.reshape(image, (1, 3, 512, 512))
 
         height, width = (512, 512)
-        tmp = [width, height, width, height, width, height, width, height, width, height]
-        scale1 = torch.tensor(tmp, dtype=torch.float32, device=self.models_processor.device)
+        if (width, height) in self.landmark_5_scale1_cache:
+            scale1 = self.landmark_5_scale1_cache[(width, height)]
+        else:
+            tmp = [width, height, width, height, width, height, width, height, width, height]
+            scale1 = torch.tensor(tmp, dtype=torch.float32, device=self.models_processor.device)
+            self.landmark_5_scale1_cache[(width, height)] = scale1
 
         conf = torch.empty((1,10752,2), dtype=torch.float32, device=self.models_processor.device).contiguous()
         landmarks = torch.empty((1,10752,10), dtype=torch.float32, device=self.models_processor.device).contiguous()
@@ -141,8 +146,12 @@ class FaceLandmarkDetectors:
         self.models_processor.models['FaceLandmark5'].run_with_iobinding(io_binding)
 
         scores = torch.squeeze(conf)[:, 1]
-        priors = torch.tensor(self.models_processor.anchors).view(-1, 4)
-        priors = priors.to(self.models_processor.device)
+
+        if self.landmark_5_priors is None:
+            # Create the tensor once and cache it on the correct device
+            self.landmark_5_priors = torch.tensor(self.landmark_5_anchors).view(-1, 4).to(self.models_processor.device)
+        
+        priors = self.landmark_5_priors
 
         pre = torch.squeeze(landmarks, 0)
 

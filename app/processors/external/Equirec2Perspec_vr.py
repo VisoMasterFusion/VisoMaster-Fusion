@@ -20,7 +20,7 @@ class Equirectangular:
         self._img_tensor_cxhxw_rgb_float = img_tensor_cxhxw_rgb_uint8.float() / 255.0 # Normalize to [0,1]
         self.device = img_tensor_cxhxw_rgb_uint8.device
         self._channels, self._height, self._width = self._img_tensor_cxhxw_rgb_float.shape
-    
+        self._persp_cache = {}
 
     def GetPerspective(self, FOV: float, THETA: float, PHI: float, height: int, width: int) -> torch.Tensor:
         #
@@ -33,16 +33,20 @@ class Equirectangular:
         equ_cx = (equ_w - 1) / 2.0
         equ_cy = (equ_h - 1) / 2.0
 
-        wFOV = FOV
-        hFOV = float(height) / float(width) * wFOV
+        cache_key = (FOV, height, width)
+        if cache_key in self._persp_cache:
+            persp_xx, persp_yy, w_len, h_len = self._persp_cache[cache_key]
+        else:
+            wFOV = FOV
+            hFOV = float(height) / float(width) * wFOV
+            w_len = torch.tan(torch.deg2rad(torch.tensor(wFOV / 2.0, device=self.device)))
+            h_len = torch.tan(torch.deg2rad(torch.tensor(hFOV / 2.0, device=self.device)))
 
-        w_len = torch.tan(torch.deg2rad(torch.tensor(wFOV / 2.0, device=self.device)))
-        h_len = torch.tan(torch.deg2rad(torch.tensor(hFOV / 2.0, device=self.device)))
-
-        # Create perspective grid
-        persp_x_coords = torch.linspace(-w_len, w_len, width, device=self.device, dtype=torch.float32)
-        persp_y_coords = torch.linspace(-h_len, h_len, height, device=self.device, dtype=torch.float32)
-        persp_yy, persp_xx = torch.meshgrid(persp_y_coords, persp_x_coords, indexing='ij')
+            # Create perspective grid
+            persp_x_coords = torch.linspace(-w_len, w_len, width, device=self.device, dtype=torch.float32)
+            persp_y_coords = torch.linspace(-h_len, h_len, height, device=self.device, dtype=torch.float32)
+            persp_yy, persp_xx = torch.meshgrid(persp_y_coords, persp_x_coords, indexing='ij')
+            self._persp_cache[cache_key] = (persp_xx, persp_yy, w_len, h_len)
 
         # Points in 3D space on the perspective image plane (camera looking along X-axis)
         x_3d = torch.ones_like(persp_xx)
