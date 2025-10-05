@@ -436,6 +436,14 @@ def enable_zoom_and_pan(view: QtWidgets.QGraphicsView):
 
 def play_video(main_window: 'MainWindow', checked: bool):
     video_processor = main_window.video_processor
+    if checked and video_processor.file_type == 'webcam':
+        if video_processor.processing:
+            print("play_video: Webcam already streaming. Stopping the stream before restarting.")
+            video_processor.stop_processing()
+        print("play_video: Starting webcam stream processing.")
+        set_play_button_icon_to_stop(main_window)
+        video_processor.process_webcam()
+        return
     if checked:
         if video_processor.processing or video_processor.current_frame_number==video_processor.max_frame_number:
             print("play_video: Video already playing. Stopping the current video before starting a new one.")
