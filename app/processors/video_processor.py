@@ -336,8 +336,12 @@ class VideoProcessor(QObject):
         if interval <= 0: interval = 1 # Ensure interval is positive
 
         print(f"Starting {mode} timers with interval {interval} ms (Target FPS: {fps:.2f}).")
-        self.frame_read_timer.start(interval)
-        self.frame_display_timer.start(interval) # Start display timer with same interval
+        if self.recording:
+            self.frame_read_timer.start(0)
+            self.frame_display_timer.start(0) # Start display timer with same interval
+        else:
+            self.frame_read_timer.start(interval)
+            self.frame_display_timer.start(interval) # Start display timer with same interval
         self.gpu_memory_update_timer.start(5000)
         self.processing_started_signal.emit()  # EMIT UNIFIED SIGNAL HERE
 
@@ -1262,8 +1266,8 @@ class VideoProcessor(QObject):
         self.frame_display_timer.timeout.connect(self.display_next_frame) # Display logic is shared
 
         if interval <= 0: interval = 1 # Ensure positive interval
-        self.frame_read_timer.start(interval)
-        self.frame_display_timer.start(interval) # Match intervals
+        self.frame_read_timer.start(0)
+        self.frame_display_timer.start(0) # Match intervals
         self.gpu_memory_update_timer.start(5000)
 
         self.processing_started_signal.emit() # EMIT UNIFIED SIGNAL HERE
