@@ -72,6 +72,26 @@ SETTINGS_LAYOUT_DATA: LayoutDictTypes = {
             'help': 'Set the playback audio of the audio, when Live Sound is enabled'
         },
     },
+    'Video Recording Settings': {
+        'FrameEnhancerDownToggle':{
+            'level': 1,
+            'label': 'Frame resize to 1920*1080',
+            'default': False,
+            'help': 'Select to resize the video to 1920*1080 (only on 16/9 format)'
+        },
+        'HDREncodeToggle':{
+            'level': 1,
+            'label': 'HDR Encoding - Use on HDR videos only (CPU)',
+            'default': False,
+            'help': 'Encode the video file in HDR, uses CPU and libx256, slower processing.'
+        },
+        'OpenOutputToggle':{
+            'level': 1,
+            'label': 'Open Output Folder After Recording',
+            'default': False,
+            'help': 'Opens the output folder after recording ends.'
+        }
+    },
     'Swap settings':{
         'AutoSwapToggle': {
             'level': 1,
@@ -244,18 +264,6 @@ SETTINGS_LAYOUT_DATA: LayoutDictTypes = {
             'parentToggle': 'FrameEnhancerEnableToggle',
             'requiredToggleValue': True,
             'help': 'Blends the enhanced results back into the original frame.'
-        },
-        'FrameEnhancerDownToggle':{
-            'level': 1,
-            'label': 'Frame resize to 1920*1080',
-            'default': False,
-            'help': 'Select to resize the video to 1920*1080 (only on 16/9 format)'
-        },
-        'HDREncodeToggle':{
-            'level': 1,
-            'label': 'HDR Encoding - Use on HDR videos only (CPU)',
-            'default': False,
-            'help': 'Encode the video file in HDR, uses CPU and libx256, slower processing.'
         }
     },
     'Webcam and Virtualcam Settings': {

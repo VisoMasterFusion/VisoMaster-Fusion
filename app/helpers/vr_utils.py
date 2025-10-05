@@ -9,11 +9,13 @@ from torchvision import transforms
 from app.processors.external.Equirec2Perspec_vr import Equirectangular as E2P_Equirectangular
 from app.processors.external.Perspec2Equirec_vr import Perspective as P2E_Perspective
 
+# Define Sobel kernels once at the module level
+_SOBEL_X_KERNEL = torch.tensor([[-1., 0., 1.], [-2., 0., 2.], [-1., 0., 1.]], dtype=torch.float32).reshape(1, 1, 3, 3)
+_SOBEL_Y_KERNEL = torch.tensor([[-1., -2., -1.], [0., 0., 0.], [1., 2., 1.]], dtype=torch.float32).reshape(1, 1, 3, 3)
 
 def _get_sobel_kernels(device):
-    sobel_x_kernel = torch.tensor([[-1., 0., 1.], [-2., 0., 2.], [-1., 0., 1.]], device=device, dtype=torch.float32).reshape(1, 1, 3, 3)
-    sobel_y_kernel = torch.tensor([[-1., -2., -1.], [0., 0., 0.], [1., 2., 1.]], device=device, dtype=torch.float32).reshape(1, 1, 3, 3)
-    return sobel_x_kernel, sobel_y_kernel
+    """Moves the pre-defined Sobel kernels to the specified device."""
+    return _SOBEL_X_KERNEL.to(device), _SOBEL_Y_KERNEL.to(device)
 
 class EquirectangularConverter:
     def __init__(self, equirect_image_data_rgb_uint8: np.ndarray, device: torch.device):
@@ -66,6 +68,7 @@ class PerspectiveConverter:
         ).permute(2,0,1).to(self.device)
         self.orig_channels, self.orig_height, self.orig_width = self.base_equirect_tensor_cxhxw_rgb_uint8.shape
         self.sobel_x_kernel, self.sobel_y_kernel = _get_sobel_kernels(self.device)
+        self._blur_cache = {}
 
     def _apply_feathering(self, mask_torch: torch.Tensor, feather_radius: int = 15, blur_sigma_factor: float = 0.5, erosion_kernel_size: int = 5) -> torch.Tensor:
         """ Applies feathering to a Torch mask using a memory-efficient erosion followed by Gaussian blur.
@@ -101,8 +104,12 @@ class PerspectiveConverter:
         # --- BLUR STEP for feathering ---
         kernel_size_blur = max(3, 2 * feather_radius + 1)
         sigma = max(1.0, float(feather_radius) * blur_sigma_factor) 
-
-        gauss = transforms.GaussianBlur(kernel_size_blur, sigma)
+        
+        blur_key = (kernel_size_blur, sigma)
+        if blur_key not in self._blur_cache:
+            self._blur_cache[blur_key] = transforms.GaussianBlur(kernel_size_blur, sigma)
+        
+        gauss = self._blur_cache[blur_key]
         feathered_mask = gauss(eroded_mask)
 
         feathered_mask = torch.clamp(feathered_mask, 0.0, 1.0)
