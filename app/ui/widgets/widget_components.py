@@ -707,30 +707,53 @@ class InputFaceCardButton(CardButton):
             except Exception as e:
                 print(f"Error removing K/V data file {self.kv_map}: {e}")
 
-    def deselect_currently_selected_face(self,main_window):
+    def _remove_face_from_lists(self):
+        main_window = self.main_window
         i = self.get_item_position()
-        main_window.inputFacesList.takeItem(i)
-        main_window.input_faces.pop(self.face_id)
-        for target_face_id in main_window.target_faces:
-            main_window.target_faces[target_face_id].remove_assigned_input_face(self.face_id)
+        if i is not None:
+            main_window.inputFacesList.takeItem(i)
+            main_window.input_faces.pop(self.face_id)
+            for target_face_id in main_window.target_faces:
+                main_window.target_faces[target_face_id].remove_assigned_input_face(self.face_id)
+            self.deleteLater()
+            return True
+        return False
+
+    def deselect_currently_selected_face(self,main_window):
+        self.remove_kv_data_file()
+        self._remove_face_from_lists()
 
         common_widget_actions.refresh_frame(self.main_window)
 
-        # If the input faces list is empty, show the placeholder text
         if not main_window.input_faces:
             main_window.placeholder_update_signal.emit(self.main_window.inputFacesList, False)
 
     def remove_input_face_from_list(self):
         main_window = self.main_window
-        self.remove_kv_data_file()
-        self.deselect_currently_selected_face(main_window)
-        self.deleteLater()
+        faces_to_remove = [
+            face_button for _, face_button in main_window.input_faces.items()
+            if face_button.isChecked()
+        ]
 
+        if not faces_to_remove:
+            faces_to_remove = [self]
+
+        was_removed = False
+
+        for face_to_remove in faces_to_remove:
+            face_to_remove.remove_kv_data_file()
+            if face_to_remove._remove_face_from_lists():
+                was_removed = True
+
+        if was_removed:
+            common_widget_actions.refresh_frame(main_window)
+            if not main_window.input_faces:
+                main_window.placeholder_update_signal.emit(main_window.inputFacesList, False)
 
     def delete_input_face_to_trash(self):
         main_window = self.main_window
         self.remove_kv_data_file()
-        self.deselect_currently_selected_face(main_window)
+        self._remove_face_from_lists()
 
         # Send the file to the trash
         if os.path.exists(self.media_path):
@@ -738,8 +761,10 @@ class InputFaceCardButton(CardButton):
             print(f"{self.media_path} has been sent to the trash.")
         else:
             print(f"{self.media_path} does not exist.")
-
-        self.deleteLater()
+            
+        common_widget_actions.refresh_frame(main_window)
+        if not main_window.input_faces:
+            main_window.placeholder_update_signal.emit(main_window.inputFacesList, False)
 
     def open_target_path_by_explorer(self):
         if os.path.exists(self.media_path):

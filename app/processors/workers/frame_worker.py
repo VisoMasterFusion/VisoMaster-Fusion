@@ -994,8 +994,12 @@ class FrameWorker(threading.Thread):
         texture_exclude_512 = BgExclude.clone()
         swap_mask_noFP = swap_mask.clone()  # unveränderte 128er Basismaske für Editor-End
         
-        swap = torch.clamp(swap, 0.0, 255.0)   
-
+        M_ref = tform.params[0:2]
+        ones_column_ref = np.ones((kps_5.shape[0], 1), dtype=np.float32)
+        kps_ref = np.hstack([kps_5, ones_column_ref]) @ M_ref.T
+        
+        swap = torch.clamp(swap, 0.0, 255.0)
+        
         # Expression Restorer beginning
         if parameters['FaceExpressionEnableToggleBoth'] and (parameters['FaceExpressionLipsToggle'] or parameters['FaceExpressionEyesToggle']) and parameters['FaceExpressionBeforeTypeSelection'] == 'Beginning':
             swap = self.apply_face_expression_restorer(original_face_512, swap, parameters)
@@ -1014,7 +1018,7 @@ class FrameWorker(threading.Thread):
         swap_original = swap.clone()   
         
         if parameters["FaceRestorerEnableToggle"]:
-            swap_restorecalc = self.models_processor.apply_facerestorer(swap, parameters['FaceRestorerDetTypeSelection'], parameters['FaceRestorerTypeSelection'], parameters["FaceRestorerBlendSlider"], parameters['FaceFidelityWeightDecimalSlider'], control['DetectorScoreSlider'])                                    
+            swap_restorecalc = self.models_processor.apply_facerestorer(swap, parameters['FaceRestorerDetTypeSelection'], parameters['FaceRestorerTypeSelection'], parameters["FaceRestorerBlendSlider"], parameters['FaceFidelityWeightDecimalSlider'], control['DetectorScoreSlider'], kps_ref)                                    
         else:
             swap_restorecalc = swap.clone()
 
@@ -1215,7 +1219,7 @@ class FrameWorker(threading.Thread):
         if parameters["FaceRestorerEnable2Toggle"] and not parameters["FaceRestorerEnable2EndToggle"]:
             swap_original2 = swap.clone()
 
-            swap2 = self.models_processor.apply_facerestorer(swap, parameters['FaceRestorerDetType2Selection'], parameters['FaceRestorerType2Selection'], parameters["FaceRestorerBlend2Slider"], parameters['FaceFidelityWeight2DecimalSlider'], control['DetectorScoreSlider'])
+            swap2 = self.models_processor.apply_facerestorer(swap, parameters['FaceRestorerDetType2Selection'], parameters['FaceRestorerType2Selection'], parameters["FaceRestorerBlend2Slider"], parameters['FaceFidelityWeight2DecimalSlider'], control['DetectorScoreSlider'], kps_ref)
          
             if parameters["FaceRestorerAutoEnable2Toggle"]:
                 original_face_512_autorestore2 = original_face_512.clone()
@@ -1517,7 +1521,7 @@ class FrameWorker(threading.Thread):
         # Second Restorer - After Diff / Texture Transfer and AutoColor
         if parameters["FaceRestorerEnable2Toggle"] and parameters["FaceRestorerEnable2EndToggle"]:
             swap_original2 = swap.clone()
-            swap2 = self.models_processor.apply_facerestorer(swap, parameters['FaceRestorerDetType2Selection'], parameters['FaceRestorerType2Selection'], parameters["FaceRestorerBlend2Slider"], parameters['FaceFidelityWeight2DecimalSlider'], control['DetectorScoreSlider'])
+            swap2 = self.models_processor.apply_facerestorer(swap, parameters['FaceRestorerDetType2Selection'], parameters['FaceRestorerType2Selection'], parameters["FaceRestorerBlend2Slider"], parameters['FaceFidelityWeight2DecimalSlider'], control['DetectorScoreSlider'], kps_ref)
             
             if parameters["FaceRestorerAutoEnable2Toggle"]:
                 original_face_512_autorestore2 = original_face_512.clone()
