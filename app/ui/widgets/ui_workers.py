@@ -132,6 +132,8 @@ class InputFacesLoaderWorker(qtc.QThread):
         detect_model = detection_model_mapping[control['DetectorModelSelection']]
         landmark_detect_model = landmark_model_mapping[control['LandmarkDetectModelSelection']]
         models_processor = self.main_window.models_processor
+        # Track which models are being loaded for this specific task
+        models_to_load = []
         if self.main_window.video_processor.processing:
             was_playing = True
             self.main_window.buttonMediaPlay.click()
@@ -139,26 +141,16 @@ class InputFacesLoaderWorker(qtc.QThread):
             was_playing = False
         if not models_processor.models[detect_model]:
             models_processor.models[detect_model] = models_processor.load_model(detect_model)
+            models_to_load.append(detect_model)
         if not models_processor.models[landmark_detect_model] and control['LandmarkDetectToggle']:
             models_processor.models[landmark_detect_model] = models_processor.load_model(landmark_detect_model)
-        for recognition_model in ['Inswapper128ArcFace', 'SimSwapArcFace', 'GhostArcFace', 'CSCSArcFace', 'CSCSIDArcFace']:
+            models_to_load.append(landmark_detect_model)
+        for recognition_model in ['Inswapper128ArcFace', 'SimSwapArcFace', 'GhostArcFace', 'CSCSArcFace', 'CSCSIDArcFace', 'CanonSwapArcFace']:
             if not models_processor.models[recognition_model]:
                 models_processor.models[recognition_model] = models_processor.load_model(recognition_model)
+                models_to_load.append(recognition_model)
         if was_playing:
             self.main_window.buttonMediaPlay.click()
-
-        # Track which models are being loaded for this specific task
-        models_to_load = []
-        if not models_processor.models.get(detect_model):
-            models_to_load.append(detect_model)
-        
-        if control['LandmarkDetectToggle'] and not models_processor.models.get(landmark_detect_model):
-            models_to_load.append(landmark_detect_model)
-            
-        recognition_models = ['Inswapper128ArcFace', 'SimSwapArcFace', 'GhostArcFace', 'CSCSArcFace', 'CSCSIDArcFace', 'CanonSwapArcFace']
-        for recognition_model in recognition_models:
-            if not models_processor.models.get(recognition_model):
-                models_to_load.append(recognition_model)
         
         for model_name in models_to_load:
             models_processor.models[model_name] = models_processor.load_model(model_name)
@@ -203,6 +195,8 @@ class InputFacesLoaderWorker(qtc.QThread):
 
             # If atleast one face is found
             # found_face = []
+            if kpss_5 is None:
+                continue
             face_kps = False
             try:
                 face_kps = kpss_5[0]

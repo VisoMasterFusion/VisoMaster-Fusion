@@ -16,7 +16,7 @@ class FaceDetectors:
         self.center_cache = {}
         self.resize_cache = {}
         self.det_img_cache = {}
-
+        
     def run_detect(self, img, detect_mode='RetinaFace', max_num=1, score=0.5, input_size=(512, 512), use_landmark_detection=False, landmark_detect_mode='203', landmark_score=0.5, from_points=False, rotation_angles=None):
         rotation_angles = rotation_angles or [0]
         bboxes = []
@@ -59,32 +59,21 @@ class FaceDetectors:
         if not isinstance(input_size, tuple):
             input_size = (input_size, input_size)
         img_height, img_width = (img.size()[1], img.size()[2])
-        cache_key = (img_height, img_width, tuple(input_size))
-        if cache_key in self.resize_cache:
-            new_height, new_width, det_scale, resize_op = self.resize_cache[cache_key]
-        else:
-            im_ratio = torch.div(img_height, img_width)
-            model_ratio = 1.0
-            if im_ratio > model_ratio:
-                new_height = input_size[1]
-                new_width = int(new_height / im_ratio)
-            else:
-                new_width = input_size[0]
-                new_height = int(new_width * im_ratio)
-            det_scale = torch.div(new_height,  img.size()[1])
-            resize_op = v2.Resize((new_height, new_width), antialias=True)
-            self.resize_cache[cache_key] = (new_height, new_width, det_scale, resize_op)
+        im_ratio = torch.div(img_height, img_width)
 
-        img = resize_op(img)
+        model_ratio = 1.0
+        if im_ratio > model_ratio:
+            new_height = input_size[1]
+            new_width = int(new_height / im_ratio)
+        else:
+            new_width = input_size[0]
+            new_height = int(new_width * im_ratio)
+        det_scale = torch.div(new_height,  img.size()[1])
+        resize = v2.Resize((new_height, new_width), antialias=True)
+        img = resize(img)
         img = img.permute(1,2,0)
 
-        # Reuse or create the padding tensor
-        if input_size in self.det_img_cache:
-            det_img = self.det_img_cache[input_size]
-            det_img.zero_()  # Zero out the existing tensor
-        else:
-            det_img = torch.zeros((input_size[1], input_size[0], 3), dtype=torch.float32, device=self.models_processor.device)
-            self.det_img_cache[input_size] = det_img
+        det_img = torch.zeros((input_size[1], input_size[0], 3), dtype=torch.float32, device=self.models_processor.device)
 
         det_img[:new_height,:new_width,  :] = img
 
@@ -142,7 +131,7 @@ class FaceDetectors:
             input_width = aimg.shape[3]
 
             fmc = 3
-
+            center_cache = {}
             for idx, stride in enumerate([8, 16, 32]):
                 scores = net_outs[idx]
                 bbox_preds = net_outs[idx+fmc]
@@ -152,14 +141,14 @@ class FaceDetectors:
                 height = input_height // stride
                 width = input_width // stride
                 key = (height, width, stride)
-                if key in self.center_cache:
-                    anchor_centers = self.center_cache[key]
+                if key in center_cache:
+                    anchor_centers = center_cache[key]
                 else:
                     anchor_centers = np.stack(np.mgrid[:height, :width][::-1], axis=-1).astype(np.float32)
                     anchor_centers = (anchor_centers * stride).reshape( (-1, 2) )
                     anchor_centers = np.stack([anchor_centers]*2, axis=1).reshape( (-1,2) )
-                    if len(self.center_cache)<100:
-                        self.center_cache[key] = anchor_centers
+                    if len(center_cache)<100:
+                        center_cache[key] = anchor_centers
 
                 pos_inds = np.where(scores>=score)[0]
 

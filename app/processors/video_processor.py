@@ -277,7 +277,7 @@ class VideoProcessor(QObject):
                 layout_actions.disable_all_parameters_and_control_widget(self.main_window)
                 
             # Create the ffmpeg subprocess for default style
-            if not self.create_ffmpeg_subprocess_default_style():
+            if not self.create_ffmpeg_subprocess(output_filename=None):
                 print("[ERROR] Failed to start FFmpeg for default-style recording.")
                 self.stop_processing() # Abort the start
                 return
@@ -652,59 +652,93 @@ class VideoProcessor(QObject):
 
     # --- default Style FFmpeg and Finalization ---
 
-    def create_ffmpeg_subprocess_default_style(self):
+    def create_ffmpeg_subprocess(self, output_filename: str):
+        
+        # Merged create_ffmpeg_subprocess default_style and segment
+        # Get main controls
         control = self.main_window.control.copy()
-        """Creates the FFmpeg subprocess for simple (default') style recording."""
+        # Initialize as default style
+        segment = False
+        # If there is an output file then it's a segment
+        if output_filename is not None: segment = True
+        
+        """Creates the FFmpeg subprocess."""
         if not isinstance(self.current_frame, numpy.ndarray) or self.current_frame.size == 0:
-             print("[ERROR] create_ffmpeg_subprocess_default_style: Current frame invalid. Cannot get dimensions.")
+             print("[ERROR] Current frame invalid. Cannot get dimensions.")
              return False
+        if not self.media_path or not Path(self.media_path).is_file():
+            print("[ERROR] Original media path invalid.")
+            return False
         if self.fps <= 0:
-             print("[ERROR] create_ffmpeg_subprocess_default_style: Invalid FPS.")
+             print("[ERROR] Invalid FPS.")
              return False
-
+        if segment:
+            if self.current_segment_index < 0 or self.current_segment_index >= len(self.segments_to_process):
+                print(f"[ERROR] Invalid segment index {self.current_segment_index}.")
+                return False
+            start_frame, end_frame = self.segments_to_process[self.current_segment_index]
+            start_time_sec = start_frame / self.fps
+            end_time_sec = end_frame / self.fps
+        
+        # Frame height/width block
         frame_height, frame_width, _ = self.current_frame.shape
+        if segment:
+            # Fix for frame enhancer activated while doing segments
+            if control['FrameEnhancerEnableToggle']:
+                if control['FrameEnhancerTypeSelection'] in ('RealEsrgan-x2-Plus', 'BSRGan-x2'):
+                    frame_height = frame_height * 2
+                    frame_width = frame_width * 2
+                elif control['FrameEnhancerTypeSelection'] in ('RealEsrgan-x4-Plus', 'BSRGan-x4', 'UltraSharp-x4', 'UltraMix-x4', 'RealEsr-General-x4v3'):
+                    frame_height = frame_height * 4
+                    frame_width = frame_width * 4
         # Added option to resize video frame to 1920*1080
         frame_height_down = frame_height
         frame_width_down = frame_width
-        #frame_height_down_mult = frame_height / 1080
         frame_width_down_mult = frame_width / 1920
           
         if control['FrameEnhancerDownToggle']:
             if (frame_width != 1920 or frame_height != 1080):
                 frame_height_down = math.ceil(frame_height / frame_width_down_mult)
-                #frame_width_down = math.ceil(frame_width / frame_width_down_mult)
                 frame_width_down = 1920
             else:
                 print("Already 1920*1080")
-                
-        date_and_time = datetime.now().strftime(r'%Y_%m_%d_%H_%M_%S')
-        # Use a temporary directory within the project root
-        try:
-            # Define the base temp directory within the project
-            base_temp_dir = os.path.join(os.getcwd(), "temp_files", "default")
-            os.makedirs(base_temp_dir, exist_ok=True) # Ensure base dir exists
-            self.temp_file = os.path.join(base_temp_dir, f'temp_output_{date_and_time}.mp4')
-            print(f"Default temp file will be created at: {self.temp_file}")
-        except Exception as e:
-            print(f"[ERROR] Failed to create temporary directory/file path: {e}")
-            # Fallback to local dir relative to cwd if creation fails?
-            self.temp_file = f'temp_output_{date_and_time}.mp4'
-            print(f"[WARN] Falling back to local directory for temp file: {self.temp_file}")
 
-        print(f"Creating FFmpeg (default-style): Video Dim={frame_width}x{frame_height}, FPS={self.fps}, Temp Output='{self.temp_file}'")
+        # Output file creation
+        if segment:
+            segment_num = self.current_segment_index + 1
+            print(f"Creating FFmpeg (Segment {segment_num}): Video Dim={frame_width}x{frame_height}, FPS={self.fps}, Output='{output_filename}'")
+            print(f"  Audio Segment: Start={start_time_sec:.3f}s, End={end_time_sec:.3f}s (Frames {start_frame}-{end_frame})")
 
-        if Path(self.temp_file).is_file():
+            if Path(output_filename).is_file():
+                try:
+                    os.remove(output_filename)
+                except OSError as e:
+                    print(f"[WARN] Could not remove existing segment file {output_filename}: {e}")
+        else:
+            date_and_time = datetime.now().strftime(r'%Y_%m_%d_%H_%M_%S')
+            # Use a temporary directory within the project root
             try:
-                os.remove(self.temp_file)
-            except OSError as e:
-                print(f"[WARN] Could not remove existing temp file {self.temp_file}: {e}")
+                # Define the base temp directory within the project
+                base_temp_dir = os.path.join(os.getcwd(), "temp_files", "default")
+                os.makedirs(base_temp_dir, exist_ok=True) # Ensure base dir exists
+                self.temp_file = os.path.join(base_temp_dir, f'temp_output_{date_and_time}.mp4')
+                print(f"Default temp file will be created at: {self.temp_file}")
+            except Exception as e:
+                print(f"[ERROR] Failed to create temporary directory/file path: {e}")
+                # Fallback to local dir relative to cwd if creation fails?
+                self.temp_file = f'temp_output_{date_and_time}.mp4'
+                print(f"[WARN] Falling back to local directory for temp file: {self.temp_file}")
 
-        # Change color options to keep original video colors
-        output_pix_fmt = 'yuvj420p' # Standard 8-bit SDR
-        output_color_trc = 'bt2020-10'
-        output_colorspace = 'rgb'
-        output_color_primaries = 'bt2020'
-        
+            print(f"Creating FFmpeg : Video Dim={frame_width}x{frame_height}, FPS={self.fps}, Temp Output='{self.temp_file}'")
+
+            if Path(self.temp_file).is_file():
+                try:
+                    os.remove(self.temp_file)
+                except OSError as e:
+                    print(f"[WARN] Could not remove existing temp file {self.temp_file}: {e}")
+
+        # FFmpeg arguments passed to the subprocess
+        # Base args always used to get the pipeline frames
         args = [
             "ffmpeg",
             "-hide_banner",
@@ -715,60 +749,59 @@ class VideoProcessor(QObject):
             "-r", str(self.fps),
             "-i", "pipe:0", # Read from stdin (pipe:0 is more explicit)
         ]
+        if segment:
+            # Exclusive arguments for segments processing
+            args.extend([
+                # Input 1: Original Audio from File (Segmented)
+                "-ss", str(start_time_sec),
+                "-to", str(end_time_sec),
+                "-i", self.media_path, # Input 1 is original file
+                # Mapping
+                "-map", "0:v:0", # Video from pipe
+                "-map", "1:a:0?", # Audio from file (optional)
+                # Audio Codec
+                "-c:a", "copy", # Copy original audio stream segment
+                # Options
+                "-shortest", # Stop when shortest input (audio segment) ends
+            ])
         # Merged settings from experimental and vr180 patches
         if control['HDREncodeToggle']:
-            if control['FrameEnhancerDownToggle']:
-                args.extend([
-                    # Video Codec: Use NVIDIA HEVC encoder
-                    "-c:v", "libx265",
-                    "-vf", f"scale={frame_width_down}x{frame_height_down}:flags=lanczos+accurate_rnd+full_chroma_int",
-                    "-profile:v", "main10",
-                    "-preset", "slow",
-                    "-pix_fmt", "yuv420p10le",
-                    "-x265-params", f"crf=18:vbv-bufsize=10000:vbv-maxrate=8000:selective-sao=0:no-sao=1:strong-intra-smoothing=0:rect=0:aq-mode=1:hdr-opt=1:repeat-headers=1:colorprim=bt2020:range=limited:transfer=smpte2084:colormatrix=bt2020nc:range=limited:master-display='G(13250,34500)B(7500,3000)R(34000,16000)WP(15635,16450)L(10000000,1)':max-cll=1000,400",
-                    # Output File
-                    self.temp_file
-                ])
-            else:
-                args.extend([
-                    # Video Codec: Use NVIDIA HEVC encoder
-                    "-c:v", "libx265",
-                    "-profile:v", "main10",
-                    "-preset", "slow",
-                    "-pix_fmt", "yuv420p10le",
-                    "-x265-params", "crf=18:vbv-bufsize=10000:vbv-maxrate=8000:selective-sao=0:no-sao=1:strong-intra-smoothing=0:rect=0:aq-mode=1:hdr-opt=1:repeat-headers=1:colorprim=bt2020:range=limited:transfer=smpte2084:colormatrix=bt2020nc:range=limited:master-display='G(13250,34500)B(7500,3000)R(34000,16000)WP(15635,16450)L(10000000,1)':max-cll=1000,400",
-                    #Output File
-                    self.temp_file
-                ])
+            # HDR uses X265 library to encode videos
+            args.extend([
+                # Video Codec: Use NVIDIA HEVC encoder
+                "-c:v", "libx265",
+                "-profile:v", "main10",
+                "-preset", "slow",
+                "-pix_fmt", "yuv420p10le",
+                "-x265-params", f"crf=18:vbv-bufsize=10000:vbv-maxrate=8000:selective-sao=0:no-sao=1:strong-intra-smoothing=0:rect=0:aq-mode=1:hdr-opt=1:repeat-headers=1:colorprim=bt2020:range=limited:transfer=smpte2084:colormatrix=bt2020nc:range=limited:master-display='G(13250,34500)B(7500,3000)R(34000,16000)WP(15635,16450)L(10000000,1)':max-cll=1000,400",
+            ])
         else:
-            if control['FrameEnhancerDownToggle']:
-                args.extend([
-                    "-c:v", "hevc_nvenc",
-                    "-preset", "p5",
-                    "-cq", "18", # Higher quality setting from experimental patch
-                    "-vf", f"scale={frame_width_down}x{frame_height_down}:flags=lanczos+accurate_rnd+full_chroma_int",
-                    "-pix_fmt", output_pix_fmt,
-                    "-colorspace", output_colorspace,
-                    "-color_primaries", output_color_primaries,
-                    "-color_trc", output_color_trc,
-                    "-tag:v", "hvc1",
-                    self.temp_file
-                ])
-            else:
-                
-                args.extend([
-                    "-c:v", "hevc_nvenc",
-                    "-preset", "p5",
-                    "-cq", "18", # Higher quality setting from experimental patch
-                    "-pix_fmt", output_pix_fmt,
-                    "-colorspace", output_colorspace,
-                    "-color_primaries", output_color_primaries,
-                    "-color_trc", output_color_trc,
-                    "-tag:v", "hvc1",
-                    self.temp_file
-                ])
+            # NVENC for SDR encoding 
+            args.extend([
+                "-c:v", "hevc_nvenc",
+                "-preset", "p5",
+                "-cq", "18", # Higher quality setting from experimental patch
+                "-pix_fmt", "yuvj420p",
+                "-colorspace", "rgb",
+                "-color_primaries", "bt709",
+                "-color_trc", "bt709",
+                "-spatial-aq", "1",
+                "-temporal-aq", "1",
+                "-tier", "high",
+                "-tag:v", "hvc1",
+            ])
+        if control['FrameEnhancerDownToggle']:
+            # Added resize frame height/width
+            args.extend([
+                "-vf", f"scale={frame_width_down}x{frame_height_down}:flags=lanczos+accurate_rnd+full_chroma_int",
+            ])
+        # Output file setting
+        if segment:
+            args.extend([output_filename])
+        else:
+            args.extend([self.temp_file])
+        # Run the subprocess
         try:
-            # bufsize=-1 uses system default, often buffered which might be better for video
             self.recording_sp = subprocess.Popen(args, stdin=subprocess.PIPE, bufsize=-1)
             return True
         except FileNotFoundError:
@@ -776,8 +809,11 @@ class VideoProcessor(QObject):
             self.main_window.display_messagebox_signal.emit('FFmpeg Error', 'FFmpeg command not found.', self.main_window)
             return False
         except Exception as e:
-            print(f"[ERROR] Failed to start FFmpeg subprocess (default-style): {e}")
-            self.main_window.display_messagebox_signal.emit('FFmpeg Error', f'Failed to start FFmpeg:\n{e}', self.main_window)
+            print(f"[ERROR] Failed to start FFmpeg subprocess : {e}")
+            if segment:
+                self.main_window.display_messagebox_signal.emit('FFmpeg Error', f'Failed to start FFmpeg for segment {segment_num}:\n{e}', self.main_window)
+            else:
+                self.main_window.display_messagebox_signal.emit('FFmpeg Error', f'Failed to start FFmpeg:\n{e}', self.main_window)
             return False
 
     def _finalize_default_style_recording(self):
@@ -1014,174 +1050,6 @@ class VideoProcessor(QObject):
                  print(f"[WARN] Error closing virtual camera: {e}")
             self.virtcam = None
 
-
-    # --- Multi-Segment Recording Methods (Your Original Logic - Minor Adaptations) ---
-
-    def create_ffmpeg_subprocess_segment(self, output_filename: str):
-        control = self.main_window.control.copy()
-        """Creates the FFmpeg subprocess for a single segment during multi-segment recording."""
-        # This is your original ffmpeg logic, slightly adapted checks
-        if not isinstance(self.current_frame, numpy.ndarray) or self.current_frame.size == 0:
-            print("[ERROR] create_ffmpeg_subprocess_segment: Invalid current_frame.")
-            return False
-        if not self.media_path or not Path(self.media_path).is_file():
-            print("[ERROR] create_ffmpeg_subprocess_segment: Original media path invalid.")
-            return False
-        if self.fps <= 0:
-            print("[ERROR] create_ffmpeg_subprocess_segment: Invalid FPS.")
-            return False
-        if self.current_segment_index < 0 or self.current_segment_index >= len(self.segments_to_process):
-            print(f"[ERROR] create_ffmpeg_subprocess_segment: Invalid segment index {self.current_segment_index}.")
-            return False
-
-        start_frame, end_frame = self.segments_to_process[self.current_segment_index]
-        start_time_sec = start_frame / self.fps
-        # Use end_frame + 1 for duration calc if using -t, or end_frame / fps for -to
-        # Let's stick to -ss and -to for consistency with default style where applicable
-        # end_time_sec = (end_frame + 1) / self.fps # End time is exclusive in -to? No, ffmpeg docs say -to is inclusive. Use end_frame.
-        end_time_sec = end_frame / self.fps # Let's try end_frame directly for -to
-
-        frame_height, frame_width, _ = self.current_frame.shape
-        # Fix for frame enhancer activated while doing segments
-        if control['FrameEnhancerEnableToggle']:
-            if control['FrameEnhancerTypeSelection'] in ('RealEsrgan-x2-Plus', 'BSRGan-x2'):
-                frame_height = frame_height * 2
-                frame_width = frame_width * 2
-            elif control['FrameEnhancerTypeSelection'] in ('RealEsrgan-x4-Plus', 'BSRGan-x4', 'UltraSharp-x4', 'UltraMix-x4', 'RealEsr-General-x4v3'):
-                frame_height = frame_height * 4
-                frame_width = frame_width * 4
-        # Added option to resize video frame to 1920*1080
-        frame_height_down = frame_height
-        frame_width_down = frame_width
-        #frame_height_down_mult = frame_height / 1080
-        frame_width_down_mult = frame_width / 1920
-          
-        if control['FrameEnhancerDownToggle']:
-            if (frame_width != 1920 or frame_height != 1080):
-                frame_height_down = math.ceil(frame_height / frame_width_down_mult)
-                #frame_width_down = math.ceil(frame_width / frame_width_down_mult)
-                frame_width_down = 1920
-            else:
-                print("Already 1920*1080")
-                
-        segment_num = self.current_segment_index + 1
-        print(f"Creating FFmpeg (Segment {segment_num}): Video Dim={frame_width}x{frame_height}, FPS={self.fps}, Output='{output_filename}'")
-        print(f"  Audio Segment: Start={start_time_sec:.3f}s, End={end_time_sec:.3f}s (Frames {start_frame}-{end_frame})")
-
-        if Path(output_filename).is_file():
-            try:
-                os.remove(output_filename)
-            except OSError as e:
-                print(f"[WARN] Could not remove existing segment file {output_filename}: {e}")
-
-        output_pix_fmt = 'yuvj420p' # Standard 8-bit SDR
-        output_color_trc = 'bt2020-10'
-        output_colorspace = 'rgb'
-        output_color_primaries = 'bt2020'
-        
-        args = [
-            "ffmpeg",
-            "-hide_banner",
-            "-loglevel", "error",
-            # Input 0: Processed Video from Pipe (RGB)
-            "-f", "rawvideo",
-            "-pix_fmt", "bgr24", # Sending RGB frames
-            "-s", f"{frame_width}x{frame_height}",
-            "-r", str(self.fps),
-            "-i", "pipe:0", # Input 0 from pipe
-            # Input 1: Original Audio from File (Segmented)
-            "-ss", str(start_time_sec),
-            "-to", str(end_time_sec),
-            "-i", self.media_path, # Input 1 is original file
-            # Mapping
-            "-map", "0:v:0", # Video from pipe
-            "-map", "1:a:0?", # Audio from file (optional)
-            # Audio Codec
-            "-c:a", "copy", # Copy original audio stream segment
-            # Options
-            "-shortest", # Stop when shortest input (audio segment) ends
-        ]
-        # Video Codec & Options (Pad and format for compatibility)
-        if control['HDREncodeToggle']:
-            if control['FrameEnhancerDownToggle']:
-                args.extend([
-                    # Video Codec: Use NVIDIA HEVC encoder
-                    "-c:v", "libx265",
-                    "-vf", f"scale={frame_width_down}x{frame_height_down}:flags=lanczos+accurate_rnd+full_chroma_int",
-                    "-profile:v", "main10",
-                    "-preset", "slow",
-                    "-pix_fmt", "yuv420p10le",
-                    "-x265-params", f"crf=18:vbv-bufsize=10000:vbv-maxrate=8000:selective-sao=0:no-sao=1:strong-intra-smoothing=0:rect=0:aq-mode=1:hdr-opt=1:repeat-headers=1:colorprim=bt2020:range=limited:transfer=smpte2084:colormatrix=bt2020nc:range=limited:master-display='G(13250,34500)B(7500,3000)R(34000,16000)WP(15635,16450)L(10000000,1)':max-cll=1000,400",
-                    # Output File
-                    output_filename
-                ])
-            else:
-                args.extend([
-                    # Video Codec: Use NVIDIA HEVC encoder
-                    "-c:v", "libx265",
-                    "-profile:v", "main10",
-                    "-preset", "slow",
-                    "-pix_fmt", "yuv420p10le",
-                    "-x265-params", "crf=18:vbv-bufsize=10000:vbv-maxrate=8000:selective-sao=0:no-sao=1:strong-intra-smoothing=0:rect=0:aq-mode=1:hdr-opt=1:repeat-headers=1:colorprim=bt2020:range=limited:transfer=smpte2084:colormatrix=bt2020nc:range=limited:master-display='G(13250,34500)B(7500,3000)R(34000,16000)WP(15635,16450)L(10000000,1)':max-cll=1000,400",
-                    #Output File
-                    output_filename
-                ])
-        else:
-            if control['FrameEnhancerDownToggle']:
-                args.extend([
-                    # Video Codec: Use NVIDIA HEVC encoder
-                    "-c:v", "hevc_nvenc",
-                    # Quality Setting: NVENC uses -cq (Constant Quality scale, lower=better, ~18-28 is common range)
-                    # Or use -qp (Constant Quantization Parameter)
-                    # Or target bitrate: -b:v 60M
-                    "-cq", "18", # Experiment with this value
-                    # Preset: Controls speed vs quality trade-off for NVENC (e.g., p1-p7, default is p4/p5)
-                    # p5=medium, p6=slow, p7=slower (higher quality)
-                    "-preset", "p5",
-                    # Set color properties (NVENC should respect these)
-                    "-vf", f"scale={frame_width_down}x{frame_height_down}:flags=lanczos+accurate_rnd+full_chroma_int",
-                    "-pix_fmt", output_pix_fmt,
-                    "-colorspace", output_colorspace,
-                    "-color_primaries", output_color_primaries,
-                    "-color_trc", output_color_trc,
-                    "-tag:v", "hvc1",
-                    # Output File
-                    output_filename
-                ])
-            else:
-                args.extend([
-                    # Video Codec: Use NVIDIA HEVC encoder
-                    "-c:v", "hevc_nvenc",
-                    # Quality Setting: NVENC uses -cq (Constant Quality scale, lower=better, ~18-28 is common range)
-                    # Or use -qp (Constant Quantization Parameter)
-                    # Or target bitrate: -b:v 60M
-                    "-cq", "18", # Experiment with this value
-                    # Preset: Controls speed vs quality trade-off for NVENC (e.g., p1-p7, default is p4/p5)
-                    # p5=medium, p6=slow, p7=slower (higher quality)
-                    "-preset", "p5",
-                    # Set color properties (NVENC should respect these)
-                    "-pix_fmt", output_pix_fmt,
-                    "-colorspace", output_colorspace,
-                    "-color_primaries", output_color_primaries,
-                    "-color_trc", output_color_trc,
-                    "-tag:v", "hvc1",
-                    # Output File
-                    output_filename
-                ])
-        
-        try:
-            self.recording_sp = subprocess.Popen(args, stdin=subprocess.PIPE, bufsize=-1)
-            return True
-        except FileNotFoundError:
-            print("[ERROR] FFmpeg command not found. Ensure FFmpeg is installed and in system PATH.")
-            self.main_window.display_messagebox_signal.emit('FFmpeg Error', 'FFmpeg command not found.', self.main_window)
-            return False
-        except Exception as e:
-            print(f"[ERROR] Failed to start FFmpeg subprocess for segment {segment_num}: {e}")
-            self.main_window.display_messagebox_signal.emit('FFmpeg Error', f'Failed to start FFmpeg for segment {segment_num}:\n{e}', self.main_window)
-            return False
-
-
     def start_multi_segment_recording(self, segments: list[tuple[int, int]], triggered_by_job_manager: bool = False):
         if self.processing or self.is_processing_segments:
             print("[WARN] Attempted to start segment recording while already processing.")
@@ -1322,7 +1190,7 @@ class VideoProcessor(QObject):
         temp_segment_path = os.path.join(self.segment_temp_dir, temp_segment_filename)
         self.temp_segment_files.append(temp_segment_path) # Store path for concatenation
 
-        if not self.create_ffmpeg_subprocess_segment(output_filename=temp_segment_path):
+        if not self.create_ffmpeg_subprocess(output_filename=temp_segment_path):
             print(f"[ERROR] Failed to create ffmpeg subprocess for segment {segment_num}. Aborting.")
             self.stop_processing() # Abort
             return

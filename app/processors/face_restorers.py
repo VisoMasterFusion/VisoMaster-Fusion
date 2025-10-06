@@ -19,7 +19,7 @@ class FaceRestorers:
             2048: v2.Resize((2048, 2048), antialias=False)
         }
 
-    def apply_facerestorer(self, swapped_face_upscaled, restorer_det_type, restorer_type, restorer_blend, fidelity_weight, detect_score):
+    def apply_facerestorer(self, swapped_face_upscaled, restorer_det_type, restorer_type, restorer_blend, fidelity_weight, detect_score, target_kps=None):
         temp = swapped_face_upscaled
         t512 = self.resize_transforms[512]
         t256 = self.resize_transforms[256]
@@ -34,11 +34,11 @@ class FaceRestorers:
                 dst[:,0] += 32.0
 
             elif restorer_det_type == 'Reference':
-                try:
-                    dst, _, _ = self.models_processor.run_detect_landmark(swapped_face_upscaled, bbox=np.array([0, 0, 512, 512]), det_kpss=[], detect_mode='5', score=detect_score/100.0, from_points=False)
-                except Exception as e: # pylint: disable=broad-except
-                    print(f"exception: {e}")
+                # FIX: Instead of re-detecting landmarks, use the target_kps passed to the function.
+                if target_kps is None or len(target_kps) == 0:
+                    print("[WARN] 'Reference' alignment selected, but no target landmarks (target_kps) were provided. Skipping restoration.")
                     return swapped_face_upscaled
+                dst = target_kps
 
             # Return non-enhanced face if keypoints are empty
             if not isinstance(dst, np.ndarray) or len(dst)==0:
