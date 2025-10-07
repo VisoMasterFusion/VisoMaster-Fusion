@@ -9,6 +9,8 @@ onnxruntime-gpu==1.22.0
 packaging
 PySide6 
 kornia
+cuda-toolkit==12.9.1
+nvidia-cudnn-cu12==9.13.1.26
 tensorrt-cu12
 tensorrt-cu12_libs==10.13.2.6
 tensorrt-cu12_bindings==10.13.2.6
