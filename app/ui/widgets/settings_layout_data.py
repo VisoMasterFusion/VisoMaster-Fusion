@@ -79,17 +79,68 @@ SETTINGS_LAYOUT_DATA: LayoutDictTypes = {
             'default': False,
             'help': 'Select to resize the video to 1920*1080 (only on 16/9 format)'
         },
+        'OpenOutputToggle':{
+            'level': 1,
+            'label': 'Open Output Folder After Recording',
+            'default': False,
+            'help': 'Opens the output folder after recording ends.'
+        },
         'HDREncodeToggle':{
             'level': 1,
             'label': 'HDR Encoding - Use on HDR videos only (CPU)',
             'default': False,
             'help': 'Encode the video file in HDR, uses CPU and libx256, slower processing.'
         },
-        'OpenOutputToggle':{
+        'FFMpegOptionsToggle':{
             'level': 1,
-            'label': 'Open Output Folder After Recording',
+            'label': 'FFMpeg options',
             'default': False,
-            'help': 'Opens the output folder after recording ends.'
+            'help': 'Show FFMpeg options.'
+        },
+        'FFPresetsSDRSelection':{
+            'level': 2,
+            'label': 'Presets SDR',
+            'options': ['p1', 'p2', 'p3', 'p4', 'p5', 'p6', 'p7'],
+            'default': 'p5',
+            'parentToggle': 'FFMpegOptionsToggle',
+            'requiredToggleValue': True,
+            'help': 'HEVC_NVENC presets, P1 = faster but lower quality → P7 = slower but better quality. Default = P5.'
+        },
+        'FFPresetsHDRSelection':{
+            'level': 2,
+            'label': 'Presets HDR',
+            'options': ['ultrafast', 'superfast', 'veryfast', 'faster', 'fast', 'medium', 'slow', 'veryslow'],
+            'default': 'slow',
+            'parentToggle': 'FFMpegOptionsToggle',
+            'requiredToggleValue': True,
+            'help': 'LIBx265 presets, Ultrafast = faster but lower quality → Veryslow = slower but better quality. Default = Slow.'
+        },
+        'FFQualitySlider':{
+            'level': 2,
+            'label': 'Quality',
+            'min_value': '0',
+            'max_value': '51',
+            'default': '18',
+            'step': 1,
+            'parentToggle': 'FFMpegOptionsToggle',
+            'requiredToggleValue': True,
+            'help': 'Constant quality slider, lower values = better quality but less encoding (bigger files). Default = 18.'
+        },
+        'FFSpatialAQToggle':{
+            'level': 2,
+            'label': 'Spatial AQ',
+            'default': False,
+            'parentToggle': 'FFMpegOptionsToggle',
+            'requiredToggleValue': True,
+            'help': 'Spatial AQ adjusts the QP within a single frame based on content complexity. It allocates more bits to detailed or textured areas and fewer bits to flat, uniform areas.'
+        },
+        'FFTemporalAQToggle':{
+            'level': 2,
+            'label': 'Temporal AQ',
+            'default': False,
+            'parentToggle': 'FFMpegOptionsToggle',
+            'requiredToggleValue': True,
+            'help': 'Temporal AQ adjusts the QP across multiple frames over time. It helps maintain a consistent visual quality by mitigating fluctuations in bitrate and quality between frames.'
         }
     },
     'Swap settings':{
