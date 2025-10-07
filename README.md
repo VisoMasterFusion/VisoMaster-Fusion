@@ -56,7 +56,15 @@ VisoMaster-Fusion includes all the great features of the original plus major enh
 ---
 
 ### **Prerequisites**
-- Portable Version: No pre-requirements
+- All versions require 
+  - CUDA - https://developer.nvidia.com/cuda-toolkit-archive
+    Currently supported versions: 11.8 / 12.4 / 12.8 / 12.9
+    Some newer GPUs (like rtx 50xx cards) need the newer CUDA version 12.9. Check the minimum supported cuda version for your GPU. Beside that you can choose any supported version.
+  - CuDNN - https://developer.nvidia.com/cudnn
+    Check the version support matrix and choose version based on your installed CUDA version (https://docs.nvidia.com/deeplearning/cudnn/backend/latest/reference/support-matrix.html)
+  - FFmpeg 7.1 - ([see installation below]([https://github.com/asdf31jsa/VisoMaster-Experimental?tab=readme-ov-file#4-download-and-install-ffmpeg-711-method-1)))
+
+- Portable Version: No other pre-requirements
 - Non-Portable Version:
     -   **Git** ([Download](https://git-scm.com/downloads))
     -   **Miniconda** ([Download](https://www.anaconda.com/download))
@@ -115,12 +123,44 @@ uv venv --python 3.11
 uv pip install -r requirements_cu129.txt
 ```
 
-**4. Download required models**
+#### **4. Download and install ffmpeg 7.1.1 [Method 1]**
+  - FFmpeg is required for video processing and to be able to record and save your swapped results.
+  - **You won't be able to save any of your swapped videos without installing FFmpeg!**
+```sh
+winget install -e --id Gyan.FFmpeg --version 7.1.1
+```
+
+***4.1** Alternatively if you prefer it in your environment only [OPTIONAL Method 2]*
+  - ***Not needed if you used winget to install it***
+  - *Might be not as reliably found from installed Packages or VisoMaster itself.*
+  - *If you chose this method and are getting errors about missing FFmpeg, I'd suggest using winget. But you have a third option below too.*
+  - *Make sure your VisoMaster environment is active.*
+```sh
+conda activate visomaster
+conda install -c conda-forge ffmpeg
+```
+
+***4.2** Manual Installation [OPTIONAL Method 3]*
+  - ***Also not needed if you used winget or chose to install it into your environment
+  - *If option one and two didn't work for you for whatever reason, you can install it manually.*
+  - *Download the .zip from [here](https://github.com/BtbN/FFmpeg-Builds/releases/download/latest/ffmpeg-n7.1-latest-win64-gpl-7.1.zip)*
+  - *Extract the `bin` folder from the FFmpeg archive to `C:\Tools\ffmpeg\` (or wherever want, just remember it).*
+  - *Add `C:\Tools\ffmpeg\bin` to PATH automatically using PowerShell. (the bin folder with its content is the important part here!)*
+    > ***Note:** REMEMBER If you chose a different location to extract to, adjust the path accordingly, or this will have no effect!*
+    
+    *Open ***PowerShell as Administrator*** and run:*
+```sh
+[Environment]::SetEnvironmentVariable("Path", $env:Path + ";C:\ffmpeg\bin", "Machine")
+```
+
+
+
+**5. Download required models**
 ```sh
 python download_models.py
 ```
 
-**5. Run the Application**
+**6. Run the Application**
 
 Once everything is set up, start the application: 
 - by opening the **Start.bat** file (for Windows)
@@ -139,7 +179,7 @@ python main.py
 ```
 
 
-**5.1 Update to latest code state**
+**6.1 Update to latest code state**
 ```sh
 cd VisoMaster
 git pull
