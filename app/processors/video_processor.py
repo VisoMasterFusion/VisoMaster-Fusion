@@ -738,6 +738,11 @@ class VideoProcessor(QObject):
                     print(f"[WARN] Could not remove existing temp file {self.temp_file}: {e}")
 
         # FFmpeg arguments passed to the subprocess
+        hdrpreset = control['FFPresetsHDRSelection']
+        sdrpreset = control['FFPresetsSDRSelection']
+        ffquality = control['FFQualitySlider']
+        ffspatial = int(control['FFSpatialAQToggle'])
+        fftemporal = int(control['FFTemporalAQToggle'])
         # Base args always used to get the pipeline frames
         args = [
             "ffmpeg",
@@ -771,22 +776,23 @@ class VideoProcessor(QObject):
                 # Video Codec: Use NVIDIA HEVC encoder
                 "-c:v", "libx265",
                 "-profile:v", "main10",
-                "-preset", "slow",
+                "-preset", str(hdrpreset),
                 "-pix_fmt", "yuv420p10le",
-                "-x265-params", f"crf=18:vbv-bufsize=10000:vbv-maxrate=8000:selective-sao=0:no-sao=1:strong-intra-smoothing=0:rect=0:aq-mode=1:hdr-opt=1:repeat-headers=1:colorprim=bt2020:range=limited:transfer=smpte2084:colormatrix=bt2020nc:range=limited:master-display='G(13250,34500)B(7500,3000)R(34000,16000)WP(15635,16450)L(10000000,1)':max-cll=1000,400",
+                "-x265-params", f"crf={ffquality}:vbv-bufsize=10000:vbv-maxrate=10000:selective-sao=0:no-sao=1:strong-intra-smoothing=0:rect=0:aq-mode={ffspatial}:t-aq={fftemporal}:hdr-opt=1:repeat-headers=1:colorprim=bt2020:range=limited:transfer=smpte2084:colormatrix=bt2020nc:range=limited:master-display='G(13250,34500)B(7500,3000)R(34000,16000)WP(15635,16450)L(10000000,1)':max-cll=1000,400",
             ])
         else:
             # NVENC for SDR encoding 
             args.extend([
                 "-c:v", "hevc_nvenc",
-                "-preset", "p5",
-                "-cq", "18", # Higher quality setting from experimental patch
-                "-pix_fmt", "yuvj420p",
+                "-preset", str(sdrpreset),
+                "-profile:v", "main10",
+                "-cq", str(ffquality), # Higher quality setting from experimental patch
+                "-pix_fmt", "yuv420p10le",
                 "-colorspace", "rgb",
                 "-color_primaries", "bt709",
                 "-color_trc", "bt709",
-                "-spatial-aq", "1",
-                "-temporal-aq", "1",
+                "-spatial-aq", str(ffspatial),
+                "-temporal-aq", str(fftemporal),
                 "-tier", "high",
                 "-tag:v", "hvc1",
             ])
@@ -800,6 +806,7 @@ class VideoProcessor(QObject):
             args.extend([output_filename])
         else:
             args.extend([self.temp_file])
+        print(args)
         # Run the subprocess
         try:
             self.recording_sp = subprocess.Popen(args, stdin=subprocess.PIPE, bufsize=-1)
