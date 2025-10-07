@@ -18,12 +18,17 @@ set "UV_DIR=%PORTABLE_DIR%\uv"
 set "GIT_DIR=%PORTABLE_DIR%\git"
 set "GIT_BIN=%PORTABLE_DIR%\git\bin\git.exe"
 set "VENV_DIR=%PORTABLE_DIR%\venv"
-set "PYTHON_EMBED_URL=https://www.python.org/ftp/python/3.10.11/python-3.10.11-embed-amd64.zip"
+set "PYTHON_EMBED_URL=https://www.python.org/ftp/python/3.11.9/python-3.11.9-embed-amd64.zip"
 set "PYTHON_ZIP=%PORTABLE_DIR%\python-embed.zip"
 set "UV_URL=https://github.com/astral-sh/uv/releases/download/0.8.22/uv-x86_64-pc-windows-msvc.zip"
 set "UV_ZIP=%PORTABLE_DIR%\uv.zip"
 set "GIT_URL=https://github.com/git-for-windows/git/releases/download/v2.51.0.windows.1/PortableGit-2.51.0-64-bit.7z.exe"
 set "GIT_ZIP=%PORTABLE_DIR%\PortableGit.exe"
+set "FFMPEG_URL=https://www.gyan.dev/ffmpeg/builds/packages/ffmpeg-7.1.1-essentials_build.zip"
+set "FFMPEG_ZIP=%PORTABLE_DIR%\ffmpeg.zip"
+set "FFMPEG_EXTRACT_DIR=%BASE_DIR%dependencies"
+set "FFMPEG_DIR_NAME=ffmpeg-7.1.1-essentials_build"
+set "FFMPEG_PATH_VAR=%FFMPEG_EXTRACT_DIR%\%FFMPEG_DIR_NAME%\bin"
 
 set "OLD_PATH=%PATH%"
 set "PATH=%GIT_DIR%\bin;%PATH%"
@@ -40,24 +45,8 @@ if exist "%CONFIG_FILE%" (
     goto :ConfigLoaded
 )
 
-:: First time setup - show menu
-echo.
-echo Welcome! Please select the environment to install.
-echo This choice will be saved in portable.cfg for future runs.
-echo --------------------------------------------------------
-echo 1. Install for CUDA 11.8 - requirements_cu118.txt
-echo 2. Install for CUDA 12.4 - requirements_cu124.txt
-echo 3. Install for CUDA 12.8 - requirements_cu128.txt
-echo 4. Install for RTX 50xx cards - requirements_rtx50.txt
-echo.
-choice /c 1234 /m "Enter your choice (1-4): "
-
-set "CHOICE=!ERRORLEVEL!"
-if !CHOICE! equ 1 set "REQ_FILE_NAME=requirements_cu118.txt"
-if !CHOICE! equ 2 set "REQ_FILE_NAME=requirements_cu124.txt"
-if !CHOICE! equ 3 set "REQ_FILE_NAME=requirements_cu128.txt"
-if !CHOICE! equ 4 set "REQ_FILE_NAME=requirements_rtx50.txt"
-
+:: First time setup
+set "REQ_FILE_NAME=requirements_cu129.txt"
 set "DOWNLOAD_RUN=false"
 
 :: Write to config file in a clean "KEY=VALUE" format.
@@ -69,6 +58,9 @@ echo Configuration saved.
 echo.
 
 :ConfigLoaded
+
+:: Force requirements file to cu129
+set "REQ_FILE_NAME=requirements_cu129.txt"
 
 :: Reconstruct the full path to the requirements file from the config.
 set "REQUIREMENTS=%APP_DIR%\%REQ_FILE_NAME%"
@@ -170,7 +162,7 @@ if not exist "%PYTHON_DIR%\python.exe" (
     del "%PYTHON_ZIP%"
     
     :: Enable site packages
-    set "PTH_FILE=%PYTHON_DIR%\python310._pth"
+    set "PTH_FILE=%PYTHON_DIR%\python311._pth"
     if exist "!PTH_FILE!" (
         echo Enabling site packages in PTH file...
         powershell -Command "(Get-Content '!PTH_FILE!') -replace '#import site', 'import site' | Set-Content '!PTH_FILE!'"
@@ -254,6 +246,26 @@ if /I "!DOWNLOAD_RUN!"=="false" (
     echo Model downloads already completed. Skipping...
 )
 
+:: --- Step 7.5: Set up FFmpeg ---
+if not exist "%FFMPEG_PATH_VAR%\ffmpeg.exe" (
+    echo Downloading FFmpeg...
+    powershell -Command "try { (New-Object Net.WebClient).DownloadFile('%FFMPEG_URL%', '%FFMPEG_ZIP%'); exit 0 } catch { exit 1 }"
+    if !ERRORLEVEL! neq 0 (
+        echo ERROR: Failed to download FFmpeg.
+        set "PATH=%OLD_PATH%"
+        exit /b 1
+    )
+    echo Extracting FFmpeg...
+    powershell -Command "Expand-Archive -Path '%FFMPEG_ZIP%' -DestinationPath '%FFMPEG_EXTRACT_DIR%' -Force"
+    if !ERRORLEVEL! neq 0 (
+        echo ERROR: Failed to extract FFmpeg.
+        del "%FFMPEG_ZIP%"
+        set "PATH=%OLD_PATH%"
+        exit /b 1
+    )
+    del "%FFMPEG_ZIP%"
+)
+
 :: Restore original PATH
 set "PATH=%OLD_PATH%"
 
@@ -263,6 +275,8 @@ if exist "%APP_DIR%\%MAIN_PY%" (
     echo Starting main.py...
     echo ========================================
     pushd "%APP_DIR%"
+    set "FFMPEG_PATH=%FFMPEG_PATH_VAR%"
+    set "PATH=%FFMPEG_PATH_VAR%;%PATH%"
     "%VENV_DIR%\Scripts\python.exe" "%MAIN_PY%"
     popd
 ) else (

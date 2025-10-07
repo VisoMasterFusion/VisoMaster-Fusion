@@ -56,14 +56,7 @@ VisoMaster-Fusion includes all the great features of the original plus major enh
 ---
 
 ### **Prerequisites**
-- All versions require 
-  - CUDA - https://developer.nvidia.com/cuda-toolkit-archive
-    Currently supported versions: 11.8 / 12.4 / 12.8 / 12.9
-    Some newer GPUs (like rtx 50xx cards) need the newer CUDA version 12.9. Check the minimum supported cuda version for your GPU. Beside that you can choose any supported version.
-  - CuDNN - https://developer.nvidia.com/cudnn
-    Check the version support matrix and choose version based on your installed CUDA version (https://docs.nvidia.com/deeplearning/cudnn/backend/latest/reference/support-matrix.html)
-
-- Portable Version: No other pre-requirements
+- Portable Version: No pre-requirements
 - Non-Portable Version:
     -   **Git** ([Download](https://git-scm.com/downloads))
     -   **Miniconda** ([Download](https://www.anaconda.com/download))
@@ -74,7 +67,7 @@ VisoMaster-Fusion includes all the great features of the original plus major enh
 
 ### **Portable version**
 
-Download only the Run_Portable.bat file from this repo (you don't need to clone the whole repo) from link below and put it in a new directory were you want to run VisoMaster from. Then just execute the bat file to run VisoMaster. Portable dependencies will be installed on the first run to portable-files directory. Select your installed CUDA version on the initial run.
+Download only the Run_Portable.bat file from this repo (you don't need to clone the whole repo) from link below and put it in a new directory were you want to run VisoMaster from. Then just execute the bat file to run VisoMaster. Portable dependencies will be installed on the first run to portable-files directory.
 - [Download - Start_Portable.bat](Start_Portable.bat)
 
 You don't need any other steps from below for the portable version. Always start visomaster with Start_Portable.bat
@@ -99,7 +92,7 @@ git checkout fusion
 #### In case you like to use "anaconda"
 
 ```sh
-conda create -n visomaster python=3.10 -y
+conda create -n visomaster python=3.11 -y
 ```
 ```sh
 conda activate visomaster
@@ -111,25 +104,15 @@ pip install uv
 ### In case you like to use "uv" directly
 
 ```sh
-uv venv --python 3.10
+uv venv --python 3.11
 ```
 ```sh
 .venv\Scripts\activate
 ```
 
-**3. Install requirements depending on your cuda version**
+**3. Install requirements**
 ```
-# for CUDA 11.4
-uv pip install -r requirements_cu118.txt
-
-# for CUDA 12.4
-uv pip install -r requirements_cu124.txt
-
-# for CUDA 12.8
-uv pip install -r requirements_cu128.txt
-
-# for CUDA 12.9 (minimum version for rtx 50xx cards)
-uv pip install -r requirements_rtx50.txt
+uv pip install -r requirements_cu129.txt
 ```
 
 **4. Download required models**
@@ -163,6 +146,18 @@ git pull
 ```
 
 ---
+
+**6. Install ffmpeg**
+
+In Windows - Either via:
+
+- powershell command: "winget install -e --id Gyan.FFmpeg --version 7.1.1"
+
+<br>or
+
+- Download ffmpeg zip: https://www.gyan.dev/ffmpeg/builds/packages/ffmpeg-7.1.1-essentials_build.zip
+- Unzip it somewhere
+- Add "\<unzipped ffmpeg path>\bin" folder to your Windows environment PATH variable
 
 ## How to use the Job Manager
 1.  Set up your workspace as you normally would before recording (select source/target faces, adjust settings, etc.).
