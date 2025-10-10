@@ -940,6 +940,10 @@ class FrameWorker(threading.Thread):
             if debug and parameters['SwapperResAutoSelectEnableToggle']:
                 debug_info["Resolution"] = 128*dim
 
+            # Optional Scaling # change the transform matrix scaling from center
+            if parameters['FaceAdjEnableToggle']:
+                input_face_affined = v2.functional.affine(input_face_affined, 0, (0, 0), 1 + parameters['FaceScaleAmountSlider'] / 100, 0, center=(dim*128/2, dim*128/2), interpolation=v2.InterpolationMode.BILINEAR)
+                
             itex = 1
             if parameters['StrengthEnableToggle']:
                 itex = ceil(parameters['StrengthAmountSlider'] / 100.)
