@@ -24,7 +24,7 @@ if TYPE_CHECKING:
     from app.ui.main_ui import MainWindow
 
 def open_embeddings_from_file(main_window: 'MainWindow'):
-    
+
     embedding_filename, _ = QtWidgets.QFileDialog.getOpenFileName(main_window, filter='JSON (*.json)', dir=misc_helpers.get_dir_of_file(main_window.loaded_embedding_filename))
     if embedding_filename:
         with open(embedding_filename, 'r') as embed_file: #pylint: disable=unspecified-encoding
@@ -45,8 +45,8 @@ def open_embeddings_from_file(main_window: 'MainWindow'):
 
                 # Passa l'intero embedding_store alla funzione
                 list_view_actions.create_and_add_embed_button_to_list(
-                    main_window, 
-                    embed_data['name'], 
+                    main_window,
+                    embed_data['name'],
                     embedding_store,  # Passa l'intero embedding_store
                     embedding_id=str(uuid.uuid1().int)
                 )
@@ -179,7 +179,7 @@ def load_saved_workspace(main_window: 'MainWindow', data_filename: str|bool = Fa
             main_window.input_faces_loader_worker.thumbnail_ready.connect(partial(list_view_actions.add_media_thumbnail_to_source_faces_list, main_window))
             main_window.input_faces_loader_worker.finished.connect(partial(common_widget_actions.refresh_frame, main_window))
             #Use run() instead of start(), as we dont want it running in a different thread as it could create synchronisation issues in the steps below
-            main_window.input_faces_loader_worker.run() 
+            main_window.input_faces_loader_worker.run()
 
             for face_id, input_face_data in data['input_faces_data'].items():
                 if face_id in main_window.input_faces:
@@ -220,7 +220,7 @@ def load_saved_workspace(main_window: 'MainWindow', data_filename: str|bool = Fa
                 assigned_input_faces: list = target_face_data['assigned_input_faces']
                 for assigned_input_face_id in assigned_input_faces:
                     main_window.target_faces[face_id].assigned_input_faces[assigned_input_face_id] = main_window.input_faces[assigned_input_face_id].embedding_store
-                
+
                 # Set assigned input embedding (Input face + merged embeddings)
                 assigned_input_embedding = {embed_model: np.array(embedding) for embed_model, embedding in target_face_data['assigned_input_embedding'].items()}
                 main_window.target_faces[face_id].assigned_input_embedding = assigned_input_embedding
@@ -244,7 +244,7 @@ def load_saved_workspace(main_window: 'MainWindow', data_filename: str|bool = Fa
 
             # Convert params to ParametersDict
             data['markers'] = convert_markers_to_supported_type(main_window, data['markers'], misc_helpers.ParametersDict)
-        
+
             for marker_position, marker_data in data['markers'].items():
                 video_control_actions.add_marker(main_window, marker_data['parameters'], marker_data['control'], int(marker_position))
             # main_window.videoSeekSlider.setValue(0)
@@ -291,7 +291,7 @@ def load_saved_workspace(main_window: 'MainWindow', data_filename: str|bool = Fa
                 # Set the active tab index
                 if 'current_tab_index' in tab_state:
                     main_window.tabWidget.setCurrentIndex(tab_state['current_tab_index'])
-                    
+
             layout_actions.fit_image_to_view_onchange(main_window)
 
             if main_window.target_faces:
@@ -299,11 +299,57 @@ def load_saved_workspace(main_window: 'MainWindow', data_filename: str|bool = Fa
             else:
                 main_window.current_widget_parameters = data.get('current_widget_parameters', main_window.default_parameters.copy())
                 main_window.current_widget_parameters = misc_helpers.ParametersDict(main_window.current_widget_parameters, main_window.default_parameters)
-                common_widget_actions.set_widgets_values_using_face_id_parameters(main_window, face_id=False) 
-        
+                common_widget_actions.set_widgets_values_using_face_id_parameters(main_window, face_id=False)
+
+            # Restore Window State
+            window_state = data.get('window_state_data',{})
+            is_maximized = window_state.get('isMaximized', False)
+            is_fullScreen = window_state.get('isFullScreen', False)
+
+            if is_maximized :
+                main_window.resize(main_window.sizeHint())
+                main_window.showMaximized()
+            elif is_fullScreen :
+                main_window.resize(main_window.sizeHint())
+                main_window.showFullScreen()
+                main_window.menuBar().hide()
+                main_window.is_full_screen = True
+            else :
+                main_window.setGeometry(window_state.get('x', main_window.x()),
+                                        window_state.get('y', main_window.y()),
+                                        window_state.get('width', main_window.width()),
+                                        window_state.get('height', main_window.height())
+                                        )
+            main_window.TargetMediaCheckBox.setChecked(window_state.get('TargetMediaCheckBox', True))
+            main_window.InputFacesCheckBox.setChecked(window_state.get('InputFacesCheckBox', True))
+            main_window.JobsCheckBox.setChecked(window_state.get('JobsCheckBox', True))
+            main_window.facesPanelCheckBox.setChecked(window_state.get('facesPanelCheckBox', True))
+            main_window.parametersPanelCheckBox.setChecked(window_state.get('parametersPanelCheckBox', True))
+            main_window.filterImagesCheckBox.setChecked(window_state.get('filterImagesCheckBox', True))
+            main_window.filterVideosCheckBox.setChecked(window_state.get('filterVideosCheckBox', True))
+            main_window.filterWebcamsCheckBox.setChecked(window_state.get('filterWebcamsCheckBox', False))
+
 def save_current_workspace(main_window: 'MainWindow', data_filename:str|bool = False):
     target_faces_data = {}; embeddings_data = {}; input_faces_data = {}
     target_medias_data = []
+
+    # --- Save Window State ---
+    window_state_data ={
+        'x': main_window.x(),
+        'y': main_window.y(),
+        'height': main_window.height(),
+        'width': main_window.width(),
+        'isMaximized': main_window.isMaximized(),
+        'isFullScreen': main_window.is_full_screen,
+        'TargetMediaCheckBox': main_window.TargetMediaCheckBox.isChecked(),
+        'InputFacesCheckBox': main_window.InputFacesCheckBox.isChecked(),
+        'JobsCheckBox': main_window.JobsCheckBox.isChecked(),
+        'facesPanelCheckBox': main_window.facesPanelCheckBox.isChecked(),
+        'parametersPanelCheckBox': main_window.parametersPanelCheckBox.isChecked(),
+        'filterImagesCheckBox': main_window.filterImagesCheckBox.isChecked(),
+        'filterVideosCheckBox': main_window.filterVideosCheckBox.isChecked(),
+        'filterWebcamsCheckBox': main_window.filterWebcamsCheckBox.isChecked(),
+    }
 
     # --- Check if Denoiser is enabled ---
     control = main_window.control
@@ -341,12 +387,12 @@ def save_current_workspace(main_window: 'MainWindow', data_filename:str|bool = F
             'media_path': input_face.media_path,
             'kv_map': kv_map_path
         }
-    
+
     # --- Serialize Target Faces & Parameters ---
     for face_id, target_face in main_window.target_faces.items():
         assigned_kv_map_serializable = None
         target_faces_data[face_id] = {
-            'cropped_face': target_face.cropped_face.tolist(), 
+            'cropped_face': target_face.cropped_face.tolist(),
             'embedding_store': {embed_model: embedding.tolist() for embed_model, embedding in target_face.embedding_store.items()},
             'parameters': main_window.parameters.get(face_id, main_window.default_parameters).data.copy(), # Use .get with default, ensure it's dict
             'assigned_input_faces': list(target_face.assigned_input_faces.keys()),
@@ -385,18 +431,19 @@ def save_current_workspace(main_window: 'MainWindow', data_filename:str|bool = F
         'input_faces_data': input_faces_data,
         'target_faces_data': target_faces_data,
         'embeddings_data': embeddings_data,
-        'markers': markers_to_save, 
+        'markers': markers_to_save,
         'control': main_window.control.copy(),
         'job_marker_pairs': main_window.job_marker_pairs, # Save the list of tuples
         'last_target_media_folder_path': main_window.last_target_media_folder_path,
         'last_input_media_folder_path': main_window.last_input_media_folder_path,
         'loaded_embedding_filename': main_window.loaded_embedding_filename,
         'current_widget_parameters': main_window.current_widget_parameters.data.copy(), # Save as dict
-        'tab_state': tab_state  # Add the tab state to the saved data
+        'tab_state': tab_state,  # Add the tab state to the saved data
+        'window_state_data': window_state_data,
     }
     if data_filename is False:
         data_filename, _ = QtWidgets.QFileDialog.getSaveFileName(main_window, filter='JSON (*.json)')
-    
+
     if data_filename:
         try:
             with open(data_filename, 'w') as data_file: #pylint: disable=unspecified-encoding
@@ -422,7 +469,7 @@ def save_current_job(main_window: 'MainWindow'):
     if not any(tf.get_assigned_total_input_faces() for tf in main_window.target_faces.values()):
         common_widget_actions.create_and_show_messagebox(main_window, "Error", "No input faces assigned to any target face.", main_window)
         return
-    
+
     # Show dialog to get job name and output options
     dialog = widget_components.SaveJobDialog(main_window)
     if dialog.exec() == QtWidgets.QDialog.Accepted:
@@ -445,7 +492,7 @@ def save_current_job(main_window: 'MainWindow'):
         'target_media_type': main_window.selected_video_button.file_type,
         'input_faces_data': {fid: {'media_path': face.media_path} for fid, face in main_window.input_faces.items()},
         'target_faces_data': {},
-        'embeddings_data': {eid: {'name': emb.embedding_name, 'store': {m: e.tolist() for m, e in emb.embedding_store.items()}} 
+        'embeddings_data': {eid: {'name': emb.embedding_name, 'store': {m: e.tolist() for m, e in emb.embedding_store.items()}}
                             for eid, emb in main_window.merged_embeddings.items()},
         'markers': convert_markers_to_supported_type(main_window, copy.deepcopy(main_window.markers), dict),
         'control': main_window.control.copy(),
@@ -456,7 +503,7 @@ def save_current_job(main_window: 'MainWindow'):
     # Serialize target face specifics for the job
     for face_id, target_face in main_window.target_faces.items():
         job_data['target_faces_data'][face_id] = {
-            'cropped_face': target_face.cropped_face.tolist(), 
+            'cropped_face': target_face.cropped_face.tolist(),
             'embedding_store': {m: e.tolist() for m, e in target_face.embedding_store.items()},
             'parameters': main_window.parameters.get(face_id, main_window.default_parameters).data.copy(),
             'assigned_input_faces': list(target_face.assigned_input_faces.keys()),
