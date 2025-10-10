@@ -320,6 +320,14 @@ def load_saved_workspace(main_window: 'MainWindow', data_filename: str|bool = Fa
                                         window_state.get('width', main_window.width()),
                                         window_state.get('height', main_window.height())
                                         )
+            main_window.TargetMediaCheckBox.setChecked(window_state.get('TargetMediaCheckBox', True))
+            main_window.InputFacesCheckBox.setChecked(window_state.get('InputFacesCheckBox', True))
+            main_window.JobsCheckBox.setChecked(window_state.get('JobsCheckBox', True))
+            main_window.facesPanelCheckBox.setChecked(window_state.get('facesPanelCheckBox', True))
+            main_window.parametersPanelCheckBox.setChecked(window_state.get('parametersPanelCheckBox', True))
+            main_window.filterImagesCheckBox.setChecked(window_state.get('filterImagesCheckBox', True))
+            main_window.filterVideosCheckBox.setChecked(window_state.get('filterVideosCheckBox', True))
+            main_window.filterWebcamsCheckBox.setChecked(window_state.get('filterWebcamsCheckBox', False))
 
 def save_current_workspace(main_window: 'MainWindow', data_filename:str|bool = False):
     target_faces_data = {}; embeddings_data = {}; input_faces_data = {}
@@ -333,6 +341,14 @@ def save_current_workspace(main_window: 'MainWindow', data_filename:str|bool = F
         'width': main_window.width(),
         'isMaximized': main_window.isMaximized(),
         'isFullScreen': main_window.is_full_screen,
+        'TargetMediaCheckBox': main_window.TargetMediaCheckBox.isChecked(),
+        'InputFacesCheckBox': main_window.InputFacesCheckBox.isChecked(),
+        'JobsCheckBox': main_window.JobsCheckBox.isChecked(),
+        'facesPanelCheckBox': main_window.facesPanelCheckBox.isChecked(),
+        'parametersPanelCheckBox': main_window.parametersPanelCheckBox.isChecked(),
+        'filterImagesCheckBox': main_window.filterImagesCheckBox.isChecked(),
+        'filterVideosCheckBox': main_window.filterVideosCheckBox.isChecked(),
+        'filterWebcamsCheckBox': main_window.filterWebcamsCheckBox.isChecked(),
     }
 
     # --- Check if Denoiser is enabled ---
