@@ -26,6 +26,10 @@ class FaceLandmarkDetectors:
         scores = []
 
         if detect_mode=='5':
+            # Load the model if it's not already in memory
+            if not self.models_processor.models['FaceLandmark5']:
+                self.models_processor.models['FaceLandmark5'] = self.models_processor.load_model('FaceLandmark5')
+
             # Moved anchor generation to a persistent cache
             if not self.landmark_5_anchors:
                 feature_maps = [[64, 64], [32, 32], [16, 16]]
@@ -45,6 +49,7 @@ class FaceLandmarkDetectors:
                                 self.landmark_5_anchors += [cx, cy, s_kx, s_ky]
 
             kpss_5, kpss, scores = self.detect_face_landmark_5(img, bbox=bbox, det_kpss=det_kpss, from_points=from_points)
+
 
         elif detect_mode=='68':
             if not self.models_processor.models['FaceLandmark68']:

@@ -8,7 +8,8 @@ SWAPPER_LAYOUT_DATA: LayoutDictTypes = {
         'SwapModelSelection': {
             'level': 1,
             'label': 'Swapper Model',
-            'options': ['Inswapper128', 'InStyleSwapper256 Version A', 'InStyleSwapper256 Version B', 'InStyleSwapper256 Version C', 'DeepFaceLive (DFM)', 'SimSwap512', 'GhostFace-v1', 'GhostFace-v2', 'GhostFace-v3', 'CSCS', 'CanonSwap'],            'default': 'Inswapper128',
+            'options': ['Inswapper128', 'InStyleSwapper256 Version A', 'InStyleSwapper256 Version B', 'InStyleSwapper256 Version C', 'DeepFaceLive (DFM)', 'SimSwap512', 'GhostFace-v1', 'GhostFace-v2', 'GhostFace-v3', 'CSCS', 'CanonSwap'],
+            'default': 'Inswapper128',
             'help': 'Choose which swapper model to use for face swapping.'
         },
         'SwapperResSelection': {
@@ -55,8 +56,8 @@ SWAPPER_LAYOUT_DATA: LayoutDictTypes = {
         'DFMModelSelection': {
             'level': 2,
             'label': 'DFM Model',
-            'options': misc_helpers.get_dfm_models_selection_values,
-            'default': misc_helpers.get_dfm_models_default_value,
+            'options': lambda manager: manager.get_selection_values(),
+            'default': lambda manager: manager.get_default_value(),
             'parentSelection': 'SwapModelSelection',
             'requiredSelectionValue': 'DeepFaceLive (DFM)',
             'help': 'Select which pretrained DeepFaceLive (DFM) Model to use for swapping.'
