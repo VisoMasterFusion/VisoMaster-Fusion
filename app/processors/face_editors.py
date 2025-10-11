@@ -35,33 +35,25 @@ class FaceEditors:
     def lp_motion_extractor(self, img, face_editor_type='Human-Face', **kwargs) -> dict:
         kp_info = {}
         with torch.no_grad():
-            # We force to use TensorRT because it doesn't work well in trt
+            # prepare_source
+            I_s = torch.div(img.type(torch.float32), 255.)
+            I_s = torch.clamp(I_s, 0, 1)  # clamp to 0~1
+            I_s = torch.unsqueeze(I_s, 0).contiguous()
+
             if self.models_processor.provider_name in ["TensorRT", "TensorRT-Engine"]:
-            #if self.models_processor.provider_name == "!TensorRT-Engine":
                 if face_editor_type == 'Human-Face':
                     if not self.models_processor.models_trt['LivePortraitMotionExtractor']:
                         self.models_processor.models_trt['LivePortraitMotionExtractor'] = self.models_processor.load_model_trt('LivePortraitMotionExtractor', custom_plugin_path=None, precision="fp32")
 
                 motion_extractor_model = self.models_processor.models_trt['LivePortraitMotionExtractor']
-                # input_spec = motion_extractor_model.input_spec()
-                # output_spec = motion_extractor_model.output_spec()
-
-                # prepare_source
-                I_s = torch.div(img.type(torch.float32), 255.)
-                I_s = torch.clamp(I_s, 0, 1)  # clamp to 0~1
-                I_s = torch.unsqueeze(I_s, 0).contiguous()
 
                 nvtx.range_push("forward")
 
-                feed_dict = {}
-                feed_dict["img"] = I_s
-                stream = torch.cuda.Stream()
-                stream.wait_stream(torch.cuda.default_stream())
-                with torch.cuda.stream(stream):
-                #preds_dict = motion_extractor_model.predict_async(feed_dict, stream)
-                    preds_dict = motion_extractor_model.predict_async(feed_dict, torch.cuda.current_stream())
-                #preds_dict = motion_extractor_model.predict(feed_dict)
-
+                feed_dict = {"img": I_s}
+                current_stream = torch.cuda.current_stream()
+                preds_dict = motion_extractor_model.predict_async(feed_dict, current_stream)
+                #current_stream.synchronize()
+                
                 kp_info = {
                     'pitch': preds_dict["pitch"],
                     'yaw': preds_dict["yaw"],
@@ -80,11 +72,6 @@ class FaceEditors:
                         self.models_processor.models['LivePortraitMotionExtractor'] = self.models_processor.load_model('LivePortraitMotionExtractor')
 
                 motion_extractor_model = self.models_processor.models['LivePortraitMotionExtractor']
-
-                # prepare_source
-                I_s = torch.div(img.type(torch.float32), 255.)
-                I_s = torch.clamp(I_s, 0, 1)  # clamp to 0~1
-                I_s = torch.unsqueeze(I_s, 0).contiguous()
 
                 pitch = torch.empty((1,66), dtype=torch.float32, device=self.models_processor.device).contiguous()
                 yaw = torch.empty((1,66), dtype=torch.float32, device=self.models_processor.device).contiguous()
@@ -133,29 +120,24 @@ class FaceEditors:
 
     def lp_appearance_feature_extractor(self, img, face_editor_type='Human-Face'):
         with torch.no_grad():
-            # We force to use TensorRT. 
+            # prepare_source
+            I_s = torch.div(img.type(torch.float32), 255.)
+            I_s = torch.clamp(I_s, 0, 1)  # clamp to 0~1
+            I_s = torch.unsqueeze(I_s, 0).contiguous()
+            
             if self.models_processor.provider_name in ["TensorRT", "TensorRT-Engine"]:
-            #if self.models_processor.provider_name == "!TensorRT-Engine":
                 if face_editor_type == 'Human-Face':
                     if not self.models_processor.models_trt['LivePortraitAppearanceFeatureExtractor']:
                         self.models_processor.models_trt['LivePortraitAppearanceFeatureExtractor'] = self.models_processor.load_model_trt('LivePortraitAppearanceFeatureExtractor', custom_plugin_path=None, precision="fp16")
 
                 appearance_feature_extractor_model = self.models_processor.models_trt['LivePortraitAppearanceFeatureExtractor']
 
-                # prepare_source
-                I_s = torch.div(img.type(torch.float32), 255.)
-                I_s = torch.clamp(I_s, 0, 1)  # clamp to 0~1
-                I_s = torch.unsqueeze(I_s, 0).contiguous()
-
                 nvtx.range_push("forward")
 
-                feed_dict = {}
-                feed_dict["img"] = I_s
-                stream = torch.cuda.Stream()
-                stream.wait_stream(torch.cuda.default_stream())
-                with torch.cuda.stream(stream):
-                    preds_dict = appearance_feature_extractor_model.predict_async(feed_dict, torch.cuda.current_stream())
-                #preds_dict = appearance_feature_extractor_model.predict(feed_dict)
+                feed_dict = {"img": I_s}
+                current_stream = torch.cuda.current_stream()
+                preds_dict = appearance_feature_extractor_model.predict_async(feed_dict, current_stream)
+                #current_stream.synchronize()
 
                 output = preds_dict["output"]
 
@@ -167,11 +149,6 @@ class FaceEditors:
                         self.models_processor.models['LivePortraitAppearanceFeatureExtractor'] = self.models_processor.load_model('LivePortraitAppearanceFeatureExtractor')
 
                 appearance_feature_extractor_model = self.models_processor.models['LivePortraitAppearanceFeatureExtractor']
-
-                # prepare_source
-                I_s = torch.div(img.type(torch.float32), 255.)
-                I_s = torch.clamp(I_s, 0, 1)  # clamp to 0~1
-                I_s = torch.unsqueeze(I_s, 0).contiguous()
 
                 output = torch.empty((1,32,16,64,64), dtype=torch.float32, device=self.models_processor.device).contiguous()
 
@@ -194,26 +171,22 @@ class FaceEditors:
         Return: Bx(3*num_kp)
         """
         with torch.no_grad():
-            # We force to use TensorRT. 
+            # prepare_source
+            feat_eye = faceutil.concat_feat(kp_source, eye_close_ratio).contiguous()
+
             if self.models_processor.provider_name in ["TensorRT", "TensorRT-Engine"]:
-            #if self.models_processor.provider_name == "!TensorRT-Engine":
                 if face_editor_type == 'Human-Face':
                     if not self.models_processor.models_trt['LivePortraitStitchingEye']:
                         self.models_processor.models_trt['LivePortraitStitchingEye'] = self.models_processor.load_model_trt('LivePortraitStitchingEye', custom_plugin_path=None, precision="fp16")
 
                 stitching_eye_model = self.models_processor.models_trt['LivePortraitStitchingEye']
 
-                feat_eye = faceutil.concat_feat(kp_source, eye_close_ratio).contiguous()
-
                 nvtx.range_push("forward")
 
-                feed_dict = {}
-                feed_dict["input"] = feat_eye
-                stream = torch.cuda.Stream()
-                stream.wait_stream(torch.cuda.default_stream())
-                with torch.cuda.stream(stream):
-                    preds_dict = stitching_eye_model.predict_async(feed_dict, torch.cuda.current_stream())
-                #preds_dict = stitching_eye_model.predict(feed_dict)
+                feed_dict = {"input": feat_eye}
+                current_stream = torch.cuda.current_stream()
+                preds_dict = stitching_eye_model.predict_async(feed_dict, current_stream)
+                #current_stream.synchronize() 
 
                 delta = preds_dict["output"]
 
@@ -226,7 +199,6 @@ class FaceEditors:
 
                 stitching_eye_model = self.models_processor.models['LivePortraitStitchingEye']
 
-                feat_eye = faceutil.concat_feat(kp_source, eye_close_ratio).contiguous()
                 delta = torch.empty((1,63), dtype=torch.float32, device=self.models_processor.device).contiguous()
 
                 io_binding = stitching_eye_model.io_binding()
@@ -237,6 +209,7 @@ class FaceEditors:
                     torch.cuda.synchronize()
                 elif self.models_processor.device != "cpu":
                     self.models_processor.syncvec.cpu()
+                
                 stitching_eye_model.run_with_iobinding(io_binding)
 
         return delta.reshape(-1, kp_source.shape[1], 3)
@@ -248,26 +221,22 @@ class FaceEditors:
         Return: Bx(3*num_kp)
         """
         with torch.no_grad():
-            # We force to use TensorRT. 
+            # Prepare the input feature vector (common to both backends)
+            feat_lip = faceutil.concat_feat(kp_source, lip_close_ratio).contiguous()
+
             if self.models_processor.provider_name in ["TensorRT", "TensorRT-Engine"]:
-            #if self.models_processor.provider_name == "!TensorRT-Engine":
                 if face_editor_type == 'Human-Face':
                     if not self.models_processor.models_trt['LivePortraitStitchingLip']:
                         self.models_processor.models_trt['LivePortraitStitchingLip'] = self.models_processor.load_model_trt('LivePortraitStitchingLip', custom_plugin_path=None, precision="fp16")
 
                 stitching_lip_model = self.models_processor.models_trt['LivePortraitStitchingLip']
 
-                feat_lip = faceutil.concat_feat(kp_source, lip_close_ratio).contiguous()
-
                 nvtx.range_push("forward")
 
-                feed_dict = {}
-                feed_dict["input"] = feat_lip
-                stream = torch.cuda.Stream()
-                stream.wait_stream(torch.cuda.default_stream())
-                with torch.cuda.stream(stream):
-                    preds_dict = stitching_lip_model.predict_async(feed_dict, torch.cuda.current_stream())
-                #preds_dict = stitching_lip_model.predict(feed_dict)
+                feed_dict = {"input": feat_lip}
+                current_stream = torch.cuda.current_stream()
+                preds_dict = stitching_lip_model.predict_async(feed_dict, current_stream)
+                #current_stream.synchronize() 
 
                 delta = preds_dict["output"]
 
@@ -280,7 +249,6 @@ class FaceEditors:
 
                 stitching_lip_model = self.models_processor.models['LivePortraitStitchingLip']
 
-                feat_lip = faceutil.concat_feat(kp_source, lip_close_ratio).contiguous()
                 delta = torch.empty((1,63), dtype=torch.float32, device=self.models_processor.device).contiguous()
 
                 io_binding = stitching_lip_model.io_binding()
@@ -291,6 +259,7 @@ class FaceEditors:
                     torch.cuda.synchronize()
                 elif self.models_processor.device != "cpu":
                     self.models_processor.syncvec.cpu()
+                
                 stitching_lip_model.run_with_iobinding(io_binding)
 
         return delta.reshape(-1, kp_source.shape[1], 3)
@@ -302,49 +271,60 @@ class FaceEditors:
         Return: Bx(3*num_kp+2)
         """
         with torch.no_grad():
-            # We force to use TensorRT. 
+            # Prepare the concatenated feature vector (keypoints from source and driving)
+            feat_stiching = faceutil.concat_feat(kp_source, kp_driving).contiguous()
+
+            # When using TensorRT / engine. 
             if self.models_processor.provider_name in ["TensorRT", "TensorRT-Engine"]:
-            #if self.models_processor.provider_name == "!TensorRT-Engine":
                 if face_editor_type == 'Human-Face':
+                    # Lazy loading of the TensorRT model
                     if not self.models_processor.models_trt['LivePortraitStitching']:
                         self.models_processor.models_trt['LivePortraitStitching'] = self.models_processor.load_model_trt('LivePortraitStitching', custom_plugin_path=None, precision="fp16")
 
                 stitching_model = self.models_processor.models_trt['LivePortraitStitching']
 
-                feat_stiching = faceutil.concat_feat(kp_source, kp_driving).contiguous()
-
                 nvtx.range_push("forward")
 
-                feed_dict = {}
-                feed_dict["input"] = feat_stiching
-                stream = torch.cuda.Stream()
-                stream.wait_stream(torch.cuda.default_stream())
-                with torch.cuda.stream(stream):
-                    preds_dict = stitching_model.predict_async(feed_dict, torch.cuda.current_stream())
-                #preds_dict = stitching_model.predict(feed_dict)
+                feed_dict = {"input": feat_stiching}
+                
+                # --- ASYNC FLOW CORRECTION FOR MULTITHREADING (TRT) ---
+                # Use the current thread's CUDA stream for asynchronous execution.
+                current_stream = torch.cuda.current_stream()
+                
+                # Launch inference asynchronously on the current stream.
+                preds_dict = stitching_model.predict_async(feed_dict, current_stream)
+                
+                # CRITICAL SYNCHRONIZATION: Wait for the inference on this stream to complete 
+                # before reading the results (delta) on the CPU or continuing with dependent GPU work.
+                #current_stream.synchronize() 
 
                 delta = preds_dict["output"]
 
                 nvtx.range_pop()
 
             else:
+                # --- Alternative Backend (e.g., ONNX Runtime) ---
                 if face_editor_type == 'Human-Face':
+                    # Lazy loading of the non-TRT model
                     if not self.models_processor.models['LivePortraitStitching']:
                         self.models_processor.models['LivePortraitStitching'] = self.models_processor.load_model('LivePortraitStitching')
 
                 stitching_model = self.models_processor.models['LivePortraitStitching']
 
-                feat_stiching = faceutil.concat_feat(kp_source, kp_driving).contiguous()
                 delta = torch.empty((1,65), dtype=torch.float32, device=self.models_processor.device).contiguous()
 
+                # Manual I/O binding (used for high-performance non-TRT runtimes)
                 io_binding = stitching_model.io_binding()
                 io_binding.bind_input(name='input', device_type=self.models_processor.device, device_id=0, element_type=np.float32, shape=feat_stiching.size(), buffer_ptr=feat_stiching.data_ptr())
                 io_binding.bind_output(name='output', device_type=self.models_processor.device, device_id=0, element_type=np.float32, shape=delta.size(), buffer_ptr=delta.data_ptr())
 
+                # Explicit synchronization logic for the non-TRT run
                 if self.models_processor.device == "cuda":
+                    # Synchronize all CUDA operations if running on GPU
                     torch.cuda.synchronize()
                 elif self.models_processor.device != "cpu":
                     self.models_processor.syncvec.cpu()
+                
                 stitching_model.run_with_iobinding(io_binding)
 
         return delta
@@ -402,12 +382,18 @@ class FaceEditors:
         kp_source: BxNx3
         kp_driving: BxNx3
         """
+        # Ensure all inputs are contiguous before the conditional logic
+        feature_3d = feature_3d.contiguous()
+        kp_source = kp_source.contiguous()
+        kp_driving = kp_driving.contiguous()
 
         with torch.no_grad():
             if self.models_processor.provider_name in ["TensorRT", "TensorRT-Engine"]:
-            #if self.models_processor.provider_name == "TensorRT-Engine":
                 if face_editor_type == 'Human-Face':
+                    # Lazy loading of the TensorRT model
                     if not self.models_processor.models_trt['LivePortraitWarpingSpadeFix']:
+                        
+                        # Logic to select the correct platform-specific plugin path
                         if SYSTEM_PLATFORM == 'Windows':
                             plugin_path = f'{models_dir}/grid_sample_3d_plugin.dll'
                         elif SYSTEM_PLATFORM == 'Linux':
@@ -415,52 +401,57 @@ class FaceEditors:
                         else:
                             raise ValueError("TensorRT-Engine is only supported on Windows and Linux systems!")
 
+                        # Load model with the custom plugin path and FP16 precision
                         self.models_processor.models_trt['LivePortraitWarpingSpadeFix'] = self.models_processor.load_model_trt('LivePortraitWarpingSpadeFix', custom_plugin_path=plugin_path, precision="fp16")
 
                 warping_spade_model = self.models_processor.models_trt['LivePortraitWarpingSpadeFix']
 
-                feature_3d = feature_3d.contiguous()
-                kp_source = kp_source.contiguous()
-                kp_driving = kp_driving.contiguous()
-
                 nvtx.range_push("forward")
 
-                feed_dict = {}
-                feed_dict["feature_3d"] = feature_3d
-                feed_dict["kp_source"] = kp_source
-                feed_dict["kp_driving"] = kp_driving
-                stream = torch.cuda.Stream()
-                stream.wait_stream(torch.cuda.default_stream())
-                with torch.cuda.stream(stream):
-                    preds_dict = warping_spade_model.predict_async(feed_dict, torch.cuda.current_stream())
-                #preds_dict = warping_spade_model.predict_async(feed_dict, torch.cuda.current_stream())
-                #preds_dict = warping_spade_model.predict(feed_dict)
+                feed_dict = {
+                    "feature_3d": feature_3d,
+                    "kp_source": kp_source,
+                    "kp_driving": kp_driving
+                }
+                
+                # --- ASYNC FLOW CORRECTION FOR MULTITHREADING (TRT) ---
+                # 1. Use the current thread's CUDA stream for asynchronous execution.
+                current_stream = torch.cuda.current_stream()
+                
+                # 2. Launch inference asynchronously.
+                preds_dict = warping_spade_model.predict_async(feed_dict, current_stream)
+                
+                # 3. CRITICAL SYNCHRONIZATION: Wait for the inference on this stream to complete.
+                #current_stream.synchronize() 
 
                 out = preds_dict["out"]
 
                 nvtx.range_pop()
             else:
+                # --- Alternative Backend (e.g., ONNX Runtime) ---
                 if face_editor_type == 'Human-Face':
+                    # Lazy loading of the non-TRT model
                     if not self.models_processor.models['LivePortraitWarpingSpade']:
                         self.models_processor.models['LivePortraitWarpingSpade'] = self.models_processor.load_model('LivePortraitWarpingSpade')
 
                 warping_spade_model = self.models_processor.models['LivePortraitWarpingSpade']
 
-                feature_3d = feature_3d.contiguous()
-                kp_source = kp_source.contiguous()
-                kp_driving = kp_driving.contiguous()
-
+                # Allocate output buffer
                 out = torch.empty((1,3,512,512), dtype=torch.float32, device=self.models_processor.device).contiguous()
+                
+                # Manual I/O binding
                 io_binding = warping_spade_model.io_binding()
                 io_binding.bind_input(name='feature_3d', device_type=self.models_processor.device, device_id=0, element_type=np.float32, shape=feature_3d.size(), buffer_ptr=feature_3d.data_ptr())
                 io_binding.bind_input(name='kp_driving', device_type=self.models_processor.device, device_id=0, element_type=np.float32, shape=kp_driving.size(), buffer_ptr=kp_driving.data_ptr())
                 io_binding.bind_input(name='kp_source', device_type=self.models_processor.device, device_id=0, element_type=np.float32, shape=kp_source.size(), buffer_ptr=kp_source.data_ptr())
                 io_binding.bind_output(name='out', device_type=self.models_processor.device, device_id=0, element_type=np.float32, shape=out.size(), buffer_ptr=out.data_ptr())
 
+                # Explicit synchronization logic for the non-TRT run
                 if self.models_processor.device == "cuda":
                     torch.cuda.synchronize()
                 elif self.models_processor.device != "cpu":
                     self.models_processor.syncvec.cpu()
+                    
                 warping_spade_model.run_with_iobinding(io_binding)
 
         return out

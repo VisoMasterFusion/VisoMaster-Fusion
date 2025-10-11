@@ -41,6 +41,16 @@ try:
             'hash': '8448de922a824b7b11eb7f470805ec22cf4ee541f7d66afeb2965094f96fd3ab'
         },
         {
+            "model_name": "Inswapper128",
+            "local_path": f'{models_dir}/inswapper_128.fp16.' + trt.__version__ + '.trt',
+            "hash": "6d51a9278a1f650cffefc18ba53f38bf2769bf4bbff89267822cf72945f8a38b",
+        },
+        {
+            "model_name": "RetinaFace",
+            "local_path": f'{models_dir}/det_10g.' + trt.__version__ + '.trt',
+            "hash": "5838f7fe053675b1c7a08b633df49e7af5495cee0493c7dcf6697200b85b5b91",
+        },
+        {
             'model_name': 'LivePortraitWarpingSpadeFix', 
             'local_path': f'{models_dir}/liveportrait_onnx/warping_spade-fix.' + trt.__version__ + '.trt', 
             'hash': '24acdb6379b28fbefefb6339b3605693e00f1703c21ea5b8fec0215e521f6912'

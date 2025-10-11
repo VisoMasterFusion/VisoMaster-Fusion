@@ -131,7 +131,7 @@ class TensorRTPredictor:
             if -1 in shape:
                 if is_input:
                     # Ottiene la shape massima per il profilo 0
-                    profile_shape = self.engine.get_tensor_profile_shape(name, 0)[-1]
+                    profile_shape = self.engine.get_tensor_profile_shape(name, 0)[2]
                     shape = list(profile_shape)
                     batch_size = shape[0]
                 else:
@@ -260,17 +260,17 @@ class TensorRTPredictor:
             if not noerror:
                 raise RuntimeError("ERROR: inference failed.")
 
-            input_consumed_event.synchronize()
+            for output in self.outputs:
+                output_name = output["name"]
+                actual_shape_trt = context.get_tensor_shape(output_name)
+                actual_shape = list(actual_shape_trt) 
+                buffers[output_name].resize_(actual_shape) 
 
             return buffers
 
         finally:
-            # Sincronizza lo stream usato se diverso da quello corrente
-            if stream != torch.cuda.current_stream():
-                stream.synchronize()
-            else:
-                torch.cuda.synchronize()
-            self.context_pool.put(pool_entry)
+            # Laisser l'appelant synchroniser. Le seul rôle est de remettre le contexte dans le pool.
+            self.context_pool.put(pool_entry) 
 
     def cleanup(self) -> None:
         """
