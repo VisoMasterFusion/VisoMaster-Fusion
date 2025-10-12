@@ -33,10 +33,11 @@ from app.ui.widgets.denoiser_layout_data import DENOISER_LAYOUT_DATA
 from app.ui.widgets.swapper_layout_data import SWAPPER_LAYOUT_DATA
 from app.ui.widgets.settings_layout_data import SETTINGS_LAYOUT_DATA
 from app.ui.widgets.face_editor_layout_data import FACE_EDITOR_LAYOUT_DATA
-from app.helpers.miscellaneous import DFM_MODELS_DATA, ParametersDict
+from app.helpers.miscellaneous import DFMModelManager, ParametersDict, ThumbnailManager
 from app.helpers.typing_helper import FacesParametersTypes, ParametersTypes, ControlTypes, MarkerTypes
 from app.processors.models_data import models_dir as global_models_dir # For UNet model discovery
 from app.processors.utils.ref_ldm_kv_embedding import KVExtractor
+
 
 ParametersWidgetTypes = Dict[str, widget_components.ToggleButton|widget_components.SelectionBox|widget_components.ParameterDecimalSlider|widget_components.ParameterSlider|widget_components.ParameterText]
 
@@ -67,19 +68,12 @@ class MainWindow(QtWidgets.QMainWindow, Ui_MainWindow):
         self._rightFacesButtonsRow = None           # HLayout für Buttons
         self._faceButtonsOriginalTexts = {}         # zum Wiederherstellen
         self._rightFacesStripVisible = False
-        # '''
-            # self.parameters dict have the following structure:
-            # {
-                # face_id (int): 
-                # {
-                    # parameter_name: parameter_value,
-                    # ------
-                # }
-                # -----
-            # }
-        # '''
-        self.parameters: FacesParametersTypes = {} 
+        
+        # --- Initialize Managers ---
+        self.thumbnail_manager = ThumbnailManager()
+        self.dfm_model_manager = DFMModelManager()
 
+        self.parameters: FacesParametersTypes = {} 
         self.default_parameters: ParametersTypes = {}
         self.copied_parameters: ParametersTypes = {}
         self.current_widget_parameters: ParametersTypes = {}
@@ -104,11 +98,8 @@ class MainWindow(QtWidgets.QMainWindow, Ui_MainWindow):
         self.last_input_media_folder_path = ''
 
         self.is_full_screen = False
-        self.dfm_models_data = DFM_MODELS_DATA
+        
         # This flag is used to make sure new loaded media is properly fit into the graphics frame on the first load
-
-        # Determine project root and actual models directory path
-        # main_ui.py is in app/ui/, so project root is 3 levels up.
         self.project_root_path = Path(__file__).resolve().parent.parent.parent
         self.actual_models_dir_path = self.project_root_path / global_models_dir
         self.loading_new_media = False

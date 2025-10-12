@@ -286,7 +286,7 @@ class ModelsProcessor(QtCore.QObject):
                     self.dfm_models.pop(model_name)
                     gc.collect()
                 try:
-                    self.dfm_models[dfm_model] = DFMModel(self.main_window.dfm_models_data[dfm_model], self.providers, self.device)
+                    self.dfm_models[dfm_model] = DFMModel(self.main_window.dfm_model_manager.get_models_data()[dfm_model], self.providers, self.device)
                 except:
                     traceback.print_exc()   
                     self.dfm_models[dfm_model] = None         
