@@ -3,16 +3,39 @@ import re
 import json
 import argparse
 import copy
+
 # MARKER: Import OrderedDict
 from collections import OrderedDict
 from PySide6.QtWidgets import (
-    QApplication, QWidget, QVBoxLayout, QHBoxLayout, QPushButton,
-    QFileDialog, QMessageBox, QLineEdit, QLabel, QFrame, QScrollArea,
-    QMenu, QInputDialog, QCheckBox, QGridLayout, QSizePolicy, QComboBox,
-    QGraphicsDropShadowEffect, QMenuBar, QStyle
+    QApplication,
+    QWidget,
+    QVBoxLayout,
+    QHBoxLayout,
+    QPushButton,
+    QFileDialog,
+    QMessageBox,
+    QLineEdit,
+    QLabel,
+    QFrame,
+    QScrollArea,
+    QMenu,
+    QInputDialog,
+    QCheckBox,
+    QComboBox,
+    QGraphicsDropShadowEffect,
+    QMenuBar,
 )
-from PySide6.QtCore import Qt, QPoint, QRect, QTimer, QThread, Signal, QObject, QMimeData, QEvent
-from PySide6.QtGui import QColor, QPalette, QFont, QDrag, QPixmap, QWheelEvent, QAction
+from PySide6.QtCore import (
+    Qt,
+    QPoint,
+    QRect,
+    QThread,
+    Signal,
+    QObject,
+    QMimeData,
+    QEvent,
+)
+from PySide6.QtGui import QColor, QFont, QDrag, QPixmap, QAction
 
 # Dark theme with red accent
 DARK_BG = "#1A1A1A"
@@ -32,9 +55,11 @@ ENTRY_HEIGHT = 65
 ENTRY_WIDTH = 220
 STACK_SPACING = 12
 
+
 class FileLoader(QObject):
     """Worker thread for loading and parsing files."""
-    finished = Signal(object, str) # Use object for OrderedDict
+
+    finished = Signal(object, str)  # Use object for OrderedDict
 
     def __init__(self, file_paths):
         super().__init__()
@@ -43,19 +68,19 @@ class FileLoader(QObject):
     def run(self):
         # MARKER: Use OrderedDict to guarantee preservation of file order.
         embedding_data = OrderedDict()
-        file_type = ''
+        file_type = ""
         for file_path in self.file_paths:
             try:
-                if file_path.endswith('.json'):
-                    file_type = 'json'
-                    with open(file_path, "r", encoding='utf-8') as file:
+                if file_path.endswith(".json"):
+                    file_type = "json"
+                    with open(file_path, "r", encoding="utf-8") as file:
                         content = json.load(file)
                         for item in content:
-                            if 'name' in item and 'embedding_store' in item:
-                                embedding_data[item['name']] = item['embedding_store']
+                            if "name" in item and "embedding_store" in item:
+                                embedding_data[item["name"]] = item["embedding_store"]
                 else:
-                    file_type = 'txt'
-                    with open(file_path, "r", encoding='utf-8') as file:
+                    file_type = "txt"
+                    with open(file_path, "r", encoding="utf-8") as file:
                         content = file.read()
                         current_name = None
                         lines = content.splitlines()
@@ -68,6 +93,7 @@ class FileLoader(QObject):
             except Exception as e:
                 print(f"Error loading file {file_path}: {e}")
         self.finished.emit(embedding_data, file_type)
+
 
 class EntryWidget(QFrame):
     def __init__(self, name, parent=None):
@@ -153,19 +179,21 @@ class EntryWidget(QFrame):
     def mouseMoveEvent(self, event):
         if not (event.buttons() & Qt.LeftButton) or self.drag_start_pos is None:
             return
-        if (event.position() - self.drag_start_pos).manhattanLength() < QApplication.startDragDistance():
+        if (
+            event.position() - self.drag_start_pos
+        ).manhattanLength() < QApplication.startDragDistance():
             return
-        
+
         main_window = self.window()
         if isinstance(main_window, EmbeddingGUI):
             main_window.start_drag_operation()
-            
+
     def mouseReleaseEvent(self, event):
         main_window = self.window()
         if event.button() == Qt.LeftButton:
             if isinstance(main_window, EmbeddingGUI):
                 main_window.handle_entry_click(self, event)
-    
+
     def show_context_menu(self, pos):
         menu = QMenu(self)
         menu.setStyleSheet(f"""
@@ -184,9 +212,9 @@ class EntryWidget(QFrame):
         paste_action = menu.addAction("Paste")
         menu.addSeparator()
         delete_action = menu.addAction("Delete")
-        
+
         action = menu.exec(self.mapToGlobal(pos))
-        
+
         main_window = self.window()
         if not isinstance(main_window, EmbeddingGUI):
             return
@@ -202,9 +230,11 @@ class EntryWidget(QFrame):
                 main_window.deselect_all()
                 self.checkbox.setChecked(True)
             main_window.delete_selected_entries()
-            
+
     def start_rename(self):
-        text, ok = QInputDialog.getText(self, "Rename Entry", "Enter new name:", QLineEdit.Normal, self.name)
+        text, ok = QInputDialog.getText(
+            self, "Rename Entry", "Enter new name:", QLineEdit.Normal, self.name
+        )
         if ok and text and text != self.name:
             main_window = self.window()
             if isinstance(main_window, EmbeddingGUI):
@@ -222,10 +252,12 @@ class EntryWidget(QFrame):
         data_to_copy = []
         for item in selected_items:
             if item.name in main_window.embedding_data:
-                data_to_copy.append({
-                    "name": item.name,
-                    "embedding_store": main_window.embedding_data[item.name]
-                })
+                data_to_copy.append(
+                    {
+                        "name": item.name,
+                        "embedding_store": main_window.embedding_data[item.name],
+                    }
+                )
 
         if data_to_copy:
             QApplication.clipboard().setText(json.dumps(data_to_copy, indent=4))
@@ -307,7 +339,7 @@ class StacksWidget(QWidget):
                     self.drag_indicator.raise_()
                     self.drag_indicator.show()
             else:
-                pos = target_stack.parentWidget().mapToGlobal(QPoint(0,0))
+                pos = target_stack.parentWidget().mapToGlobal(QPoint(0, 0))
                 indicator_pos = self.mapFromGlobal(pos)
                 self.drag_indicator.move(indicator_pos)
                 self.drag_indicator.raise_()
@@ -316,7 +348,7 @@ class StacksWidget(QWidget):
             self.drag_indicator.hide()
 
     def dragEnterEvent(self, event):
-        if event.mimeData().text() == 'internal-move':
+        if event.mimeData().text() == "internal-move":
             event.acceptProposedAction()
 
     def dragMoveEvent(self, event):
@@ -335,8 +367,10 @@ class StacksWidget(QWidget):
         if not isinstance(main_window, EmbeddingGUI):
             return
 
-        target_stack, index_in_stack = self.get_drop_location(self.mapToGlobal(event.position().toPoint()))
-        
+        target_stack, index_in_stack = self.get_drop_location(
+            self.mapToGlobal(event.position().toPoint())
+        )
+
         if target_stack is None:
             return
 
@@ -349,28 +383,33 @@ class StacksWidget(QWidget):
                 for i in range(stack.count()):
                     if isinstance(stack.itemAt(i).widget(), EntryWidget):
                         global_index += 1
-        
+
         main_window.move_selected_entries(global_index)
         event.acceptProposedAction()
 
     def get_drop_location(self, global_pos):
         closest_stack = None
-        min_dist = float('inf')
+        min_dist = float("inf")
 
         for stack in self.stacks:
             stack_widget = stack.parentWidget()
             stack_center_x = stack_widget.mapToGlobal(stack_widget.rect().center()).x()
             dist = abs(stack_center_x - global_pos.x())
-            
+
             global_top_left = stack_widget.mapToGlobal(stack_widget.rect().topLeft())
-            global_bottom_right = stack_widget.mapToGlobal(stack_widget.rect().bottomRight())
+            global_bottom_right = stack_widget.mapToGlobal(
+                stack_widget.rect().bottomRight()
+            )
             global_stack_rect = QRect(global_top_left, global_bottom_right)
-            
-            if global_pos.y() > global_stack_rect.top() - ENTRY_HEIGHT and global_pos.y() < global_stack_rect.bottom() + ENTRY_HEIGHT:
-                 if dist < min_dist:
+
+            if (
+                global_pos.y() > global_stack_rect.top() - ENTRY_HEIGHT
+                and global_pos.y() < global_stack_rect.bottom() + ENTRY_HEIGHT
+            ):
+                if dist < min_dist:
                     min_dist = dist
                     closest_stack = stack
-        
+
         if not closest_stack:
             return None, -1
 
@@ -382,8 +421,12 @@ class StacksWidget(QWidget):
 
                 if global_pos.y() < drop_here_y:
                     return closest_stack, i
-        
-        entry_widget_count = sum(1 for i in range(closest_stack.count()) if isinstance(closest_stack.itemAt(i).widget(), EntryWidget))
+
+        entry_widget_count = sum(
+            1
+            for i in range(closest_stack.count())
+            if isinstance(closest_stack.itemAt(i).widget(), EntryWidget)
+        )
         return closest_stack, entry_widget_count
 
 
@@ -397,17 +440,17 @@ class EmbeddingGUI(QWidget):
         self.last_clicked_widget = None
         self.undo_stack = []
         self.redo_stack = []
-        self.current_load_mode = 'replace'
+        self.current_load_mode = "replace"
         self.setAcceptDrops(True)
         self.init_ui()
 
     def init_ui(self):
         self.setFont(QFont("Segoe UI", 10))
-        
+
         main_layout = QVBoxLayout(self)
         main_layout.setContentsMargins(0, 0, 0, 0)
         main_layout.setSpacing(0)
-        
+
         self._create_menu()
         main_layout.setMenuBar(self.menu_bar)
 
@@ -423,7 +466,7 @@ class EmbeddingGUI(QWidget):
         self.load_button = QPushButton("Load File(s)")
         self.load_button.clicked.connect(self.load_files)
         top_layout.addWidget(self.load_button)
-        
+
         self.additive_load_button = QPushButton("Load Additive")
         self.additive_load_button.clicked.connect(self.additive_load_files)
         top_layout.addWidget(self.additive_load_button)
@@ -431,23 +474,25 @@ class EmbeddingGUI(QWidget):
         self.save_as_button = QPushButton("Save As")
         self.save_as_button.clicked.connect(self.save_as_file)
         top_layout.addWidget(self.save_as_button)
-        
+
         self.save_button = QPushButton("Save Selected")
         self.save_button.clicked.connect(self.save_file)
         top_layout.addWidget(self.save_button)
-        
+
         self.convert_button = QPushButton()
         self.convert_button.clicked.connect(self.convert_format)
         self.convert_button.setVisible(False)
         top_layout.addWidget(self.convert_button)
-        
+
         self.model_combo = QComboBox()
-        self.model_combo.addItems(['Inswapper128ArcFace', 'SimSwapArcFace', 'GhostArcFace'])
+        self.model_combo.addItems(
+            ["Inswapper128ArcFace", "SimSwapArcFace", "GhostArcFace"]
+        )
         self.model_combo.setVisible(False)
         top_layout.addWidget(self.model_combo)
 
         top_layout.addStretch()
-        
+
         self.search_input = QLineEdit()
         self.search_input.setPlaceholderText("Search...")
         self.search_input.textChanged.connect(self.filter_entries)
@@ -467,7 +512,7 @@ class EmbeddingGUI(QWidget):
         bottom_widget = QWidget()
         bottom_layout = QHBoxLayout(bottom_widget)
         bottom_layout.setContentsMargins(0, 0, 0, 0)
-        
+
         self.select_all_button = QPushButton("Select All")
         self.select_all_button.clicked.connect(self.select_all)
         bottom_layout.addWidget(self.select_all_button)
@@ -477,7 +522,7 @@ class EmbeddingGUI(QWidget):
         bottom_layout.addWidget(self.deselect_all_button)
 
         bottom_layout.addStretch()
-        
+
         sort_label = QLabel("Sort by:")
         bottom_layout.addWidget(sort_label)
 
@@ -496,7 +541,7 @@ class EmbeddingGUI(QWidget):
 
     def _create_menu(self):
         self.menu_bar = QMenuBar(self)
-        
+
         edit_menu = self.menu_bar.addMenu("&Edit")
         undo_action = QAction("Undo", self)
         undo_action.setShortcut(Qt.CTRL | Qt.Key_Z)
@@ -509,7 +554,7 @@ class EmbeddingGUI(QWidget):
         edit_menu.addAction(redo_action)
 
         edit_menu.addSeparator()
-        
+
         paste_action = QAction("Paste", self)
         paste_action.setShortcut(Qt.CTRL | Qt.Key_V)
         paste_action.triggered.connect(self.paste_from_clipboard)
@@ -608,7 +653,7 @@ class EmbeddingGUI(QWidget):
                  background-color: {DARKER_BG};
             }}
         """)
-    
+
     def update_button_visibility(self, visible):
         is_data_loaded = bool(self.embedding_data)
         self.select_all_button.setVisible(visible)
@@ -621,12 +666,12 @@ class EmbeddingGUI(QWidget):
 
         if visible:
             self.convert_button.setVisible(True)
-            if hasattr(self, 'current_file_type'):
-                if self.current_file_type == 'txt':
-                    self.convert_button.setText('Convert to Viso')
+            if hasattr(self, "current_file_type"):
+                if self.current_file_type == "txt":
+                    self.convert_button.setText("Convert to Viso")
                     self.model_combo.setVisible(True)
                 else:
-                    self.convert_button.setText('Convert to Rope')
+                    self.convert_button.setText("Convert to Rope")
                     self.model_combo.setVisible(False)
         else:
             self.convert_button.setVisible(False)
@@ -652,39 +697,47 @@ class EmbeddingGUI(QWidget):
     def dropEvent(self, event):
         urls = event.mimeData().urls()
         file_paths = [url.toLocalFile() for url in urls if url.isLocalFile()]
-        valid_paths = [path for path in file_paths if path.endswith(('.json', '.txt'))]
+        valid_paths = [path for path in file_paths if path.endswith((".json", ".txt"))]
 
         if not valid_paths:
             return
 
         if not self.embedding_data:
-            self.start_file_loading_thread(valid_paths, 'replace')
+            self.start_file_loading_thread(valid_paths, "replace")
             return
 
         msg_box = QMessageBox(self)
         msg_box.setWindowTitle("Load Files")
         msg_box.setText("How would you like to load the dropped files?")
         msg_box.setIcon(QMessageBox.Icon.Question)
-        replace_button = msg_box.addButton("Load (Replace)", QMessageBox.ButtonRole.ActionRole)
-        additive_button = msg_box.addButton("Load (Additive)", QMessageBox.ButtonRole.ActionRole)
+        replace_button = msg_box.addButton(
+            "Load (Replace)", QMessageBox.ButtonRole.ActionRole
+        )
+        additive_button = msg_box.addButton(
+            "Load (Additive)", QMessageBox.ButtonRole.ActionRole
+        )
         cancel_button = msg_box.addButton(QMessageBox.StandardButton.Cancel)
         msg_box.exec()
 
         clicked_button = msg_box.clickedButton()
         if clicked_button == replace_button:
-            self.start_file_loading_thread(valid_paths, 'replace')
+            self.start_file_loading_thread(valid_paths, "replace")
         elif clicked_button == additive_button:
-            self.start_file_loading_thread(valid_paths, 'additive')
+            self.start_file_loading_thread(valid_paths, "additive")
 
     def load_files(self):
-        file_paths, _ = QFileDialog.getOpenFileNames(self, "Load Files", "", "JSON Files (*.json);;Text Files (*.txt)")
+        file_paths, _ = QFileDialog.getOpenFileNames(
+            self, "Load Files", "", "JSON Files (*.json);;Text Files (*.txt)"
+        )
         if file_paths:
-            self.start_file_loading_thread(file_paths, 'replace')
-            
+            self.start_file_loading_thread(file_paths, "replace")
+
     def additive_load_files(self):
-        file_paths, _ = QFileDialog.getOpenFileNames(self, "Load Additive", "", "JSON Files (*.json);;Text Files (*.txt)")
+        file_paths, _ = QFileDialog.getOpenFileNames(
+            self, "Load Additive", "", "JSON Files (*.json);;Text Files (*.txt)"
+        )
         if file_paths:
-            self.start_file_loading_thread(file_paths, 'additive')
+            self.start_file_loading_thread(file_paths, "additive")
 
     def start_file_loading_thread(self, file_paths, mode):
         self.current_load_mode = mode
@@ -699,14 +752,14 @@ class EmbeddingGUI(QWidget):
         self.load_button.setText("Loading...")
 
     def on_loading_finished(self, new_data, file_type):
-        if self.current_load_mode == 'replace':
+        if self.current_load_mode == "replace":
             self.embedding_data = new_data
             # MARKER: The loaded file's order is now the new "Original" order.
             self.original_embedding_data = copy.deepcopy(new_data)
             self.undo_stack.clear()
             self.redo_stack.clear()
-        
-        elif self.current_load_mode == 'additive':
+
+        elif self.current_load_mode == "additive":
             self._save_state_for_undo()
             for name, data in new_data.items():
                 if name not in self.embedding_data:
@@ -718,7 +771,7 @@ class EmbeddingGUI(QWidget):
         self.sorting_combo.blockSignals(True)
         self.sorting_combo.setCurrentText("Manual")
         self.sorting_combo.blockSignals(False)
-        
+
         self.populate_entries()
         self.update_button_visibility(True)
         self.thread.quit()
@@ -729,14 +782,15 @@ class EmbeddingGUI(QWidget):
 
     def populate_entries(self):
         self.entries_widget.clear_entries()
-        
+
         if not self.embedding_data:
             return
 
         total_items = len(self.embedding_data)
         num_stacks = (total_items + ITEMS_PER_STACK - 1) // ITEMS_PER_STACK
-        if num_stacks == 0 and total_items > 0: num_stacks = 1
-        
+        if num_stacks == 0 and total_items > 0:
+            num_stacks = 1
+
         names = list(self.embedding_data.keys())
         item_idx = 0
         for i in range(num_stacks):
@@ -751,7 +805,7 @@ class EmbeddingGUI(QWidget):
                     spacer = QWidget()
                     spacer.setFixedSize(ENTRY_WIDTH, ENTRY_HEIGHT)
                     stack_layout.addWidget(spacer)
-    
+
     def filter_entries(self):
         search_text = self.search_input.text().lower()
         for widget in self.entries_widget.get_all_widgets():
@@ -772,8 +826,12 @@ class EmbeddingGUI(QWidget):
             self.sorting_combo.setCurrentText("Manual")
 
     def get_selected_entries(self):
-        return [widget for widget in self.entries_widget.get_all_widgets() if widget.checkbox.isChecked()]
-    
+        return [
+            widget
+            for widget in self.entries_widget.get_all_widgets()
+            if widget.checkbox.isChecked()
+        ]
+
     def select_all(self):
         for widget in self.entries_widget.get_all_widgets():
             if widget.isVisible():
@@ -785,28 +843,42 @@ class EmbeddingGUI(QWidget):
         self.last_clicked_widget = None
 
     def natural_sort_key(self, s):
-        return [int(text) if text.isdigit() else text.lower() for text in re.split(r'(\d+)', s)]
+        return [
+            int(text) if text.isdigit() else text.lower()
+            for text in re.split(r"(\d+)", s)
+        ]
 
     def apply_sorting(self):
         mode = self.sorting_combo.currentText()
-        if not self.embedding_data or mode == "Manual": return
-        
+        if not self.embedding_data or mode == "Manual":
+            return
+
         self._save_state_for_undo()
 
         if mode == "A-Z":
             sorted_names = sorted(self.embedding_data.keys(), key=self.natural_sort_key)
             # MARKER: Rebuild as an OrderedDict to preserve order
-            self.embedding_data = OrderedDict((name, self.embedding_data[name]) for name in sorted_names)
+            self.embedding_data = OrderedDict(
+                (name, self.embedding_data[name]) for name in sorted_names
+            )
         elif mode == "Z-A":
-            sorted_names = sorted(self.embedding_data.keys(), key=self.natural_sort_key, reverse=True)
+            sorted_names = sorted(
+                self.embedding_data.keys(), key=self.natural_sort_key, reverse=True
+            )
             # MARKER: Rebuild as an OrderedDict to preserve order
-            self.embedding_data = OrderedDict((name, self.embedding_data[name]) for name in sorted_names)
+            self.embedding_data = OrderedDict(
+                (name, self.embedding_data[name]) for name in sorted_names
+            )
         elif mode == "Original":
             original_order = list(self.original_embedding_data.keys())
             current_keys = set(self.embedding_data.keys())
             # MARKER: Rebuild as an OrderedDict to preserve order
-            self.embedding_data = OrderedDict((name, self.embedding_data[name]) for name in original_order if name in current_keys)
-        
+            self.embedding_data = OrderedDict(
+                (name, self.embedding_data[name])
+                for name in original_order
+                if name in current_keys
+            )
+
         self.populate_entries()
 
     def save_file(self):
@@ -817,13 +889,21 @@ class EmbeddingGUI(QWidget):
 
         all_widgets = self.entries_widget.get_all_widgets()
         ordered_names_to_save = [w.name for w in all_widgets if w in selected_entries]
-        
-        # MARKER: Build the save data as an OrderedDict to be safe
-        selected_data = OrderedDict((name, self.embedding_data[name]) for name in ordered_names_to_save)
 
-        default_filter = "JSON Files (*.json)" if self.current_file_type == 'json' else "Text Files (*.txt)"
-        file_path, _ = QFileDialog.getSaveFileName(self, "Save File", "", f"{default_filter};;All Files (*)")
-        
+        # MARKER: Build the save data as an OrderedDict to be safe
+        selected_data = OrderedDict(
+            (name, self.embedding_data[name]) for name in ordered_names_to_save
+        )
+
+        default_filter = (
+            "JSON Files (*.json)"
+            if self.current_file_type == "json"
+            else "Text Files (*.txt)"
+        )
+        file_path, _ = QFileDialog.getSaveFileName(
+            self, "Save File", "", f"{default_filter};;All Files (*)"
+        )
+
         if file_path:
             self._write_to_file(file_path, selected_data)
 
@@ -834,24 +914,35 @@ class EmbeddingGUI(QWidget):
 
         all_widgets = self.entries_widget.get_all_widgets()
         ordered_names_to_save = [w.name for w in all_widgets]
-        
-        # MARKER: Build the save data as an OrderedDict to be safe
-        all_data = OrderedDict((name, self.embedding_data[name]) for name in ordered_names_to_save)
 
-        default_filter = "JSON Files (*.json)" if self.current_file_type == 'json' else "Text Files (*.txt)"
-        file_path, _ = QFileDialog.getSaveFileName(self, "Save File As", "", f"{default_filter};;All Files (*)")
-        
+        # MARKER: Build the save data as an OrderedDict to be safe
+        all_data = OrderedDict(
+            (name, self.embedding_data[name]) for name in ordered_names_to_save
+        )
+
+        default_filter = (
+            "JSON Files (*.json)"
+            if self.current_file_type == "json"
+            else "Text Files (*.txt)"
+        )
+        file_path, _ = QFileDialog.getSaveFileName(
+            self, "Save File As", "", f"{default_filter};;All Files (*)"
+        )
+
         if file_path:
             self._write_to_file(file_path, all_data)
 
     def _write_to_file(self, file_path, data_to_save):
         try:
-            if file_path.endswith('.json'):
-                json_data = [{"name": name, "embedding_store": values} for name, values in data_to_save.items()]
-                with open(file_path, "w", encoding='utf-8') as file:
+            if file_path.endswith(".json"):
+                json_data = [
+                    {"name": name, "embedding_store": values}
+                    for name, values in data_to_save.items()
+                ]
+                with open(file_path, "w", encoding="utf-8") as file:
                     json.dump(json_data, file, indent=4)
             else:
-                with open(file_path, "w", encoding='utf-8') as file:
+                with open(file_path, "w", encoding="utf-8") as file:
                     for name, values in data_to_save.items():
                         file.write(f"Name: {name}\n")
                         for value in values:
@@ -862,11 +953,16 @@ class EmbeddingGUI(QWidget):
 
     def delete_selected_entries(self):
         selected_widgets = self.get_selected_entries()
-        if not selected_widgets: return
+        if not selected_widgets:
+            return
 
-        reply = QMessageBox.question(self, 'Confirm Deletion',
-                                     f"Are you sure you want to delete {len(selected_widgets)} selected item(s)?",
-                                     QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No, QMessageBox.StandardButton.No)
+        reply = QMessageBox.question(
+            self,
+            "Confirm Deletion",
+            f"Are you sure you want to delete {len(selected_widgets)} selected item(s)?",
+            QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
+            QMessageBox.StandardButton.No,
+        )
 
         if reply == QMessageBox.StandardButton.Yes:
             self._save_state_for_undo()
@@ -878,34 +974,40 @@ class EmbeddingGUI(QWidget):
             self.sorting_combo.setCurrentText("Manual")
 
     def handle_entry_click(self, widget, event):
-        all_widgets = [w for w in self.entries_widget.get_all_widgets() if w.isVisible()]
+        all_widgets = [
+            w for w in self.entries_widget.get_all_widgets() if w.isVisible()
+        ]
         modifiers = event.modifiers()
         is_shift = modifiers & Qt.ShiftModifier
         is_ctrl = modifiers & Qt.ControlModifier
 
         try:
             current_index = all_widgets.index(widget)
-        except ValueError: return
+        except ValueError:
+            return
 
         if is_shift and self.last_clicked_widget in all_widgets:
             try:
                 last_index = all_widgets.index(self.last_clicked_widget)
-                start, end = min(last_index, current_index), max(last_index, current_index)
-                
+                start, end = (
+                    min(last_index, current_index),
+                    max(last_index, current_index),
+                )
+
                 if not is_ctrl:
                     for i, w in enumerate(all_widgets):
                         if not (start <= i <= end):
                             w.checkbox.setChecked(False)
-                
+
                 for i in range(start, end + 1):
                     all_widgets[i].checkbox.setChecked(True)
             except (ValueError, IndexError):
                 self.last_clicked_widget = widget
-        
+
         elif is_ctrl:
             widget.checkbox.setChecked(not widget.checkbox.isChecked())
             self.last_clicked_widget = widget
-        
+
         else:
             is_currently_checked = widget.checkbox.isChecked()
             self.deselect_all()
@@ -925,33 +1027,42 @@ class EmbeddingGUI(QWidget):
             self._save_state_for_undo()
             added_count = 0
             for item in pasted_data:
-                if 'name' in item and 'embedding_store' in item:
-                    name = item['name']
+                if "name" in item and "embedding_store" in item:
+                    name = item["name"]
                     if name in self.embedding_data:
                         base_name = name
                         i = 1
                         while name in self.embedding_data:
                             name = f"{base_name}_{i}"
                             i += 1
-                    
-                    self.embedding_data[name] = item['embedding_store']
+
+                    self.embedding_data[name] = item["embedding_store"]
                     added_count += 1
-            
+
             if added_count > 0:
                 self.populate_entries()
                 self.sorting_combo.setCurrentText("Manual")
-                QMessageBox.information(self, "Paste Successful", f"{added_count} embedding(s) have been pasted.")
+                QMessageBox.information(
+                    self,
+                    "Paste Successful",
+                    f"{added_count} embedding(s) have been pasted.",
+                )
             else:
-                QMessageBox.warning(self, "Paste", "No valid embeddings found in the clipboard.")
+                QMessageBox.warning(
+                    self, "Paste", "No valid embeddings found in the clipboard."
+                )
 
         except (json.JSONDecodeError, ValueError) as e:
-            QMessageBox.critical(self, "Paste Error", f"Could not paste embeddings: {e}")
+            QMessageBox.critical(
+                self, "Paste Error", f"Could not paste embeddings: {e}"
+            )
 
     def convert_format(self):
-        if not self.embedding_data: return
+        if not self.embedding_data:
+            return
         self._save_state_for_undo()
 
-        if self.current_file_type == 'txt':
+        if self.current_file_type == "txt":
             recognizer_model = self.model_combo.currentText()
             # MARKER: Rebuild as an OrderedDict
             new_data = OrderedDict()
@@ -960,10 +1071,14 @@ class EmbeddingGUI(QWidget):
                     float_values = [float(val) for val in values]
                     new_data[name] = {recognizer_model: float_values}
                 except ValueError:
-                    QMessageBox.warning(self, "Conversion Error", f"Could not convert values for '{name}' to numbers. Skipping.")
+                    QMessageBox.warning(
+                        self,
+                        "Conversion Error",
+                        f"Could not convert values for '{name}' to numbers. Skipping.",
+                    )
                     continue
             self.embedding_data = new_data
-            self.current_file_type = 'json'
+            self.current_file_type = "json"
             QMessageBox.information(self, "Success", "Converted to Viso (JSON) Format")
         else:
             # MARKER: Rebuild as an OrderedDict
@@ -977,7 +1092,7 @@ class EmbeddingGUI(QWidget):
                 else:
                     new_data[name] = []
             self.embedding_data = new_data
-            self.current_file_type = 'txt'
+            self.current_file_type = "txt"
             QMessageBox.information(self, "Success", "Converted to Rope (TXT) Format")
 
         self.populate_entries()
@@ -991,7 +1106,7 @@ class EmbeddingGUI(QWidget):
 
         drag = QDrag(self)
         mime_data = QMimeData()
-        mime_data.setText('internal-move')
+        mime_data.setText("internal-move")
         drag.setMimeData(mime_data)
 
         pixmap = self.create_drag_pixmap(selected_widgets)
@@ -1011,11 +1126,13 @@ class EmbeddingGUI(QWidget):
                 border-radius: 8px;
             }}
         """)
-        
+
         label = QLabel(f"{num_widgets} item(s)", preview)
         label.setAlignment(Qt.AlignmentFlag.AlignCenter)
         label.setGeometry(0, 0, ENTRY_WIDTH, ENTRY_HEIGHT)
-        label.setStyleSheet(f"color: {TEXT_COLOR}; background: transparent; border: none; font-size: 16px; font-weight: bold;")
+        label.setStyleSheet(
+            f"color: {TEXT_COLOR}; background: transparent; border: none; font-size: 16px; font-weight: bold;"
+        )
 
         pixmap = QPixmap(preview.size())
         preview.render(pixmap)
@@ -1026,15 +1143,24 @@ class EmbeddingGUI(QWidget):
 
         all_item_names = list(self.embedding_data.keys())
         selected_item_names = [w.name for w in self.get_selected_entries()]
-        remaining_items = [name for name in all_item_names if name not in selected_item_names]
+        remaining_items = [
+            name for name in all_item_names if name not in selected_item_names
+        ]
 
-        if drop_index > len(remaining_items): drop_index = len(remaining_items)
-        
-        new_order = remaining_items[:drop_index] + selected_item_names + remaining_items[drop_index:]
+        if drop_index > len(remaining_items):
+            drop_index = len(remaining_items)
+
+        new_order = (
+            remaining_items[:drop_index]
+            + selected_item_names
+            + remaining_items[drop_index:]
+        )
 
         # MARKER: Rebuild as an OrderedDict to preserve order
-        self.embedding_data = OrderedDict((name, self.embedding_data[name]) for name in new_order)
-        
+        self.embedding_data = OrderedDict(
+            (name, self.embedding_data[name]) for name in new_order
+        )
+
         self.populate_entries()
         for widget in self.entries_widget.get_all_widgets():
             if widget.name in selected_item_names:
@@ -1054,13 +1180,15 @@ class EmbeddingGUI(QWidget):
         self.sorting_combo.setCurrentText("Manual")
 
     def undo(self):
-        if not self.undo_stack: return
+        if not self.undo_stack:
+            return
         self.redo_stack.append(copy.deepcopy(self.embedding_data))
         last_state = self.undo_stack.pop()
         self._restore_state(last_state)
 
     def redo(self):
-        if not self.redo_stack: return
+        if not self.redo_stack:
+            return
         self.undo_stack.append(copy.deepcopy(self.embedding_data))
         next_state = self.redo_stack.pop()
         self._restore_state(next_state)
@@ -1074,7 +1202,7 @@ class EmbeddingGUI(QWidget):
         <p><b>Delete</b>: Delete all selected entries.</p>
         <p><b>Ctrl + Z</b>: Undo the last action.</p>
         <p><b>Ctrl + Shift + Z</b>: Redo the last undone action.</p>
-        
+
         <h3>Mouse Controls</h3>
         <p><b>Click</b>: Select a single entry.</p>
         <p><b>Ctrl + Click</b>: Add or remove an entry from the selection.</p>
@@ -1087,11 +1215,12 @@ class EmbeddingGUI(QWidget):
         """
         QMessageBox.information(self, "About Shortcuts", shortcuts_text)
 
+
 if __name__ == "__main__":
-    parser = argparse.ArgumentParser(description='Embedding Editor')
-    parser.add_argument('--debug', action='store_true', help='Enable debug output')
+    parser = argparse.ArgumentParser(description="Embedding Editor")
+    parser.add_argument("--debug", action="store_true", help="Enable debug output")
     args = parser.parse_args()
-    
+
     app = QApplication(sys.argv)
     gui = EmbeddingGUI()
     gui.showMaximized()

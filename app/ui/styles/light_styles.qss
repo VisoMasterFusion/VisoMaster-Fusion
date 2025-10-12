@@ -125,7 +125,7 @@ ToggleButton {
 }
 ToggleButton:hover {
     background-color: #232323;
-} 
+}
 ToggleButton:pressed {
     background-color: #38b845;
 }
@@ -134,7 +134,7 @@ ToggleButton:checked {
 }
 ToggleButton:default {
     border-color: none; /* make the default button prominent */
-} 
+}
 
 
 

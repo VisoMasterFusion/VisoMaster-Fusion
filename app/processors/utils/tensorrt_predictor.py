@@ -1,10 +1,9 @@
 import numpy as np
 import torch
-from collections import OrderedDict
 import platform
 from queue import Queue
 from threading import Lock
-from typing import Dict, Any, OrderedDict as OrderedDictType
+from typing import Dict
 
 try:
     from torch.cuda import nvtx
@@ -38,7 +37,7 @@ else:
 
 # Initialize the TensorRT logger. Setting the severity to ERROR reduces verbose logging.
 # A placeholder is used if the 'trt' module is not available.
-if 'trt' in globals():
+if "trt" in globals():
     TRT_LOGGER = trt.Logger(trt.Logger.ERROR)
 else:
     TRT_LOGGER = None
@@ -55,6 +54,7 @@ class TensorRTPredictor:
     PyTorch tensor memory addresses to the engine's inputs and outputs, which is highly
     efficient for GPU operations.
     """
+
     def __init__(self, **kwargs) -> None:
         """
         Initializes the TensorRTPredictor.
@@ -67,7 +67,7 @@ class TensorRTPredictor:
                 - custom_plugin_path (str, optional): Path to a custom TensorRT plugin library (.so or .dll).
                 - model_path (str): The path to the serialized TensorRT engine file (.trt). This is mandatory.
         """
-        self.device = kwargs.get("device", 'cuda')
+        self.device = kwargs.get("device", "cuda")
         self.debug = kwargs.get("debug", False)
         self.pool_size = kwargs.get("pool_size", 10)
 
@@ -76,7 +76,7 @@ class TensorRTPredictor:
         custom_plugin_path = kwargs.get("custom_plugin_path", None)
         if custom_plugin_path is not None:
             try:
-                if platform.system().lower() == 'linux':
+                if platform.system().lower() == "linux":
                     ctypes.CDLL(custom_plugin_path, mode=ctypes.RTLD_GLOBAL)
                 else:
                     # On Windows, winmode=0 is needed for compatibility with certain libraries.
@@ -98,7 +98,7 @@ class TensorRTPredictor:
 
         if self.engine is None:
             raise RuntimeError("Engine deserialization failed.")
-            
+
         # Create a pool of execution contexts. This is a key optimization for multi-threaded
         # applications, as creating contexts is an expensive operation.
         self.context_pool = Queue(maxsize=self.pool_size)
@@ -110,7 +110,9 @@ class TensorRTPredictor:
             context = self.engine.create_execution_context()
             self.context_pool.put(context)
 
-    def predict_async(self, bindings: Dict[str, torch.Tensor], stream: torch.cuda.Stream) -> None:
+    def predict_async(
+        self, bindings: Dict[str, torch.Tensor], stream: torch.cuda.Stream
+    ) -> None:
         """
         Executes asynchronous inference by writing directly to the provided tensors.
 
@@ -131,16 +133,16 @@ class TensorRTPredictor:
         try:
             # Push a range to the NVTX profiler for performance analysis.
             nvtx.range_push("set_bindings_and_execute_async")
-            
+
             # Bind the memory addresses of all provided tensors to the engine.
             for name, tensor in bindings.items():
                 # For inputs with dynamic shapes, the context must be informed of the tensor's shape.
                 if self.engine.get_tensor_mode(name) == trt.TensorIOMode.INPUT:
                     if -1 in self.engine.get_tensor_shape(name):
-                         context.set_input_shape(name, tensor.shape)
+                        context.set_input_shape(name, tensor.shape)
                 # Set the memory address for the binding.
                 context.set_tensor_address(name, tensor.data_ptr())
-            
+
             # Launch the asynchronous execution using v3, which relies on the addresses
             # set by `set_tensor_address`. This is a non-blocking call.
             noerror = context.execute_async_v3(stream.cuda_stream)
@@ -160,11 +162,11 @@ class TensorRTPredictor:
         Safely cleans up and releases all TensorRT resources (engine and contexts).
         This is crucial to prevent CUDA memory leaks.
         """
-        if hasattr(self, 'engine') and self.engine is not None:
+        if hasattr(self, "engine") and self.engine is not None:
             del self.engine
             self.engine = None
 
-        if hasattr(self, 'context_pool') and self.context_pool is not None:
+        if hasattr(self, "context_pool") and self.context_pool is not None:
             while not self.context_pool.empty():
                 context = self.context_pool.get()
                 if context is not None:

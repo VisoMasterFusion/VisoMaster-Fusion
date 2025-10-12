@@ -1,0 +1,81 @@
+# .pre-commit-config.yaml
+
+minimum_pre_commit_version: '3.0.0'
+
+repos:
+# ===================================================================
+# LOCAL HOOKS - Defined directly here, guaranteed to work.
+# ===================================================================
+-   repo: local
+    hooks:
+    -   id: check-utf8-encoding
+        name: Check for UTF-8 encoding
+        entry: |
+            python -c "
+            import sys
+            errors_found = False
+            for filename in sys.argv[1:]:
+                try:
+                    with open(filename, 'rb') as f:
+                        f.read().decode('utf-8')
+                except UnicodeDecodeError:
+                    print(f'ERROR: {filename} is not a valid UTF-8 file.')
+                    errors_found = True
+            if errors_found:
+                sys.exit(1)
+            "
+        language: python
+        types: [python, yaml, toml, markdown, text]
+
+# ===================================================================
+# STANDARD HOOKS
+# ===================================================================
+-   repo: https://github.com/pre-commit/pre-commit-hooks
+    rev: v6.0.0
+    hooks:
+    -   id: trailing-whitespace
+    -   id: end-of-file-fixer
+    -   id: check-yaml
+    -   id: check-toml
+    -   id: check-merge-conflict
+    -   id: check-case-conflict
+    -   id: check-added-large-files
+        args: ['--maxkb=4096']
+
+-   repo: https://github.com/astral-sh/ruff-pre-commit
+    rev: 'v0.14.0'
+    hooks:
+    -   id: ruff
+        args: [--fix, --exit-non-zero-on-fix]
+        exclude: &exclude_files |
+            (?x)^(
+                app/ui/core/main_window\.py|
+                app/ui/core/media_rc\.py|
+                app/processors/external/.*
+            )$
+    -   id: ruff-format
+        exclude: *exclude_files
+
+-   repo: https://github.com/pre-commit/mirrors-mypy
+    rev: 'v1.18.2'
+    hooks:
+    -   id: mypy
+        additional_dependencies:
+          - types-Pillow
+          - types-requests
+          - types-PyYAML
+        exclude: *exclude_files
+
+# ===================================================================
+# ADDITIONAL ROBUSTNESS HOOKS
+# ===================================================================
+-   repo: https://github.com/pre-commit/pygrep-hooks
+    rev: v1.10.0
+    hooks:
+    -   id: python-no-log-warn
+
+#-   repo: https://github.com/asottile/pyupgrade
+#    rev: v3.21.0
+#    hooks:
+#    -   id: pyupgrade
+#        args: [--py311-plus]

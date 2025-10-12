@@ -1,533 +1,579 @@
 from app.ui.widgets.actions import control_actions
 import cv2
 from app.helpers.typing_helper import LayoutDictTypes
+
 SETTINGS_LAYOUT_DATA: LayoutDictTypes = {
-    'Appearance': {
-        'ThemeSelection': {
-            'level': 1,
-            'label': 'Theme',
-            'options': ['True-Dark', 'Dark', 'Dark-Blue', 'Light', 'Solarized-Dark', 'Solarized-Light', 'Dracula', 'Nord', 'Gruvbox'],
-            'default': 'True-Dark',
-            'help': 'Select the theme to be used',
-            'exec_function': control_actions.change_theme,
-            'exec_function_args': [],
+    "Appearance": {
+        "ThemeSelection": {
+            "level": 1,
+            "label": "Theme",
+            "options": [
+                "True-Dark",
+                "Dark",
+                "Dark-Blue",
+                "Light",
+                "Solarized-Dark",
+                "Solarized-Light",
+                "Dracula",
+                "Nord",
+                "Gruvbox",
+            ],
+            "default": "True-Dark",
+            "help": "Select the theme to be used",
+            "exec_function": control_actions.change_theme,
+            "exec_function_args": [],
         }
     },
-    'General': {
-        'ProvidersPrioritySelection': {
-            'level': 1,
-            'label': 'Providers Priority',
-            'options': ['CUDA', 'TensorRT', 'TensorRT-Engine', 'CPU'],
-            'default': 'CUDA',
-            'help': 'Select the providers priority to be used with the system.',
-            'exec_function': control_actions.change_execution_provider,
-            'exec_function_args': [],
+    "General": {
+        "ProvidersPrioritySelection": {
+            "level": 1,
+            "label": "Providers Priority",
+            "options": ["CUDA", "TensorRT", "TensorRT-Engine", "CPU"],
+            "default": "CUDA",
+            "help": "Select the providers priority to be used with the system.",
+            "exec_function": control_actions.change_execution_provider,
+            "exec_function_args": [],
         },
-        'nThreadsSlider': {
-            'level': 1,
-            'label': 'Number of Threads',
-            'min_value': '1',
-            'max_value': '30',
-            'default': '1',
-            'step': 1,
-            'help': 'Set number of execution threads while playing and recording. Depends strongly on GPU VRAM.',
-            'exec_function': control_actions.change_threads_number,
-            'exec_function_args': [],
+        "nThreadsSlider": {
+            "level": 1,
+            "label": "Number of Threads",
+            "min_value": "1",
+            "max_value": "30",
+            "default": "1",
+            "step": 1,
+            "help": "Set number of execution threads while playing and recording. Depends strongly on GPU VRAM.",
+            "exec_function": control_actions.change_threads_number,
+            "exec_function_args": [],
         },
-        'KeepControlsToggle': {
-            'level': 1,
-            'label': 'Keep Controls Active',
-            'default': False,
-            'help': 'Keep the controls active during recording.'
-        }
-    },
-    'Video Playback Settings': {
-        'VideoPlaybackCustomFpsToggle': {
-            'level': 1,
-            'label': 'Set Custom Video Playback FPS',
-            'default': False,
-            'help': 'Manually set the FPS to be used when playing the video',
-            'exec_function': control_actions.set_video_playback_fps,
-            'exec_function_args': [],
-        },
-        'VideoPlaybackCustomFpsSlider': {
-            'level': 2,
-            'label': 'Video Playback FPS',
-            'min_value': '1',
-            'max_value': '120',
-            'default': '30',
-            'parentToggle': 'VideoPlaybackCustomFpsToggle',
-            'requiredToggleValue': True,
-            'step': 1,
-            'help': 'Set the maximum FPS of the video when playing'
-        },
-        'LiveSoundVolumeDecimalSlider': {
-            'level': 1,
-            'label': 'Audio Playback Volume',
-            'min_value': '0.00',
-            'max_value': '1.00',
-            'default': '1.00',
-            'step': 0.01,
-            'decimals': 2,
-            'help': 'Set the playback audio of the audio, when Live Sound is enabled'
+        "KeepControlsToggle": {
+            "level": 1,
+            "label": "Keep Controls Active",
+            "default": False,
+            "help": "Keep the controls active during recording.",
         },
     },
-    'Video Recording Settings': {
-        'FrameEnhancerDownToggle':{
-            'level': 1,
-            'label': 'Frame resize to 1920*1080',
-            'default': False,
-            'help': 'Select to resize the video to 1920*1080 (only on 16/9 format)'
+    "Video Playback Settings": {
+        "VideoPlaybackCustomFpsToggle": {
+            "level": 1,
+            "label": "Set Custom Video Playback FPS",
+            "default": False,
+            "help": "Manually set the FPS to be used when playing the video",
+            "exec_function": control_actions.set_video_playback_fps,
+            "exec_function_args": [],
         },
-        'OpenOutputToggle':{
-            'level': 1,
-            'label': 'Open Output Folder After Recording',
-            'default': False,
-            'help': 'Opens the output folder after recording ends.'
+        "VideoPlaybackCustomFpsSlider": {
+            "level": 2,
+            "label": "Video Playback FPS",
+            "min_value": "1",
+            "max_value": "120",
+            "default": "30",
+            "parentToggle": "VideoPlaybackCustomFpsToggle",
+            "requiredToggleValue": True,
+            "step": 1,
+            "help": "Set the maximum FPS of the video when playing",
         },
-        'HDREncodeToggle':{
-            'level': 1,
-            'label': 'HDR Encoding - Use on HDR videos only (CPU)',
-            'default': False,
-            'help': 'Encode the video file in HDR, uses CPU and libx256, slower processing.'
+        "LiveSoundVolumeDecimalSlider": {
+            "level": 1,
+            "label": "Audio Playback Volume",
+            "min_value": "0.00",
+            "max_value": "1.00",
+            "default": "1.00",
+            "step": 0.01,
+            "decimals": 2,
+            "help": "Set the playback audio of the audio, when Live Sound is enabled",
         },
-        'FFMpegOptionsToggle':{
-            'level': 1,
-            'label': 'FFMpeg options',
-            'default': False,
-            'help': 'Show FFMpeg options.'
-        },
-        'FFPresetsSDRSelection':{
-            'level': 2,
-            'label': 'Presets SDR',
-            'options': ['p1', 'p2', 'p3', 'p4', 'p5', 'p6', 'p7'],
-            'default': 'p5',
-            'parentToggle': 'FFMpegOptionsToggle',
-            'requiredToggleValue': True,
-            'help': 'HEVC_NVENC presets, P1 = faster but lower quality → P7 = slower but better quality. Default = P5.'
-        },
-        'FFPresetsHDRSelection':{
-            'level': 2,
-            'label': 'Presets HDR',
-            'options': ['ultrafast', 'superfast', 'veryfast', 'faster', 'fast', 'medium', 'slow', 'veryslow'],
-            'default': 'slow',
-            'parentToggle': 'FFMpegOptionsToggle',
-            'requiredToggleValue': True,
-            'help': 'LIBx265 presets, Ultrafast = faster but lower quality → Veryslow = slower but better quality. Default = Slow.'
-        },
-        'FFQualitySlider':{
-            'level': 2,
-            'label': 'Quality',
-            'min_value': '0',
-            'max_value': '51',
-            'default': '18',
-            'step': 1,
-            'parentToggle': 'FFMpegOptionsToggle',
-            'requiredToggleValue': True,
-            'help': 'Constant quality slider, lower values = better quality but less encoding (bigger files). Default = 18.'
-        },
-        'FFSpatialAQToggle':{
-            'level': 2,
-            'label': 'Spatial AQ',
-            'default': False,
-            'parentToggle': 'FFMpegOptionsToggle',
-            'requiredToggleValue': True,
-            'help': 'Spatial AQ adjusts the QP within a single frame based on content complexity. It allocates more bits to detailed or textured areas and fewer bits to flat, uniform areas.'
-        },
-        'FFTemporalAQToggle':{
-            'level': 2,
-            'label': 'Temporal AQ',
-            'default': False,
-            'parentToggle': 'FFMpegOptionsToggle',
-            'requiredToggleValue': True,
-            'help': 'Temporal AQ adjusts the QP across multiple frames over time. It helps maintain a consistent visual quality by mitigating fluctuations in bitrate and quality between frames.'
-        }
     },
-    'Swap settings':{
-        'AutoSwapToggle': {
-            'level': 1,
-            'label': 'Auto Swap',
-            'default': False,
-            'help': 'Automatically Swap all faces using selected Source Faces/Embeddings when loading an video/image file'
+    "Video Recording Settings": {
+        "FrameEnhancerDownToggle": {
+            "level": 1,
+            "label": "Frame resize to 1920*1080",
+            "default": False,
+            "help": "Select to resize the video to 1920*1080 (only on 16/9 format)",
         },
-        'SwapOnlyBestMatchEnableToggle': {
-            'level': 1,
-            'label': 'Swap Input Face only once',
-            'default': False,           
-            'help': 'only swap highest face match per face (not every match above treshold)'
+        "OpenOutputToggle": {
+            "level": 1,
+            "label": "Open Output Folder After Recording",
+            "default": False,
+            "help": "Opens the output folder after recording ends.",
         },
-        'VR180ModeEnableToggle': {
-            'level': 1,
-            'label': 'Enable VR180 Mode',
-            'default': False,
-            'help': 'Enable VR180 mode. This will treat the input video as an equirectangular VR180 video and apply face swapping within perspective crops.'
+        "HDREncodeToggle": {
+            "level": 1,
+            "label": "HDR Encoding - Use on HDR videos only (CPU)",
+            "default": False,
+            "help": "Encode the video file in HDR, uses CPU and libx256, slower processing.",
         },
-        'MaxDFMModelsSlider':{
-            'level': 1,
-            'label': 'Maximum DFM Models to use',
-            'min_value': '1',
-            'max_value': '5',
-            'default': '1',
-            'step': 1,
-            'help': "Set the maximum number of DFM Models to keep in memory at a time. Set this based on your GPU's VRAM",
+        "FFMpegOptionsToggle": {
+            "level": 1,
+            "label": "FFMpeg options",
+            "default": False,
+            "help": "Show FFMpeg options.",
         },
-        'EmbMergeMethodSelection':{
-            'level': 1,
-            'label': 'Embedding Merge Method',
-            'options': ['Mean','Median'],
-            'default': 'Mean',
-            'help': 'Select the method to merge facial embeddings. "Mean" averages the embeddings, while "Median" selects the middle value, providing more robustness to outliers.'
-        }
+        "FFPresetsSDRSelection": {
+            "level": 2,
+            "label": "Presets SDR",
+            "options": ["p1", "p2", "p3", "p4", "p5", "p6", "p7"],
+            "default": "p5",
+            "parentToggle": "FFMpegOptionsToggle",
+            "requiredToggleValue": True,
+            "help": "HEVC_NVENC presets, P1 = faster but lower quality → P7 = slower but better quality. Default = P5.",
+        },
+        "FFPresetsHDRSelection": {
+            "level": 2,
+            "label": "Presets HDR",
+            "options": [
+                "ultrafast",
+                "superfast",
+                "veryfast",
+                "faster",
+                "fast",
+                "medium",
+                "slow",
+                "veryslow",
+            ],
+            "default": "slow",
+            "parentToggle": "FFMpegOptionsToggle",
+            "requiredToggleValue": True,
+            "help": "LIBx265 presets, Ultrafast = faster but lower quality → Veryslow = slower but better quality. Default = Slow.",
+        },
+        "FFQualitySlider": {
+            "level": 2,
+            "label": "Quality",
+            "min_value": "0",
+            "max_value": "51",
+            "default": "18",
+            "step": 1,
+            "parentToggle": "FFMpegOptionsToggle",
+            "requiredToggleValue": True,
+            "help": "Constant quality slider, lower values = better quality but less encoding (bigger files). Default = 18.",
+        },
+        "FFSpatialAQToggle": {
+            "level": 2,
+            "label": "Spatial AQ",
+            "default": False,
+            "parentToggle": "FFMpegOptionsToggle",
+            "requiredToggleValue": True,
+            "help": "Spatial AQ adjusts the QP within a single frame based on content complexity. It allocates more bits to detailed or textured areas and fewer bits to flat, uniform areas.",
+        },
+        "FFTemporalAQToggle": {
+            "level": 2,
+            "label": "Temporal AQ",
+            "default": False,
+            "parentToggle": "FFMpegOptionsToggle",
+            "requiredToggleValue": True,
+            "help": "Temporal AQ adjusts the QP across multiple frames over time. It helps maintain a consistent visual quality by mitigating fluctuations in bitrate and quality between frames.",
+        },
     },
-    'Detectors': {
-        'RecognitionModelSelection': {
-            'level': 1,
-            'label': 'Recognition Model',
-            'options': ['Inswapper128ArcFace', 'SimSwapArcFace', 'GhostArcFace', 'CSCSArcFace', 'CanonSwapArcFace'],
-            'default': 'Inswapper128ArcFace',
-            'help': 'Choose the ArcFace model to be used for comparing the similarity of faces.'
+    "Swap settings": {
+        "AutoSwapToggle": {
+            "level": 1,
+            "label": "Auto Swap",
+            "default": False,
+            "help": "Automatically Swap all faces using selected Source Faces/Embeddings when loading an video/image file",
         },
-        'SimilarityTypeSelection': {
-            'level': 1,
-            'label': 'Swapping Similarity Type',
-            'options': ['Opal', 'Pearl', 'Optimal'],
-            'default': 'Opal',
-            'help': 'Choose the type of similarity calculation for face detection and matching during the face swapping process.'
+        "SwapOnlyBestMatchEnableToggle": {
+            "level": 1,
+            "label": "Swap Input Face only once",
+            "default": False,
+            "help": "only swap highest face match per face (not every match above treshold)",
         },
-        'DetectorModelSelection': {
-            'level': 1,
-            'label': 'Face Detect Model',
-            'options': ['RetinaFace', 'Yolov8', 'SCRFD', 'Yunet'],
-            'default': 'RetinaFace',
-            'help': 'Select the face detection model to use for detecting faces in the input image or video.'
+        "VR180ModeEnableToggle": {
+            "level": 1,
+            "label": "Enable VR180 Mode",
+            "default": False,
+            "help": "Enable VR180 mode. This will treat the input video as an equirectangular VR180 video and apply face swapping within perspective crops.",
         },
-        'DetectorScoreSlider': {
-            'level': 1,
-            'label': 'Detect Score',
-            'min_value': '1',
-            'max_value': '100',
-            'default': '50',
-            'step': 1,
-            'help': 'Set the confidence score threshold for face detection. Higher values ensure more confident detections but may miss some faces.'
+        "MaxDFMModelsSlider": {
+            "level": 1,
+            "label": "Maximum DFM Models to use",
+            "min_value": "1",
+            "max_value": "5",
+            "default": "1",
+            "step": 1,
+            "help": "Set the maximum number of DFM Models to keep in memory at a time. Set this based on your GPU's VRAM",
         },
-        'MaxFacesToDetectSlider': {
-            'level': 1,
-            'label': 'Max No of Faces to Detect',
-            'min_value': '1',
-            'max_value': '50',
-            'default': '20',
-            'step': 1,     
-            'help': 'Set the maximum number of faces to detect in a frame'
+        "EmbMergeMethodSelection": {
+            "level": 1,
+            "label": "Embedding Merge Method",
+            "options": ["Mean", "Median"],
+            "default": "Mean",
+            "help": 'Select the method to merge facial embeddings. "Mean" averages the embeddings, while "Median" selects the middle value, providing more robustness to outliers.',
         },
-        'AutoRotationToggle': {
-            'level': 1,
-            'label': 'Auto Rotation',
-            'default': False,
-            'help': 'Automatically rotate the input to detect faces in various orientations.'
-        },
-        'ManualRotationEnableToggle': {
-            'level': 1,
-            'label': 'Manual Rotation',
-            'default': False,
-            'help': 'Rotate the face detector to better detect faces at different angles.'
-        },
-        'ManualRotationAngleSlider': {
-            'level': 2,
-            'label': 'Rotation Angle',
-            'min_value': '0',
-            'max_value': '270',
-            'default': '0',
-            'step': 90,
-            'parentToggle': 'ManualRotationEnableToggle',
-            'requiredToggleValue': True,
-            'help': 'Set this to the angle of the input face angle to help with laying down/upside down/etc. Angles are read clockwise.'
-        },
-        'LandmarkDetectToggle': {
-            'level': 1,
-            'label': 'Enable Landmark Detection',
-            'default': False,
-            'help': 'Enable or disable facial landmark detection, which is used to refine face alignment.'
-        },
-        'LandmarkDetectModelSelection': {
-            'level': 2,
-            'label': 'Landmark Detect Model',
-            'options': ['5', '68', '3d68', '98', '106', '203', '478'],
-            'default': '203',
-            'parentToggle': 'LandmarkDetectToggle',
-            'requiredToggleValue': True,
-            'help': 'Select the landmark detection model, where different models detect varying numbers of facial landmarks.'
-        },
-        'LandmarkDetectScoreSlider': {
-            'level': 2,
-            'label': 'Landmark Detect Score',
-            'min_value': '1',
-            'max_value': '100',
-            'default': '50',
-            'step': 1,
-            'parentToggle': 'LandmarkDetectToggle',
-            'requiredToggleValue': True,
-            'help': 'Set the confidence score threshold for facial landmark detection.'
-        },
-        'DetectFromPointsToggle': {
-            'level': 2,
-            'label': 'Detect From Points',
-            'default': False,
-            'parentToggle': 'LandmarkDetectToggle',
-            'requiredToggleValue': True,
-            'help': 'Enable detection of faces from specified landmark points.'
-        },
-        'ShowLandmarksEnableToggle': {
-            'level': 1,
-            'label': 'Show Landmarks',
-            'default': False,
-            'help': 'Show Landmarks in realtime.'
-        },
-        'ShowAllDetectedFacesBBoxToggle': {
-            'level': 1,
-            'label': 'Show Bounding Boxes',
-            'default': False,
-            'help': 'Draw bounding boxes to all detected faces in the frame'
-        }
     },
-    'Frame Enhancer':{
-        'FrameEnhancerEnableToggle':{
-            'level': 1,
-            'label': 'Enable Frame Enhancer',
-            'default': False,
-            'help': 'Enable frame enhancement for video inputs to improve visual quality.'
+    "Detectors": {
+        "RecognitionModelSelection": {
+            "level": 1,
+            "label": "Recognition Model",
+            "options": [
+                "Inswapper128ArcFace",
+                "SimSwapArcFace",
+                "GhostArcFace",
+                "CSCSArcFace",
+                "CanonSwapArcFace",
+            ],
+            "default": "Inswapper128ArcFace",
+            "help": "Choose the ArcFace model to be used for comparing the similarity of faces.",
         },
-        'FrameEnhancerTypeSelection':{
-            'level': 2,
-            'label': 'Frame Enhancer Type',
-            'options': ['RealEsrgan-x2-Plus', 'RealEsrgan-x4-Plus', 'RealEsr-General-x4v3', 'BSRGan-x2', 'BSRGan-x4', 'UltraSharp-x4', 'UltraMix-x4', 'DDColor-Artistic', 'DDColor', 'DeOldify-Artistic', 'DeOldify-Stable', 'DeOldify-Video'],
-            'default': 'RealEsrgan-x2-Plus',
-            'parentToggle': 'FrameEnhancerEnableToggle',
-            'requiredToggleValue': True,
-            'help': 'Select the type of frame enhancement to apply, based on the content and resolution requirements.'
+        "SimilarityTypeSelection": {
+            "level": 1,
+            "label": "Swapping Similarity Type",
+            "options": ["Opal", "Pearl", "Optimal"],
+            "default": "Opal",
+            "help": "Choose the type of similarity calculation for face detection and matching during the face swapping process.",
         },
-        'FrameEnhancerBlendSlider': {
-            'level': 2,
-            'label': 'Blend',
-            'min_value': '0',
-            'max_value': '100',
-            'default': '100',
-            'step': 1,
-            'parentToggle': 'FrameEnhancerEnableToggle',
-            'requiredToggleValue': True,
-            'help': 'Blends the enhanced results back into the original frame.'
-        }
+        "DetectorModelSelection": {
+            "level": 1,
+            "label": "Face Detect Model",
+            "options": ["RetinaFace", "Yolov8", "SCRFD", "Yunet"],
+            "default": "RetinaFace",
+            "help": "Select the face detection model to use for detecting faces in the input image or video.",
+        },
+        "DetectorScoreSlider": {
+            "level": 1,
+            "label": "Detect Score",
+            "min_value": "1",
+            "max_value": "100",
+            "default": "50",
+            "step": 1,
+            "help": "Set the confidence score threshold for face detection. Higher values ensure more confident detections but may miss some faces.",
+        },
+        "MaxFacesToDetectSlider": {
+            "level": 1,
+            "label": "Max No of Faces to Detect",
+            "min_value": "1",
+            "max_value": "50",
+            "default": "20",
+            "step": 1,
+            "help": "Set the maximum number of faces to detect in a frame",
+        },
+        "AutoRotationToggle": {
+            "level": 1,
+            "label": "Auto Rotation",
+            "default": False,
+            "help": "Automatically rotate the input to detect faces in various orientations.",
+        },
+        "ManualRotationEnableToggle": {
+            "level": 1,
+            "label": "Manual Rotation",
+            "default": False,
+            "help": "Rotate the face detector to better detect faces at different angles.",
+        },
+        "ManualRotationAngleSlider": {
+            "level": 2,
+            "label": "Rotation Angle",
+            "min_value": "0",
+            "max_value": "270",
+            "default": "0",
+            "step": 90,
+            "parentToggle": "ManualRotationEnableToggle",
+            "requiredToggleValue": True,
+            "help": "Set this to the angle of the input face angle to help with laying down/upside down/etc. Angles are read clockwise.",
+        },
+        "LandmarkDetectToggle": {
+            "level": 1,
+            "label": "Enable Landmark Detection",
+            "default": False,
+            "help": "Enable or disable facial landmark detection, which is used to refine face alignment.",
+        },
+        "LandmarkDetectModelSelection": {
+            "level": 2,
+            "label": "Landmark Detect Model",
+            "options": ["5", "68", "3d68", "98", "106", "203", "478"],
+            "default": "203",
+            "parentToggle": "LandmarkDetectToggle",
+            "requiredToggleValue": True,
+            "help": "Select the landmark detection model, where different models detect varying numbers of facial landmarks.",
+        },
+        "LandmarkDetectScoreSlider": {
+            "level": 2,
+            "label": "Landmark Detect Score",
+            "min_value": "1",
+            "max_value": "100",
+            "default": "50",
+            "step": 1,
+            "parentToggle": "LandmarkDetectToggle",
+            "requiredToggleValue": True,
+            "help": "Set the confidence score threshold for facial landmark detection.",
+        },
+        "DetectFromPointsToggle": {
+            "level": 2,
+            "label": "Detect From Points",
+            "default": False,
+            "parentToggle": "LandmarkDetectToggle",
+            "requiredToggleValue": True,
+            "help": "Enable detection of faces from specified landmark points.",
+        },
+        "ShowLandmarksEnableToggle": {
+            "level": 1,
+            "label": "Show Landmarks",
+            "default": False,
+            "help": "Show Landmarks in realtime.",
+        },
+        "ShowAllDetectedFacesBBoxToggle": {
+            "level": 1,
+            "label": "Show Bounding Boxes",
+            "default": False,
+            "help": "Draw bounding boxes to all detected faces in the frame",
+        },
     },
-    'Webcam and Virtualcam Settings': {
-        'WebcamMaxNoSelection': {
-            'level': 2,
-            'label': 'Webcam Max No',
-            'options': ['1', '2', '3', '4', '5', '6'],
-            'default': '1',
-            'help': 'Select the maximum number of webcam streams to allow for face swapping.'
+    "Frame Enhancer": {
+        "FrameEnhancerEnableToggle": {
+            "level": 1,
+            "label": "Enable Frame Enhancer",
+            "default": False,
+            "help": "Enable frame enhancement for video inputs to improve visual quality.",
         },
-        'WebcamBackendSelection': {
-            'level': 2,
-            'label': 'Webcam Backend',
-            'options': ['Default', 'DirectShow', 'MSMF', 'V4L', 'V4L2', 'GSTREAMER'],
-            'default': 'Default',
-            'help': 'Choose the backend for accessing webcam input.'
+        "FrameEnhancerTypeSelection": {
+            "level": 2,
+            "label": "Frame Enhancer Type",
+            "options": [
+                "RealEsrgan-x2-Plus",
+                "RealEsrgan-x4-Plus",
+                "RealEsr-General-x4v3",
+                "BSRGan-x2",
+                "BSRGan-x4",
+                "UltraSharp-x4",
+                "UltraMix-x4",
+                "DDColor-Artistic",
+                "DDColor",
+                "DeOldify-Artistic",
+                "DeOldify-Stable",
+                "DeOldify-Video",
+            ],
+            "default": "RealEsrgan-x2-Plus",
+            "parentToggle": "FrameEnhancerEnableToggle",
+            "requiredToggleValue": True,
+            "help": "Select the type of frame enhancement to apply, based on the content and resolution requirements.",
         },
-        'WebcamMaxResSelection': {
-            'level': 2,
-            'label': 'Webcam Resolution',
-            'options': ['480x360', '640x480', '1280x720', '1920x1080', '2560x1440', '3840x2160'],
-            'default': '1280x720',
-            'help': 'Select the maximum resolution for webcam input.'
+        "FrameEnhancerBlendSlider": {
+            "level": 2,
+            "label": "Blend",
+            "min_value": "0",
+            "max_value": "100",
+            "default": "100",
+            "step": 1,
+            "parentToggle": "FrameEnhancerEnableToggle",
+            "requiredToggleValue": True,
+            "help": "Blends the enhanced results back into the original frame.",
         },
-        'WebCamMaxFPSSelection': {
-            'level': 2,
-            'label': 'Webcam FPS',
-            'options': ['23', '30', '60'],
-            'default': '30',
-            'help': 'Set the maximum frames per second (FPS) for webcam input.'
-        },
-        'SendVirtCamFramesEnableToggle': {
-            'level': 1,
-            'label': 'Send Frames to Virtual Camera',
-            'default': False,
-            'help': 'Send the swapped video/webcam output to virtual camera for using in external applications',
-            'exec_function': control_actions.toggle_virtualcam,
-            'exec_function_args': [],
-        },
-        'VirtCamBackendSelection': {
-            'level': 1,
-            'label': 'Virtual Camera Backend',
-            'options': ['obs', 'unitycapture'],
-            'default': 'obs',
-            'help': 'Choose the backend based on the Virtual Camera you have set up',
-            'parentToggle': 'SendVirtCamFramesEnableToggle',
-            'requiredToggleValue': True,
-            'exec_function': control_actions.enable_virtualcam,
-            'exec_funtion_args': [],
-        }
     },
-    'Misc':{
-        'TargetMediaFolderRecursiveToggle':{
-            'level': 1,
-            'label': 'Target Media Include Subfolders',
-            'default': False,
-            'help': 'Include all files from Subfolders when choosing Target Media Folder'
+    "Webcam and Virtualcam Settings": {
+        "WebcamMaxNoSelection": {
+            "level": 2,
+            "label": "Webcam Max No",
+            "options": ["1", "2", "3", "4", "5", "6"],
+            "default": "1",
+            "help": "Select the maximum number of webcam streams to allow for face swapping.",
         },
-        'InputFacesFolderRecursiveToggle':{
-            'level': 1,
-            'label': 'Input Faces Include Subfolders',
-            'default': False,
-            'help': 'Include all files from Subfolders when choosing Input Faces Folder'
-        },   
-        'CommandLineDebugEnableToggle': {
-            'level': 1,
-            'label': 'Commandline Infos',
-            'default': False,           
-            'help': 'used restore strenght and needed itterations in Commandline + jpeg/mpeg infos'
+        "WebcamBackendSelection": {
+            "level": 2,
+            "label": "Webcam Backend",
+            "options": ["Default", "DirectShow", "MSMF", "V4L", "V4L2", "GSTREAMER"],
+            "default": "Default",
+            "help": "Choose the backend for accessing webcam input.",
         },
-        'AutoSaveWorkspaceToggle':{
-            'level': 1,
-            'label': 'Auto Save Workspace',
-            'default': False,
-            'help': 'Auto Saves Workspace .json in output folder at end of recording (only the status at end of recording)'
+        "WebcamMaxResSelection": {
+            "level": 2,
+            "label": "Webcam Resolution",
+            "options": [
+                "480x360",
+                "640x480",
+                "1280x720",
+                "1920x1080",
+                "2560x1440",
+                "3840x2160",
+            ],
+            "default": "1280x720",
+            "help": "Select the maximum resolution for webcam input.",
         },
-        'AutoLoadWorkspaceToggle':{
-            'level': 1,
-            'label': 'Auto Load Last Workspace',
-            'default': False,
-            'help': 'Do not show the "load last workspace" dialog when open then app, always load last workspace.'
+        "WebCamMaxFPSSelection": {
+            "level": 2,
+            "label": "Webcam FPS",
+            "options": ["23", "30", "60"],
+            "default": "30",
+            "help": "Set the maximum frames per second (FPS) for webcam input.",
         },
-        'DilatationTypeSelection': {
-            'level': 1,
-            'label': 'Mask Dilatation Type',
-            'options': ['conv', 'pool', 'iter_pool'],
-            'default': 'conv',
-            'help': 'Max_Pool2d is faster but conv2d is more precise (especially on higher dilatation values)'
-        }
+        "SendVirtCamFramesEnableToggle": {
+            "level": 1,
+            "label": "Send Frames to Virtual Camera",
+            "default": False,
+            "help": "Send the swapped video/webcam output to virtual camera for using in external applications",
+            "exec_function": control_actions.toggle_virtualcam,
+            "exec_function_args": [],
+        },
+        "VirtCamBackendSelection": {
+            "level": 1,
+            "label": "Virtual Camera Backend",
+            "options": ["obs", "unitycapture"],
+            "default": "obs",
+            "help": "Choose the backend based on the Virtual Camera you have set up",
+            "parentToggle": "SendVirtCamFramesEnableToggle",
+            "requiredToggleValue": True,
+            "exec_function": control_actions.enable_virtualcam,
+            "exec_funtion_args": [],
+        },
     },
-   'Experimental Settings (very experimental, better don´t touch)': {                          
-        'ActivateexperimentalsettingsEnableToggle': {
-            'level': 1,
-            'label': 'Experimental settings',
-            'default': False,
-            'help': 'Enable AutoColor Transfer: 1. Hans Test without mask, 2. Hans Test with mask, 3. DFL Method without mask, 4. DFL Original Method.'
+    "Misc": {
+        "TargetMediaFolderRecursiveToggle": {
+            "level": 1,
+            "label": "Target Media Include Subfolders",
+            "default": False,
+            "help": "Include all files from Subfolders when choosing Target Media Folder",
         },
-        'AnalyseImageEnableToggle': {
-            'level': 2,
-            'label': 'Analyse Image',
-            'default': False,
-            'parentToggle': 'ActivateexperimentalsettingsEnableToggle',
-            'requiredToggleValue': True, 
-            'help': 'Image analysis'
-        },        
-#        'DFLXSegBGEnableToggle': {
-#            'level': 2,
-#            'label': 'Xseg 2 Background',
-#            'default': False,
-#            'parentToggle': 'ActivateexperimentalsettingsEnableToggle',
-#            'requiredToggleValue': True,            
-#            'help': 'Enable second XSeg Mask for Inside the Face. not working well atm. (uses Faceparser on swap)'
-#        },
-#        'OccluderMaskBgSlider': {
-#            'level': 3,
-#            'label': 'Xseg 2 Background Adjust',
-#            'min_value': '-40',
-#            'max_value': '40',
-#            'default': '-10',
-#            'step': 1,
-#            'parentToggle': 'DFLXSegBGEnableToggle',
-#            'requiredToggleValue': True,
-#            'help': 'Adjust where the second Xseg Mask gets applied.'
-#        },
-        'get_cropped_face_kpsTypeSelection': {
-            'level': 2,
-            'label': 'get cropped face kps',
-            'options': ['NEAREST', 'BILINEAR'],
-            'default': 'BILINEAR',
-            'parentToggle': 'ActivateexperimentalsettingsEnableToggle',
-            'requiredToggleValue': True,
-            'help': 'Experimental! for basic functionality testing. changes the interpolation type for necessary pipeline functions (resize/rotation/etc. of image). caution, influences Autorestore calculation'
-        },        
-        'original_face_128_384TypeSelection': {
-            'level': 2,
-            'label': 'original_128_384',
-            'options': ['NEAREST', 'BILINEAR'],
-            'default': 'BILINEAR',
-            'parentToggle': 'ActivateexperimentalsettingsEnableToggle',
-            'requiredToggleValue': True,
-            'help': 'Experimental! for basic functionality testing. changes the interpolation type for necessary pipeline functions (resize/rotation/etc. of image). caution, influences Autorestore calculation'
+        "InputFacesFolderRecursiveToggle": {
+            "level": 1,
+            "label": "Input Faces Include Subfolders",
+            "default": False,
+            "help": "Include all files from Subfolders when choosing Input Faces Folder",
         },
-        'original_face_512TypeSelection': {
-            'level': 2,
-            'label': 'original_512',
-            'options': ['NEAREST', 'BILINEAR'],
-            'default': 'BILINEAR',
-            'parentToggle': 'ActivateexperimentalsettingsEnableToggle',
-            'requiredToggleValue': True,
-            'help': 'Experimental! for basic functionality testing. changes the interpolation type for necessary pipeline functions (resize/rotation/etc. of image). caution, influences Autorestore calculation'
+        "CommandLineDebugEnableToggle": {
+            "level": 1,
+            "label": "Commandline Infos",
+            "default": False,
+            "help": "used restore strenght and needed itterations in Commandline + jpeg/mpeg infos",
         },
-        'UntransformTypeSelection': {
-            'level': 2,
-            'label': 'Untransform',
-            'options': ['NEAREST', 'BILINEAR'],
-            'default': 'BILINEAR',
-            'parentToggle': 'ActivateexperimentalsettingsEnableToggle',
-            'requiredToggleValue': True,
-            'help': 'Experimental! for basic functionality testing. changes the interpolation type for necessary pipeline functions (resize/rotation/etc. of image). caution, influences Autorestore calculation'
+        "AutoSaveWorkspaceToggle": {
+            "level": 1,
+            "label": "Auto Save Workspace",
+            "default": False,
+            "help": "Auto Saves Workspace .json in output folder at end of recording (only the status at end of recording)",
         },
-        'ScalebackFrameTypeSelection': {
-            'level': 2,
-            'label': 'Scaleback Frame',
-            'options': ['NEAREST', 'BILINEAR', 'BICUBIC'],
-            'default': 'BILINEAR',
-            'parentToggle': 'ActivateexperimentalsettingsEnableToggle',
-            'requiredToggleValue': True,
-            'help': 'Experimental! for basic functionality testing. changes the interpolation type for necessary pipeline functions (resize/rotation/etc. of image). caution, influences Autorestore calculation'
-        },          
-        'expression_faceeditor_t256TypeSelection': {
-            'level': 2,
-            'label': 'Expression_faceeditor_t256',
-            'options': ['NEAREST', 'BILINEAR'],
-            'default': 'BILINEAR',
-            'parentToggle': 'ActivateexperimentalsettingsEnableToggle',
-            'requiredToggleValue': True,
-            'help': 'Experimental! for basic functionality testing. changes the interpolation type for necessary pipeline functions (resize/rotation/etc. of image). caution, influences Autorestore calculation'
-        },         
-        'expression_faceeditor_backTypeSelection': {
-            'level': 2,
-            'label': 'Expression_faceeditor_back',
-            'options': ['NEAREST', 'BILINEAR'],
-            'default': 'BILINEAR',
-            'parentToggle': 'ActivateexperimentalsettingsEnableToggle',
-            'requiredToggleValue': True,
-            'help': 'Experimental! for basic functionality testing. changes the interpolation type for necessary pipeline functions (resize/rotation/etc. of image). caution, influences Autorestore calculation'
-        },         
-        'block_shiftTypeSelection': {
-            'level': 2,
-            'label': 'block shift',
-            'options': ['NEAREST', 'BILINEAR'],
-            'default': 'NEAREST',
-            'parentToggle': 'ActivateexperimentalsettingsEnableToggle',
-            'requiredToggleValue': True,
-            'help': 'Experimental! for basic functionality testing. changes the interpolation type for necessary pipeline functions (resize/rotation/etc. of image). caution, influences Autorestore calculation'
-        },         
-        'AntialiasTypeSelection': {
-            'level': 2,
-            'label': 'Antialias',
-            'options': ['False', 'True'],
-            'default': 'False',
-            'parentToggle': 'ActivateexperimentalsettingsEnableToggle',
-            'requiredToggleValue': True,
-            'help': 'Experimental! most of the time no visual effect, in rare cases minor effect'
-        }
-    }
+        "AutoLoadWorkspaceToggle": {
+            "level": 1,
+            "label": "Auto Load Last Workspace",
+            "default": False,
+            "help": 'Do not show the "load last workspace" dialog when open then app, always load last workspace.',
+        },
+        "DilatationTypeSelection": {
+            "level": 1,
+            "label": "Mask Dilatation Type",
+            "options": ["conv", "pool", "iter_pool"],
+            "default": "conv",
+            "help": "Max_Pool2d is faster but conv2d is more precise (especially on higher dilatation values)",
+        },
+    },
+    "Experimental Settings (very experimental, better don´t touch)": {
+        "ActivateexperimentalsettingsEnableToggle": {
+            "level": 1,
+            "label": "Experimental settings",
+            "default": False,
+            "help": "Enable AutoColor Transfer: 1. Hans Test without mask, 2. Hans Test with mask, 3. DFL Method without mask, 4. DFL Original Method.",
+        },
+        "AnalyseImageEnableToggle": {
+            "level": 2,
+            "label": "Analyse Image",
+            "default": False,
+            "parentToggle": "ActivateexperimentalsettingsEnableToggle",
+            "requiredToggleValue": True,
+            "help": "Image analysis",
+        },
+        #        'DFLXSegBGEnableToggle': {
+        #            'level': 2,
+        #            'label': 'Xseg 2 Background',
+        #            'default': False,
+        #            'parentToggle': 'ActivateexperimentalsettingsEnableToggle',
+        #            'requiredToggleValue': True,
+        #            'help': 'Enable second XSeg Mask for Inside the Face. not working well atm. (uses Faceparser on swap)'
+        #        },
+        #        'OccluderMaskBgSlider': {
+        #            'level': 3,
+        #            'label': 'Xseg 2 Background Adjust',
+        #            'min_value': '-40',
+        #            'max_value': '40',
+        #            'default': '-10',
+        #            'step': 1,
+        #            'parentToggle': 'DFLXSegBGEnableToggle',
+        #            'requiredToggleValue': True,
+        #            'help': 'Adjust where the second Xseg Mask gets applied.'
+        #        },
+        "get_cropped_face_kpsTypeSelection": {
+            "level": 2,
+            "label": "get cropped face kps",
+            "options": ["NEAREST", "BILINEAR"],
+            "default": "BILINEAR",
+            "parentToggle": "ActivateexperimentalsettingsEnableToggle",
+            "requiredToggleValue": True,
+            "help": "Experimental! for basic functionality testing. changes the interpolation type for necessary pipeline functions (resize/rotation/etc. of image). caution, influences Autorestore calculation",
+        },
+        "original_face_128_384TypeSelection": {
+            "level": 2,
+            "label": "original_128_384",
+            "options": ["NEAREST", "BILINEAR"],
+            "default": "BILINEAR",
+            "parentToggle": "ActivateexperimentalsettingsEnableToggle",
+            "requiredToggleValue": True,
+            "help": "Experimental! for basic functionality testing. changes the interpolation type for necessary pipeline functions (resize/rotation/etc. of image). caution, influences Autorestore calculation",
+        },
+        "original_face_512TypeSelection": {
+            "level": 2,
+            "label": "original_512",
+            "options": ["NEAREST", "BILINEAR"],
+            "default": "BILINEAR",
+            "parentToggle": "ActivateexperimentalsettingsEnableToggle",
+            "requiredToggleValue": True,
+            "help": "Experimental! for basic functionality testing. changes the interpolation type for necessary pipeline functions (resize/rotation/etc. of image). caution, influences Autorestore calculation",
+        },
+        "UntransformTypeSelection": {
+            "level": 2,
+            "label": "Untransform",
+            "options": ["NEAREST", "BILINEAR"],
+            "default": "BILINEAR",
+            "parentToggle": "ActivateexperimentalsettingsEnableToggle",
+            "requiredToggleValue": True,
+            "help": "Experimental! for basic functionality testing. changes the interpolation type for necessary pipeline functions (resize/rotation/etc. of image). caution, influences Autorestore calculation",
+        },
+        "ScalebackFrameTypeSelection": {
+            "level": 2,
+            "label": "Scaleback Frame",
+            "options": ["NEAREST", "BILINEAR", "BICUBIC"],
+            "default": "BILINEAR",
+            "parentToggle": "ActivateexperimentalsettingsEnableToggle",
+            "requiredToggleValue": True,
+            "help": "Experimental! for basic functionality testing. changes the interpolation type for necessary pipeline functions (resize/rotation/etc. of image). caution, influences Autorestore calculation",
+        },
+        "expression_faceeditor_t256TypeSelection": {
+            "level": 2,
+            "label": "Expression_faceeditor_t256",
+            "options": ["NEAREST", "BILINEAR"],
+            "default": "BILINEAR",
+            "parentToggle": "ActivateexperimentalsettingsEnableToggle",
+            "requiredToggleValue": True,
+            "help": "Experimental! for basic functionality testing. changes the interpolation type for necessary pipeline functions (resize/rotation/etc. of image). caution, influences Autorestore calculation",
+        },
+        "expression_faceeditor_backTypeSelection": {
+            "level": 2,
+            "label": "Expression_faceeditor_back",
+            "options": ["NEAREST", "BILINEAR"],
+            "default": "BILINEAR",
+            "parentToggle": "ActivateexperimentalsettingsEnableToggle",
+            "requiredToggleValue": True,
+            "help": "Experimental! for basic functionality testing. changes the interpolation type for necessary pipeline functions (resize/rotation/etc. of image). caution, influences Autorestore calculation",
+        },
+        "block_shiftTypeSelection": {
+            "level": 2,
+            "label": "block shift",
+            "options": ["NEAREST", "BILINEAR"],
+            "default": "NEAREST",
+            "parentToggle": "ActivateexperimentalsettingsEnableToggle",
+            "requiredToggleValue": True,
+            "help": "Experimental! for basic functionality testing. changes the interpolation type for necessary pipeline functions (resize/rotation/etc. of image). caution, influences Autorestore calculation",
+        },
+        "AntialiasTypeSelection": {
+            "level": 2,
+            "label": "Antialias",
+            "options": ["False", "True"],
+            "default": "False",
+            "parentToggle": "ActivateexperimentalsettingsEnableToggle",
+            "requiredToggleValue": True,
+            "help": "Experimental! most of the time no visual effect, in rare cases minor effect",
+        },
+    },
 }
 
 CAMERA_BACKENDS = {
-    'Default': cv2.CAP_ANY,
-    'DirectShow': cv2.CAP_DSHOW,
-    'MSMF': cv2.CAP_MSMF,
-    'V4L': cv2.CAP_V4L,
-    'V4L2': cv2.CAP_V4L2,
-    'GSTREAMER': cv2.CAP_GSTREAMER,
+    "Default": cv2.CAP_ANY,
+    "DirectShow": cv2.CAP_DSHOW,
+    "MSMF": cv2.CAP_MSMF,
+    "V4L": cv2.CAP_V4L,
+    "V4L2": cv2.CAP_V4L2,
+    "GSTREAMER": cv2.CAP_GSTREAMER,
 }

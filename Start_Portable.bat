@@ -160,14 +160,14 @@ if not exist "%PYTHON_DIR%\python.exe" (
     mkdir "%PYTHON_DIR%" >nul 2>&1
     powershell -Command "Expand-Archive -Path '%PYTHON_ZIP%' -DestinationPath '%PYTHON_DIR%' -Force"
     del "%PYTHON_ZIP%"
-    
+
     :: Enable site packages
     set "PTH_FILE=%PYTHON_DIR%\python311._pth"
     if exist "!PTH_FILE!" (
         echo Enabling site packages in PTH file...
         powershell -Command "(Get-Content '!PTH_FILE!') -replace '#import site', 'import site' | Set-Content '!PTH_FILE!'"
     )
-    
+
     echo Installing pip...
     powershell -Command "(New-Object Net.WebClient).DownloadFile('https://bootstrap.pypa.io/get-pip.py', '%PYTHON_DIR%\get-pip.py')"
     "%PYTHON_DIR%\python.exe" "%PYTHON_DIR%\get-pip.py" --no-warn-script-location
