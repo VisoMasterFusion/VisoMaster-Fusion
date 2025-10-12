@@ -33,9 +33,6 @@ class TargetMediaLoaderWorker(qtc.QThread):
         self.media_ids = media_ids or []
         self.webcam_mode = webcam_mode
         self._running = True  # Flag to control the running state
-        
-        # Ensure thumbnail directory exists
-        misc_helpers.ensure_thumbnail_dir()
 
     def run(self):
         if self.folder_name:
@@ -59,7 +56,7 @@ class TargetMediaLoaderWorker(qtc.QThread):
                 break
             media_file_path = os.path.join(folder_name, media_file)
             file_type = misc_helpers.get_file_type(media_file_path)
-            pixmap = common_widget_actions.extract_frame_as_pixmap(media_file_path, file_type)
+            pixmap = common_widget_actions.extract_frame_as_pixmap(self.main_window, media_file_path, file_type)
             if self.media_ids:
                 media_id = self.media_ids[i]
             else:
@@ -79,7 +76,7 @@ class TargetMediaLoaderWorker(qtc.QThread):
             if not self._running:  # Check if the thread is still running
                 break
             file_type = misc_helpers.get_file_type(media_file_path)
-            pixmap = common_widget_actions.extract_frame_as_pixmap(media_file_path, file_type=file_type)
+            pixmap = common_widget_actions.extract_frame_as_pixmap(self.main_window, media_file_path, file_type=file_type)
             if self.media_ids:
                 media_id = self.media_ids[i]
             else:
@@ -95,7 +92,7 @@ class TargetMediaLoaderWorker(qtc.QThread):
         camera_backend = CAMERA_BACKENDS[self.main_window.control['WebcamBackendSelection']]
         for i in range(int(self.main_window.control['WebcamMaxNoSelection'])):
             try:
-                pixmap = common_widget_actions.extract_frame_as_pixmap(media_file_path=f'Webcam {i}', file_type='webcam', webcam_index=i, webcam_backend=camera_backend)
+                pixmap = common_widget_actions.extract_frame_as_pixmap(self.main_window, media_file_path=f'Webcam {i}', file_type='webcam', webcam_index=i, webcam_backend=camera_backend)
                 media_id = str(uuid.uuid1().int)
 
                 if pixmap:

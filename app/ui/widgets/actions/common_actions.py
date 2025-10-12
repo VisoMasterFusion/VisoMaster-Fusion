@@ -276,65 +276,58 @@ def clear_gpu_memory(main_window: 'MainWindow'):
     #main_window.videoSeekSlider.markers = set() # Comment this to keep markers visible after vram clear
     main_window.videoSeekSlider.update()
 
-def extract_frame_as_pixmap(media_file_path, file_type, webcam_index=False, webcam_backend=False):
-    frame = False
-
-    def convert_thumbnail_frame_to_pixmap(frame):
-        # Convert the frame to QPixmap
+def extract_frame_as_pixmap(main_window: 'MainWindow', media_file_path, file_type, webcam_index=False, webcam_backend=False):
+    """
+    Extracts a frame from a media file and converts it to a QPixmap for thumbnails.
+    It now uses the ThumbnailManager to efficiently cache and retrieve thumbnails.
+    """
+    
+    # This helper function converts a numpy frame to a scaled QPixmap.
+    def convert_frame_to_pixmap(frame):
         height, width, _ = frame.shape
         bytes_per_line = 3 * width
-        q_img = QtGui.QImage(frame.data, width, height, bytes_per_line, QtGui.QImage.Format.Format_RGB888).rgbSwapped()
+        q_img = QtGui.QImage(frame.data, width, height, bytes_per_line, QtGui.QImage.Format_RGB888).rgbSwapped()
         pixmap = QtGui.QPixmap.fromImage(q_img)
-        pixmap = pixmap.scaled(70, 70, QtCore.Qt.AspectRatioMode.KeepAspectRatio)
-        return pixmap
-    
-    # For non-webcam media, check for cached thumbnail
+        # The final scaling for display is consistent.
+        return pixmap.scaled(70, 70, QtCore.Qt.AspectRatioMode.KeepAspectRatio)
+
+    # For images and videos, first check for a cached thumbnail.
     if file_type in ['image', 'video']:
-        # Ensure thumbnail directory exists
-        misc_helpers.ensure_thumbnail_dir()
+        # We use the thumbnail_manager instance from the main_window.
+        thumbnail_path = main_window.thumbnail_manager.find_existing_thumbnail(media_file_path)
         
-        # Get hash and thumbnail path
-        file_hash = misc_helpers.get_hash_from_filename(media_file_path)
-        thumbnail_path = misc_helpers.get_thumbnail_path(file_hash)
-        
-        # Check if cached thumbnail exists
-        if misc_helpers.is_file_exists(thumbnail_path):
+        if thumbnail_path:
             frame = misc_helpers.read_image_file(thumbnail_path)
             if frame is not None:
-                pixmap = convert_thumbnail_frame_to_pixmap(frame)
-                return pixmap
-    
-    # If no cached thumbnail or it's a webcam, proceed with normal frame extraction
+                return convert_frame_to_pixmap(frame)
+
+    # If no cache is found, or for webcams, generate the frame from source.
+    frame = None
     if file_type == 'image':
         frame = misc_helpers.read_image_file(media_file_path)
-    elif file_type == 'video':    
+    elif file_type == 'video':
         cap = cv2.VideoCapture(media_file_path)
-        if not cap.isOpened():
-            return None
-        
-        # Get total frames and find the middle frame no
-        total_frames = int(cap.get(cv2.CAP_PROP_FRAME_COUNT))
-        middle_frame_no = total_frames//2
-        # Seek to the middle frame
-        cap.set(cv2.CAP_PROP_POS_FRAMES, middle_frame_no)
-        ret, frame = misc_helpers.read_frame(cap)
-        cap.release()
-            
+        if cap.isOpened():
+            total_frames = int(cap.get(cv2.CAP_PROP_FRAME_COUNT))
+            middle_frame_no = total_frames // 2
+            cap.set(cv2.CAP_PROP_POS_FRAMES, middle_frame_no)
+            ret, frame = misc_helpers.read_frame(cap)
+            cap.release()
     elif file_type == 'webcam':
         camera = cv2.VideoCapture(webcam_index, webcam_backend)
-        if not camera.isOpened():
-            return
-        ret, frame = misc_helpers.read_frame(camera)
-        if not ret:
-            return
+        if camera.isOpened():
+            ret, frame = misc_helpers.read_frame(camera)
+            camera.release() # Release camera immediately after grabbing one frame
 
     if isinstance(frame, np.ndarray):
-        # Save thumbnail for future use
-        if frame is not None and file_type != 'webcam':
-            misc_helpers.save_thumbnail(frame, thumbnail_path)
-        pixmap = convert_thumbnail_frame_to_pixmap(frame)
-        return pixmap
-    return None
+        # Create a new thumbnail in the cache for next time.
+        if file_type != 'webcam':
+            main_window.thumbnail_manager.create_thumbnail(frame, media_file_path)
+        
+        # Return the generated pixmap.
+        return convert_frame_to_pixmap(frame)
+
+    return None # Return None if everything failed.
 
 def set_widgets_values_using_face_id_parameters(main_window: 'MainWindow', face_id=False):
     if (face_id is False) or (not main_window.parameters.get(face_id)):
