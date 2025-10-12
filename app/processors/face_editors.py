@@ -572,7 +572,7 @@ class FaceEditors:
 
         # 3. Apply color to each enabled facial area.
         if parameters.get('FaceMakeupEnableToggle', False):
-             color = [parameters['FaceMakeupRedSlider'], parameters['FaceMakeupGreenSlider'], parameters['FaceMakeupBlueSlider']]
+            color = [parameters['FaceMakeupRedSlider'], parameters['FaceMakeupGreenSlider'], parameters['FaceMakeupBlueSlider']]
             out = self.face_parser_makeup_direct_rgb(out, labels, part=(1, 7, 8, 10),
                                                      color=color,
                                                      blend_factor=parameters['FaceMakeupBlendAmountDecimalSlider'])
