@@ -469,7 +469,7 @@ class FaceEditors:
 
 
     def face_parser_makeup_direct_rgb_masked(self, img: torch.Tensor, mask: torch.Tensor,
-                                              color=None, blend_factor: float = 0.2) -> torch.Tensor:
+                                             color=None, blend_factor: float = 0.2) -> torch.Tensor:
         """
         Applies a specified RGB color to a masked region of an image using alpha blending.
 
@@ -539,9 +539,9 @@ class FaceEditors:
         if isinstance(part, tuple):
             m = torch.zeros_like(labels, dtype=torch.bool, device=device)
             for p in part:
-                 m |= (labels == int(p))
+                m |= (labels == int(p))
         else:
-            m = (labels == int(p))
+            m = (labels == int(part))
         
         # Apply the color to the generated mask.
         return self.face_parser_makeup_direct_rgb_masked(
