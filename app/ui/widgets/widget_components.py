@@ -7,7 +7,6 @@ from typing import TYPE_CHECKING, Dict
 from send2trash import send2trash
 import subprocess
 import sys
-import torch
 
 from PySide6 import QtWidgets, QtGui, QtCore
 from PySide6.QtWidgets import QPushButton
@@ -26,20 +25,21 @@ import app.helpers.miscellaneous as misc_helpers
 if TYPE_CHECKING:
     from app.ui.main_ui import MainWindow
 
+
 class CardButton(QPushButton):
     def __init__(self, *args, **kwargs):
         super().__init__(*args)
-        self.main_window: 'MainWindow' = kwargs.get('main_window', False)
-        self.list_item  = None
+        self.main_window: "MainWindow" = kwargs.get("main_window", False)
+        self.list_item = None
         self.list_widget: QtWidgets.QListWidget = None
 
     def get_item_position(self):
-        for i in range(self.list_widget.count()-1, -1, -1):
+        for i in range(self.list_widget.count() - 1, -1, -1):
             list_item = self.list_widget.item(i)
             if list_item.listWidget().itemWidget(list_item) == self:
                 return i
         return None
-    
+
     # To find the index of second last selected button by traversing the list
     # Mainly used as a helper for Shift Selection of CardButtons
     def get_index_of_second_last_selected_item(self):
@@ -47,20 +47,22 @@ class CardButton(QPushButton):
         if total_items_count < 2:
             return None
         selected_count = 0
-        for i in range(self.list_widget.count()-1, -1, -1):
+        for i in range(self.list_widget.count() - 1, -1, -1):
             list_item = self.list_widget.item(i)
             card_button: CardButton = list_item.listWidget().itemWidget(list_item)
             if card_button.isChecked():
-                selected_count+=1
-                if selected_count==2:
+                selected_count += 1
+                if selected_count == 2:
                     return i
         return None
-    
+
     # To find all the selected buttons behind 'item_index' (Only those which are sequentially selected)
-    # Mainly used as a helper for Shift Selection of CardButtons    
-    def get_sequential_trailing_selected_items(self, item_index) -> list[tuple[int, QPushButton]]: 
+    # Mainly used as a helper for Shift Selection of CardButtons
+    def get_sequential_trailing_selected_items(
+        self, item_index
+    ) -> list[tuple[int, QPushButton]]:
         selected_items = []
-        for i in range(item_index-1, -1, -1):
+        for i in range(item_index - 1, -1, -1):
             list_item = self.list_widget.item(i)
             card_button: CardButton = list_item.listWidget().itemWidget(list_item)
             if card_button.isChecked():
@@ -68,19 +70,21 @@ class CardButton(QPushButton):
             else:
                 break
         return selected_items
-    
+
     def deselect_all_trailing_items(self, item_index):
-        for i in range(item_index-1, -1, -1):
+        for i in range(item_index - 1, -1, -1):
             list_item = self.list_widget.item(i)
             card_button: CardButton = list_item.listWidget().itemWidget(list_item)
             card_button.blockSignals(True)
             card_button.setChecked(False)
             card_button.blockSignals(False)
 
-    def select_all_items_between_range(self, lower_range, upper_range) -> list[QPushButton]:
+    def select_all_items_between_range(
+        self, lower_range, upper_range
+    ) -> list[QPushButton]:
         card_buttons = []
         # Include items in the lower_range and upper_range indexes too
-        for i in range(lower_range, upper_range+1):
+        for i in range(lower_range, upper_range + 1):
             list_item = self.list_widget.item(i)
             card_button: CardButton = list_item.listWidget().itemWidget(list_item)
             card_button.blockSignals(True)
@@ -88,17 +92,28 @@ class CardButton(QPushButton):
             card_button.blockSignals(False)
             card_buttons.append(card_button)
         return card_buttons
-    
+
+
 class TargetMediaCardButton(CardButton):
-    def __init__(self, media_path: str, file_type: str, media_id:str, is_webcam=False, webcam_index=-1, webcam_backend=-1, *args, **kwargs):
+    def __init__(
+        self,
+        media_path: str,
+        file_type: str,
+        media_id: str,
+        is_webcam=False,
+        webcam_index=-1,
+        webcam_backend=-1,
+        *args,
+        **kwargs,
+    ):
         super().__init__(*args, **kwargs)
         self.media_id = media_id
         self.file_type = file_type
-        self.media_path = media_path.replace('/','\\')
+        self.media_path = media_path.replace("/", "\\")
         self.is_webcam = is_webcam
         self.webcam_index = webcam_index
         self.webcam_backend = webcam_backend
-        self.media_capture: cv2.VideoCapture|bool = False
+        self.media_capture: cv2.VideoCapture | bool = False
         self.setCheckable(True)
         self.setToolTip(media_path)
         layout = QtWidgets.QVBoxLayout(self)
@@ -107,7 +122,9 @@ class TargetMediaCardButton(CardButton):
         filename = os.path.basename(media_path)
         text_label = QtWidgets.QLabel(filename, self)
         text_label.setAlignment(QtCore.Qt.AlignmentFlag.AlignBottom)
-        text_label.setStyleSheet("font-size: 8px; font-weight:bold;")  # Style for the label
+        text_label.setStyleSheet(
+            "font-size: 8px; font-weight:bold;"
+        )  # Style for the label
         layout.addWidget(text_label)
         self.clicked.connect(self.load_media)
         # Imposta lo stylesheet solo per questo pulsante
@@ -130,7 +147,7 @@ class TargetMediaCardButton(CardButton):
         if main_window.selected_video_button:
             main_window.selected_video_button.toggle()  # Deselect the previous video
             main_window.selected_video_button = False
-        
+
         # Stop the current video processing
         main_window.video_processor.stop_processing()
 
@@ -154,22 +171,29 @@ class TargetMediaCardButton(CardButton):
         video_control_actions.reset_media_buttons(main_window)
 
     def load_media(self):
-
         main_window = self.main_window
         # Deselect the currently selected video
         if main_window.selected_video_button:
             main_window.selected_video_button.toggle()  # Deselect the previous video
             main_window.selected_video_button = False
-        
+
         # Stop the current video processing
         main_window.video_processor.stop_processing()
 
         if main_window.selected_target_face_id:
-            main_window.current_widget_parameters = main_window.parameters[main_window.selected_target_face_id].copy()
+            main_window.current_widget_parameters = main_window.parameters[
+                main_window.selected_target_face_id
+            ].copy()
 
-        if main_window.control.get('AutoSwapToggle'):
-            prev_selected_input_faces = [face for _,face in main_window.input_faces.items() if face.isChecked()]
-            prev_selected_embeddings = [embed for _,embed in main_window.merged_embeddings.items() if embed.isChecked()]
+        if main_window.control.get("AutoSwapToggle"):
+            prev_selected_input_faces = [
+                face for _, face in main_window.input_faces.items() if face.isChecked()
+            ]
+            prev_selected_embeddings = [
+                embed
+                for _, embed in main_window.merged_embeddings.items()
+                if embed.isChecked()
+            ]
         # Reset the frame counter
         main_window.video_processor.current_frame_number = 0
         main_window.video_processor.media_path = self.media_path
@@ -183,8 +207,8 @@ class TargetMediaCardButton(CardButton):
 
         frame = None
         max_frames_number = 0  # Initialize max_frames_number for either video or image
-        
-        if self.file_type == 'video':
+
+        if self.file_type == "video":
             media_capture = cv2.VideoCapture(self.media_path)
             if not media_capture.isOpened():
                 print(f"Error opening video {self.media_path}")
@@ -198,13 +222,15 @@ class TargetMediaCardButton(CardButton):
             main_window.video_processor.fps = media_capture.get(cv2.CAP_PROP_FPS)
             main_window.video_processor.max_frame_number = max_frames_number
 
-        elif self.file_type == 'image':
+        elif self.file_type == "image":
             frame = misc_helpers.read_image_file(self.media_path)
             max_frames_number = 0  # For an image, there is only one "frame"
             main_window.video_processor.max_frame_number = max_frames_number
 
-        elif self.file_type == 'webcam':
-            res_width, res_height = self.main_window.control['WebcamMaxResSelection'].split('x')
+        elif self.file_type == "webcam":
+            res_width, res_height = self.main_window.control[
+                "WebcamMaxResSelection"
+            ].split("x")
 
             media_capture = cv2.VideoCapture(self.webcam_index, self.webcam_backend)
             media_capture.set(cv2.CAP_PROP_FRAME_WIDTH, int(res_width))
@@ -218,18 +244,22 @@ class TargetMediaCardButton(CardButton):
 
         if frame is not None:
             main_window.scene.clear()
-            if self.file_type == 'video':
+            if self.file_type == "video":
                 # restore initial video position after reading. == 0
                 media_capture.set(cv2.CAP_PROP_POS_FRAMES, 0)
 
             main_window.video_processor.current_frame = frame
             pixmap = common_widget_actions.get_pixmap_from_frame(main_window, frame)
-            graphics_view_actions.update_graphics_view(main_window, pixmap, 0, reset_fit=True)
+            graphics_view_actions.update_graphics_view(
+                main_window, pixmap, 0, reset_fit=True
+            )
 
         self.reset_related_widgets_and_values()
 
         main_window.video_processor.file_type = self.file_type
-        main_window.videoSeekSlider.blockSignals(True)  # Block signals to prevent unnecessary updates
+        main_window.videoSeekSlider.blockSignals(
+            True
+        )  # Block signals to prevent unnecessary updates
         main_window.videoSeekSlider.setMaximum(max_frames_number)
         main_window.videoSeekSlider.setValue(0)  # Set the slider to 0 for the new video
 
@@ -242,31 +272,40 @@ class TargetMediaCardButton(CardButton):
         main_window.graphicsViewFrame.update()
 
         # Set Parameter widget values to default
-        common_widget_actions.set_widgets_values_using_face_id_parameters(main_window=main_window, face_id=False)
-        
+        common_widget_actions.set_widgets_values_using_face_id_parameters(
+            main_window=main_window, face_id=False
+        )
+
         main_window.loading_new_media = True
         common_widget_actions.refresh_frame(main_window)
 
-        if main_window.control.get('AutoSwapToggle'):
+        if main_window.control.get("AutoSwapToggle"):
             card_actions.find_target_faces(main_window)
             for _, target_face in main_window.target_faces.items():
                 for input_face in prev_selected_input_faces:
-                    target_face.assigned_input_faces[input_face.face_id] = input_face.embedding_store
+                    target_face.assigned_input_faces[input_face.face_id] = (
+                        input_face.embedding_store
+                    )
                 for embedding in prev_selected_embeddings:
-                    target_face.assigned_merged_embeddings[embedding.embedding_id] = embedding.embedding_store
+                    target_face.assigned_merged_embeddings[embedding.embedding_id] = (
+                        embedding.embedding_store
+                    )
                 target_face.calculate_assigned_input_embedding()
             if main_window.target_faces:
                 list(main_window.target_faces.values())[0].click()
             common_widget_actions.refresh_frame(main_window)
             layout_actions.fit_image_to_view_onchange(main_window)
 
-        if main_window.control['SendVirtCamFramesEnableToggle'] and self.file_type!='image':
+        if (
+            main_window.control["SendVirtCamFramesEnableToggle"]
+            and self.file_type != "image"
+        ):
             # Re-initialize virtualcam to reset its dimensions with that of the new video
             main_window.video_processor.enable_virtualcam()
 
         # list_view_actions.find_target_faces(main_window)
 
-    def deselect_currently_selected_video(self,main_window):
+    def deselect_currently_selected_video(self, main_window):
         # Deselect the currently selected video
         if main_window.selected_video_button == self:
             self.reset_media_state()
@@ -286,9 +325,13 @@ class TargetMediaCardButton(CardButton):
 
             self.reset_related_widgets_and_values()
 
-            main_window.videoSeekSlider.blockSignals(True)  # Block signals to prevent unnecessary updates
+            main_window.videoSeekSlider.blockSignals(
+                True
+            )  # Block signals to prevent unnecessary updates
             main_window.videoSeekSlider.setMaximum(1)
-            main_window.videoSeekSlider.setValue(0)  # Set the slider to 0 for the new video
+            main_window.videoSeekSlider.setValue(
+                0
+            )  # Set the slider to 0 for the new video
             main_window.videoSeekSlider.blockSignals(False)  # Unblock signals
             # Append the selected video button to the list
             main_window.selected_video_button = False
@@ -308,7 +351,9 @@ class TargetMediaCardButton(CardButton):
 
         # If the target media list is empty, show the placeholder text
         if not main_window.target_videos:
-            main_window.placeholder_update_signal.emit(self.main_window.targetVideosList, False)
+            main_window.placeholder_update_signal.emit(
+                self.main_window.targetVideosList, False
+            )
 
     def remove_target_media_from_list(self):
         main_window = self.main_window
@@ -322,8 +367,8 @@ class TargetMediaCardButton(CardButton):
         # Send the file to the trash
         if os.path.exists(self.media_path):
             send2trash(self.media_path)
-            print(f"{self.media_path} has been sent to the trash.")  
-        else:  
+            print(f"{self.media_path} has been sent to the trash.")
+        else:
             print(f"{self.media_path} does not exist.")
 
         self.deleteLater()
@@ -353,15 +398,15 @@ class TargetMediaCardButton(CardButton):
 
     def create_context_menu(self):
         self.popMenu = QtWidgets.QMenu(self)
-        remove_action = QtGui.QAction('Remove from list', self)
+        remove_action = QtGui.QAction("Remove from list", self)
         remove_action.triggered.connect(self.remove_target_media_from_list)
         self.popMenu.addAction(remove_action)
 
-        delete_action = QtGui.QAction('Delete file to recycle bin', self)
+        delete_action = QtGui.QAction("Delete file to recycle bin", self)
         delete_action.triggered.connect(self.delete_target_media_to_trash)
         self.popMenu.addAction(delete_action)
 
-        open_path_action = QtGui.QAction('Open file location', self)
+        open_path_action = QtGui.QAction("Open file location", self)
         open_path_action.triggered.connect(self.open_target_path_by_explorer)
         self.popMenu.addAction(open_path_action)
 
@@ -369,8 +414,17 @@ class TargetMediaCardButton(CardButton):
         # show context menu
         self.popMenu.exec_(self.mapToGlobal(point))
 
+
 class TargetFaceCardButton(CardButton):
-    def __init__(self, media_path, cropped_face, embedding_store: Dict[str, np.ndarray], face_id:str, *args, **kwargs):
+    def __init__(
+        self,
+        media_path,
+        cropped_face,
+        embedding_store: Dict[str, np.ndarray],
+        face_id: str,
+        *args,
+        **kwargs,
+    ):
         super().__init__(*args, **kwargs)
         # if self.main_window.target_faces:
         #     self.face_id = max([target_face.face_id for target_face in self.main_window.target_faces]) + 1
@@ -380,13 +434,19 @@ class TargetFaceCardButton(CardButton):
         self.media_path = media_path
         self.cropped_face = cropped_face
 
-        self.embedding_store = embedding_store  # Key: embedding_swap_model, Value: embedding
+        self.embedding_store = (
+            embedding_store  # Key: embedding_swap_model, Value: embedding
+        )
 
-        self.assigned_input_faces: Dict[str, Dict[str, np.ndarray]] = {}  # Inside Dict (key - input face_id): {Key: embedding_swap_model, Value: InputFaceCardButton.embedding_store}
-        self.assigned_merged_embeddings: Dict[str, Dict[str, np.ndarray]] = {}  # Key: embedding_swap_model, Value: EmbeddingCardButton.embedding_store
+        self.assigned_input_faces: Dict[
+            str, Dict[str, np.ndarray]
+        ] = {}  # Inside Dict (key - input face_id): {Key: embedding_swap_model, Value: InputFaceCardButton.embedding_store}
+        self.assigned_merged_embeddings: Dict[
+            str, Dict[str, np.ndarray]
+        ] = {}  # Key: embedding_swap_model, Value: EmbeddingCardButton.embedding_store
         self.assigned_input_embedding = {}  # Key: embedding_swap_model, Value: np.ndarray
         self.assigned_kv_map: Dict | None = None
-        
+
         self.setCheckable(True)
         self.clicked.connect(self.load_target_face)
 
@@ -397,7 +457,7 @@ class TargetFaceCardButton(CardButton):
             border: 2px solid #1abc9c;
         }
         """)
-        
+
         # Set the context menu policy to trigger the custom context menu on right-click
         self.setContextMenuPolicy(QtCore.Qt.CustomContextMenu)
         # Connect the custom context menu request signal to the custom slot
@@ -406,7 +466,9 @@ class TargetFaceCardButton(CardButton):
 
         # Create parameter dict for the target
         if not self.main_window.parameters.get(self.face_id):
-            common_widget_actions.create_parameter_dict_for_face_id(self.main_window, self.face_id)
+            common_widget_actions.create_parameter_dict_for_face_id(
+                self.main_window, self.face_id
+            )
 
     def set_embedding(self, embedding_swap_model: str, embedding: np.ndarray):
         self.embedding_store[embedding_swap_model] = embedding
@@ -420,7 +482,7 @@ class TargetFaceCardButton(CardButton):
         self.setChecked(True)
         for _, target_face_button in main_window.target_faces.items():
             # Uncheck all other target faces
-            if target_face_button!=self:
+            if target_face_button != self:
                 target_face_button.setChecked(False)
 
         card_actions.uncheck_all_input_faces(main_window)
@@ -430,15 +492,19 @@ class TargetFaceCardButton(CardButton):
             main_window.input_faces[input_face_id].setChecked(True)
         for embedding_id in self.assigned_merged_embeddings.keys():
             main_window.merged_embeddings[embedding_id].setChecked(True)
-        
+
         main_window.selected_target_face_id = self.face_id
         main_window.current_kv_tensors_map = self.assigned_kv_map
 
-        # print('main_window.selected_target_face_id', main_window.selected_target_face_id)     
-        common_widget_actions.set_widgets_values_using_face_id_parameters(main_window=main_window, face_id=self.face_id)      
+        # print('main_window.selected_target_face_id', main_window.selected_target_face_id)
+        common_widget_actions.set_widgets_values_using_face_id_parameters(
+            main_window=main_window, face_id=self.face_id
+        )
         # common_widget_actions.refresh_frame(main_window)
 
-        main_window.current_widget_parameters = main_window.parameters[self.face_id].copy()
+        main_window.current_widget_parameters = main_window.parameters[
+            self.face_id
+        ].copy()
 
     def calculate_assigned_input_embedding(self):
         control = self.main_window.control.copy()
@@ -451,7 +517,7 @@ class TargetFaceCardButton(CardButton):
             if embedding_store:  # Verifica se l'embedding_store non è vuoto
                 all_embedding_swap_models.update(embedding_store.keys())
                 all_input_embeddings.append(embedding_store)  # Aggiungi l'intero store
-        
+
         # Itera su `assigned_merged_embeddings` e raccogli gli embedding e i modelli
         for _, embedding_store in self.assigned_merged_embeddings.items():
             if embedding_store:  # Verifica se l'embedding_store non è vuoto
@@ -460,14 +526,28 @@ class TargetFaceCardButton(CardButton):
 
         # Calcolo degli embedding se presenti
         if len(all_input_embeddings) > 0:
-            if control['EmbMergeMethodSelection'] == 'Mean':
+            if control["EmbMergeMethodSelection"] == "Mean":
                 self.assigned_input_embedding = {
-                    model: np.mean([store[model] for store in all_input_embeddings if model in store], axis=0)
+                    model: np.mean(
+                        [
+                            store[model]
+                            for store in all_input_embeddings
+                            if model in store
+                        ],
+                        axis=0,
+                    )
                     for model in all_embedding_swap_models
                 }
-            elif control['EmbMergeMethodSelection'] == 'Median':
+            elif control["EmbMergeMethodSelection"] == "Median":
                 self.assigned_input_embedding = {
-                    model: np.median([store[model] for store in all_input_embeddings if model in store], axis=0)
+                    model: np.median(
+                        [
+                            store[model]
+                            for store in all_input_embeddings
+                            if model in store
+                        ],
+                        axis=0,
+                    )
                     for model in all_embedding_swap_models
                 }
 
@@ -477,9 +557,11 @@ class TargetFaceCardButton(CardButton):
         # --- New KV Map Logic ---
         main_window = self.main_window
         control = main_window.control
-        denoiser_on = control.get('DenoiserUNetEnableBeforeRestorersToggle', False) or \
-                      control.get('DenoiserAfterFirstRestorerToggle', False) or \
-                      control.get('DenoiserAfterRestorersToggle', False)
+        denoiser_on = (
+            control.get("DenoiserUNetEnableBeforeRestorersToggle", False)
+            or control.get("DenoiserAfterFirstRestorerToggle", False)
+            or control.get("DenoiserAfterRestorersToggle", False)
+        )
 
         self.assigned_kv_map = None
         self.kv_data_color_transferred = False
@@ -490,42 +572,48 @@ class TargetFaceCardButton(CardButton):
 
             if input_face_button:
                 # If the input face has a map, use it.
-                if hasattr(input_face_button, 'kv_map') and input_face_button.kv_map is not None:
-                    #print(f"Using cached K/V map for input face: {input_face_button.media_path}")
+                if (
+                    hasattr(input_face_button, "kv_map")
+                    and input_face_button.kv_map is not None
+                ):
+                    # print(f"Using cached K/V map for input face: {input_face_button.media_path}")
                     self.assigned_kv_map = input_face_button.kv_map
                 else:
                     # Otherwise, generate a new one
-                    #print(f"Generating K/V map for input face: {input_face_button.media_path}")
+                    # print(f"Generating K/V map for input face: {input_face_button.media_path}")
                     try:
                         from PIL import Image
+
                         models_processor = main_window.models_processor
                         models_processor.ensure_kv_extractor_loaded()
 
                         if models_processor.kv_extractor:
                             cropped_face_np = input_face_button.cropped_face
                             pil_img = Image.fromarray(cropped_face_np[..., ::-1])
-                            
-                            if pil_img.size != (512, 512):
-                                pil_img = pil_img.resize((512, 512), Image.Resampling.LANCZOS)
 
-                            kv_map = models_processor.kv_extractor.extract_kv(
-                                pil_img
-                            )
-                            
+                            if pil_img.size != (512, 512):
+                                pil_img = pil_img.resize(
+                                    (512, 512), Image.Resampling.LANCZOS
+                                )
+
+                            kv_map = models_processor.kv_extractor.extract_kv(pil_img)
+
                             # Cache the generated map on the input face button
                             input_face_button.kv_map = kv_map
-                            
+
                             # Assign to the target face
                             self.assigned_kv_map = kv_map
-                            #print(f"Generated and cached K/V map.")
+                            # print(f"Generated and cached K/V map.")
                         else:
-                            print("KV Extractor not available, cannot generate K/V map.")
+                            print(
+                                "KV Extractor not available, cannot generate K/V map."
+                            )
                     except Exception as e:
                         print(f"Error generating K/V map: {e}")
                         traceback.print_exc()
                     finally:
-                        if not main_window.control.get('DenoiserUNetModelSelection'):
-                             main_window.models_processor.unload_kv_extractor()
+                        if not main_window.control.get("DenoiserUNetModelSelection"):
+                            main_window.models_processor.unload_kv_extractor()
 
         if main_window.selected_target_face_id == self.face_id:
             main_window.current_kv_tensors_map = self.assigned_kv_map
@@ -533,17 +621,40 @@ class TargetFaceCardButton(CardButton):
     def create_context_menu(self):
         # create context menu
         self.popMenu = QtWidgets.QMenu(self)
-        parameters_copy_action = QtGui.QAction('Copy Parameters', self)
+        parameters_copy_action = QtGui.QAction("Copy Parameters", self)
         parameters_copy_action.triggered.connect(self.copy_parameters)
-        parameters_paste_action = QtGui.QAction('Apply Copied Parameters', self)
+        parameters_paste_action = QtGui.QAction("Apply Copied Parameters", self)
         parameters_paste_action.triggered.connect(self.paste_and_apply_parameters)
-        save_parameters_action = QtGui.QAction('Save Current Parameters and Settings', self)
-        save_parameters_action.triggered.connect(partial(save_load_actions.save_current_parameters_and_control, self.main_window, self.face_id))
-        load_parameters_action = QtGui.QAction('Load Parameters', self)
-        load_parameters_action.triggered.connect(partial(save_load_actions.load_parameters_and_settings, self.main_window, self.face_id))
-        load_parameters_and_settings_action = QtGui.QAction('Load Parameters and Settings', self)
-        load_parameters_and_settings_action.triggered.connect(partial(save_load_actions.load_parameters_and_settings, self.main_window, self.face_id, True))
-        remove_action = QtGui.QAction('Remove from List', self)
+        save_parameters_action = QtGui.QAction(
+            "Save Current Parameters and Settings", self
+        )
+        save_parameters_action.triggered.connect(
+            partial(
+                save_load_actions.save_current_parameters_and_control,
+                self.main_window,
+                self.face_id,
+            )
+        )
+        load_parameters_action = QtGui.QAction("Load Parameters", self)
+        load_parameters_action.triggered.connect(
+            partial(
+                save_load_actions.load_parameters_and_settings,
+                self.main_window,
+                self.face_id,
+            )
+        )
+        load_parameters_and_settings_action = QtGui.QAction(
+            "Load Parameters and Settings", self
+        )
+        load_parameters_and_settings_action.triggered.connect(
+            partial(
+                save_load_actions.load_parameters_and_settings,
+                self.main_window,
+                self.face_id,
+                True,
+            )
+        )
+        remove_action = QtGui.QAction("Remove from List", self)
         remove_action.triggered.connect(self.remove_target_face_from_list)
         self.popMenu.addAction(parameters_copy_action)
         self.popMenu.addAction(parameters_paste_action)
@@ -561,9 +672,9 @@ class TargetFaceCardButton(CardButton):
 
         if main_window.video_processor.processing:
             main_window.video_processor.stop_processing()
-            
+
         i = self.get_item_position()
-        main_window.targetFacesList.takeItem(i)   
+        main_window.targetFacesList.takeItem(i)
         main_window.target_faces.pop(self.face_id)
         # Pop parameters using the target's face_id
         main_window.parameters.pop(self.face_id)
@@ -573,10 +684,14 @@ class TargetFaceCardButton(CardButton):
 
         # Otherwise reset parameter widgets value to the default
         else:
-            common_widget_actions.set_widgets_values_using_face_id_parameters(main_window, face_id=False)
+            common_widget_actions.set_widgets_values_using_face_id_parameters(
+                main_window, face_id=False
+            )
             main_window.selected_target_face_id = False
 
-        video_control_actions.remove_face_parameters_and_control_from_markers(main_window, self.face_id) #Remove parameters for the face from all markers
+        video_control_actions.remove_face_parameters_and_control_from_markers(
+            main_window, self.face_id
+        )  # Remove parameters for the face from all markers
         common_widget_actions.refresh_frame(self.main_window)
         self.deleteLater()
 
@@ -585,30 +700,50 @@ class TargetFaceCardButton(CardButton):
             self.assigned_input_faces.pop(input_face_id)
             self.calculate_assigned_input_embedding()
 
-
     def remove_assigned_merged_embedding(self, embedding_id):
         if self.assigned_merged_embeddings.get(embedding_id):
             self.assigned_merged_embeddings.pop(embedding_id)
             self.calculate_assigned_input_embedding()
 
     def copy_parameters(self):
-
-        self.main_window.copied_parameters = self.main_window.parameters[self.face_id].copy()
+        self.main_window.copied_parameters = self.main_window.parameters[
+            self.face_id
+        ].copy()
 
     def paste_and_apply_parameters(self):
         if not self.main_window.copied_parameters:
-            common_widget_actions.create_and_show_messagebox(self.main_window, 'No parameters found in Clipboard', 'You need to copy parameters from any of the target face before pasting it!', parent_widget=self)
+            common_widget_actions.create_and_show_messagebox(
+                self.main_window,
+                "No parameters found in Clipboard",
+                "You need to copy parameters from any of the target face before pasting it!",
+                parent_widget=self,
+            )
         else:
-            self.main_window.parameters[self.face_id] = self.main_window.copied_parameters.copy()
-            common_widget_actions.set_widgets_values_using_face_id_parameters(self.main_window, face_id=self.face_id)
+            self.main_window.parameters[self.face_id] = (
+                self.main_window.copied_parameters.copy()
+            )
+            common_widget_actions.set_widgets_values_using_face_id_parameters(
+                self.main_window, face_id=self.face_id
+            )
             common_widget_actions.refresh_frame(main_window=self.main_window)
 
+
 class InputFaceCardButton(CardButton):
-    def __init__(self, media_path, cropped_face, embedding_store: Dict[str, np.ndarray], face_id: str, *args, **kwargs):
+    def __init__(
+        self,
+        media_path,
+        cropped_face,
+        embedding_store: Dict[str, np.ndarray],
+        face_id: str,
+        *args,
+        **kwargs,
+    ):
         super().__init__(*args, **kwargs)
         self.face_id = face_id
         self.cropped_face = cropped_face
-        self.embedding_store = embedding_store  # Key: embedding_swap_model, Value: embedding
+        self.embedding_store = (
+            embedding_store  # Key: embedding_swap_model, Value: embedding
+        )
         self.media_path = media_path
         self.kv_map: Dict | None = None
 
@@ -640,7 +775,9 @@ class InputFaceCardButton(CardButton):
         main_window = self.main_window
 
         if main_window.cur_selected_target_face_button:
-            cur_selected_target_face_button = main_window.cur_selected_target_face_button
+            cur_selected_target_face_button = (
+                main_window.cur_selected_target_face_button
+            )
 
             if QtWidgets.QApplication.keyboardModifiers() == QtCore.Qt.ShiftModifier:
                 # Step 1: Find the index of the last selected item before selecting the 'current_item_position' item. If this is None, then shift select shouldn't work
@@ -648,51 +785,77 @@ class InputFaceCardButton(CardButton):
                 # Step 3: If there are trailing items, then deselect all checked items behind the last sequentially trailing item (This is to make sure all unsequentially selected items are deselected)
                 # Step 4: Now select all the items between second_last_item_position (or last trailed item, if there was trailing selected items) and the current_item_position, to complete the Shift Selection
                 current_item_position = self.get_item_position()
-                second_last_item_position = self.get_index_of_second_last_selected_item()
+                second_last_item_position = (
+                    self.get_index_of_second_last_selected_item()
+                )
                 if second_last_item_position is not None:
                     selected_input_faces = []
                     if current_item_position >= second_last_item_position:
-                        trailing_selected_items = self.get_sequential_trailing_selected_items(second_last_item_position)
+                        trailing_selected_items = (
+                            self.get_sequential_trailing_selected_items(
+                                second_last_item_position
+                            )
+                        )
                         if trailing_selected_items:
-                            self.deselect_all_trailing_items(trailing_selected_items[-1][0])
+                            self.deselect_all_trailing_items(
+                                trailing_selected_items[-1][0]
+                            )
 
-                            selected_input_faces = self.select_all_items_between_range(trailing_selected_items[-1][0], current_item_position)
+                            selected_input_faces = self.select_all_items_between_range(
+                                trailing_selected_items[-1][0], current_item_position
+                            )
                         else:
-                            selected_input_faces = self.select_all_items_between_range(second_last_item_position, current_item_position)
-                    
+                            selected_input_faces = self.select_all_items_between_range(
+                                second_last_item_position, current_item_position
+                            )
+
                     else:
-                        for input_face_id in cur_selected_target_face_button.assigned_input_faces.keys():
+                        for input_face_id in (
+                            cur_selected_target_face_button.assigned_input_faces.keys()
+                        ):
                             input_face_button = main_window.input_faces[input_face_id]
-                            if input_face_button!=self:
+                            if input_face_button != self:
                                 input_face_button.setChecked(False)
 
                     cur_selected_target_face_button.assigned_input_faces = {}
                     for input_face in selected_input_faces:
-                        cur_selected_target_face_button.assigned_input_faces[input_face.face_id] = input_face.embedding_store
+                        cur_selected_target_face_button.assigned_input_faces[
+                            input_face.face_id
+                        ] = input_face.embedding_store
 
-            elif not QtWidgets.QApplication.keyboardModifiers() == QtCore.Qt.ControlModifier:
-                for input_face_id in cur_selected_target_face_button.assigned_input_faces.keys():
+            elif (
+                not QtWidgets.QApplication.keyboardModifiers()
+                == QtCore.Qt.ControlModifier
+            ):
+                for (
+                    input_face_id
+                ) in cur_selected_target_face_button.assigned_input_faces.keys():
                     input_face_button = main_window.input_faces[input_face_id]
-                    if input_face_button!=self:
+                    if input_face_button != self:
                         input_face_button.setChecked(False)
                 cur_selected_target_face_button.assigned_input_faces = {}
 
-            cur_selected_target_face_button.assigned_input_faces[self.face_id] = self.embedding_store
+            cur_selected_target_face_button.assigned_input_faces[self.face_id] = (
+                self.embedding_store
+            )
 
             if not self.isChecked():
                 cur_selected_target_face_button.assigned_input_faces.pop(self.face_id)
             cur_selected_target_face_button.calculate_assigned_input_embedding()
         else:
-            if not QtWidgets.QApplication.keyboardModifiers() == QtCore.Qt.ControlModifier:
+            if (
+                not QtWidgets.QApplication.keyboardModifiers()
+                == QtCore.Qt.ControlModifier
+            ):
                 # If there is no target face selected, uncheck all other input faces
                 for _, input_face_button in main_window.input_faces.items():
-                    if input_face_button!=self:
+                    if input_face_button != self:
                         input_face_button.setChecked(False)
 
         common_widget_actions.refresh_frame(main_window)
 
     def remove_kv_data_file(self):
-        if isinstance(self.kv_map, str) and self.kv_map.endswith('.pt'):
+        if isinstance(self.kv_map, str) and self.kv_map.endswith(".pt"):
             try:
                 if os.path.exists(self.kv_map):
                     os.remove(self.kv_map)
@@ -714,24 +877,29 @@ class InputFaceCardButton(CardButton):
             main_window.inputFacesList.takeItem(i)
             main_window.input_faces.pop(self.face_id)
             for target_face_id in main_window.target_faces:
-                main_window.target_faces[target_face_id].remove_assigned_input_face(self.face_id)
+                main_window.target_faces[target_face_id].remove_assigned_input_face(
+                    self.face_id
+                )
             self.deleteLater()
             return True
         return False
 
-    def deselect_currently_selected_face(self,main_window):
+    def deselect_currently_selected_face(self, main_window):
         self.remove_kv_data_file()
         self._remove_face_from_lists()
 
         common_widget_actions.refresh_frame(self.main_window)
 
         if not main_window.input_faces:
-            main_window.placeholder_update_signal.emit(self.main_window.inputFacesList, False)
+            main_window.placeholder_update_signal.emit(
+                self.main_window.inputFacesList, False
+            )
 
     def remove_input_face_from_list(self):
         main_window = self.main_window
         faces_to_remove = [
-            face_button for _, face_button in main_window.input_faces.items()
+            face_button
+            for _, face_button in main_window.input_faces.items()
             if face_button.isChecked()
         ]
 
@@ -748,7 +916,9 @@ class InputFaceCardButton(CardButton):
         if was_removed:
             common_widget_actions.refresh_frame(main_window)
             if not main_window.input_faces:
-                main_window.placeholder_update_signal.emit(main_window.inputFacesList, False)
+                main_window.placeholder_update_signal.emit(
+                    main_window.inputFacesList, False
+                )
 
     def delete_input_face_to_trash(self):
         main_window = self.main_window
@@ -761,10 +931,12 @@ class InputFaceCardButton(CardButton):
             print(f"{self.media_path} has been sent to the trash.")
         else:
             print(f"{self.media_path} does not exist.")
-            
+
         common_widget_actions.refresh_frame(main_window)
         if not main_window.input_faces:
-            main_window.placeholder_update_signal.emit(main_window.inputFacesList, False)
+            main_window.placeholder_update_signal.emit(
+                main_window.inputFacesList, False
+            )
 
     def open_target_path_by_explorer(self):
         if os.path.exists(self.media_path):
@@ -792,19 +964,21 @@ class InputFaceCardButton(CardButton):
     def create_context_menu(self):
         # create context menu
         self.popMenu = QtWidgets.QMenu(self)
-        create_embed_action = QtGui.QAction('Create embedding from selected faces', self)
+        create_embed_action = QtGui.QAction(
+            "Create embedding from selected faces", self
+        )
         create_embed_action.triggered.connect(self.create_embedding_from_selected_faces)
         self.popMenu.addAction(create_embed_action)
 
-        remove_action = QtGui.QAction('Remove from list', self)
+        remove_action = QtGui.QAction("Remove from list", self)
         remove_action.triggered.connect(self.remove_input_face_from_list)
         self.popMenu.addAction(remove_action)
 
-        delete_action = QtGui.QAction('Delete file to recycle bin', self)
+        delete_action = QtGui.QAction("Delete file to recycle bin", self)
         delete_action.triggered.connect(self.delete_input_face_to_trash)
         self.popMenu.addAction(delete_action)
 
-        open_path_action = QtGui.QAction('Open file location', self)
+        open_path_action = QtGui.QAction("Open file location", self)
         open_path_action.triggered.connect(self.open_target_path_by_explorer)
         self.popMenu.addAction(open_path_action)
 
@@ -815,29 +989,41 @@ class InputFaceCardButton(CardButton):
     def create_embedding_from_selected_faces(self):
         # Raccogli l'intero embedding_store dalle facce selezionate
         selected_faces_embeddings_store = [
-            input_face.embedding_store 
-            for _, input_face in self.main_window.input_faces.items() 
+            input_face.embedding_store
+            for _, input_face in self.main_window.input_faces.items()
             if input_face.isChecked()
         ]
 
         # Controlla se ci sono facce selezionate
         if len(selected_faces_embeddings_store) == 0:
             common_widget_actions.create_and_show_messagebox(
-                self.main_window, 
-                "No Faces Selected!", 
-                "You need to select at least one face to create a merged embedding!", 
-                self
+                self.main_window,
+                "No Faces Selected!",
+                "You need to select at least one face to create a merged embedding!",
+                self,
             )
         else:
             # Passa l'intero embedding_store al dialogo per la creazione dell'embedding
-            embed_create_dialog = CreateEmbeddingDialog(self.main_window, selected_faces_embeddings_store)
+            embed_create_dialog = CreateEmbeddingDialog(
+                self.main_window, selected_faces_embeddings_store
+            )
             embed_create_dialog.exec_()
 
+
 class EmbeddingCardButton(CardButton):
-    def __init__(self, embedding_name: str, embedding_store: Dict[str, np.ndarray], embedding_id: str, *args, **kwargs):
+    def __init__(
+        self,
+        embedding_name: str,
+        embedding_store: Dict[str, np.ndarray],
+        embedding_id: str,
+        *args,
+        **kwargs,
+    ):
         super().__init__(*args, **kwargs)
         self.embedding_id = embedding_id
-        self.embedding_store = embedding_store  # Key: embedding_swap_model, Value: embedding
+        self.embedding_store = (
+            embedding_store  # Key: embedding_swap_model, Value: embedding
+        )
         self.embedding_name = embedding_name
         self.setCheckable(True)
         self.setText(embedding_name)
@@ -868,25 +1054,38 @@ class EmbeddingCardButton(CardButton):
     def load_embedding(self):
         main_window = self.main_window
         if main_window.cur_selected_target_face_button:
-            
-            cur_selected_target_face_button = main_window.cur_selected_target_face_button
-            if not QtWidgets.QApplication.keyboardModifiers() == QtCore.Qt.ControlModifier:
-                for embedding_id in cur_selected_target_face_button.assigned_merged_embeddings.keys():
+            cur_selected_target_face_button = (
+                main_window.cur_selected_target_face_button
+            )
+            if (
+                not QtWidgets.QApplication.keyboardModifiers()
+                == QtCore.Qt.ControlModifier
+            ):
+                for (
+                    embedding_id
+                ) in cur_selected_target_face_button.assigned_merged_embeddings.keys():
                     embed_button = main_window.merged_embeddings[embedding_id]
-                    if embed_button!=self:
+                    if embed_button != self:
                         embed_button.setChecked(False)
                 cur_selected_target_face_button.assigned_merged_embeddings = {}
 
-            cur_selected_target_face_button.assigned_merged_embeddings[self.embedding_id] = self.embedding_store
+            cur_selected_target_face_button.assigned_merged_embeddings[
+                self.embedding_id
+            ] = self.embedding_store
 
             if not self.isChecked():
-                cur_selected_target_face_button.assigned_merged_embeddings.pop(self.embedding_id)
+                cur_selected_target_face_button.assigned_merged_embeddings.pop(
+                    self.embedding_id
+                )
             cur_selected_target_face_button.calculate_assigned_input_embedding()
         else:
-            if not QtWidgets.QApplication.keyboardModifiers() == QtCore.Qt.ControlModifier:
+            if (
+                not QtWidgets.QApplication.keyboardModifiers()
+                == QtCore.Qt.ControlModifier
+            ):
                 # If there is no target face selected, uncheck all other input faces
                 for embedding_id, embed_button in main_window.merged_embeddings.items():
-                    if embed_button!=self:
+                    if embed_button != self:
                         embed_button.setChecked(False)
 
         common_widget_actions.refresh_frame(main_window)
@@ -894,7 +1093,7 @@ class EmbeddingCardButton(CardButton):
     def create_context_menu(self):
         # create context menu
         self.popMenu = QtWidgets.QMenu(self)
-        remove_action = QtGui.QAction('Remove Embedding', self)
+        remove_action = QtGui.QAction("Remove Embedding", self)
         remove_action.triggered.connect(self.remove_embedding_from_list)
         self.popMenu.addAction(remove_action)
 
@@ -904,33 +1103,38 @@ class EmbeddingCardButton(CardButton):
 
     def remove_embedding_from_list(self):
         main_window = self.main_window
-        for i in range(main_window.inputEmbeddingsList.count()-1, -1, -1):
+        for i in range(main_window.inputEmbeddingsList.count() - 1, -1, -1):
             list_item = main_window.inputEmbeddingsList.item(i)
             if list_item.listWidget().itemWidget(list_item) == self:
-                main_window.inputEmbeddingsList.takeItem(i)   
+                main_window.inputEmbeddingsList.takeItem(i)
                 main_window.merged_embeddings.pop(self.embedding_id)
                 for target_face_id in main_window.target_faces:
-                    main_window.target_faces[target_face_id].remove_assigned_merged_embedding(self.embedding_id)
+                    main_window.target_faces[
+                        target_face_id
+                    ].remove_assigned_merged_embedding(self.embedding_id)
         common_widget_actions.refresh_frame(self.main_window)
         self.deleteLater()
 
+
 class CreateEmbeddingDialog(QtWidgets.QDialog):
-    def __init__(self, main_window: 'MainWindow', embedding_stores: list=None):
+    def __init__(self, main_window: "MainWindow", embedding_stores: list = None):
         super().__init__()
         self.embedding_stores = embedding_stores or []
         self.main_window = main_window
-        self.embedding_name = ''
-        self.merge_type = ''
+        self.embedding_name = ""
+        self.merge_type = ""
         self.setWindowTitle("Create Embedding")
-        self.setWindowIcon(QtGui.QIcon(u":/media/media/visomaster_small.png"))
+        self.setWindowIcon(QtGui.QIcon(":/media/media/visomaster_small.png"))
 
         # Create widgets
         self.embed_name_edit = QtWidgets.QLineEdit(self)
         self.embed_name_edit.setPlaceholderText("Enter embedding name")
 
         self.merge_type_selection = QtWidgets.QComboBox(self)
-        self.merge_type_selection.addItems(['Mean', 'Median'])
-        self.merge_type_selection.setCurrentText(main_window.control['EmbMergeMethodSelection'])
+        self.merge_type_selection.addItems(["Mean", "Median"])
+        self.merge_type_selection.setCurrentText(
+            main_window.control["EmbMergeMethodSelection"]
+        )
 
         # Create button box
         QBtn = QtWidgets.QDialogButtonBox.Ok | QtWidgets.QDialogButtonBox.Cancel
@@ -953,12 +1157,17 @@ class CreateEmbeddingDialog(QtWidgets.QDialog):
         self.embedding_name = self.embed_name_edit.text().strip()
         self.merge_type = self.merge_type_selection.currentText()
 
-        if self.embedding_name == '':
-            common_widget_actions.create_and_show_messagebox(self.main_window, 'Empty Embedding Name!', 'Embedding Name cannot be empty!', self)
+        if self.embedding_name == "":
+            common_widget_actions.create_and_show_messagebox(
+                self.main_window,
+                "Empty Embedding Name!",
+                "Embedding Name cannot be empty!",
+                self,
+            )
         else:
             # Estrai tutti gli embedding per ogni embedding_swap_model
             merged_embedding_store = {}
-            
+
             for embedding_store in self.embedding_stores:
                 for embedding_swap_model, embedding in embedding_store.items():
                     if embedding_swap_model not in merged_embedding_store:
@@ -968,27 +1177,28 @@ class CreateEmbeddingDialog(QtWidgets.QDialog):
             # Calcola l'embedding unito per ciascun embedding_swap_model
             final_embedding_store = {}
             for swap_model, embeddings in merged_embedding_store.items():
-                if self.merge_type == 'Mean':
+                if self.merge_type == "Mean":
                     final_embedding_store[swap_model] = np.mean(embeddings, axis=0)
-                elif self.merge_type == 'Median':
+                elif self.merge_type == "Median":
                     final_embedding_store[swap_model] = np.median(embeddings, axis=0)
 
             # Crea e aggiungi il nuovo embedding_store con tutti i modelli di swap
             list_view_actions.create_and_add_embed_button_to_list(
-                main_window=self.main_window, 
-                embedding_name=self.embedding_name, 
+                main_window=self.main_window,
+                embedding_name=self.embedding_name,
                 embedding_store=final_embedding_store,  # Passa l'intero embedding_store
-                embedding_id=str(uuid.uuid1().int)
+                embedding_id=str(uuid.uuid1().int),
             )
             self.accept()
 
 
-
 class LoadingDialog(QtWidgets.QDialog):
-    def __init__(self, message="Loading Models, please wait...\nDon't panic if it looks stuck!"):
+    def __init__(
+        self, message="Loading Models, please wait...\nDon't panic if it looks stuck!"
+    ):
         super().__init__()
         self.setWindowTitle("Loading Models")
-        self.setWindowIcon(QtGui.QIcon(u":/media/media/visomaster_small.png"))
+        self.setWindowIcon(QtGui.QIcon(":/media/media/visomaster_small.png"))
         self.setWindowFlag(QtCore.Qt.WindowCloseButtonHint, False)
         self.setModal(True)  # Block interaction with other windows
         self.setFixedSize(225, 125)  # Increased size for better layout
@@ -1003,9 +1213,10 @@ class LoadingDialog(QtWidgets.QDialog):
         self.icon_label.setAlignment(QtCore.Qt.AlignmentFlag.AlignCenter)
         self.icon_label.setPixmap(
             QtGui.QPixmap(":/media/media/repeat.png").scaled(
-                30, 30, 
-                QtCore.Qt.AspectRatioMode.KeepAspectRatio, 
-                QtCore.Qt.TransformationMode.SmoothTransformation
+                30,
+                30,
+                QtCore.Qt.AspectRatioMode.KeepAspectRatio,
+                QtCore.Qt.TransformationMode.SmoothTransformation,
             )
         )
 
@@ -1023,16 +1234,21 @@ class LoadingDialog(QtWidgets.QDialog):
         layout.addWidget(self.label)
         self.setLayout(layout)
 
+
 # Custom progress dialog
 class ProgressDialog(QtWidgets.QProgressDialog):
     pass
 
+
 class LoadLastWorkspaceDialog(QtWidgets.QDialog):
-    def __init__(self, main_window: 'MainWindow',):
+    def __init__(
+        self,
+        main_window: "MainWindow",
+    ):
         super().__init__()
         self.main_window = main_window
         self.setWindowTitle("Load Last Workspace")
-        self.setWindowIcon(QtGui.QIcon(u":/media/media/visomaster_small.png"))
+        self.setWindowIcon(QtGui.QIcon(":/media/media/visomaster_small.png"))
 
         # Create button box
         QBtn = QtWidgets.QDialogButtonBox.Ok | QtWidgets.QDialogButtonBox.Cancel
@@ -1047,17 +1263,18 @@ class LoadLastWorkspaceDialog(QtWidgets.QDialog):
         layout.addWidget(self.buttonBox)
 
         # Set dialog layout
-        self.setLayout(layout)   
+        self.setLayout(layout)
 
     def load_workspace(self):
         self.accept()
-        save_load_actions.load_saved_workspace(self.main_window, 'last_workspace.json')    
+        save_load_actions.load_saved_workspace(self.main_window, "last_workspace.json")
+
 
 class JobLoadingDialog(QtWidgets.QDialog):
     def __init__(self, total_steps, parent=None):
         super().__init__(parent)
         self.setWindowTitle("Loading Job Data...")
-        self.setWindowIcon(QtGui.QIcon(u":/media/media/visomaster_small.png"))
+        self.setWindowIcon(QtGui.QIcon(":/media/media/visomaster_small.png"))
         self.setWindowFlag(QtCore.Qt.WindowCloseButtonHint, False)
         self.setModal(True)
         self.setFixedSize(300, 120)
@@ -1082,18 +1299,21 @@ class JobLoadingDialog(QtWidgets.QDialog):
         self.step_label.setText(f"{step_name} ({current}/{total})")
         QtWidgets.QApplication.processEvents()
 
+
 class SaveJobDialog(QtWidgets.QDialog):
     def __init__(self, parent=None):
         super().__init__(parent)
         self.setWindowTitle("Save Job")
-        self.setWindowIcon(QtGui.QIcon(u":/media/media/visomaster_small.png"))
+        self.setWindowIcon(QtGui.QIcon(":/media/media/visomaster_small.png"))
 
         # Widgets
         self.job_name_label = QtWidgets.QLabel("Job Name:")
         self.job_name_edit = QtWidgets.QLineEdit(self)
         self.job_name_edit.setPlaceholderText("Enter job name")
-        
-        self.set_output_name_checkbox = QtWidgets.QCheckBox("Use job name for output file name", self)
+
+        self.set_output_name_checkbox = QtWidgets.QCheckBox(
+            "Use job name for output file name", self
+        )
         self.set_output_name_checkbox.setChecked(True)
 
         self.output_name_label = QtWidgets.QLabel("Output File Name:")
@@ -1142,29 +1362,42 @@ class SaveJobDialog(QtWidgets.QDialog):
         # Return the output file name only if the checkbox is unchecked and the field is not empty
         if not self.use_job_name_for_output:
             name = self.output_name_edit.text().strip()
-            return name if name else None # Return None if empty, job_name will be used
-        return None # Return None if checkbox is checked
+            return name if name else None  # Return None if empty, job_name will be used
+        return None  # Return None if checkbox is checked
+
 
 class ParametersWidget:
     def __init__(self, *args, **kwargs):
-        self.default_value = kwargs.get('default_value', False)
-        self.min_value = kwargs.get('min_value',False)
-        self.max_value = kwargs.get('max_value',False)
-        self.group_layout_data: Dict[str, Dict[str, str|int|float|bool]]  = kwargs.get('group_layout_data', {})
-        self.widget_name = kwargs.get('widget_name', False)
-        self.label_widget: QtWidgets.QLabel = kwargs.get('label_widget', False)
-        self.group_widget: QtWidgets.QGroupBox = kwargs.get('group_widget', False)
-        self.main_window: 'MainWindow' = kwargs.get('main_window', False)
-        self.line_edit: ParameterLineEdit|ParameterLineDecimalEdit = False #Only sliders have textbox currently
+        self.default_value = kwargs.get("default_value", False)
+        self.min_value = kwargs.get("min_value", False)
+        self.max_value = kwargs.get("max_value", False)
+        self.group_layout_data: Dict[str, Dict[str, str | int | float | bool]] = (
+            kwargs.get("group_layout_data", {})
+        )
+        self.widget_name = kwargs.get("widget_name", False)
+        self.label_widget: QtWidgets.QLabel = kwargs.get("label_widget", False)
+        self.group_widget: QtWidgets.QGroupBox = kwargs.get("group_widget", False)
+        self.main_window: "MainWindow" = kwargs.get("main_window", False)
+        self.line_edit: ParameterLineEdit | ParameterLineDecimalEdit = (
+            False  # Only sliders have textbox currently
+        )
         self.reset_default_button: QPushButton = False
-        self.enable_refresh_frame = True #This flag can be used to temporarily disable refreshing the frame when the widget value is changed
+        self.enable_refresh_frame = True  # This flag can be used to temporarily disable refreshing the frame when the widget value is changed
+
 
 class SelectionBox(QtWidgets.QComboBox, ParametersWidget):
     def __init__(self, *args, **kwargs):
         super().__init__(*args, **kwargs)
         ParametersWidget.__init__(self, *args, **kwargs)
-        self.selection_values = kwargs.get('selection_values', [])
-        self.currentTextChanged.connect(partial(common_widget_actions.show_hide_related_widgets, self.main_window, self, self.widget_name, ))
+        self.selection_values = kwargs.get("selection_values", [])
+        self.currentTextChanged.connect(
+            partial(
+                common_widget_actions.show_hide_related_widgets,
+                self.main_window,
+                self,
+                self.widget_name,
+            )
+        )
 
     def reset_to_default_value(self):
         # Check if selection values are dynamically retrieved
@@ -1180,32 +1413,49 @@ class SelectionBox(QtWidgets.QComboBox, ParametersWidget):
             self.setCurrentText(value())
         else:
             self.setCurrentText(value)
-    
+
+
 class ToggleButton(QtWidgets.QPushButton, ParametersWidget):
     _circle_position = None
 
-    def __init__(self, bg_color="#000000", circle_color="#ffffff", active_color="#4facc9", default_value=False, *args, **kwargs):
+    def __init__(
+        self,
+        bg_color="#000000",
+        circle_color="#ffffff",
+        active_color="#4facc9",
+        default_value=False,
+        *args,
+        **kwargs,
+    ):
         super().__init__(*args, **kwargs)
         ParametersWidget.__init__(self, *args, **kwargs)
 
         self.setFixedSize(30, 15)
         self.setCursor(QtCore.Qt.PointingHandCursor)
         self.setCheckable(True)
-        
+
         self._bg_color = bg_color
         self._circle_color = circle_color
         self._active_color = active_color
         self.default_value = bool(default_value)
         self._circle_position = 1  # Start position of the circle
         self.animation_curve = QtCore.QEasingCurve.OutCubic
-        
+
         # Animation
         self.animation = QtCore.QPropertyAnimation(self, b"circle_position", self)
         self.animation.setDuration(300)  # Animation duration in milliseconds
         self.animation.setEasingCurve(self.animation_curve)
-        
-        self.toggled.connect(partial(common_widget_actions.show_hide_related_widgets, self.main_window, self, self.widget_name, None))
-        
+
+        self.toggled.connect(
+            partial(
+                common_widget_actions.show_hide_related_widgets,
+                self.main_window,
+                self,
+                self.widget_name,
+                None,
+            )
+        )
+
     # Property for animation
     @QtCore.Property(int)
     def circle_position(self):
@@ -1220,7 +1470,7 @@ class ToggleButton(QtWidgets.QPushButton, ParametersWidget):
         # Animate circle position when toggled
         start_pos = 1 if self.isChecked() else 15
         end_pos = 15 if self.isChecked() else 1
-        
+
         self.animation.setStartValue(start_pos)
         self.animation.setEndValue(end_pos)
         self.animation.start()
@@ -1229,20 +1479,24 @@ class ToggleButton(QtWidgets.QPushButton, ParametersWidget):
         p = QtGui.QPainter(self)
         p.setRenderHint(QtGui.QPainter.Antialiasing)
         p.setPen(QtCore.Qt.NoPen)
-        
+
         rect = QtCore.QRect(0, 0, self.width(), self.height())
-        
+
         if self.isChecked():
             p.setBrush(QtGui.QColor(self._active_color))
-            p.drawRoundedRect(0, 0, rect.width(), self.height(), self.height() / 2, self.height() / 2)
+            p.drawRoundedRect(
+                0, 0, rect.width(), self.height(), self.height() / 2, self.height() / 2
+            )
         else:
             p.setBrush(QtGui.QColor(self._bg_color))
-            p.drawRoundedRect(0, 0, rect.width(), self.height(), self.height() / 2, self.height() / 2)
-        
+            p.drawRoundedRect(
+                0, 0, rect.width(), self.height(), self.height() / 2, self.height() / 2
+            )
+
         # Draw the circle at the animated position
         p.setBrush(QtGui.QColor(self._circle_color))
         p.drawEllipse(self._circle_position, 1, 13, 13)
-        
+
         p.end()
 
     def reset_to_default_value(self):
@@ -1252,8 +1506,18 @@ class ToggleButton(QtWidgets.QPushButton, ParametersWidget):
     def set_value(self, value):
         self.setChecked(value)
 
+
 class ParameterSlider(QtWidgets.QSlider, ParametersWidget):
-    def __init__(self, min_value=0, max_value=0, default_value=0, step_size=1, fixed_width = 130, *args, **kwargs):
+    def __init__(
+        self,
+        min_value=0,
+        max_value=0,
+        default_value=0,
+        step_size=1,
+        fixed_width=130,
+        *args,
+        **kwargs,
+    ):
         super().__init__(*args, **kwargs)
         ParametersWidget.__init__(self, *args, **kwargs)
         self.min_value = int(min_value)
@@ -1263,14 +1527,20 @@ class ParameterSlider(QtWidgets.QSlider, ParametersWidget):
 
         # Debounce timer for handle_slider_moved
         self.debounce_timer = QtCore.QTimer()
-        self.debounce_timer.setSingleShot(True)  # Assicura che il timer scatti una sola volta
-        self.debounce_timer.timeout.connect(self.handle_slider_moved)  # Collega il timeout al metodo
+        self.debounce_timer.setSingleShot(
+            True
+        )  # Assicura che il timer scatti una sola volta
+        self.debounce_timer.timeout.connect(
+            self.handle_slider_moved
+        )  # Collega il timeout al metodo
 
         self.setMinimum(int(min_value))
         self.setMaximum(int(max_value))
         self.setValue(self.default_value)
         self.setOrientation(QtCore.Qt.Orientation.Horizontal)
-        self.setSizePolicy(QtWidgets.QSizePolicy.Preferred, QtWidgets.QSizePolicy.Minimum)
+        self.setSizePolicy(
+            QtWidgets.QSizePolicy.Preferred, QtWidgets.QSizePolicy.Minimum
+        )
         # Set a fixed width for the slider
         self.setFixedWidth(fixed_width)
         self.setAttribute(QtCore.Qt.WidgetAttribute.WA_Hover)
@@ -1304,7 +1574,9 @@ class ParameterSlider(QtWidgets.QSlider, ParametersWidget):
         """Set the slider value, scaling it from a float to the internal integer."""
         super().setValue(int(value))
         if self.line_edit:
-            self.line_edit.set_value(int(value))  # Aggiorna immediatamente il valore nel line edit
+            self.line_edit.set_value(
+                int(value)
+            )  # Aggiorna immediatamente il valore nel line edit
 
     def wheelEvent(self, event):
         """Override wheel event to define custom increments/decrements with the mouse wheel."""
@@ -1353,7 +1625,9 @@ class ParameterSlider(QtWidgets.QSlider, ParametersWidget):
 
     def mousePressEvent(self, event):
         """Handle the mouse press event to update the slider value immediately."""
-        if event.button() == QtCore.Qt.LeftButton:  # Verifica che sia il pulsante sinistro del mouse
+        if (
+            event.button() == QtCore.Qt.LeftButton
+        ):  # Verifica che sia il pulsante sinistro del mouse
             self.setValue(self.pos_to_value(event.pos().x()))
 
         # Chiama il metodo della classe base per gestire il resto dell'evento
@@ -1361,7 +1635,7 @@ class ParameterSlider(QtWidgets.QSlider, ParametersWidget):
 
     def mouseMoveEvent(self, event: QtGui.QMouseEvent) -> None:
         new_value = self.pos_to_value(event.pos().x())
-        QtWidgets.QToolTip.showText(QtGui.QCursor.pos(), f'{new_value}')
+        QtWidgets.QToolTip.showText(QtGui.QCursor.pos(), f"{new_value}")
         super().mouseMoveEvent(event)
 
     def set_value(self, value):
@@ -1375,9 +1649,19 @@ class ParameterSlider(QtWidgets.QSlider, ParametersWidget):
         # Applica lo step size, arrotondando il valore allo step più vicino
         return round(new_position / self.step_size) * self.step_size
 
-    
+
 class ParameterDecimalSlider(QtWidgets.QSlider, ParametersWidget):
-    def __init__(self, min_value=0.0, max_value=1.0, default_value=0.00, decimals=2, step_size=0.01, fixed_width = 130, *args, **kwargs):
+    def __init__(
+        self,
+        min_value=0.0,
+        max_value=1.0,
+        default_value=0.00,
+        decimals=2,
+        step_size=0.01,
+        fixed_width=130,
+        *args,
+        **kwargs,
+    ):
         super().__init__(*args, **kwargs)
         ParametersWidget.__init__(self, *args, **kwargs)
 
@@ -1392,11 +1676,15 @@ class ParameterDecimalSlider(QtWidgets.QSlider, ParametersWidget):
 
         # Debounce timer for handle_slider_moved
         self.debounce_timer = QtCore.QTimer()
-        self.debounce_timer.setSingleShot(True)  # Assicura che il timer scatti una sola volta
-        self.debounce_timer.timeout.connect(self.handle_slider_moved)  # Collega il timeout al metodo
+        self.debounce_timer.setSingleShot(
+            True
+        )  # Assicura che il timer scatti una sola volta
+        self.debounce_timer.timeout.connect(
+            self.handle_slider_moved
+        )  # Collega il timeout al metodo
 
         # Scale values for internal handling (to manage decimals)
-        self.scale_factor = 10 ** self.decimals
+        self.scale_factor = 10**self.decimals
         self.min_value = int(min_value * self.scale_factor)
         self.max_value = int(max_value * self.scale_factor)
         self.default_value = int(default_value * self.scale_factor)
@@ -1406,7 +1694,9 @@ class ParameterDecimalSlider(QtWidgets.QSlider, ParametersWidget):
         self.setMaximum(self.max_value)
         self.setValue(float(self.default_value) / self.scale_factor)
         self.setOrientation(QtCore.Qt.Orientation.Horizontal)
-        self.setSizePolicy(QtWidgets.QSizePolicy.Preferred, QtWidgets.QSizePolicy.Minimum)
+        self.setSizePolicy(
+            QtWidgets.QSizePolicy.Preferred, QtWidgets.QSizePolicy.Minimum
+        )
         self.setFixedWidth(fixed_width)
         self.setAttribute(QtCore.Qt.WidgetAttribute.WA_Hover)
 
@@ -1440,7 +1730,7 @@ class ParameterDecimalSlider(QtWidgets.QSlider, ParametersWidget):
         """Set the slider value, scaling it from a float to the internal integer."""
         # Arrotonda il valore a 2 decimali, come specificato in decimals
         value = round(value, self.decimals)
-        
+
         # Moltiplica per il fattore di scala e arrotonda prima di convertirlo in intero
         scaled_value = int(round(float(value) * float(self.scale_factor)))
 
@@ -1459,11 +1749,14 @@ class ParameterDecimalSlider(QtWidgets.QSlider, ParametersWidget):
         new_value = current_value + (self.step_size * num_steps)
 
         # Ensure the new value is within the valid range
-        new_value = min(max(round(new_value, self.decimals), self.min_value / self.scale_factor), self.max_value / self.scale_factor)
+        new_value = min(
+            max(round(new_value, self.decimals), self.min_value / self.scale_factor),
+            self.max_value / self.scale_factor,
+        )
 
         # Update the slider's internal value (ensuring precision)
         self.setValue(new_value)
-        
+
         # Accept the event
         event.accept()
 
@@ -1485,7 +1778,10 @@ class ParameterDecimalSlider(QtWidgets.QSlider, ParametersWidget):
             return
 
         # Ensure the new value is within the valid range
-        new_value = min(max(round(new_value, self.decimals), self.min_value / self.scale_factor), self.max_value / self.scale_factor)
+        new_value = min(
+            max(round(new_value, self.decimals), self.min_value / self.scale_factor),
+            self.max_value / self.scale_factor,
+        )
 
         # Set the new value to the slider
         self.setValue(new_value)
@@ -1495,7 +1791,9 @@ class ParameterDecimalSlider(QtWidgets.QSlider, ParametersWidget):
 
     def mousePressEvent(self, event):
         """Handle the mouse press event to update the slider value immediately."""
-        if event.button() == QtCore.Qt.LeftButton:  # Verifica che sia il pulsante sinistro del mouse
+        if (
+            event.button() == QtCore.Qt.LeftButton
+        ):  # Verifica che sia il pulsante sinistro del mouse
             # Aggiorna immediatamente il valore dello slider
             self.setValue(self.pos_to_value(event.pos().x()))
 
@@ -1504,7 +1802,7 @@ class ParameterDecimalSlider(QtWidgets.QSlider, ParametersWidget):
 
     def mouseMoveEvent(self, event: QtGui.QMouseEvent) -> None:
         new_value = self.pos_to_value(event.pos().x())
-        QtWidgets.QToolTip.showText(QtGui.QCursor.pos(), f'{new_value}')
+        QtWidgets.QToolTip.showText(QtGui.QCursor.pos(), f"{new_value}")
         super().mouseMoveEvent(event)
 
     def set_value(self, value):
@@ -1526,11 +1824,23 @@ class ParameterDecimalSlider(QtWidgets.QSlider, ParametersWidget):
 
 
 class ParameterLineEdit(QtWidgets.QLineEdit):
-    def __init__(self, min_value: int, max_value: int, default_value: str, fixed_width: int = 38, max_length: int = 3, alignment: int = 1, *args, **kwargs):
+    def __init__(
+        self,
+        min_value: int,
+        max_value: int,
+        default_value: str,
+        fixed_width: int = 38,
+        max_length: int = 3,
+        alignment: int = 1,
+        *args,
+        **kwargs,
+    ):
         super().__init__(*args, **kwargs)
         self.setFixedWidth(fixed_width)  # Make the line edit narrower
         self.setMaxLength(max_length)
-        self.setValidator(QtGui.QIntValidator(min_value, max_value))  # Restrict input to numbers
+        self.setValidator(
+            QtGui.QIntValidator(min_value, max_value)
+        )  # Restrict input to numbers
 
         # Optional: Align text to the right for better readability
         if alignment == 0:
@@ -1546,8 +1856,21 @@ class ParameterLineEdit(QtWidgets.QLineEdit):
         """Set the line edit's value."""
         self.setText(str(value))
 
+
 class ParameterLineDecimalEdit(QtWidgets.QLineEdit):
-    def __init__(self, min_value: float, max_value: float, default_value: str, decimals: int = 2, step_size=0.01, fixed_width: int = 38, max_length: int = 5, alignment: int = 1, *args, **kwargs):
+    def __init__(
+        self,
+        min_value: float,
+        max_value: float,
+        default_value: str,
+        decimals: int = 2,
+        step_size=0.01,
+        fixed_width: int = 38,
+        max_length: int = 5,
+        alignment: int = 1,
+        *args,
+        **kwargs,
+    ):
         super().__init__(*args, **kwargs)
         self.setFixedWidth(fixed_width)  # Adjust the width for decimal numbers
         self.decimals = decimals
@@ -1589,13 +1912,22 @@ class ParameterLineDecimalEdit(QtWidgets.QLineEdit):
         """Get the current value from the line edit."""
         return float(self.text())
 
+
 class ParameterText(QtWidgets.QLineEdit, ParametersWidget):
-    def __init__(self, default_value: str, fixed_width: int = 130, max_length: int = 500, alignment: int = 0, *args, **kwargs):
+    def __init__(
+        self,
+        default_value: str,
+        fixed_width: int = 130,
+        max_length: int = 500,
+        alignment: int = 0,
+        *args,
+        **kwargs,
+    ):
         super().__init__(*args, **kwargs)
         ParametersWidget.__init__(self, *args, **kwargs)
-        self.data_type = kwargs.get('data_type')
-        self.exec_function = kwargs.get('exec_function')
-        self.exec_function_args = kwargs.get('exec_function_args', [])
+        self.data_type = kwargs.get("data_type")
+        self.exec_function = kwargs.get("exec_function")
+        self.exec_function_args = kwargs.get("exec_function_args", [])
 
         self.setFixedWidth(fixed_width)  # Make the line edit narrower
         self.setMaxLength(max_length)
@@ -1615,39 +1947,75 @@ class ParameterText(QtWidgets.QLineEdit, ParametersWidget):
     def reset_to_default_value(self):
         """Reset the line edit to its default value."""
         self.setText(self.default_value)
-        if self.data_type == 'parameter':
-            common_widget_actions.update_parameter(self.main_window, self.widget_name, self.text(), enable_refresh_frame=self.enable_refresh_frame)
+        if self.data_type == "parameter":
+            common_widget_actions.update_parameter(
+                self.main_window,
+                self.widget_name,
+                self.text(),
+                enable_refresh_frame=self.enable_refresh_frame,
+            )
         else:
-            common_widget_actions.update_control(self.main_window, self.widget_name, self.text(), exec_function=self.exec_function, exec_function_args=self.exec_function_args)
+            common_widget_actions.update_control(
+                self.main_window,
+                self.widget_name,
+                self.text(),
+                exec_function=self.exec_function,
+                exec_function_args=self.exec_function_args,
+            )
 
     def focusOutEvent(self, event):
         """Handle the focus out event (when the QLineEdit loses focus)."""
-        if self.data_type == 'parameter':
-            common_widget_actions.update_parameter(self.main_window, self.widget_name, self.text(), enable_refresh_frame=self.enable_refresh_frame)
+        if self.data_type == "parameter":
+            common_widget_actions.update_parameter(
+                self.main_window,
+                self.widget_name,
+                self.text(),
+                enable_refresh_frame=self.enable_refresh_frame,
+            )
         else:
-            common_widget_actions.update_control(self.main_window, self.widget_name, self.text(), exec_function=self.exec_function, exec_function_args=self.exec_function_args)
+            common_widget_actions.update_control(
+                self.main_window,
+                self.widget_name,
+                self.text(),
+                exec_function=self.exec_function,
+                exec_function_args=self.exec_function_args,
+            )
 
         # Call the base class method to ensure normal behavior
         super().focusOutEvent(event)
 
     def set_value(self, value):
         self.setText(value)
+
+
 class ParameterResetDefaultButton(QtWidgets.QPushButton):
-    def __init__(self, related_widget: ParameterSlider | ParameterDecimalSlider | SelectionBox, *args, **kwargs):
+    def __init__(
+        self,
+        related_widget: ParameterSlider | ParameterDecimalSlider | SelectionBox,
+        *args,
+        **kwargs,
+    ):
         super().__init__(*args, **kwargs)
         self.related_widget = related_widget
-        button_icon = QtGui.QIcon(QtGui.QPixmap(':/media/media/reset_default.png'))
+        button_icon = QtGui.QIcon(QtGui.QPixmap(":/media/media/reset_default.png"))
         self.setIcon(button_icon)
         self.setFixedWidth(30)  # Make the line edit narrower
         self.setCursor(QtCore.Qt.PointingHandCursor)
-        self.setToolTip('Reset to default value')
+        self.setToolTip("Reset to default value")
 
         self.clicked.connect(related_widget.reset_to_default_value)
 
+
 class FormGroupBox(QtWidgets.QGroupBox):
-    def __init__(self, main_window:'MainWindow', title="Form Group", parent=None,):
+    def __init__(
+        self,
+        main_window: "MainWindow",
+        title="Form Group",
+        parent=None,
+    ):
         super().__init__(title, parent)
         self.main_window = main_window
-        self.setSizePolicy(QtWidgets.QSizePolicy.Minimum, QtWidgets.QSizePolicy.Preferred)
+        self.setSizePolicy(
+            QtWidgets.QSizePolicy.Minimum, QtWidgets.QSizePolicy.Preferred
+        )
         self.setFlat(True)
-

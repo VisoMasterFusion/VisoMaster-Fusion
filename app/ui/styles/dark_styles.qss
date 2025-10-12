@@ -130,7 +130,7 @@ ToggleButton {
 }
 ToggleButton:hover {
     background-color: #232323;
-} 
+}
 ToggleButton:pressed {
     background-color: #38b845;
 }

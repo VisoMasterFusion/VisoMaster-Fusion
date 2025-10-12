@@ -60,7 +60,7 @@ class Equirectangular:
         # Rotation matrices
         y_axis_np = np.array([0.0, 1.0, 0.0], np.float32)
         z_axis_np = np.array([0.0, 0.0, 1.0], np.float32)
-        
+
         # 1. Yaw around Z-axis
         R1_np, _ = cv2.Rodrigues(z_axis_np * np.radians(THETA))
         # 2. Pitch around new Y-axis
@@ -83,7 +83,7 @@ class Equirectangular:
         # x_eq = rotated_xyz[..., 0], y_eq = rotated_xyz[..., 1], z_eq = rotated_xyz[..., 2]
         lon_rad = torch.atan2(rotated_xyz[..., 1], rotated_xyz[..., 0]) # Longitude
         lat_rad = torch.asin(rotated_xyz[..., 2])                     # Latitude
-        
+
         # Convert spherical to equirectangular pixel coordinates
         lon_px = (lon_rad / torch.pi) * equ_cx + equ_cx # Map [-pi, pi] to [0, equ_w-1]
         lat_px = (-lat_rad / (torch.pi / 2.0)) * equ_cy + equ_cy # Map [-pi/2, pi/2] to [0, equ_h-1] (lat is inverted)
@@ -99,7 +99,7 @@ class Equirectangular:
         # grid_sample expects input (N, C, H_in, W_in)
         persp_float = F.grid_sample(self._img_tensor_cxhxw_rgb_float.unsqueeze(0), grid,
                                     mode='bilinear', padding_mode='border', align_corners=True)
-        
+
         persp_uint8 = (torch.clamp(persp_float.squeeze(0) * 255.0, 0, 255)).byte()
         return persp_uint8
 

@@ -7,7 +7,7 @@ protobuf
 psutil
 onnxruntime-gpu==1.22.0
 packaging
-PySide6 
+PySide6
 kornia
 cuda-toolkit==12.9.1
 nvidia-cudnn-cu12==9.13.1.26

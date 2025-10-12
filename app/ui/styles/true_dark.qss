@@ -408,4 +408,4 @@ QTabBar::tab:!selected {
     margin-top: 2px; /* make non-selected tabs look smaller */
 }
 
-/* Add more widget styles as needed */ 
+/* Add more widget styles as needed */

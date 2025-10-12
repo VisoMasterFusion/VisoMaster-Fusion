@@ -20,7 +20,7 @@ class Equirectangular:
         self._img_tensor_cxhxw_rgb_float = img_tensor_cxhxw_rgb_uint8.float() / 255.0 # Normalize to [0,1]
         self.device = img_tensor_cxhxw_rgb_uint8.device
         self._channels, self._height, self._width = self._img_tensor_cxhxw_rgb_float.shape
-    
+
 
     def GetPerspective(self, FOV: float, THETA: float, PHI: float, height: int, width: int) -> torch.Tensor:
         #
@@ -56,7 +56,7 @@ class Equirectangular:
         # Rotation matrices
         y_axis_np = np.array([0.0, 1.0, 0.0], np.float32)
         z_axis_np = np.array([0.0, 0.0, 1.0], np.float32)
-        
+
         # 1. Yaw around Z-axis
         R1_np, _ = cv2.Rodrigues(z_axis_np * np.radians(THETA))
         # 2. Pitch around new Y-axis
@@ -71,7 +71,7 @@ class Equirectangular:
         # Convert Cartesian to spherical coordinates (longitude, latitude)
         lon_rad = torch.atan2(rotated_xyz[..., 1], rotated_xyz[..., 0]) # Longitude
         lat_rad = torch.asin(torch.clamp(rotated_xyz[..., 2], -1.0, 1.0)) # Latitude (clamp for safety)
-        
+
         # Convert spherical to equirectangular pixel coordinates
         lon_px = (lon_rad / torch.pi) * equ_cx + equ_cx # Map [-pi, pi] to [0, equ_w-1]
         lat_px = (-lat_rad / (torch.pi / 2.0)) * equ_cy + equ_cy # Map [-pi/2, pi/2] to [0, equ_h-1] (lat is inverted)
@@ -91,7 +91,7 @@ class Equirectangular:
         # With manual wrapping/clamping, 'border' mode is now safe as coordinates are pre-sanitized.
         persp_float = F.grid_sample(self._img_tensor_cxhxw_rgb_float.unsqueeze(0), grid,
                                     mode='bilinear', padding_mode='border', align_corners=True)
-        
+
         persp_uint8 = (torch.clamp(persp_float.squeeze(0) * 255.0, 0, 255)).byte()
         return persp_uint8
 

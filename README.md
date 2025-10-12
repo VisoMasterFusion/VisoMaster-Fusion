@@ -122,9 +122,9 @@ python download_models.py
 
 **5. Run the Application**
 
-Once everything is set up, start the application: 
+Once everything is set up, start the application:
 - by opening the **Start.bat** file (for Windows)
-or 
+or
 Activate conda or uv environment in a terminal in the visomaster directory:
 
 ```

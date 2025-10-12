@@ -52,7 +52,7 @@ def _get_rotation_matrices_cached(THETA_deg: float, PHI_deg: float, device_str: 
 
     # 1. Yaw rotation
     R1_np, _ = cv2.Rodrigues(z_axis_np * theta_rad_val)
-    
+
     # 2. Pitch rotation axis and matrix
     rotated_y_axis_np = np.dot(R1_np, y_axis_np)
     # PHI is up/down angle. Negative PHI in Rodrigues often means rotating "upwards" from XY plane around the new Y.
@@ -133,7 +133,7 @@ class Perspective:
         # Check FOV conditions
         fov_conditions = (u_norm >= -self.w_len) & (u_norm <= self.w_len) & \
                          (v_norm >= -self.h_len) & (v_norm <= self.h_len)
-        
+
         mask = is_in_front & fov_conditions # H, W boolean tensor
 
         # Map normalized screen coordinates to pixel coordinates in the perspective image
@@ -142,7 +142,7 @@ class Perspective:
         # Perspective image: x from -w_len to w_len, y from -h_len to h_len (center is 0,0)
         # grid_sample x: -1 (left) to 1 (right)
         # grid_sample y: -1 (top) to 1 (bottom)
-        
+
         grid_x_persp = u_norm / self.w_len  # Maps to [-1, 1]
         grid_y_persp = - (v_norm / self.h_len)  # Invert Y-axis for grid_sample convention
 
@@ -156,9 +156,9 @@ class Perspective:
         # self._img_tensor_cxhxw_rgb_float is (C, H_persp, W_persp)
         equirect_component_float = F.grid_sample(self._img_tensor_cxhxw_rgb_float.unsqueeze(0), grid,
                                                  mode='bilinear', padding_mode='zeros', align_corners=True)
-        
+
         equirect_component_uint8 = (torch.clamp(equirect_component_float.squeeze(0) * 255.0, 0, 255)).byte()
-        
+
         # Mask should be (H_out, W_out, 1) or (1, H_out, W_out) for broadcasting
         mask_out = mask.unsqueeze(0) # 1, H, W
 

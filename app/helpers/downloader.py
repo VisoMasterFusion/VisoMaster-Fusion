@@ -7,9 +7,10 @@ from app.helpers.integrity_checker import check_file_integrity
 # --- Constants ---
 # Use named constants for values that appear in the code. This makes the code
 # more readable and easier to modify.
-DOWNLOAD_CHUNK_SIZE = 1024      # Size of download chunks in bytes.
-MAX_DOWNLOAD_ATTEMPTS = 3       # Number of retries for a failed download.
-REQUEST_TIMEOUT = 10            # Timeout for network requests in seconds.
+DOWNLOAD_CHUNK_SIZE = 1024  # Size of download chunks in bytes.
+MAX_DOWNLOAD_ATTEMPTS = 3  # Number of retries for a failed download.
+REQUEST_TIMEOUT = 10  # Timeout for network requests in seconds.
+
 
 def download_file(model_name: str, file_path: str, correct_hash: str, url: str) -> bool:
     """
@@ -29,7 +30,7 @@ def download_file(model_name: str, file_path: str, correct_hash: str, url: str) 
     Returns:
         bool: True if the file was successfully downloaded and verified, False otherwise.
     """
-    
+
     # First, check if the file already exists and has the correct integrity.
     # This avoids re-downloading large files unnecessarily.
     if Path(file_path).is_file():
@@ -53,32 +54,42 @@ def download_file(model_name: str, file_path: str, correct_hash: str, url: str) 
                 response.raise_for_status()
 
                 total_size = int(response.headers.get("content-length", 0))
-                
+
                 # The tqdm progress bar provides a great user experience for long downloads.
                 # The 'desc' parameter adds a useful description.
-                with tqdm(total=total_size, unit="B", unit_scale=True, desc=model_name) as progress_bar:
+                with tqdm(
+                    total=total_size, unit="B", unit_scale=True, desc=model_name
+                ) as progress_bar:
                     with open(file_path, "wb") as f:
-                        for chunk in response.iter_content(chunk_size=DOWNLOAD_CHUNK_SIZE):
-                            if chunk: # filter out keep-alive new chunks
+                        for chunk in response.iter_content(
+                            chunk_size=DOWNLOAD_CHUNK_SIZE
+                        ):
+                            if chunk:  # filter out keep-alive new chunks
                                 f.write(chunk)
                                 progress_bar.update(len(chunk))
-                
+
                 # After a successful download, verify the file's integrity.
                 if check_file_integrity(file_path, correct_hash):
                     print(f"\nSuccessfully downloaded and verified '{model_name}'.")
                     print(f"File saved at: {file_path}")
-                    return True # Exit the function on success.
+                    return True  # Exit the function on success.
                 else:
-                    print(f"\nDownload complete, but integrity check failed (Attempt {attempt}/{MAX_DOWNLOAD_ATTEMPTS}).")
-                    os.remove(file_path) # Clean up the corrupt file before retrying.
+                    print(
+                        f"\nDownload complete, but integrity check failed (Attempt {attempt}/{MAX_DOWNLOAD_ATTEMPTS})."
+                    )
+                    os.remove(file_path)  # Clean up the corrupt file before retrying.
 
         except requests.exceptions.RequestException as e:
-            print(f"\nAn error occurred during download (Attempt {attempt}/{MAX_DOWNLOAD_ATTEMPTS}): {e}")
-        
+            print(
+                f"\nAn error occurred during download (Attempt {attempt}/{MAX_DOWNLOAD_ATTEMPTS}): {e}"
+            )
+
         # This message will be shown if the loop continues to the next attempt.
         if attempt < MAX_DOWNLOAD_ATTEMPTS:
             print("Retrying...")
 
     # This message is displayed only if all attempts have failed.
-    print(f"\nFailed to download '{model_name}' after {MAX_DOWNLOAD_ATTEMPTS} attempts.")
+    print(
+        f"\nFailed to download '{model_name}' after {MAX_DOWNLOAD_ATTEMPTS} attempts."
+    )
     return False
