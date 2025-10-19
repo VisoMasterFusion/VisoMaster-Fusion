@@ -15,3 +15,8 @@ QPushButton {
     background-color: #073642;
     border: 1px solid #586e75;
 }
+
+/* Frame borders */
+QFrame, QListWidget {
+	background-color: transparent;
+}

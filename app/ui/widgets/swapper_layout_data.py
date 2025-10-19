@@ -26,7 +26,7 @@ SWAPPER_LAYOUT_DATA: LayoutDictTypes = {
             "level": 2,
             "label": "Swapper Resolution",
             "options": ["128", "256", "384", "512"],
-            "default": "512",
+            "default": "128",
             "parentSelection": "SwapModelSelection",
             "requiredSelectionValue": "Inswapper128",
             "help": "Select the resolution for the swapped face in pixels. Higher values offer better quality but are slower to process.",

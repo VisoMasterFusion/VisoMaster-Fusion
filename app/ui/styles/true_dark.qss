@@ -409,3 +409,8 @@ QTabBar::tab:!selected {
 }
 
 /* Add more widget styles as needed */
+
+/* Frame borders */
+QFrame, QListWidget {
+	background-color: transparent;
+}

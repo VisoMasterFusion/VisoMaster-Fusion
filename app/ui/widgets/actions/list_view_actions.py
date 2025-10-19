@@ -9,6 +9,7 @@ from PySide6 import QtWidgets, QtGui, QtCore
 
 from app.ui.widgets.actions import common_actions as common_widget_actions
 from app.ui.widgets.actions import card_actions
+from app.ui.widgets.actions import filter_actions
 from app.ui.widgets import widget_components
 import app.helpers.miscellaneous as misc_helpers
 from app.ui.widgets import ui_workers
@@ -289,6 +290,10 @@ def select_target_medias(
     )
     main_window.video_loader_worker.start()
 
+@QtCore.Slot()
+def filter_target_videos(main_window):
+    filter_actions.filter_target_videos(main_window)
+    load_target_webcams(main_window)
 
 @QtCore.Slot()
 def load_target_webcams(
@@ -434,8 +439,70 @@ def open_output_media_folder(main_window: "MainWindow"):
 
 
 def show_shortcuts(main_window: "MainWindow"):
+    
+    # HTML formating
+    shortcuts_text = (
+        "<b><u>Actions:</u></b><br>"
+        "<b>F11</b> : View fullscreen<br>"
+        "<b>Space</b> : Play/Stop<br>"
+        "<b>R</b> : Record start/stop<br>"
+        "<b>S</b> : Swap face"
+        "<br>" 
+        "<b><u>Seeking:</u></b><br>"
+        "<b>V</b> : Advance 1 frame<br>"
+        "<b>C</b> : Rewind 1 frame<br>"
+        "<b>D</b> : Advance 30 frames<br>"
+        "<b>A</b> : Rewind 30 frames<br>"
+        "<b>Z</b> : Seek to start<br>"
+        "<br>"
+        "<b><u>Markers:</u></b><br>"
+        "<b>F</b> : Add video marker<br>"
+        "<b>ALT+F</b> : Remove video marker<br>"
+        "<b>W</b> : Move to next marker<br>"
+        "<b>Q</b> : Move to previous marker<br>"
+        "<br>"
+    )
+
     main_window.display_messagebox_signal.emit(
         "Shortcuts",
-        " F11 : View fullscreen.\n V : Advance by 1 frame.\n C : Rewind by 1 frame.\n D : Advance by 30 frames.\n A : Rewind by 30 frames.\n Z : Seek to start.\n Space : Play start/stop.\n R : Record start/stop.\n F : Add video marker.\n ALT+F : Remove video marker.\n W : Move to next marker.\n Q : Move to previous marker.\n S : Swap face.",
+        shortcuts_text,
+        main_window,
+    )
+
+def show_presets(main_window: "MainWindow"):
+    
+    # HTML formating
+    presets_text = (
+        "<b><u>What are Presets?</u></b><br>"
+        "Presets are a functionality that allows saving and applying parameters on swapped faces.<br>"
+        "Saved options come from the: 'Face Swap', 'Face Editor', 'Restorers', 'Denoiser', and 'Settings' tabs."
+        "<br><br>"
+        
+        "<b><u>Option Categories</u></b><br>"
+        "There are two distinct categories:"
+        "<br><br>"
+
+        "<b>1. Parameters (Applied <u>per face</u>)</b><br>"
+        "Includes all options from:<br>"
+        "&nbsp;&nbsp;&bull; 'Face Swap'<br>"
+        "&nbsp;&nbsp;&bull; 'Face Editor'<br>"
+        "&nbsp;&nbsp;&bull; 'Restorers'"
+        "<br><br>"
+
+        "<b>2. Controls (Applied <u>globally</u>)</b><br>"
+        "Includes all options from:<br>"
+        "&nbsp;&nbsp;&bull; 'Denoiser'<br>"
+        "&nbsp;&nbsp;&bull; 'Settings'"
+        "<br><br>"
+
+        # Une couleur (ex: #FFCC00 pour jaune/orange) aide à attirer l'œil
+        "<b><u><font color='#FFCC00'>IMPORTANT</font></u></b><br>"
+        "To apply the <b>Controls</b> options (Denoiser/Settings), the "
+        "<b>'Apply Settings'</b> button <u>must be checked</u> (it is OFF by default)."
+    )
+
+    main_window.display_messagebox_signal.emit(
+        "Presets",
+        presets_text,
         main_window,
     )

@@ -500,9 +500,11 @@ class ModelsProcessor(QtCore.QObject):
                 if self.models.get(model_name):
                     del model_instance
                     gc.collect()
+                    print(f"Unloaded model: {model_name} already in memory")
                     return self.models.get(model_name)
 
                 self.models[model_name] = model_instance
+                print(f"Loading model: {model_name} with provider: {self.provider_name}")
                 return model_instance
             finally:
                 self.main_window.model_loaded_signal.emit()
