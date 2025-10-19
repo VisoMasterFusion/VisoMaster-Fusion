@@ -78,10 +78,6 @@ class MainWindow(QtWidgets.QMainWindow, Ui_MainWindow):
             main_window=self, search_text="", filter_list="merged_embeddings"
         )
         self.video_processor = VideoProcessor(self)
-        # Connect the signal to start timers from the main thread
-        self.video_processor.start_segment_timers_signal.connect(
-            self.video_processor._start_timers_from_signal
-        )
         self.models_processor = ModelsProcessor(self)
         self.target_videos: Dict[
             int, widget_components.TargetMediaCardButton

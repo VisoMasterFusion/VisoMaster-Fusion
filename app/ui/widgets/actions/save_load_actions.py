@@ -16,6 +16,7 @@ from app.ui.widgets.actions import card_actions
 from app.ui.widgets.actions import list_view_actions
 from app.ui.widgets.actions import video_control_actions
 from app.ui.widgets.actions import layout_actions
+from app.ui.widgets.actions import filter_actions
 from app.ui.widgets import ui_workers
 from app.helpers.typing_helper import ParametersTypes, MarkerTypes
 import app.helpers.miscellaneous as misc_helpers
@@ -219,6 +220,11 @@ def load_saved_workspace(main_window: "MainWindow", data_filename: str | bool = 
             card_actions.clear_target_faces(main_window)
             card_actions.clear_merged_embeddings(main_window)
 
+            # Load control (settings)
+            control = data["control"]
+            for control_name, control_value in control.items():
+                main_window.control[control_name] = control_value
+
             # Add target medias
             target_medias_data = data["target_medias_data"]
             target_medias_files_list = []
@@ -352,11 +358,6 @@ def load_saved_workspace(main_window: "MainWindow", data_filename: str | bool = 
                 main_window.target_faces[
                     face_id
                 ].assigned_input_embedding = assigned_input_embedding
-
-            # Load control (settings)
-            control = data["control"]
-            for control_name, control_value in control.items():
-                main_window.control[control_name] = control_value
 
             # Add markers
             video_control_actions.remove_all_markers(main_window)
@@ -499,6 +500,8 @@ def load_saved_workspace(main_window: "MainWindow", data_filename: str | bool = 
             main_window.filterWebcamsCheckBox.setChecked(
                 window_state.get("filterWebcamsCheckBox", False)
             )
+            filter_actions.filter_target_videos(main_window)
+            list_view_actions.load_target_webcams(main_window)
 
 
 def save_current_workspace(
@@ -620,6 +623,7 @@ def save_current_workspace(
 
     # --- Prepare Workspace Data ---
     data = {
+        "control": main_window.control.copy(),
         "target_medias_data": target_medias_data,
         "selected_media_id": main_window.selected_video_button.media_id
         if main_window.selected_video_button
@@ -628,7 +632,6 @@ def save_current_workspace(
         "target_faces_data": target_faces_data,
         "embeddings_data": embeddings_data,
         "markers": markers_to_save,
-        "control": main_window.control.copy(),
         "job_marker_pairs": main_window.job_marker_pairs,  # Save the list of tuples
         "last_target_media_folder_path": main_window.last_target_media_folder_path,
         "last_input_media_folder_path": main_window.last_input_media_folder_path,

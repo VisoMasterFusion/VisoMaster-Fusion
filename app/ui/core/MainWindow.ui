@@ -1232,24 +1232,41 @@
              </item>
             </layout>
            </item>
-		   <item>
-            <widget class="QLabel" name="labelp">
-             <property name="text">
-              <string>Presets</string>
-             </property>
-            </widget>
-           </item>
+          </layout>
+         </item>
+        </layout>
+       </widget>
+	   <widget class="QWidget" name="preset_tab">
+        <attribute name="title">
+         <string>Presets</string>
+        </attribute>
+        <layout class="QVBoxLayout" name="presetsWidgetsLayout_1">
+         <item>
+          <widget class="QLabel" name="labelp">
+           <property name="text">
+            <string>Presets</string>
+           </property>
+          </widget>
+         </item>
+		 <item>
+          <layout class="QVBoxLayout" name="presetsWidgetsLayout">
 		   <item>
             <widget class="QListWidget" name="presetsList">
-             <property name="sizePolicy">
-              <sizepolicy hsizetype="Expanding" vsizetype="Minimum">
-               <horstretch>0</horstretch>
-               <verstretch>0</verstretch>
-              </sizepolicy>
-			 </property>
 			 <property name="sortingEnabled">
 			  <bool>true</bool>
 			 </property>
+			 <property name="minimumSize">
+			  <size>
+			   <width>0</width>
+			   <height>360</height>
+			  </size>
+			 </property>
+			 <property name="maximumSize">
+              <size>
+               <width>16777215</width>
+               <height>460</height>
+              </size>
+             </property>
             </widget>
            </item>
            <item>
@@ -1271,7 +1288,7 @@
              <item>
               <widget class="QPushButton" name="controlPresetButton">
                <property name="text">
-                <string>Apply controls</string>
+                <string>Apply Settings</string>
                </property>
 			   <property name="checkable">
                 <bool>true</bool>
@@ -1283,7 +1300,17 @@
              </item>
             </layout>
            </item>
-          </layout>
+		  </layout>
+         </item>
+		 <item>
+          <spacer name="verticalSpacerpresets">
+           <property name="orientation">
+            <enum>Qt::Vertical</enum>
+           </property>
+           <property name="sizeType">
+            <enum>QSizePolicy::Expanding</enum>
+           </property>
+          </spacer>
          </item>
         </layout>
        </widget>
@@ -1356,6 +1383,7 @@
      <string>Help</string>
     </property>
     <addaction name="actionView_Help_Shortcuts"/>
+	<addaction name="actionView_Help_Presets"/>
    </widget>
    <addaction name="menuFile"/>
    <addaction name="menuEdit"/>
@@ -1410,6 +1438,11 @@
   <action name="actionView_Help_Shortcuts">
    <property name="text">
     <string>View Shortcuts</string>
+   </property>
+  </action>
+  <action name="actionView_Help_Presets">
+   <property name="text">
+    <string>Presets</string>
    </property>
   </action>
   <action name="actionTest">

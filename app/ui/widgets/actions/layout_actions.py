@@ -581,6 +581,9 @@ def set_up_menu_actions(main_window: "MainWindow"):
     main_window.actionView_Help_Shortcuts.triggered.connect(
         partial(list_view_actions.show_shortcuts, main_window)
     )
+    main_window.actionView_Help_Presets.triggered.connect(
+        partial(list_view_actions.show_presets, main_window)
+    )
 
 
 def disable_all_parameters_and_control_widget(main_window: "MainWindow"):

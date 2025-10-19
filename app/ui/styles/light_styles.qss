@@ -180,3 +180,8 @@ ParameterSlider::groove:horizontal:disabled,ParameterDecimalSlider::groove:horiz
 ParameterSlider::sub-page:horizontal:disabled,ParameterDecimalSlider::sub-page:horizontal:disabled {
     background-color: transparent;   /* No color for completed part when disabled */
 }
+
+/* Frame borders */
+QFrame, QListWidget {
+	background-color: transparent;
+}
