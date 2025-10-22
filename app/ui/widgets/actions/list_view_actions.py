@@ -288,6 +288,9 @@ def select_target_medias(
     main_window.video_loader_worker.thumbnail_ready.connect(
         partial(add_media_thumbnail_to_target_videos_list, main_window)
     )
+    main_window.video_loader_worker.finished.connect(
+        partial(filter_target_videos, main_window)
+    )
     main_window.video_loader_worker.start()
 
 @QtCore.Slot()
@@ -505,4 +508,5 @@ def show_presets(main_window: "MainWindow"):
         "Presets",
         presets_text,
         main_window,
+
     )

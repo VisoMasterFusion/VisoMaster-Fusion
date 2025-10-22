@@ -97,6 +97,8 @@ class TargetMediaLoaderWorker(qtc.QThread):
         for media_file_path in media_files:
             if not self._running:  # Check if the thread is still running
                 break
+            if not os.path.exists(media_file_path):
+                continue
             file_type = misc_helpers.get_file_type(media_file_path)
             pixmap = common_widget_actions.extract_frame_as_pixmap(
                 self.main_window, media_file_path, file_type=file_type
@@ -437,3 +439,4 @@ class FilterWorker(qtc.QThread):
     def stop_thread(self):
         self.quit()
         self.wait()
+
