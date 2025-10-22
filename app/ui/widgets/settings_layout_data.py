@@ -82,6 +82,15 @@ SETTINGS_LAYOUT_DATA: LayoutDictTypes = {
             "decimals": 2,
             "help": "Set the playback audio of the audio, when Live Sound is enabled",
         },
+        "LiveSoundDelaySlider": {
+            "level": 1,
+            "label": "Audio Start Delay (Millisec)",
+            "min_value": "50",
+            "max_value": "3000",
+            "default": "500",
+            "step": 25,
+            "help": "Set the audio starting delay to adjust for latency.",
+        },
     },
     "Video Recording Settings": {
         "FrameEnhancerDownToggle": {
