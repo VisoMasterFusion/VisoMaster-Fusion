@@ -37,11 +37,11 @@ class VideoProcessor(QObject):
     Manages all video, image, and webcam processing.
     This class handles:
     - Reading frames from media (video, image, webcam).
-    - Dispatching frames to worker threads for processing.
-    - Managing the display metronome for smooth playback/recording.
+    - Dispatching frames to worker threads (FrameWorker) for processing.
+    - Managing the display metronome (QTimer) for smooth playback/recording.
     - Handling default and multi-segment recording via FFmpeg.
-    - Controlling virtual camera output.
-    - Managing audio playback during preview.
+    - Controlling the virtual camera (pyvirtualcam) output.
+    - Managing audio playback (ffplay) during preview.
     """
 
     # --- Signals ---
@@ -56,7 +56,9 @@ class VideoProcessor(QObject):
 
         # --- Worker Thread Management ---
         self.num_threads = num_threads
-        self.frame_queue = queue.Queue(maxsize=num_threads)  # Holds frame numbers for workers
+        self.preroll_target = max(20, self.num_threads * 2) # Target number of frames before playback starts
+        self.max_display_buffer_size = self.preroll_target * 4 # Max frames allowed "in flight" (queued + being displayed)
+        self.frame_queue = queue.Queue(maxsize=self.max_display_buffer_size)  # Holds frame numbers for workers
         self.threads: Dict[int, threading.Thread] = {} # Active worker threads, keyed by frame number
 
         # --- Media State ---
@@ -87,11 +89,14 @@ class VideoProcessor(QObject):
         self.processing_start_frame: int = 0 # The frame number where processing started
         self.last_display_schedule_time_sec: float = 0.0 # Used by metronome to prevent drift
         self.target_delay_sec: float = 1.0 / 30.0 # Time between frames for metronome
-        self.current_frame_feeder_func: callable | None = None # Metronome callback
+        self.preroll_timer = QTimer(self)
+        self.feeder_thread: threading.Thread | None = None  # The dedicated thread that reads frames and "feeds" the workers
+        self.playback_started: bool = False
 
         # --- Performance Timing ---
         self.start_time = 0.0
         self.end_time = 0.0
+        self.playback_display_start_time = 0.0 # Time when frames *actually* started displaying
         self.play_start_time = 0.0  # Used by default style for audio segmenting
         self.play_end_time = 0.0  # Used by default style for audio segmenting
 
@@ -129,7 +134,20 @@ class VideoProcessor(QObject):
 
     @Slot(QPixmap, numpy.ndarray)
     def store_webcam_frame_to_display(self, pixmap, frame):
-        """Slot to store a processed webcam frame from a worker."""
+        """
+        Slot to store a processed webcam frame from a worker.
+        For live webcam, we only want the *latest* frame.
+        We must clear any old frames waiting in the queue before adding the new one.
+        This changes the queue from a buffer into a "mailbox" (latest item only).
+        """
+        # Clear all pending (old) frames from the queue
+        while not self.webcam_frames_to_display.empty():
+            try:
+                self.webcam_frames_to_display.get_nowait()
+            except queue.Empty:
+                break
+        
+        # Put the new, latest frame in the now-empty queue
         self.webcam_frames_to_display.put((pixmap, frame))
 
     @Slot(int, QPixmap, numpy.ndarray)
@@ -151,19 +169,14 @@ class VideoProcessor(QObject):
         torch.cuda.empty_cache()
         common_widget_actions.update_gpu_memory_progressbar(self.main_window)
 
-    def _start_metronome(self, target_fps: float, feeder_function: callable, is_first_start: bool = True):
+    def _start_metronome(self, target_fps: float, is_first_start: bool = True):
         """
         Unified metronome starter.
         This function configures and starts the metronome loop for all processing types.
         
         :param target_fps: The target FPS. Use > 9000 for max speed (recording).
-        :param feeder_function: The specific frame-reading function to call on each tick 
-                                (e.g., process_next_frame).
         :param is_first_start: True if this is the very first start (e.g., not a new segment).
         """
-        
-        # 1. Store the feeder function for display_next_frame to use
-        self.current_frame_feeder_func = feeder_function
 
         # 2. Determine timer interval
         if target_fps <= 0:
@@ -171,7 +184,7 @@ class VideoProcessor(QObject):
         
         if target_fps > 9000: # Convention for "max speed"
             log_fps = f"MAX SPEED (for {self.fps:.2f} FPS recording)"
-            self.target_delay_sec = 1.0 / 9999.0
+            self.target_delay_sec = 0.005
         else:
             log_fps = f"{target_fps:.2f} FPS"
             self.target_delay_sec = 1.0 / target_fps
@@ -183,18 +196,157 @@ class VideoProcessor(QObject):
         
         if is_first_start:
              self.processing_started_signal.emit() # EMIT UNIFIED SIGNAL
+             # Record the time when the display *actually* starts
+             self.playback_display_start_time = time.perf_counter()
+             print(f"Metronome: Display loop initiated at {self.playback_display_start_time:.3f}s")
 
         # 4. Start the metronome loop
         self.last_display_schedule_time_sec = time.perf_counter()
         self.display_next_frame() # Start the loop
 
+    def _check_preroll_and_start_playback(self):
+        """
+        Called by preroll_timer.
+        Checks if the display buffer is full enough to start playback.
+        """
+        if not self.processing:
+            self.preroll_timer.stop()
+            return
+        
+        # If playback has already started, stop this timer and exit.
+        if self.playback_started:
+            self.preroll_timer.stop()
+            return
+            
+        # Check if the buffer is filled
+        if len(self.frames_to_display) >= self.preroll_target:
+            self.preroll_timer.stop()
+            self.playback_started = True
+            print(f"Preroll buffer filled ({len(self.frames_to_display)} frames). Starting playback components...")
+            
+            # Call the dedicated playback start function
+            self._start_synchronized_playback()
+            
+        else:
+            # Not ready yet, keep waiting
+            print(f"Buffering... {len(self.frames_to_display)} / {self.preroll_target}")
+
+    def _feeder_loop(self):
+        """
+        This function runs in a separate thread (self.feeder_thread).
+        Its only job is to read frames from the source and send them to the workers,
+        based on the current processing mode.
+        """
+        print(f"Feeder thread started (Mode: {self.file_type}, Segments: {self.is_processing_segments}).")
+        
+        # Determine which feed logic to use
+        try:
+            if self.file_type == "webcam":
+                self._feed_webcam()
+            elif self.file_type == "video": # Handles both standard video and segment video
+                self._feed_video_loop()
+            else:
+                print(f"[ERROR] Feeder thread: Unknown mode (file_type: {self.file_type}).")
+                
+        except Exception as e:
+            print(f"[ERROR] Unhandled exception in feeder thread: {e}")
+            
+        print("Feeder thread finished.")
+
+    def _feed_video_loop(self):
+        """
+        Unified feeder logic for standard video playback AND segment recording.
+        Reads frames as long as processing is active and within the limits
+        (full video or current segment).
+        """
+        
+        # Determine the mode at startup
+        is_segment_mode = self.is_processing_segments
+        
+        # Determine the stop condition (control variable)
+        # In segment mode, the loop is controlled by 'is_processing_segments'
+        # In video mode, the loop is controlled by 'processing'
+        stop_flag_check = lambda: self.is_processing_segments if is_segment_mode else self.processing
+
+        print(f"Feeder: Starting video loop (Mode: {'Segment' if is_segment_mode else 'Standard'}).")
+
+        while stop_flag_check():
+            try:
+                # 1. Mode-specific stop logic
+                if is_segment_mode:
+                    if self.current_segment_end_frame is None:
+                        time.sleep(0.01) # Wait for the segment to be configured
+                        continue
+                    if self.current_frame_number > self.current_segment_end_frame:
+                        # This segment is finished, wait for the stop signal (from stop_current_segment)
+                        time.sleep(0.01)
+                        continue
+                else: # Standard mode
+                    if self.current_frame_number > self.max_frame_number:
+                        break  # End of video
+
+                # 2. Buffer control (identical for both modes)
+                in_flight_frames = len(self.frames_to_display) + self.frame_queue.qsize()
+                if in_flight_frames >= self.max_display_buffer_size:
+                    time.sleep(0.005) # Wait 5ms (buffer full)
+                    continue 
+
+                # 3. Frame reading (identical)
+                # In segment mode, self.recording is False, so preview_mode=False
+                # In standard mode, self.recording determines the preview_mode
+                ret, frame_bgr = misc_helpers.read_frame(
+                    self.media_capture, preview_mode=not self.recording and not is_segment_mode
+                )
+                if not ret:
+                    print(f"[ERROR] Feeder: Could not read frame {self.current_frame_number} (Mode: {'Segment' if is_segment_mode else 'Standard'})!")
+                    break  # Stop reading
+
+                # 4. Send to worker (identical)
+                frame_rgb = frame_bgr[..., ::-1]
+                frame_num_to_process = self.current_frame_number
+                
+                self.frame_queue.put(frame_num_to_process)
+                self.start_frame_worker(frame_num_to_process, frame_rgb)
+                self.current_frame_number += 1
+                
+            except Exception as e:
+                print(f"[ERROR] Error in _feed_video_loop (Mode: {'Segment' if is_segment_mode else 'Standard'}): {e}")
+                if is_segment_mode:
+                    self.is_processing_segments = False
+                else:
+                    self.processing = False # Stop the loop
+
+    def _feed_webcam(self):
+        """Feeder logic for webcam streaming."""
+        while self.processing:
+            try:
+                in_flight_frames = len(self.webcam_frames_to_display.queue) + self.frame_queue.qsize()
+                if in_flight_frames >= self.max_display_buffer_size:
+                    time.sleep(0.005) # Wait 5ms (buffer full)
+                    continue
+
+                ret, frame_bgr = misc_helpers.read_frame(
+                    self.media_capture, preview_mode=False
+                )
+                if not ret:
+                    print("[WARN] Feeder: Failed to read webcam frame.")
+                    continue  # Try again
+
+                frame_rgb = frame_bgr[..., ::-1]
+                self.frame_queue.put(0)  # Frame number is not relevant
+                self.start_frame_worker(0, frame_rgb, is_single_frame=False)
+                
+            except Exception as e:
+                print(f"[ERROR] Error in _feed_webcam loop: {e}")
+                self.processing = False
+            
     def display_next_frame(self):
         """
         The core metronome loop.
         This function is called repeatedly via QTimer.singleShot. It handles:
         1. Precise timing to schedule the *next* call.
-        2. Calling the "feeder" function to read the next frame.
-        3. Displaying the *current* processed frame (if ready).
+        2. Popping the *current* processed frame from the display buffer.
+        3. Displaying the frame, sending it to virtualcam, and writing it to FFmpeg.
         """
         
         # 1. Stop check
@@ -259,10 +411,6 @@ class VideoProcessor(QObject):
         # We use singleShot for precision.
         if self.processing:
             QTimer.singleShot(wait_ms, self.display_next_frame)
-
-        # --- 5. Manually call the registered frame reader (feeder) ---
-        if self.processing and self.current_frame_feeder_func is not None:
-            self.current_frame_feeder_func() # Call the registered feeder
             
         # --- 6. Get the frame to display (if ready) ---
         pixmap = None
@@ -281,8 +429,8 @@ class VideoProcessor(QObject):
             frame_number_to_display = self.next_frame_to_display
             if frame_number_to_display not in self.frames_to_display:
                 # Frame not ready.
-                # This is fine! The next call is already scheduled.
-                # We just skip this display. The metronome continues.
+                # If the buffer is not full, video will stutter.
+                # print(f"[DEBUG] Frame {frame_number_to_display} not in buffer. Display may stutter.")
                 return
             pixmap, frame = self.frames_to_display.pop(frame_number_to_display)
 
@@ -404,6 +552,7 @@ class VideoProcessor(QObject):
         # 3. Set State Flags
         self.processing = True  # General flag ON
         self.is_processing_segments = False
+        self.playback_started = False
 
         # Check if this recording was initiated by the Job Manager
         job_mgr_flag = getattr(self.main_window, "job_manager_initiated_record", False)
@@ -431,161 +580,103 @@ class VideoProcessor(QObject):
                 return
 
         # 5. Setup Audio (if applicable)
-        # Start audio only if Live Sound is checked AND we are not recording
-        if self.main_window.liveSoundButton.isChecked() and not self.recording:
-            self.start_live_sound()
+        # Note: Audio is not started here. It's started by
+        # _start_synchronized_playback after the preroll buffer is full.
 
         # 6. Reset Timers and Containers
         self.start_time = time.perf_counter()
         self.frames_to_display.clear()
         self.threads.clear()
 
-        # --- 7. AUDIO/VIDEO SYNC LOGIC ---
-        # This block ensures the video frames (read by OpenCV) are synchronized
-        # with the audio (played by ffplay).
-        
-        # 7a. Get target frame from slider
-        target_start_frame = self.main_window.videoSeekSlider.value()
+       # --- 7. AUDIO/VIDEO SYNC LOGIC (MODIFIED) ---
 
-        # 7b. Calculate start time for ffplay (which is precise)
-        #     We do this BEFORE seeking, based on the TARGET frame.
-        self.play_start_time = (
-            float(target_start_frame / float(self.fps)) if self.fps > 0 else 0.0
+        # 7a. Get the target frame
+        actual_start_frame = self.main_window.videoSeekSlider.value()
+        print(f"Sync: Seeking directly to frame {actual_start_frame}...")
+
+        # 7b. Set the capture position
+        self.media_capture.set(cv2.CAP_PROP_POS_FRAMES, actual_start_frame)
+
+        # 7c. Read the frame using the LOCKED helper function ONCE for dimensions.
+        print(f"Sync: Reading frame {actual_start_frame} (for dimensions/state) using locked helper...")
+        ret, frame_bgr = misc_helpers.read_frame(
+            self.media_capture, preview_mode=False # Always read full frame for consistency
         )
-        print(f"Sync: Starting video at frame {target_start_frame}...")
+        print(f"Sync: Initial read complete (Result: {ret}).")
 
-        # 7c. Prime the CV2 capture (set() is imprecise)
-        #     `set` will jump to the nearest *previous* keyframe (e.g., 95 if target is 100)
-        self.media_capture.set(cv2.CAP_PROP_POS_FRAMES, target_start_frame)
-
-        # 7d. Priming loop: read and discard frames until we reach the TARGET
-        #     This mimics what ffplay does internally.
-        
-        frame_bgr = None
-        ret = False
-        
-        # Get the real position after .set() (e.g., 95)
-        # CAP_PROP_POS_FRAMES is the index of the *next* frame to be read.
-        current_read_pos = int(self.media_capture.get(cv2.CAP_PROP_POS_FRAMES))
-        prime_count = 0
-        
-        if current_read_pos > 0 or target_start_frame == 0:
-            # We read WHILE the "next frame" is <= our target
-            while current_read_pos <= target_start_frame:
-                ret, frame_bgr = self.media_capture.read() # Reads frame (e.g., 95, 96... 100)
-                if not ret:
-                    print(f"[ERROR] Capture failed during priming at frame {current_read_pos}.")
-                    self.stop_processing()
-                    return
-                # Update the *next* frame position (e.g., 96, 97... 101)
-                current_read_pos = int(self.media_capture.get(cv2.CAP_PROP_POS_FRAMES))
-                prime_count += 1
-                
-            print(f"Sync: {prime_count} frames read to reach target frame {target_start_frame}.")
-            
-        else:
-            # Failsafe for backends that don't support .get()
-            print(f"[WARN] Sync: Video backend does not support GET_POS_FRAMES. Audio sync may be off.")
-            ret, frame_bgr = self.media_capture.read()
+        if not ret:
+            # Fallback logic... (Keep your existing fallback logic here)
+            # ... [Fallback logic - attempts to read fallback_frame_to_try] ...
+            fallback_frame = int(self.media_capture.get(cv2.CAP_PROP_POS_FRAMES))
+            fallback_frame_to_try = max(0, fallback_frame - 1)
+            print(f"[WARN] Failed initial read for frame {actual_start_frame}. Retrying from frame {fallback_frame_to_try}.")
+            if fallback_frame_to_try == actual_start_frame:
+                 print(f"[ERROR] Fallback frame is the same. Cannot proceed.")
+                 self.stop_processing()
+                 return
+            self.media_capture.set(cv2.CAP_PROP_POS_FRAMES, fallback_frame_to_try)
+            print(f"Sync: Retrying read for frame {fallback_frame_to_try} using locked helper...")
+            ret, frame_bgr = misc_helpers.read_frame(
+                self.media_capture, preview_mode=False
+            )
+            print(f"Sync: Retry read complete (Result: {ret}).")
             if not ret:
+                print(f"[ERROR] Capture failed definitively near frame {actual_start_frame}.")
                 self.stop_processing()
                 return
-            current_read_pos = target_start_frame + 1
+            actual_start_frame = fallback_frame_to_try # Use the frame we successfully read
 
-        # 7e. Populate variables with the frame we just read (e.g., frame 100)
-        frame_rgb = None # Initialize in case ret is False
-        if ret:
-            frame_rgb = numpy.ascontiguousarray(
-                frame_bgr[..., ::-1]
-            )  # BGR to RGB
-            self.current_frame = frame_rgb
-        else:
-            print(
-                f"[ERROR] Could not read first frame {target_start_frame} after priming."
-            )
-            self.stop_processing()
-            return
-            
-        # 7f. FORCE SYNCHRONOUS PROCESSING OF FIRST FRAME
-        # This ensures the first frame is ready to display *immediately*
-        # when the metronome starts, preventing a skipped first frame.
-        print(f"Sync: Synchronously processing first frame {target_start_frame}...")
-        with self.frame_queue.mutex:
-            self.frame_queue.queue.clear()
-        self.frame_queue.put(target_start_frame)
-        self.start_frame_worker(target_start_frame, frame_rgb, is_single_frame=True)
-        # At this point, self.frames_to_display[target_start_frame] IS READY.
+        # 7d. Frame is valid - Store for potential FFmpeg init, DO NOT PROCESS SYNC
+        frame_rgb = numpy.ascontiguousarray(
+            frame_bgr[..., ::-1]
+        )  # BGR to RGB
+        self.current_frame = frame_rgb # Store for FFmpeg dimensions
 
-        # 7g. Update counters for the processing loop
-        
-        # The 1st frame to DISPLAY is the one we just read and processed
-        self.next_frame_to_display = target_start_frame 
-        self.processing_start_frame = target_start_frame
-        
-        # The *next* frame to READ (by process_next_frame)
-        # is pointed to by current_read_pos (e.g., 101)
-        self.current_frame_number = current_read_pos
+        # !!! CRITICAL: Reset position AGAIN so the feeder reads this frame too !!!
+        print(f"Sync: Resetting position to frame {actual_start_frame} for feeder thread...")
+        self.media_capture.set(cv2.CAP_PROP_POS_FRAMES, actual_start_frame)
+        print(f"Sync: Position reset complete.")
 
-        # --- END OF SYNC LOGIC ---
+        # 7e. REMOVE SYNCHRONOUS PROCESSING STEP
+        # The feeder thread will now handle queueing frame 'actual_start_frame'
 
-        # 8. Start Metronome
-        target_fps = 9999.0 if self.recording else self.fps
-        self._start_metronome(target_fps, self.process_next_frame, is_first_start=True)
+        # 7f. Update counters - Feeder will start reading FROM actual_start_frame
+        self.next_frame_to_display = actual_start_frame # Display starts here once buffered
+        self.processing_start_frame = actual_start_frame
+        self.current_frame_number = actual_start_frame # Feeder reads this frame first when it starts
 
-    def process_next_frame(self):
-        """
-        Feeder function: Reads the next frame and enqueues it for processing.
-        Used by playback and default recording.
-        """
-        if not self.processing:
-            return
-
-        # --- End of video check ---
-        if self.current_frame_number > self.max_frame_number:
-            # print("All frames read. Stopping frame reading.") # Too spammy
-            return
-
-        # --- Queue Check ---
-        if self.frame_queue.qsize() >= self.num_threads:
-            # Queue is full, skip reading this tick. The metronome will try again.
-            return
-
-        # --- Read Frame ---
-        ret, frame_bgr = misc_helpers.read_frame(
-            self.media_capture, preview_mode=not self.recording
+        # Calculate play_start_time based on the confirmed actual_start_frame
+        self.play_start_time = (
+            float(actual_start_frame / float(self.fps)) if self.fps > 0 else 0.0
         )
+        print(f"Recording audio start time set to: {self.play_start_time:.3f}s (Frame: {actual_start_frame})")
 
-        if ret:
-            frame_rgb = frame_bgr[..., ::-1]  # Convert BGR to RGB
-            self.frame_queue.put(self.current_frame_number)
-            self.start_frame_worker(
-                self.current_frame_number, frame_rgb
-            )  # is_single_frame defaults to False
-            self.current_frame_number += 1
+        # 7g. Update the slider (if needed, ensure signals blocked/unblocked correctly)
+        self.main_window.videoSeekSlider.blockSignals(True)
+        self.main_window.videoSeekSlider.setValue(actual_start_frame)
+        self.main_window.videoSeekSlider.blockSignals(False)
+
+        # --- 8. STARTING THE FEEDER THREAD AND METRONOME ---
+        print(f"Starting feeder thread (Mode: video, Recording: {self.recording})...")
+        self.feeder_thread = threading.Thread(target=self._feeder_loop, daemon=True)
+        self.feeder_thread.start()
+
+        if self.recording:
+            # Recording: start the display metronome immediately
+            print("Recording mode: Starting metronome immediately.")
+            self._start_metronome(9999.0, is_first_start=True)
         else:
-            # Frame read failed!
-            failed_frame_num = self.current_frame_number
-            print(
-                f"[ERROR] Cannot read frame {failed_frame_num}! Video source may be corrupted."
-            )
-
-            if self.recording:
-                print(
-                    f"Attempting to finalize recording due to read error at frame {failed_frame_num}."
-                )
-                # Force the display loop to stop at this frame
-                self.next_frame_to_display = (
-                    failed_frame_num
-                )
-                self._finalize_default_style_recording()
-            else:
-                self.stop_processing()
-                
-            self.main_window.display_messagebox_signal.emit(
-                "Error Reading Frame",
-                f"Error Reading Frame {failed_frame_num}.\n Stopped Processing!",
-                self.main_window,
-            )
+            # Playback: start the preroll monitor
+            print(f"Playback mode: Waiting for preroll buffer (target: {self.preroll_target} frames)...")
+            
+            # Ensure the connection is clean (avoids multiple connections)
+            try:
+                self.preroll_timer.timeout.disconnect(self._check_preroll_and_start_playback)
+            except RuntimeError:
+                pass # Disconnection failed, which is normal the first time
+            
+            self.preroll_timer.timeout.connect(self._check_preroll_and_start_playback)
+            self.preroll_timer.start(100)
 
     def start_frame_worker(self, frame_number, frame, is_single_frame=False):
         """Starts a FrameWorker to process the given frame."""
@@ -675,28 +766,6 @@ class VideoProcessor(QObject):
                 self.current_frame_number, frame_to_process, is_single_frame=True
             )
 
-    def process_next_webcam_frame(self):
-        """
-        Feeder function: Reads the next frame and enqueues it for processing.
-        Used by webcam streaming.
-        """
-        if not self.processing:
-            return
-
-        if self.frame_queue.qsize() >= self.num_threads:
-            return # Queue full, skip this tick
-
-        if self.file_type == "webcam" and self.media_capture:
-            ret, frame_bgr = misc_helpers.read_frame(
-                self.media_capture, preview_mode=False
-            )
-            if ret:
-                frame_rgb = frame_bgr[..., ::-1]  # BGR to RGB
-                self.frame_queue.put(0) # Frame number is irrelevant for webcam
-                self.start_frame_worker(0, frame_rgb, is_single_frame=False)
-            else:
-                print("[WARN] Failed to read webcam frame during stream.")
-
     def stop_processing(self):
         """
         General Stop / Abort Function.
@@ -717,13 +786,22 @@ class VideoProcessor(QObject):
         self.is_processing_segments = False
         self.recording = False
         self.triggered_by_job_manager = False
-        self.current_frame_feeder_func = None # Stop metronome feeder
 
         # 2. Stop utility timers and audio
         self.gpu_memory_update_timer.stop()
+        self.preroll_timer.stop()
         self.stop_live_sound()
 
-        # 3. Wait for worker threads
+        # 3a. Wait for the feeder thread (ADDED)
+        print("Waiting for feeder thread to complete...")
+        if self.feeder_thread and self.feeder_thread.is_alive():
+            self.feeder_thread.join(timeout=2.0) # Wait 2 seconds
+            if self.feeder_thread.is_alive():
+                print("[WARN] Feeder thread did not join gracefully.")
+        self.feeder_thread = None
+        print("Feeder thread joined.")
+        
+        # 3b. Wait for worker threads
         print("Waiting for worker threads to complete...")
         self.join_and_clear_threads()
         print("Worker threads joined.")
@@ -774,6 +852,7 @@ class VideoProcessor(QObject):
         self.current_segment_index = -1
         self.temp_segment_files = []
         self.current_segment_end_frame = None
+        self.playback_display_start_time = 0.0 # Reset display start time
 
         # 8. Reset capture position
         if self.file_type == "video" and self.media_capture:
@@ -818,20 +897,19 @@ class VideoProcessor(QObject):
 
         # 11. Final Timing and Logging
         self.end_time = time.perf_counter()
-        processing_time = self.end_time - self.start_time
-        print(f"\nProcessing completed in {processing_time:.2f} seconds")
+        processing_time_sec = self.end_time - self.start_time
+        
         try:
-            # Direct calculation: (processed frames) / (real time)
+            # Calculate processed frames
             start_frame_num = getattr(self, 'processing_start_frame', end_frame_for_calc)
             num_frames_processed = end_frame_for_calc - start_frame_num
-            
-            if processing_time > 0 and num_frames_processed > 0:
-                avg_fps = num_frames_processed / processing_time
-                print(f"Average Processing FPS: {avg_fps:.2f}\n")
-            else:
-                 print("Processing time or frame count was zero, cannot calculate FPS.\n")
-        except Exception as e:
-            print(f"[WARN] Could not calculate average FPS: {e}\n")
+            if num_frames_processed < 0:
+                num_frames_processed = 0
+        except Exception:
+            num_frames_processed = 0 # Safety fallback
+        
+        # Log the summary
+        self._log_processing_summary(processing_time_sec, num_frames_processed)
 
         return True  # Processing was stopped
 
@@ -847,6 +925,79 @@ class VideoProcessor(QObject):
             except Exception as e:
                 print(f"[WARN] Error joining thread {thread.name}: {e}")
         self.threads.clear()
+
+    # --- Utility Methods ---
+
+    def _format_duration(self, total_seconds: float) -> str:
+        """
+        Converts a duration in seconds to a human-readable string (e.g., 1h 15m 30.55s).
+        
+        :param total_seconds: The duration in seconds.
+        :return: A formatted string.
+        """
+        try:
+            total_seconds = float(total_seconds)
+            
+            hours = int(total_seconds // 3600)
+            minutes = int((total_seconds % 3600) // 60)
+            seconds = total_seconds % 60
+            
+            parts = []
+            if hours > 0:
+                parts.append(f"{hours}h")
+            if minutes > 0 or (hours > 0 and seconds == 0):
+                parts.append(f"{minutes}m")
+            
+            # Always show seconds
+            if hours > 0 or minutes > 0:
+                # Show 2 decimal places if we also show hours/minutes
+                parts.append(f"{seconds:05.2f}s")
+            else:
+                # Show 3 decimal places if it's only seconds
+                parts.append(f"{seconds:.3f}s") 
+                
+            return " ".join(parts)
+        except Exception:
+            # Fallback in case of an error
+            return f"{total_seconds:.3f} seconds"
+
+    def _log_processing_summary(self, processing_time_sec: float, num_frames_processed: int):
+        """
+        Calculates and prints the final processing time and average FPS.
+        Uses the actual display duration for FPS calculation if playback occurred.
+
+        :param processing_time_sec: Total duration of the processing (start to end).
+        :param num_frames_processed: Total number of frames displayed or intended for display.
+        """
+
+        # 1. Print formatted duration (overall processing time)
+        formatted_duration = self._format_duration(processing_time_sec)
+        print(f"\nProcessing completed in {formatted_duration}")
+
+        # 2. Calculate and print FPS (based on actual display time)
+        display_duration_sec = 0.0
+        # Check if playback actually started displaying frames
+        if self.playback_display_start_time > 0 and self.end_time > self.playback_display_start_time:
+            display_duration_sec = self.end_time - self.playback_display_start_time
+            print(f"(Actual display duration: {self._format_duration(display_duration_sec)})")
+        else:
+            # Playback might have stopped during preroll or it was a recording-only task
+            # Use the overall time, but mention it includes setup/buffering
+            display_duration_sec = processing_time_sec
+            if self.start_time != self.playback_display_start_time : # Check if display never started
+                 print("(Note: FPS calculation includes initial buffering/setup time)")
+
+
+        try:
+            if display_duration_sec > 0.01 and num_frames_processed > 0: # Use a small threshold for duration
+                avg_fps = num_frames_processed / display_duration_sec
+                print(f"Average Display FPS: {avg_fps:.2f}\n")
+            elif num_frames_processed > 0:
+                print("Display duration too short to calculate meaningful FPS.\n")
+            else:
+                 print("No frames were displayed or duration was zero, cannot calculate FPS.\n")
+        except Exception as e:
+            print(f"[WARN] Could not calculate average FPS: {e}\n")
 
     # --- FFmpeg and Finalization ---
 
@@ -893,8 +1044,8 @@ class VideoProcessor(QObject):
         # 2. Frame Dimensions
         frame_height, frame_width, _ = self.current_frame.shape
         if is_segment:
-            # Adjust dimensions based on frame enhancer (only needed for segments?)
-            # TODO: Verify if this is also needed for default-style → No it's not
+            # Adjust dimensions based on frame enhancer
+            # Note: Frame enhancer scaling is only applied to segments here, not default-style.
             if control["FrameEnhancerEnableToggle"]:
                 if control["FrameEnhancerTypeSelection"] in (
                     "RealEsrgan-x2-Plus",
@@ -985,7 +1136,7 @@ class VideoProcessor(QObject):
             "-f",
             "rawvideo",
             "-pix_fmt",
-            "bgr24", # OpenCV provides BGR
+            "bgr24", # The processed frame from FrameWorker is BGR
             "-s",
             f"{frame_width}x{frame_height}",
             "-r",
@@ -1297,20 +1448,19 @@ class VideoProcessor(QObject):
 
         # 6. Final Timing and Logging
         self.end_time = time.perf_counter()
-        processing_time = self.end_time - self.start_time
-        print(f"\nProcessing completed in {processing_time:.2f} seconds")
+        processing_time_sec = self.end_time - self.start_time
+        
         try:
-            # Direct calculation: (processed frames) / (real time)
+            # Calculate processed frames
             start_frame_num = getattr(self, 'processing_start_frame', end_frame_for_calc)
             num_frames_processed = end_frame_for_calc - start_frame_num
-            
-            if processing_time > 0 and num_frames_processed > 0:
-                avg_fps = num_frames_processed / processing_time
-                print(f"Average Processing FPS: {avg_fps:.2f}\n")
-            else:
-                 print("Processing time or frame count was zero, cannot calculate FPS.\n")
-        except Exception as e:
-            print(f"[WARN] Could not calculate average FPS: {e}\n")
+            if num_frames_processed < 0:
+                num_frames_processed = 0
+        except Exception:
+            num_frames_processed = 0 # Safety fallback
+
+        # Log the summary
+        self._log_processing_summary(processing_time_sec, num_frames_processed)
 
         # 7. Reset State and UI
         self.recording = False
@@ -1396,7 +1546,7 @@ class VideoProcessor(QObject):
                 height=frame_height,
                 fps=int(current_fps),
                 backend=backend_to_use,
-                fmt=pyvirtualcam.PixelFormat.BGR, # BGR for OpenCV
+                fmt=pyvirtualcam.PixelFormat.BGR, # Processed frame is BGR
             )
             print(f"Virtual camera '{self.virtcam.device}' started.")
         except Exception as e:
@@ -1572,51 +1722,17 @@ class VideoProcessor(QObject):
         # We must increment it so the *next* read is correct (e.g., 101)
         self.current_frame_number += 1 
 
-        # 9. Start Metronome
+        # 9. Start Metronome ET Feeder
         target_fps = 9999.0 # Always max speed for segments
-        is_first = (self.current_segment_index == 0) # Only emit "started" on the *first* segment
-        self._start_metronome(target_fps, self.process_next_segment_frame, is_first_start=is_first)
+        is_first = (self.current_segment_index == 0) 
 
-    def process_next_segment_frame(self):
-        """
-        Feeder function: Reads the next frame specifically for multi-segment processing.
-        """
-        if not self.is_processing_segments:
-            print("[WARN] process_next_segment_frame called unexpectedly.")
-            return
-
-        # 1. End of segment check
-        if (
-            self.current_segment_end_frame is not None
-            and self.current_frame_number > self.current_segment_end_frame
-        ):
-            # print(f"Segment {self.current_segment_index + 1} read limit reached.") # Too spammy
-            return
-
-        # 2. Queue check
-        if self.frame_queue.qsize() >= self.num_threads:
-            return  # Wait for queue to drain
-
-        # 3. Read frame
-        ret, frame_bgr = misc_helpers.read_frame(self.media_capture, preview_mode=False)
-
-        if ret:
-            frame_rgb = frame_bgr[..., ::-1]  # BGR to RGB
-            self.frame_queue.put(self.current_frame_number)
-            self.start_frame_worker(
-                self.current_frame_number, frame_rgb, is_single_frame=False
-            )
-            self.current_frame_number += 1
-        else:
-            # Read failed!
-            failed_frame_num = self.current_frame_number
-            print(
-                f"[ERROR] Cannot read frame {failed_frame_num} during segment {self.current_segment_index + 1}!"
-            )
-            print(
-                f"Attempting to finalize segment {self.current_segment_index + 1} due to read error."
-            )
-            self.stop_current_segment() # Stop this segment and move to the next
+        # Start the feeder thread
+        print(f"Starting feeder thread (Mode: segment {self.current_segment_index})...")
+        self.feeder_thread = threading.Thread(target=self._feeder_loop, daemon=True)
+        self.feeder_thread.start()
+        
+        # Start the display metronome
+        self._start_metronome(target_fps, is_first_start=is_first)
 
     def stop_current_segment(self):
         """
@@ -1633,7 +1749,14 @@ class VideoProcessor(QObject):
         # 1. Stop timers
         self.gpu_memory_update_timer.stop()
 
-        # 2. Wait for workers
+        # 2a. Wait for the feeder thread (ADDED)
+        print(f"Waiting for feeder thread from segment {segment_num}...")
+        if self.feeder_thread and self.feeder_thread.is_alive():
+            self.feeder_thread.join(timeout=2.0)
+        self.feeder_thread = None
+        print("Feeder thread joined.")
+        
+        # 2b. Wait for workers
         print(f"Waiting for workers from segment {segment_num}...")
         self.join_and_clear_threads()
         print("Workers joined.")
@@ -1878,15 +2001,16 @@ class VideoProcessor(QObject):
 
             # 8. Final timing
             self.end_time = time.perf_counter()
-            processing_time = self.end_time - self.start_time
+            processing_time_sec = self.end_time - self.start_time
+            formatted_duration = self._format_duration(processing_time_sec) # Use the new helper
 
             if concatenation_successful:
                 print(
-                    f"Total segment processing and concatenation finished in {processing_time:.2f} seconds"
+                    f"Total segment processing and concatenation finished in {formatted_duration}"
                 )
             else:
                 print(
-                    f"Segment processing/concatenation failed after {processing_time:.2f} seconds."
+                    f"Segment processing/concatenation failed after {formatted_duration}."
                 )
 
             # 9. Final cleanup and UI reset
@@ -1945,12 +2069,10 @@ class VideoProcessor(QObject):
                 fpsdiv = fpscust / fpsorig
         if fpsdiv < 0.5:
             fpsdiv = 0.5 # Don't allow less than 0.5x speed
-            
+  
         args = [
             "ffplay",
             "-vn", # No video
-            "-ss", # Seek to start time
-            str(seek_time),
             "-nodisp",
             "-stats",
             "-loglevel",
@@ -1959,12 +2081,48 @@ class VideoProcessor(QObject):
             "audio",
             "-af",
             f"volume={self.main_window.control['LiveSoundVolumeDecimalSlider']}, atempo={fpsdiv}",
+            "-i", # Specify the input...
             self.media_path,
+            "-ss", # ... THEN specify the seek time for a precise seek
+            str(seek_time),
         ]
 
         self.ffplay_sound_sp = subprocess.Popen(
             args, stdout=subprocess.PIPE, stderr=subprocess.STDOUT
         )
+
+    def _start_synchronized_playback(self):
+        """
+        Starts the playback components (audio and video) in a synchronized manner.
+        Called once the preroll buffer is filled.
+        """
+        # 1. Start audio (ffplay) *first*
+        if self.main_window.liveSoundButton.isChecked() and not self.recording:
+            print("Starting audio subprocess (ffplay)...")
+            self.start_live_sound()
+            
+            # 2. Start video (metronome) AFTER a delay
+            # This is to allow ffplay time to initialize.
+            AUDIO_STARTUP_LATENCY_MS = self.main_window.control.get("LiveSoundDelaySlider")
+            print(f"Waiting {AUDIO_STARTUP_LATENCY_MS}ms for audio to initialize...")
+            
+            # Use the function with the clarified name
+            QTimer.singleShot(AUDIO_STARTUP_LATENCY_MS, self._start_video_metronome_after_audio_delay)
+        
+        else:
+            # No audio, start video immediately
+            print("No audio. Starting video metronome immediately.")
+            self._start_metronome(self.fps, is_first_start=True)
+
+    def _start_video_metronome_after_audio_delay(self):
+        """
+        Slot for QTimer.singleShot.
+        Starts the video metronome *after* the audio initialization delay has passed.
+        """
+        if not self.processing: # Check in case the user stopped processing
+            return
+        print("Audio startup delay complete. Starting video metronome.")
+        self._start_metronome(self.fps, is_first_start=True)
 
     def stop_live_sound(self):
         """Stops the ffplay audio subprocess."""
@@ -2023,11 +2181,18 @@ class VideoProcessor(QObject):
         with self.frame_queue.mutex:
             self.frame_queue.queue.clear()
         
-        # 3. Start Metronome
+        # 3. Start Metronome ET Feeder
         fps = self.media_capture.get(cv2.CAP_PROP_FPS)
         if fps <= 0:
             fps = 30
         self.fps = fps
         
         print(f"Webcam target FPS: {self.fps}")
-        self._start_metronome(self.fps, self.process_next_webcam_frame, is_first_start=True)
+
+        # Start the feeder thread
+        print("Starting feeder thread (Mode: webcam)...")
+        self.feeder_thread = threading.Thread(target=self._feeder_loop, daemon=True)
+        self.feeder_thread.start()
+        
+        # Start the display metronome
+        self._start_metronome(self.fps, is_first_start=True)
