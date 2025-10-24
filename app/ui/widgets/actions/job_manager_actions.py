@@ -236,11 +236,25 @@ def load_job_workspace(main_window: "MainWindow", job_name: str):
     step_idx += 1
     progress_dialog.update_progress(step_idx, total_steps, steps[step_idx - 1])
     target_medias_data = data.get("target_medias_data", [])
+
+    # Validate paths before loading
+    valid_target_medias_data = []
+    for m in target_medias_data:
+        # Check if the path exists before adding it
+        if "media_path" in m and os.path.exists(m["media_path"]):
+            valid_target_medias_data.append(m)
+        else:
+            # Log a warning if the path is not found (avoids crash)
+            print(
+                f"[WARN] Target media path not found, skipping: {m.get('media_path')}"
+            )
+
     target_medias_files_list, target_media_ids = (
-        zip(*[(m["media_path"], m["media_id"]) for m in target_medias_data])
-        if target_medias_data
+        zip(*[(m["media_path"], m["media_id"]) for m in valid_target_medias_data])
+        if valid_target_medias_data
         else ([], [])
     )
+
     main_window.video_loader_worker = ui_workers.TargetMediaLoaderWorker(
         main_window=main_window,
         folder_name=False,
@@ -261,11 +275,30 @@ def load_job_workspace(main_window: "MainWindow", job_name: str):
     step_idx += 1
     progress_dialog.update_progress(step_idx, total_steps, steps[step_idx - 1])
     input_faces_data = data.get("input_faces_data", {})
+
+    # Validate paths before loading
+    valid_input_faces_data = {}
+    for face_id, f in input_faces_data.items():
+        # Check if the path exists before adding it
+        if "media_path" in f and os.path.exists(f["media_path"]):
+            valid_input_faces_data[face_id] = f
+        else:
+            # Log a warning if the path is not found (avoids crash)
+            print(
+                f"[WARN] Input face media path not found, skipping: {f.get('media_path')}"
+            )
+
     input_media_paths, input_face_ids = (
-        zip(*[(f["media_path"], face_id) for face_id, f in input_faces_data.items()])
-        if input_faces_data
+        zip(
+            *[
+                (f["media_path"], face_id)
+                for face_id, f in valid_input_faces_data.items()
+            ]
+        )
+        if valid_input_faces_data
         else ([], [])
     )
+
     main_window.input_faces_loader_worker = ui_workers.InputFacesLoaderWorker(
         main_window=main_window,
         folder_name=False,
