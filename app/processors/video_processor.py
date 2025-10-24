@@ -666,17 +666,22 @@ class VideoProcessor(QObject):
             print("Recording mode: Starting metronome immediately.")
             self._start_metronome(9999.0, is_first_start=True)
         else:
-            # Playback: start the preroll monitor
-            print(f"Playback mode: Waiting for preroll buffer (target: {self.preroll_target} frames)...")
-            
-            # Ensure the connection is clean (avoids multiple connections)
-            try:
-                self.preroll_timer.timeout.disconnect(self._check_preroll_and_start_playback)
-            except RuntimeError:
-                pass # Disconnection failed, which is normal the first time
-            
-            self.preroll_timer.timeout.connect(self._check_preroll_and_start_playback)
-            self.preroll_timer.start(100)
+            if self.main_window.control.get("VideoPlaybackBufferingToggle", False):
+                # Playback: start the preroll monitor
+                print(f"Playback mode: Waiting for preroll buffer (target: {self.preroll_target} frames)...")
+                
+                # Ensure the connection is clean (avoids multiple connections)
+                try:
+                    self.preroll_timer.timeout.disconnect(self._check_preroll_and_start_playback)
+                except RuntimeError:
+                    pass # Disconnection failed, which is normal the first time
+                
+                self.preroll_timer.timeout.connect(self._check_preroll_and_start_playback)
+                self.preroll_timer.start(100)
+            else:
+                # Recording: start the display metronome immediately
+                print("Playback mode.")
+                self._start_synchronized_playback()
 
     def start_frame_worker(self, frame_number, frame, is_single_frame=False):
         """Starts a FrameWorker to process the given frame."""

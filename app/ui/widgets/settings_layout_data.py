@@ -72,6 +72,12 @@ SETTINGS_LAYOUT_DATA: LayoutDictTypes = {
             "step": 1,
             "help": "Set the maximum FPS of the video when playing",
         },
+        "VideoPlaybackBufferingToggle": {
+            "level": 1,
+            "label": "Playback Buffering",
+            "default": False,
+            "help": "Activates buffering for smoother video playback.",
+        },
         "LiveSoundVolumeDecimalSlider": {
             "level": 1,
             "label": "Audio Playback Volume",
