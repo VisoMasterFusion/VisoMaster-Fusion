@@ -1339,9 +1339,13 @@ class VideoProcessor(QObject):
             )
 
             output_dir = os.path.dirname(final_file_path)
-            if not os.path.exists(output_dir):
+            
+            # Check if output_dir is not an empty string before creating it
+            # This prevents [WinError 3] if the path is just a filename.
+            if output_dir and not os.path.exists(output_dir):
                 try:
-                    os.makedirs(output_dir)
+                    # Added exist_ok=True for thread-safety
+                    os.makedirs(output_dir, exist_ok=True)
                     print(f"Created output directory: {output_dir}")
                 except OSError as e:
                     print(
@@ -1887,9 +1891,13 @@ class VideoProcessor(QObject):
         )
 
         output_dir = os.path.dirname(final_file_path)
-        if not os.path.exists(output_dir):
+
+        # Check if output_dir is not an empty string before creating it
+        # This prevents [WinError 3] if the path is just a filename.
+        if output_dir and not os.path.exists(output_dir):
             try:
-                os.makedirs(output_dir)
+                # Added exist_ok=True for thread-safety
+                os.makedirs(output_dir, exist_ok=True)
                 print(f"Created output directory: {output_dir}")
             except OSError as e:
                 print(f"[ERROR] Failed to create output directory {output_dir}: {e}")
