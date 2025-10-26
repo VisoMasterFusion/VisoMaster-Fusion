@@ -4,7 +4,7 @@ setlocal EnableDelayedExpansion
 :: --- Basic Setup ---
 :: Define repo details
 set "REPO_URL=https://github.com/VisoMasterFusion/VisoMaster-Fusion.git"
-set "BRANCH=fusion"
+set "BRANCH=main"
 
 :: Extract repo name from URL
 for %%a in ("%REPO_URL%") do set "REPO_NAME=%%~na"
