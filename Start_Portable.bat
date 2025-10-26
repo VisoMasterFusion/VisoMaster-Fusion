@@ -3,7 +3,7 @@ setlocal EnableDelayedExpansion
 
 :: --- Basic Setup ---
 :: Define repo details
-set "REPO_URL=https://github.com/Glat0s/VisoMaster.git"
+set "REPO_URL=https://github.com/VisoMasterFusion/VisoMaster-Fusion.git"
 set "BRANCH=fusion"
 
 :: Extract repo name from URL
