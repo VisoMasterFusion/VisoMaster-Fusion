@@ -1,6 +1,6 @@
-# VisoMaster-Fusion mod
+# VisoMaster Fusion
 
-### Visomaster a powerful yet easy-to-use tool for face swapping and editing in images and videos. It utilizes AI to produce natural-looking results with minimal effort, making it ideal for both casual users and professionals.
+### Visomaster Fusion is a powerful yet easy-to-use tool for face swapping and editing in images and videos. It utilizes AI to produce natural-looking results with minimal effort, making it ideal for both casual users and professionals.
 
 This version integrates major features developed by the community to create a single, enhanced application. It is built upon the incredible work of the original VisoMaster developers, **@argenspin** and **@Alucard24**.
 
@@ -9,7 +9,7 @@ This version integrates major features developed by the community to create a si
 
 ## Fusion Features
 
-VisoMaster-Fusion includes all the great features of the original plus major enhancements from community mods:
+VisoMaster Fusion includes all the great features of the original plus major enhancements from community mods:
 
 -   **Job Manager & Batch Processing**: A complete UI to save workspace configurations as "jobs" and run them sequentially for unattended batch processing. Features segmented recording to combine multiple clips into a single output.
 -   **VR180 Mode**: Process and swap faces in hemispherical 180-degree VR videos, with optimizations for memory and speed.
@@ -56,7 +56,7 @@ VisoMaster-Fusion includes all the great features of the original plus major enh
 ---
 
 ### **Prerequisites**
-- Portable Version: No pre-requirements
+- Portable Version: No pre-requirements - Minimum Nvidia driver version: >=576.57
 - Non-Portable Version:
     -   **Git** ([Download](https://git-scm.com/downloads))
     -   **Miniconda** ([Download](https://www.anaconda.com/download))
