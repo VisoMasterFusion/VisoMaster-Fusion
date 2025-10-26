@@ -94,9 +94,10 @@ def toggle_virtualcam(main_window: "MainWindow", toggle_value=False):
 
 
 def enable_virtualcam(main_window: "MainWindow", backend):
-    print("backend", backend)
-    main_window.video_processor.enable_virtualcam(backend=backend)
-
+    # Only attempt to enable if the main toggle is actually checked
+    if main_window.control.get("SendVirtCamFramesEnableToggle", False):
+        print("Backend: ", backend)
+        main_window.video_processor.enable_virtualcam(backend=backend)
 
 def handle_denoiser_state_change(
     main_window: "MainWindow",

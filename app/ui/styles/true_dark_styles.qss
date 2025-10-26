@@ -433,8 +433,7 @@ QTabBar::tab:!selected {
 
 /* Add more widget styles as needed */
 
+/* Frame borders */
 QFrame, QListWidget {
-    background-color: #202020; /* Fond foncé */
-    border: 1px solid #363636;  /* Bordure foncée par défaut */
-    border-radius: 4px;
+	background-color: transparent;
 }

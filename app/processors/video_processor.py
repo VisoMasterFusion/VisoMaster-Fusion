@@ -49,6 +49,8 @@ class VideoProcessor(QObject):
     webcam_frame_processed_signal = Signal(QPixmap, numpy.ndarray)
     single_frame_processed_signal = Signal(int, QPixmap, numpy.ndarray)
     processing_started_signal = Signal()  # Unified signal for any processing start
+    processing_stopped_signal = Signal() # Unified signal for any processing stop
+    processing_heartbeat_signal = Signal() # Emits periodically to show liveness
 
     def __init__(self, main_window: "MainWindow", num_threads=2):
         super().__init__()
@@ -92,6 +94,7 @@ class VideoProcessor(QObject):
         self.preroll_timer = QTimer(self)
         self.feeder_thread: threading.Thread | None = None  # The dedicated thread that reads frames and "feeds" the workers
         self.playback_started: bool = False
+        self.heartbeat_frame_counter: int = 0 # Counter for heartbeat signal
 
         # --- Performance Timing ---
         self.start_time = 0.0
@@ -202,6 +205,7 @@ class VideoProcessor(QObject):
 
         # 4. Start the metronome loop
         self.last_display_schedule_time_sec = time.perf_counter()
+        self.heartbeat_frame_counter = 0 # Reset heartbeat counter
         self.display_next_frame() # Start the loop
 
     def _check_preroll_and_start_playback(self):
@@ -278,9 +282,12 @@ class VideoProcessor(QObject):
                         time.sleep(0.01) # Wait for the segment to be configured
                         continue
                     if self.current_frame_number > self.current_segment_end_frame:
-                        # This segment is finished, wait for the stop signal (from stop_current_segment)
-                        time.sleep(0.01)
-                        continue
+                        # This segment is finished, the feeder's job is done.
+                        # We break the loop to allow the thread to terminate cleanly.
+                        # Previously, this was a time.sleep(0.01) loop, which
+                        # caused the thread to become an orphan.
+                        print(f"Feeder: Reached end of segment {self.current_segment_index + 1}. Stopping feed.")
+                        break 
                 else: # Standard mode
                     if self.current_frame_number > self.max_frame_number:
                         break  # End of video
@@ -437,6 +444,13 @@ class VideoProcessor(QObject):
         
         # --- 7. Frame is ready: Process and Display ---
         self.current_frame = frame  # Update current frame state
+
+        # Emit a signal every 500 frames to notify JobProcessor we are still alive
+        if self.file_type != "webcam": # Don't spam on webcam
+            self.heartbeat_frame_counter += 1
+            if self.heartbeat_frame_counter >= 500:
+                self.heartbeat_frame_counter = 0
+                self.processing_heartbeat_signal.emit()
 
         # Send to Virtual Cam
         self.send_frame_to_virtualcam(frame)
@@ -916,6 +930,9 @@ class VideoProcessor(QObject):
         # Log the summary
         self._log_processing_summary(processing_time_sec, num_frames_processed)
 
+        # Emit signal to notify other components (like JobProcessor) that processing has ended
+        self.processing_stopped_signal.emit()
+        
         return True  # Processing was stopped
 
     def join_and_clear_threads(self):
@@ -1508,10 +1525,21 @@ class VideoProcessor(QObject):
             except Exception:
                 pass
 
+        # Emit signal to notify JobProcessor that processing has finished SUCCESSFULLY
+        print("Emitting processing_stopped_signal (default-style success).")
+        self.processing_stopped_signal.emit()
+
     # --- Virtual Camera Methods ---
 
     def enable_virtualcam(self, backend=False):
         """Starts the pyvirtualcam device."""
+
+        # Guard: Only run if the user has actually enabled the virtual cam
+        if not self.main_window.control.get("SendVirtCamFramesEnableToggle", False):
+            # Ensure it's also disabled if the toggle is off
+            self.disable_virtualcam()
+            return
+
         if not self.media_capture and not isinstance(self.current_frame, numpy.ndarray):
             print(
                 "[WARN] Cannot enable virtual camera without media loaded."
@@ -1528,7 +1556,7 @@ class VideoProcessor(QObject):
             frame_height, frame_width, _ = self.current_frame.shape
         elif self.media_capture and self.media_capture.isOpened():
             frame_height = int(self.media_capture.get(cv2.CAP_PROP_FRAME_HEIGHT))
-            frame_width = int(self.media_capture.get(cv2.CAP_PROP_FRAME_WIDTH))
+            frame_width = int(self.media_capture.get(cv2.CAP_PROP_WIDTH))
             if current_fps == 30:
                 current_fps = (
                     self.media_capture.get(cv2.CAP_PROP_FPS)
@@ -1758,12 +1786,22 @@ class VideoProcessor(QObject):
         # 1. Stop timers
         self.gpu_memory_update_timer.stop()
 
-        # 2a. Wait for the feeder thread (ADDED)
+        # 2a. Wait for the feeder thread
         print(f"Waiting for feeder thread from segment {segment_num}...")
         if self.feeder_thread and self.feeder_thread.is_alive():
             self.feeder_thread.join(timeout=2.0)
+            
+            # Add a check to see if the join timed out
+            if self.feeder_thread.is_alive():
+                print(f"[WARN] Feeder thread from segment {segment_num} did not join gracefully.")
+            else:
+                print("Feeder thread joined.")
+            
+        else:
+            # This case is normal if the feeder finished its work very quickly
+            print("Feeder thread was already finished.")
+
         self.feeder_thread = None
-        print("Feeder thread joined.")
         
         # 2b. Wait for workers
         print(f"Waiting for workers from segment {segment_num}...")
@@ -2048,6 +2086,10 @@ class VideoProcessor(QObject):
                     list_view_actions.open_output_media_folder(self.main_window)
                 except Exception:
                     pass
+                    
+            # Emit signal to notify JobProcessor that processing has finished SUCCESSFULLY
+            print("Emitting processing_stopped_signal (multi-segment success).")
+            self.processing_stopped_signal.emit()
 
     def _cleanup_temp_dir(self):
         """Safely removes the temporary directory used for segments."""

@@ -162,29 +162,18 @@ def find_target_faces(main_window: "MainWindow"):
                             main_window, face_img
                         )
 
+                        # Only store the embedding for the currently selected recognition model
                         embedding_store: Dict[str, numpy.ndarray] = {}
-                        # Ottenere i valori di 'options'
-                        options = SETTINGS_LAYOUT_DATA["Detectors"][
-                            "RecognitionModelSelection"
-                        ]["options"]
-                        for option in options:
-                            if option != control["RecognitionModelSelection"]:
-                                target_emb, _ = (
-                                    main_window.models_processor.run_recognize_direct(
-                                        face[3],
-                                        face[0],
-                                        control["SimilarityTypeSelection"],
-                                        option,
-                                    )
-                                )
-                                embedding_store[option] = target_emb
-                            else:
-                                embedding_store[
-                                    control["RecognitionModelSelection"]
-                                ] = face[1]
+                        selected_recognition_model = control["RecognitionModelSelection"]
+
+                        # The embedding for the selected model was already calculated
+                        # face[1] holds the embedding calculated using control["RecognitionModelSelection"]
+                        embedding_store[selected_recognition_model] = face[1]
+                        # --- MODIFICATION END ---
 
                         face_id = str(uuid.uuid1().int)
 
+                        # Pass the embedding_store containing only the selected model's embedding
                         list_view_actions.add_media_thumbnail_to_target_faces_list(
                             main_window, face_img, embedding_store, pixmap, face_id
                         )

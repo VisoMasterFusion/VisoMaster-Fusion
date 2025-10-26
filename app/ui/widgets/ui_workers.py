@@ -178,55 +178,54 @@ class InputFacesLoaderWorker(qtc.QThread):
         self.pre_load_detection_recognition_models()
 
     def pre_load_detection_recognition_models(self):
+        """
+        Pre-loads necessary detection, landmark (if enabled), and the *selected* recognition model.
+        Tracks models loaded specifically for this worker to request unloading later.
+        """
         control = self.main_window.control.copy()
-        detect_model = detection_model_mapping[control["DetectorModelSelection"]]
-        landmark_detect_model = landmark_model_mapping[
-            control["LandmarkDetectModelSelection"]
-        ]
         models_processor = self.main_window.models_processor
-        # Track which models are being loaded for this specific task
-        models_to_load = []
-        if self.main_window.video_processor.processing:
-            was_playing = True
-            self.main_window.buttonMediaPlay.click()
-        else:
-            was_playing = False
-        if not models_processor.models[detect_model]:
-            models_processor.models[detect_model] = models_processor.load_model(
-                detect_model
-            )
-            models_to_load.append(detect_model)
-        if (
-            not models_processor.models[landmark_detect_model]
-            and control["LandmarkDetectToggle"]
-        ):
-            models_processor.models[landmark_detect_model] = (
-                models_processor.load_model(landmark_detect_model)
-            )
-            models_to_load.append(landmark_detect_model)
-        for recognition_model in [
-            "Inswapper128ArcFace",
-            "SimSwapArcFace",
-            "GhostArcFace",
-            "CSCSArcFace",
-            "CSCSIDArcFace",
-            "CanonSwapArcFace",
-        ]:
-            if not models_processor.models[recognition_model]:
-                models_processor.models[recognition_model] = (
-                    models_processor.load_model(recognition_model)
-                )
-                models_to_load.append(recognition_model)
-        if was_playing:
-            self.main_window.buttonMediaPlay.click()
+        self.models_to_unload = [] # Reset models to unload for this run
 
-        for model_name in models_to_load:
-            models_processor.models[model_name] = models_processor.load_model(
-                model_name
-            )
-            self.models_to_unload.append(
-                model_name
-            )  # Add to list of models to unload later
+        # --- Handle Detection Model ---
+        detect_model_name = detection_model_mapping.get(control["DetectorModelSelection"])
+        if detect_model_name and not models_processor.models.get(detect_model_name):
+            print(f"InputFacesLoaderWorker: Loading detection model: {detect_model_name}")
+            models_processor.models[detect_model_name] = models_processor.load_model(detect_model_name)
+            self.models_to_unload.append(detect_model_name)
+
+        # --- Handle Landmark Model (if enabled) ---
+        if control.get("LandmarkDetectToggle", False):
+            landmark_model_name = landmark_model_mapping.get(control["LandmarkDetectModelSelection"])
+            if landmark_model_name and not models_processor.models.get(landmark_model_name):
+                print(f"InputFacesLoaderWorker: Loading landmark model: {landmark_model_name}")
+                models_processor.models[landmark_model_name] = models_processor.load_model(landmark_model_name)
+                self.models_to_unload.append(landmark_model_name)
+
+        # --- Handle Selected Recognition Model ---
+        selected_recognition_model = control.get("RecognitionModelSelection")
+        if selected_recognition_model:
+            # Special case for CSCS which uses two models
+            models_to_check = [selected_recognition_model]
+            if selected_recognition_model == "CSCSArcFace":
+                models_to_check.append("CSCSIDArcFace")
+
+            for model_name in models_to_check:
+                if not models_processor.models.get(model_name):
+                    print(f"InputFacesLoaderWorker: Loading selected recognition model: {model_name}")
+                    models_processor.models[model_name] = models_processor.load_model(model_name)
+                    self.models_to_unload.append(model_name)
+        else:
+            print("[WARN] InputFacesLoaderWorker: No recognition model selected in controls.")
+
+        # Temporarily stop playback if it was running, to free VRAM for loading
+        self.was_playing = self.main_window.video_processor.processing
+        if self.was_playing:
+            print("InputFacesLoaderWorker: Temporarily stopping playback for model loading...")
+            # Use a blocking call or wait mechanism if needed, click might be async
+            self.main_window.buttonMediaPlay.setChecked(False) # More direct than click()
+            # Allow UI events to process to ensure playback stops
+            QtWidgets.QApplication.processEvents()
+            time.sleep(0.1) # Small delay to ensure state change propagates
 
     def run(self):
         if self.folder_name or self.files_list:
@@ -297,52 +296,50 @@ class InputFacesLoaderWorker(qtc.QThread):
             except IndexError:
                 continue
             if face_kps.any():
+                # Calculate embedding ONLY for the selected recognition model
+                selected_recognition_model = control["RecognitionModelSelection"]
                 face_emb, cropped_img = (
                     self.main_window.models_processor.run_recognize_direct(
                         img,
                         face_kps,
                         control["SimilarityTypeSelection"],
-                        control["RecognitionModelSelection"],
+                        selected_recognition_model, # Use selected model
                     )
                 )
-                cropped_img = cropped_img.cpu().numpy()
-                cropped_img = cropped_img[
-                    ..., ::-1
-                ]  # Swap the channels from RGB to BGR
-                face_img = numpy.ascontiguousarray(cropped_img)
-                # crop = cv2.resize(face[2].cpu().numpy(), (82, 82))
+
+                # Prepare face_img (BGR numpy array) and pixmap
+                cropped_img_np = cropped_img.cpu().numpy()
+                # Swap channels from RGB to BGR for pixmap creation
+                face_img = numpy.ascontiguousarray(cropped_img_np[..., ::-1])
                 pixmap = common_widget_actions.get_pixmap_from_frame(
                     self.main_window, face_img
                 )
 
+                # Store only the calculated embedding
                 embedding_store: Dict[str, numpy.ndarray] = {}
-                # Ottenere i valori di 'options'
-                options = SETTINGS_LAYOUT_DATA["Detectors"][
-                    "RecognitionModelSelection"
-                ]["options"]
-                for option in options:
-                    if option != control["RecognitionModelSelection"]:
-                        target_emb, _ = (
-                            self.main_window.models_processor.run_recognize_direct(
-                                img,
-                                face_kps,
-                                control["SimilarityTypeSelection"],
-                                option,
-                            )
-                        )
-                        embedding_store[option] = target_emb
-                    else:
-                        embedding_store[control["RecognitionModelSelection"]] = face_emb
+                embedding_store[selected_recognition_model] = face_emb
+                # --- MODIFICATION END ---
+
                 if not self.face_ids:
                     face_id = str(uuid.uuid1().int)
                 else:
-                    face_id = self.face_ids[i]
+                    face_id = self.face_ids[i] # Use pre-assigned ID if loading workspace
+
+                # Emit signal with the single embedding
                 self.thumbnail_ready.emit(
                     image_file_path, face_img, embedding_store, pixmap, face_id
                 )
-                i += 1
+                i += 1 # Increment index
+            # else: # Handle case where no face keypoints were found if needed
+            #     print(f"Warning: No valid keypoints found for {image_file_path}")
+
+        # Ensure finished signal is emitted even if loop finishes early or runs zero times
+        if not self._running:
+             print("InputFacesLoaderWorker: Stopped during face loading.")
+
+        # Moved cache clearing and finished signal outside the loop
         torch.cuda.empty_cache()
-        self.finished.emit()
+        self.finished.emit() # Emit finished signal *after* the loop completes or stops
 
     def stop(self):
         """Stop the thread by setting the running flag to False."""

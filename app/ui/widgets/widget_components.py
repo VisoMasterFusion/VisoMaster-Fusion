@@ -12,6 +12,7 @@ from PySide6 import QtWidgets, QtGui, QtCore
 from PySide6.QtWidgets import QPushButton
 import cv2
 import numpy as np
+import torch
 
 import app.ui.widgets.actions.common_actions as common_widget_actions
 import app.ui.widgets.actions.layout_actions as layout_actions
@@ -474,7 +475,90 @@ class TargetFaceCardButton(CardButton):
         self.embedding_store[embedding_swap_model] = embedding
 
     def get_embedding(self, embedding_swap_model: str) -> np.ndarray:
-        return self.embedding_store.get(embedding_swap_model, np.array([]))
+        """
+        Retrieves the embedding for the specified model.
+        If the embedding for the requested model is not already stored,
+        it calculates, stores, and returns it on the fly.
+        """
+        # Check if the embedding for the requested model is already in the store
+        stored_embedding = self.embedding_store.get(embedding_swap_model)
+        if stored_embedding is not None and stored_embedding.size > 0:
+            return stored_embedding
+        else:
+            # Embedding not found or empty, calculate it now
+            print(f"TargetFaceCardButton {self.face_id}: Calculating missing embedding for model '{embedding_swap_model}'...")
+            if self.cropped_face is None or self.cropped_face.size == 0:
+                print(f"[ERROR] TargetFaceCardButton {self.face_id}: Cannot calculate embedding, cropped_face is missing or empty.")
+                return np.array([]) # Return empty array on error
+
+            try:
+                # Prepare the cropped face image for run_recognize_direct
+                # cropped_face is stored as numpy BGR uint8 
+                # run_recognize_direct expects tensor CHW RGB (uint8 or float) 
+
+                # 1. Convert BGR numpy to RGB numpy
+                face_img_rgb_np = self.cropped_face[..., ::-1]
+
+                # 2. Convert RGB numpy to RGB tensor CHW
+                face_img_rgb_tensor = torch.from_numpy(np.ascontiguousarray(face_img_rgb_np)).to(
+                    self.main_window.models_processor.device
+                )
+                face_img_rgb_tensor_chw = face_img_rgb_tensor.permute(2, 0, 1)
+
+                # 3. Need keypoints (kps_5) on the cropped image (112x112 or similar)
+                #    We don't have the original kps_5 relative to the *full* image here.
+                #    We need to re-detect landmarks *on the cropped face* to get kps_5 for run_recognize_direct.
+                #    However, run_recognize_direct itself *also* performs alignment based on kps.
+                #    Let's try passing None for kps initially, as run_recognize_direct might handle it internally
+                #    by detecting on the aligned 112x112 image it creates.
+                #    If that fails, we'd need to run a landmark detector here first.
+
+                # Alternative: Let's use the internal alignment of run_recognize_direct by providing dummy kps
+                # that represent the corners/center, assuming the cropped_face is already roughly aligned.
+                # We can estimate kps based on the standard template relative to the crop size (e.g., 112x112)
+                # For simplicity and given cropped_face might not be exactly 112x112 initially,
+                # let's try calling run_recognize directly. It internally aligns to 112x112.
+                # We need *some* kps to pass, even if approximate. We'll derive them from the image size.
+
+                h, w, _ = self.cropped_face.shape # Use the actual shape
+                # Approximate 5 keypoints based on typical face proportions within the crop
+                # These are rough estimates assuming centered face in the crop
+                approx_kps_5 = np.array([
+                    [w * 0.3, h * 0.4],  # Left eye
+                    [w * 0.7, h * 0.4],  # Right eye
+                    [w * 0.5, h * 0.55], # Nose
+                    [w * 0.35, h * 0.7], # Left mouth corner
+                    [w * 0.65, h * 0.7]  # Right mouth corner
+                ], dtype=np.float32)
+
+                # Get the similarity type from global controls
+                similarity_type = self.main_window.control.get("SimilarityTypeSelection", "Opal")
+
+                # Call run_recognize_direct (which expects CHW tensor)
+                new_embedding, _ = self.main_window.models_processor.run_recognize_direct(
+                    face_img_rgb_tensor_chw, # Pass the CHW tensor
+                    approx_kps_5, # Pass the estimated keypoints on the crop
+                    similarity_type,
+                    embedding_swap_model # Use the requested model
+                )
+
+                if new_embedding is not None and new_embedding.size > 0:
+                    # Store the newly calculated embedding
+                    self.embedding_store[embedding_swap_model] = new_embedding
+                    print(f"TargetFaceCardButton {self.face_id}: Stored new embedding for '{embedding_swap_model}'.")
+                    return new_embedding
+                else:
+                    print(f"[ERROR] TargetFaceCardButton {self.face_id}: Failed to calculate embedding for '{embedding_swap_model}'.")
+                    # Store an empty array to prevent repeated calculation attempts within the same run
+                    self.embedding_store[embedding_swap_model] = np.array([])
+                    return np.array([])
+
+            except Exception as e:
+                print(f"[ERROR] TargetFaceCardButton {self.face_id}: Exception during on-the-fly embedding calculation for '{embedding_swap_model}': {e}")
+                traceback.print_exc()
+                # Store an empty array to prevent repeated calculation attempts
+                self.embedding_store[embedding_swap_model] = np.array([])
+                return np.array([])
 
     def load_target_face(self):
         main_window = self.main_window
