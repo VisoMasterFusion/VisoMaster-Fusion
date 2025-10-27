@@ -3,9 +3,11 @@ from functools import partial
 from typing import TYPE_CHECKING, Dict
 import traceback
 import os
+import time
 
 import torch
 import numpy
+from PySide6 import QtWidgets
 from PySide6 import QtCore as qtc
 from PySide6.QtGui import QPixmap
 
