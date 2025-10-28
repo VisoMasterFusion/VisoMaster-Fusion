@@ -1233,14 +1233,13 @@ SWAPPER_LAYOUT_DATA: LayoutDictTypes = {
             "help": "Changes the Gamma.",
         },
         "ColorNoiseDecimalSlider": {
-            "level": 2,
+            "level": 1,
             "label": "Noise",
             "min_value": "0.00",
             "max_value": "20.00",
             "default": "0.00",
             "step": 1.00,
             "decimals": 2,
-            "parentToggle": "ColorEnableToggle",
             "help": "Add noise to swapped face.",
         },
         "JPEGCompressionEnableToggle": {
@@ -1508,3 +1507,4 @@ SWAPPER_LAYOUT_DATA: LayoutDictTypes = {
         },
     },
 }
+
