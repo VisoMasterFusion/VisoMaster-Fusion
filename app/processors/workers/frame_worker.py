@@ -552,9 +552,6 @@ class FrameWorker(threading.Thread):
                 bboxes_eq_np = bboxes_eq_np[indices_to_keep]
                 final_box_count = len(indices_to_keep)
 
-                if initial_box_count != final_box_count:
-                    print(f"VR Mode: Filtered {initial_box_count} initial detections down to {final_box_count} distinct faces.")
-
             processed_perspective_crops_details = {}
             analyzed_faces_for_vr = []
             # This loop now iterates over the correctly de-duplicated bounding boxes.
@@ -4328,3 +4325,4 @@ class FrameWorker(threading.Thread):
         contrast = grayscale.std()
         analysis["low_contrast"] = 1.0 - min(contrast.item() * 10, 1.0)
         return analysis
+
