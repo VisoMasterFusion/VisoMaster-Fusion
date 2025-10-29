@@ -1884,6 +1884,7 @@ class FrameWorker(threading.Thread):
                 parameters["FaceFidelityWeightDecimalSlider"],
                 control["DetectorScoreSlider"],
                 kps_ref,
+                slot_id=1,
             )
         else:
             swap_restorecalc = swap.clone()
@@ -2173,6 +2174,7 @@ class FrameWorker(threading.Thread):
                 parameters["FaceFidelityWeight2DecimalSlider"],
                 control["DetectorScoreSlider"],
                 kps_ref,
+                slot_id=2,
             )
 
             if parameters["FaceRestorerAutoEnable2Toggle"]:
@@ -2610,6 +2612,7 @@ class FrameWorker(threading.Thread):
                 parameters["FaceFidelityWeight2DecimalSlider"],
                 control["DetectorScoreSlider"],
                 kps_ref,
+                slot_id=2,
             )
 
             if parameters["FaceRestorerAutoEnable2Toggle"]:

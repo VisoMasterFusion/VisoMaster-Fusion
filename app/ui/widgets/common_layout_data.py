@@ -1,4 +1,5 @@
 from app.helpers.typing_helper import LayoutDictTypes
+import app.ui.widgets.actions.control_actions as control_actions
 
 COMMON_LAYOUT_DATA: LayoutDictTypes = {
     "Face Restorer": {
@@ -7,6 +8,8 @@ COMMON_LAYOUT_DATA: LayoutDictTypes = {
             "label": "Enable Face Restorer",
             "default": False,
             "help": "Enable the use of a face restoration model to improve the quality of the face after swapping.",
+            "exec_function": control_actions.handle_restorer_state_change,
+            "exec_function_args": ["FaceRestorerEnableToggle"],
         },
         "FaceRestorerTypeSelection": {
             "level": 2,
@@ -26,6 +29,8 @@ COMMON_LAYOUT_DATA: LayoutDictTypes = {
             "parentToggle": "FaceRestorerEnableToggle",
             "requiredToggleValue": True,
             "help": "Select the model type for face restoration.",
+            "exec_function": control_actions.handle_model_selection_change,
+            "exec_function_args": ["FaceRestorerTypeSelection"],
         },
         "FaceRestorerDetTypeSelection": {
             "level": 2,
@@ -35,6 +40,8 @@ COMMON_LAYOUT_DATA: LayoutDictTypes = {
             "parentToggle": "FaceRestorerEnableToggle",
             "requiredToggleValue": True,
             "help": "Select the alignment method for restoring the face to its original or blended position.",
+            "exec_function": control_actions.handle_restorer_state_change,
+            "exec_function_args": ["FaceRestorerEnable2Toggle"],
         },
         "FaceFidelityWeightDecimalSlider": {
             "level": 2,
@@ -103,6 +110,8 @@ COMMON_LAYOUT_DATA: LayoutDictTypes = {
             "label": "Enable Face Restorer 2",
             "default": False,
             "help": "Enable the use of a face restoration model to improve the quality of the face after swapping.",
+            "exec_function": control_actions.handle_restorer_state_change,
+            "exec_function_args": ["FaceRestorerEnable2Toggle"],
         },
         "FaceRestorerEnable2EndToggle": {
             "level": 2,
@@ -130,6 +139,8 @@ COMMON_LAYOUT_DATA: LayoutDictTypes = {
             "parentToggle": "FaceRestorerEnable2Toggle",
             "requiredToggleValue": True,
             "help": "Select the model type for face restoration.",
+            "exec_function": control_actions.handle_model_selection_change,
+            "exec_function_args": ["FaceRestorerType2Selection"],
         },
         "FaceRestorerDetType2Selection": {
             "level": 2,

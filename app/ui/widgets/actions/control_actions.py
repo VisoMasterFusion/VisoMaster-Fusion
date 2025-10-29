@@ -174,3 +174,139 @@ def handle_denoiser_state_change(
             main_window.models_processor.unload_kv_extractor()
 
     # Frame refresh is handled by common_actions.update_control after this function returns.
+
+
+def handle_face_mask_state_change(
+    main_window: "MainWindow", new_value: bool, control_name: str
+):
+    """Loads or unloads a specific face mask model based on its toggle state."""
+    model_map = {
+        "OccluderEnableToggle": "Occluder",
+        "DFLXSegEnableToggle": "XSeg",
+        "FaceParserEnableToggle": "FaceParser",
+        "ClipEnableToggle": "RD64ClipText",  # Assumes this is the model for CLIP
+    }
+    model_to_change = model_map.get(control_name)
+    if not model_to_change:
+        return
+
+    if new_value:
+        main_window.models_processor.load_model(model_to_change)
+    else:
+        main_window.models_processor.unload_model(model_to_change)
+
+
+def handle_restorer_state_change(
+    main_window: "MainWindow", new_value: bool, control_name: str
+):
+    """Loads or unloads a specific face restorer model based on its toggle state."""
+    params = main_window.current_widget_parameters
+    model_map = main_window.models_processor.face_restorers.model_map
+
+    slot_id = 0
+    model_type_key = None
+    active_model_attr = None
+
+    if control_name == "FaceRestorerEnableToggle":
+        model_type_key = "FaceRestorerTypeSelection"
+        slot_id = 1
+        active_model_attr = "active_model_slot1"
+    elif control_name == "FaceRestorerEnable2Toggle":
+        model_type_key = "FaceRestorerType2Selection"
+        slot_id = 2
+        active_model_attr = "active_model_slot2"
+
+    if not model_type_key:
+        return
+
+    model_type = params.get(model_type_key)
+    model_to_change = model_map.get(model_type)
+
+    if model_to_change:
+        if new_value:
+            main_window.models_processor.load_model(model_to_change)
+            setattr(
+                main_window.models_processor.face_restorers,
+                active_model_attr,
+                model_to_change,
+            )
+        else:
+            main_window.models_processor.unload_model(model_to_change)
+            setattr(
+                main_window.models_processor.face_restorers, active_model_attr, None
+            )
+
+
+def handle_model_selection_change(
+    main_window: "MainWindow", new_model_type: str, control_name: str
+):
+    """Unloads the old model and loads the new one when a selection dropdown changes."""
+    params = main_window.current_widget_parameters
+    model_map = main_window.models_processor.face_restorers.model_map
+
+    is_enabled = False
+    active_model_attr = None
+    old_model_name = None
+
+    if control_name == "FaceRestorerTypeSelection":
+        is_enabled = params.get("FaceRestorerEnableToggle", False)
+        active_model_attr = "active_model_slot1"
+        old_model_name = main_window.models_processor.face_restorers.active_model_slot1
+    elif control_name == "FaceRestorerType2Selection":
+        is_enabled = params.get("FaceRestorerEnable2Toggle", False)
+        active_model_attr = "active_model_slot2"
+        old_model_name = main_window.models_processor.face_restorers.active_model_slot2
+
+    new_model_name = model_map.get(new_model_type)
+
+    if old_model_name and old_model_name != new_model_name:
+        main_window.models_processor.unload_model(old_model_name)
+
+    if is_enabled and new_model_name:
+        main_window.models_processor.load_model(new_model_name)
+        setattr(
+            main_window.models_processor.face_restorers,
+            active_model_attr,
+            new_model_name,
+        )
+    else:
+        setattr(main_window.models_processor.face_restorers, active_model_attr, None)
+
+
+def handle_landmark_state_change(
+    main_window: "MainWindow", new_value: bool, control_name: str
+):
+    """Unloads landmark models if the main landmark toggle is disabled."""
+    if not new_value:
+        main_window.models_processor.face_landmark_detectors.unload_models()
+
+
+def handle_landmark_model_selection_change(
+    main_window: "MainWindow", new_detect_mode: str, control_name: str
+):
+    """Unloads the old landmark model and loads the new one."""
+    from app.processors.models_data import landmark_model_mapping
+
+    fld_processor = main_window.models_processor.face_landmark_detectors
+    is_enabled = main_window.control.get("LandmarkDetectToggle", False)
+    old_model_name = fld_processor.current_landmark_model
+    new_model_name = landmark_model_mapping.get(new_detect_mode)
+
+    if old_model_name and old_model_name != new_model_name:
+        main_window.models_processor.unload_model(old_model_name)
+        fld_processor.current_landmark_model = None
+
+    if is_enabled and new_model_name:
+        instance = main_window.models_processor.load_model(new_model_name)
+        if instance:
+            fld_processor.current_landmark_model = new_model_name
+
+
+def handle_frame_enhancer_state_change(
+    main_window: "MainWindow", new_value: bool, control_name: str
+):
+    """Loads or unloads frame enhancer models."""
+    if new_value:
+        main_window.models_processor.frame_enhancers.ensure_models_loaded()
+    else:
+        main_window.models_processor.frame_enhancers.unload_models()

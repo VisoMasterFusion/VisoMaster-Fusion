@@ -1,4 +1,4 @@
-from typing import TYPE_CHECKING, Dict
+from typing import TYPE_CHECKING, Dict, Optional
 
 import torch
 import numpy as np
@@ -12,7 +12,8 @@ if TYPE_CHECKING:
 class FaceRestorers:
     def __init__(self, models_processor: "ModelsProcessor"):
         self.models_processor = models_processor
-        self.active_restorer_models = set()
+        self.active_model_slot1: Optional[str] = None
+        self.active_model_slot2: Optional[str] = None
         self.resize_transforms = {
             512: v2.Resize((512, 512), antialias=True),
             256: v2.Resize((256, 256), antialias=False),
@@ -32,54 +33,22 @@ class FaceRestorers:
             "VQFR-v2": "VQFRv2",
         }
 
-    def ensure_models_loaded(self):
-        with self.models_processor.model_lock:
-            for model_name in self.model_map.values():
-                if not self.models_processor.models.get(model_name):
-                    self.models_processor.models[model_name] = (
-                        self.models_processor.load_model(model_name)
-                    )
-            if not self.models_processor.models.get("RefLDMVAEEncoder"):
-                self.models_processor.models["RefLDMVAEEncoder"] = (
-                    self.models_processor.load_model("RefLDMVAEEncoder")
-                )
-            if not self.models_processor.models.get("RefLDMVAEDecoder"):
-                self.models_processor.models["RefLDMVAEDecoder"] = (
-                    self.models_processor.load_model("RefLDMVAEDecoder")
-                )
-
-    def unload_models(self):
-        with self.models_processor.model_lock:
-            for model_name in list(self.active_restorer_models):
-                self.models_processor.unload_model(model_name)
-            self.active_restorer_models.clear()
-
     def _get_model_session(self, model_name: str):
-        """
-        Helper to safely get a model session.
-        Tries to load it if not available, and returns None if loading fails.
-        """
-        # Check if model is already loaded (even if it's None, meaning it failed)
         if model_name in self.models_processor.models:
             ort_session = self.models_processor.models[model_name]
         else:
             ort_session = None
 
         if not ort_session:
-            # Model isn't loaded. Let's try to load it once.
             ort_session = self.models_processor.load_model(model_name)
-            # load_model will set self.models_processor.models[model_name] to None if it fails
 
         if not ort_session:
-            # Loading failed or it was already marked as failed (None).
-            # Warn once and return None.
             if model_name not in self._warned_models:
                 print(
-                    f"WARNING: Model '{model_name}' failed to load or is not available. This operation will be skipped. You could retry loading the model."
+                    f"WARNING: Model '{model_name}' failed to load or is not available. This operation will be skipped."
                 )
                 self._warned_models.add(model_name)
             return None
-
         return ort_session
 
     def apply_facerestorer(
@@ -91,9 +60,27 @@ class FaceRestorers:
         fidelity_weight,
         detect_score,
         target_kps=None,
+        slot_id: int = 1,
     ):
-        if not self.model_map.get(restorer_type):
+        model_name_to_load = self.model_map.get(restorer_type)
+        if not model_name_to_load:
             return swapped_face_upscaled
+
+        # Granular model tracking and unloading
+        if slot_id == 1:
+            if (
+                self.active_model_slot1
+                and self.active_model_slot1 != model_name_to_load
+            ):
+                self.models_processor.unload_model(self.active_model_slot1)
+            self.active_model_slot1 = model_name_to_load
+        elif slot_id == 2:
+            if (
+                self.active_model_slot2
+                and self.active_model_slot2 != model_name_to_load
+            ):
+                self.models_processor.unload_model(self.active_model_slot2)
+            self.active_model_slot2 = model_name_to_load
 
         temp = swapped_face_upscaled
         t512 = self.resize_transforms[512]
@@ -478,7 +465,6 @@ class FaceRestorers:
         if not ort_session:
             return  # Silently skip if model failed to load
 
-        self.active_restorer_models.add(model_name)
         io_binding = ort_session.io_binding()
         io_binding.bind_input(
             name="input",
@@ -509,7 +495,6 @@ class FaceRestorers:
         if not ort_session:
             return  # Silently skip
 
-        self.active_restorer_models.add(model_name)
         io_binding = ort_session.io_binding()
         io_binding.bind_input(
             name="input",
@@ -540,7 +525,6 @@ class FaceRestorers:
         if not ort_session:
             return  # Silently skip
 
-        self.active_restorer_models.add(model_name)
         io_binding = ort_session.io_binding()
         io_binding.bind_input(
             name="input",
@@ -571,7 +555,6 @@ class FaceRestorers:
         if not ort_session:
             return  # Silently skip
 
-        self.active_restorer_models.add(model_name)
         io_binding = ort_session.io_binding()
         io_binding.bind_input(
             name="input",
@@ -602,7 +585,6 @@ class FaceRestorers:
         if not ort_session:
             return  # Silently skip
 
-        self.active_restorer_models.add(model_name)
         io_binding = ort_session.io_binding()
         io_binding.bind_input(
             name="input",
@@ -633,7 +615,6 @@ class FaceRestorers:
         if not ort_session:
             return  # Silently skip
 
-        self.active_restorer_models.add(model_name)
         io_binding = ort_session.io_binding()
         io_binding.bind_input(
             name="input",
@@ -664,7 +645,6 @@ class FaceRestorers:
         if not ort_session:
             return  # Silently skip
 
-        self.active_restorer_models.add(model_name)
         io_binding = ort_session.io_binding()
         io_binding.bind_input(
             name="x",
@@ -697,7 +677,6 @@ class FaceRestorers:
         if not ort_session:
             return  # Silently skip
 
-        self.active_restorer_models.add(model_name)
         assert fidelity_ratio_value >= 0.0 and fidelity_ratio_value <= 1.0, (
             "fidelity_ratio must in range[0,1]"
         )
@@ -746,7 +725,6 @@ class FaceRestorers:
         if not ort_session:
             return  # Silently skip
 
-        self.active_restorer_models.add(model_name)
         io_binding = ort_session.io_binding()
         io_binding.bind_input(
             name="input",

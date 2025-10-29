@@ -1241,6 +1241,7 @@ class ModelsProcessor(QtCore.QObject):
         fidelity_weight,
         detect_score,
         target_kps,
+        slot_id: int = 1,  # ADD slot_id here
     ):
         return self.face_restorers.apply_facerestorer(
             swapped_face_upscaled,
@@ -1250,6 +1251,7 @@ class ModelsProcessor(QtCore.QObject):
             fidelity_weight,
             detect_score,
             target_kps,
+            slot_id=slot_id,
         )
 
     def apply_occlusion(self, img, amount):
