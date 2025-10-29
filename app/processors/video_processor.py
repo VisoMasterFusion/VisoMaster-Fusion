@@ -26,7 +26,6 @@ from app.ui.widgets.actions import layout_actions
 from app.ui.widgets.actions import save_load_actions
 from app.ui.widgets.actions import list_view_actions
 import app.helpers.miscellaneous as misc_helpers
-import warnings
 
 if TYPE_CHECKING:
     from app.ui.main_ui import MainWindow
@@ -49,8 +48,8 @@ class VideoProcessor(QObject):
     webcam_frame_processed_signal = Signal(QPixmap, numpy.ndarray)
     single_frame_processed_signal = Signal(int, QPixmap, numpy.ndarray)
     processing_started_signal = Signal()  # Unified signal for any processing start
-    processing_stopped_signal = Signal() # Unified signal for any processing stop
-    processing_heartbeat_signal = Signal() # Emits periodically to show liveness
+    processing_stopped_signal = Signal()  # Unified signal for any processing stop
+    processing_heartbeat_signal = Signal()  # Emits periodically to show liveness
 
     def __init__(self, main_window: "MainWindow", num_threads=2):
         super().__init__()
@@ -58,26 +57,34 @@ class VideoProcessor(QObject):
 
         # --- Worker Thread Management ---
         self.num_threads = num_threads
-        self.preroll_target = max(20, self.num_threads * 2) # Target number of frames before playback starts
-        self.max_display_buffer_size = self.preroll_target * 4 # Max frames allowed "in flight" (queued + being displayed)
-        self.frame_queue = queue.Queue(maxsize=self.max_display_buffer_size)  # Holds frame numbers for workers
-        self.threads: Dict[int, threading.Thread] = {} # Active worker threads, keyed by frame number
+        self.preroll_target = max(
+            20, self.num_threads * 2
+        )  # Target number of frames before playback starts
+        self.max_display_buffer_size = (
+            self.preroll_target * 4
+        )  # Max frames allowed "in flight" (queued + being displayed)
+        self.frame_queue = queue.Queue(
+            maxsize=self.max_display_buffer_size
+        )  # Holds frame numbers for workers
+        self.threads: Dict[
+            int, threading.Thread
+        ] = {}  # Active worker threads, keyed by frame number
 
         # --- Media State ---
-        self.media_capture: cv2.VideoCapture | None = None # The OpenCV capture object
-        self.file_type = None # "video", "image", or "webcam"
-        self.fps = 0.0 # Target FPS for playback or recording
+        self.media_capture: cv2.VideoCapture | None = None  # The OpenCV capture object
+        self.file_type = None  # "video", "image", or "webcam"
+        self.fps = 0.0  # Target FPS for playback or recording
         self.media_path = None
-        self.current_frame_number = 0 # The *next* frame to be read/processed
+        self.current_frame_number = 0  # The *next* frame to be read/processed
         self.max_frame_number = 0
-        self.current_frame: numpy.ndarray = [] # The most recently read/processed frame
+        self.current_frame: numpy.ndarray = []  # The most recently read/processed frame
 
         # --- Processing State Flags ---
-        self.processing = (
-            False  # MASTER flag: True if playback, recording, or webcam stream is active
-        )
+        self.processing = False  # MASTER flag: True if playback, recording, or webcam stream is active
         self.recording: bool = False  # True if "default-style" recording is active
-        self.is_processing_segments: bool = False  # True if "multi-segment" recording is active
+        self.is_processing_segments: bool = (
+            False  # True if "multi-segment" recording is active
+        )
         self.triggered_by_job_manager: bool = False  # For multi-segment job integration
 
         # --- Subprocesses ---
@@ -85,21 +92,29 @@ class VideoProcessor(QObject):
         self.recording_sp: subprocess.Popen | None = (
             None  # FFmpeg process for both recording styles
         )
-        self.ffplay_sound_sp = None # ffplay process for live audio
+        self.ffplay_sound_sp = None  # ffplay process for live audio
 
         # --- Metronome and Timing ---
-        self.processing_start_frame: int = 0 # The frame number where processing started
-        self.last_display_schedule_time_sec: float = 0.0 # Used by metronome to prevent drift
-        self.target_delay_sec: float = 1.0 / 30.0 # Time between frames for metronome
+        self.processing_start_frame: int = (
+            0  # The frame number where processing started
+        )
+        self.last_display_schedule_time_sec: float = (
+            0.0  # Used by metronome to prevent drift
+        )
+        self.target_delay_sec: float = 1.0 / 30.0  # Time between frames for metronome
         self.preroll_timer = QTimer(self)
-        self.feeder_thread: threading.Thread | None = None  # The dedicated thread that reads frames and "feeds" the workers
+        self.feeder_thread: threading.Thread | None = (
+            None  # The dedicated thread that reads frames and "feeds" the workers
+        )
         self.playback_started: bool = False
-        self.heartbeat_frame_counter: int = 0 # Counter for heartbeat signal
+        self.heartbeat_frame_counter: int = 0  # Counter for heartbeat signal
 
         # --- Performance Timing ---
         self.start_time = 0.0
         self.end_time = 0.0
-        self.playback_display_start_time = 0.0 # Time when frames *actually* started displaying
+        self.playback_display_start_time = (
+            0.0  # Time when frames *actually* started displaying
+        )
         self.play_start_time = 0.0  # Used by default style for audio segmenting
         self.play_end_time = 0.0  # Used by default style for audio segmenting
 
@@ -120,9 +135,11 @@ class VideoProcessor(QObject):
         )
 
         # --- Frame Display/Storage ---
-        self.next_frame_to_display = 0 # The next frame number the UI should display
-        self.frames_to_display: Dict[int, Tuple[QPixmap, numpy.ndarray]] = {} # Processed video frames
-        self.webcam_frames_to_display = queue.Queue() # Processed webcam frames
+        self.next_frame_to_display = 0  # The next frame number the UI should display
+        self.frames_to_display: Dict[
+            int, Tuple[QPixmap, numpy.ndarray]
+        ] = {}  # Processed video frames
+        self.webcam_frames_to_display = queue.Queue()  # Processed webcam frames
 
         # --- Signal Connections ---
         self.frame_processed_signal.connect(self.store_frame_to_display)
@@ -149,7 +166,7 @@ class VideoProcessor(QObject):
                 self.webcam_frames_to_display.get_nowait()
             except queue.Empty:
                 break
-        
+
         # Put the new, latest frame in the now-empty queue
         self.webcam_frames_to_display.put((pixmap, frame))
 
@@ -176,37 +193,39 @@ class VideoProcessor(QObject):
         """
         Unified metronome starter.
         This function configures and starts the metronome loop for all processing types.
-        
+
         :param target_fps: The target FPS. Use > 9000 for max speed (recording).
         :param is_first_start: True if this is the very first start (e.g., not a new segment).
         """
 
         # 2. Determine timer interval
         if target_fps <= 0:
-            target_fps = 30.0 # Fallback
-        
-        if target_fps > 9000: # Convention for "max speed"
+            target_fps = 30.0  # Fallback
+
+        if target_fps > 9000:  # Convention for "max speed"
             log_fps = f"MAX SPEED (for {self.fps:.2f} FPS recording)"
             self.target_delay_sec = 0.005
         else:
             log_fps = f"{target_fps:.2f} FPS"
             self.target_delay_sec = 1.0 / target_fps
-            
+
         print(f"Starting unified metronome (Target: {log_fps}).")
-        
+
         # 3. Start utility timers and emit signal
         self.gpu_memory_update_timer.start(5000)
-        
+
         if is_first_start:
-             self.processing_started_signal.emit() # EMIT UNIFIED SIGNAL
-             # Record the time when the display *actually* starts
-             self.playback_display_start_time = time.perf_counter()
-             print(f"Metronome: Display loop initiated at {self.playback_display_start_time:.3f}s")
+            self.processing_started_signal.emit()  # EMIT UNIFIED SIGNAL
+            # Record the time when the display *actually* starts
+            self.playback_display_start_time = time.perf_counter()
+            print(
+                f"Metronome: Display loop initiated at {self.playback_display_start_time:.3f}s"
+            )
 
         # 4. Start the metronome loop
         self.last_display_schedule_time_sec = time.perf_counter()
-        self.heartbeat_frame_counter = 0 # Reset heartbeat counter
-        self.display_next_frame() # Start the loop
+        self.heartbeat_frame_counter = 0  # Reset heartbeat counter
+        self.display_next_frame()  # Start the loop
 
     def _check_preroll_and_start_playback(self):
         """
@@ -216,21 +235,23 @@ class VideoProcessor(QObject):
         if not self.processing:
             self.preroll_timer.stop()
             return
-        
+
         # If playback has already started, stop this timer and exit.
         if self.playback_started:
             self.preroll_timer.stop()
             return
-            
+
         # Check if the buffer is filled
         if len(self.frames_to_display) >= self.preroll_target:
             self.preroll_timer.stop()
             self.playback_started = True
-            print(f"Preroll buffer filled ({len(self.frames_to_display)} frames). Starting playback components...")
-            
+            print(
+                f"Preroll buffer filled ({len(self.frames_to_display)} frames). Starting playback components..."
+            )
+
             # Call the dedicated playback start function
             self._start_synchronized_playback()
-            
+
         else:
             # Not ready yet, keep waiting
             print(f"Buffering... {len(self.frames_to_display)} / {self.preroll_target}")
@@ -241,20 +262,26 @@ class VideoProcessor(QObject):
         Its only job is to read frames from the source and send them to the workers,
         based on the current processing mode.
         """
-        print(f"Feeder thread started (Mode: {self.file_type}, Segments: {self.is_processing_segments}).")
-        
+        print(
+            f"Feeder thread started (Mode: {self.file_type}, Segments: {self.is_processing_segments})."
+        )
+
         # Determine which feed logic to use
         try:
             if self.file_type == "webcam":
                 self._feed_webcam()
-            elif self.file_type == "video": # Handles both standard video and segment video
+            elif (
+                self.file_type == "video"
+            ):  # Handles both standard video and segment video
                 self._feed_video_loop()
             else:
-                print(f"[ERROR] Feeder thread: Unknown mode (file_type: {self.file_type}).")
-                
+                print(
+                    f"[ERROR] Feeder thread: Unknown mode (file_type: {self.file_type})."
+                )
+
         except Exception as e:
             print(f"[ERROR] Unhandled exception in feeder thread: {e}")
-            
+
         print("Feeder thread finished.")
 
     def _feed_video_loop(self):
@@ -263,73 +290,88 @@ class VideoProcessor(QObject):
         Reads frames as long as processing is active and within the limits
         (full video or current segment).
         """
-        
+
         # Determine the mode at startup
         is_segment_mode = self.is_processing_segments
-        
+
         # Determine the stop condition (control variable)
         # In segment mode, the loop is controlled by 'is_processing_segments'
         # In video mode, the loop is controlled by 'processing'
-        stop_flag_check = lambda: self.is_processing_segments if is_segment_mode else self.processing
+        stop_flag_check = (
+            lambda: self.is_processing_segments if is_segment_mode else self.processing
+        )
 
-        print(f"Feeder: Starting video loop (Mode: {'Segment' if is_segment_mode else 'Standard'}).")
+        print(
+            f"Feeder: Starting video loop (Mode: {'Segment' if is_segment_mode else 'Standard'})."
+        )
 
         while stop_flag_check():
             try:
                 # 1. Mode-specific stop logic
                 if is_segment_mode:
                     if self.current_segment_end_frame is None:
-                        time.sleep(0.01) # Wait for the segment to be configured
+                        time.sleep(0.01)  # Wait for the segment to be configured
                         continue
                     if self.current_frame_number > self.current_segment_end_frame:
                         # This segment is finished, the feeder's job is done.
                         # We break the loop to allow the thread to terminate cleanly.
                         # Previously, this was a time.sleep(0.01) loop, which
                         # caused the thread to become an orphan.
-                        print(f"Feeder: Reached end of segment {self.current_segment_index + 1}. Stopping feed.")
-                        break 
-                else: # Standard mode
+                        print(
+                            f"Feeder: Reached end of segment {self.current_segment_index + 1}. Stopping feed."
+                        )
+                        break
+                else:  # Standard mode
                     if self.current_frame_number > self.max_frame_number:
                         break  # End of video
 
                 # 2. Buffer control (identical for both modes)
-                in_flight_frames = len(self.frames_to_display) + self.frame_queue.qsize()
+                in_flight_frames = (
+                    len(self.frames_to_display) + self.frame_queue.qsize()
+                )
                 if in_flight_frames >= self.max_display_buffer_size:
-                    time.sleep(0.005) # Wait 5ms (buffer full)
-                    continue 
+                    time.sleep(0.005)  # Wait 5ms (buffer full)
+                    continue
 
                 # 3. Frame reading (identical)
                 # In segment mode, self.recording is False, so preview_mode=False
                 # In standard mode, self.recording determines the preview_mode
                 ret, frame_bgr = misc_helpers.read_frame(
-                    self.media_capture, preview_mode=not self.recording and not is_segment_mode
+                    self.media_capture,
+                    preview_mode=not self.recording and not is_segment_mode,
                 )
                 if not ret:
-                    print(f"[ERROR] Feeder: Could not read frame {self.current_frame_number} (Mode: {'Segment' if is_segment_mode else 'Standard'})!")
+                    print(
+                        f"[ERROR] Feeder: Could not read frame {self.current_frame_number} (Mode: {'Segment' if is_segment_mode else 'Standard'})!"
+                    )
                     break  # Stop reading
 
                 # 4. Send to worker (identical)
                 frame_rgb = frame_bgr[..., ::-1]
                 frame_num_to_process = self.current_frame_number
-                
+
                 self.frame_queue.put(frame_num_to_process)
                 self.start_frame_worker(frame_num_to_process, frame_rgb)
                 self.current_frame_number += 1
-                
+
             except Exception as e:
-                print(f"[ERROR] Error in _feed_video_loop (Mode: {'Segment' if is_segment_mode else 'Standard'}): {e}")
+                print(
+                    f"[ERROR] Error in _feed_video_loop (Mode: {'Segment' if is_segment_mode else 'Standard'}): {e}"
+                )
                 if is_segment_mode:
                     self.is_processing_segments = False
                 else:
-                    self.processing = False # Stop the loop
+                    self.processing = False  # Stop the loop
 
     def _feed_webcam(self):
         """Feeder logic for webcam streaming."""
         while self.processing:
             try:
-                in_flight_frames = len(self.webcam_frames_to_display.queue) + self.frame_queue.qsize()
+                in_flight_frames = (
+                    len(self.webcam_frames_to_display.queue) + self.frame_queue.qsize()
+                )
                 if in_flight_frames >= self.max_display_buffer_size:
-                    time.sleep(0.005) # Wait 5ms (buffer full)
+                    time.sleep(0.005)  # Wait 5ms (buffer full)
                     continue
 
                 ret, frame_bgr = misc_helpers.read_frame(
@@ -342,11 +384,11 @@ class VideoProcessor(QObject):
                 frame_rgb = frame_bgr[..., ::-1]
                 self.frame_queue.put(0)  # Frame number is not relevant
                 self.start_frame_worker(0, frame_rgb, is_single_frame=False)
-                
+
             except Exception as e:
                 print(f"[ERROR] Error in _feed_webcam loop: {e}")
                 self.processing = False
-            
+
     def display_next_frame(self):
         """
         The core metronome loop.
@@ -355,7 +397,7 @@ class VideoProcessor(QObject):
         2. Popping the *current* processed frame from the display buffer.
         3. Displaying the frame, sending it to virtualcam, and writing it to FFmpeg.
         """
-        
+
         # 1. Stop check
         if not self.processing:  # General check (if stop_processing was called)
             self.stop_processing()  # Final cleanup
@@ -397,7 +439,7 @@ class VideoProcessor(QObject):
         # not the *current time*.
 
         now_sec = time.perf_counter()
-        
+
         # Calculate next tick time (based on *last* scheduled time to prevent drift)
         self.last_display_schedule_time_sec += self.target_delay_sec
 
@@ -405,12 +447,12 @@ class VideoProcessor(QObject):
         # If processing took too long, the next scheduled time might be in the past.
         if self.last_display_schedule_time_sec < now_sec:
             # We are late. Schedule the next tick "now" (or 1ms in the future)
-            self.last_display_schedule_time_sec = now_sec + 0.001 
+            self.last_display_schedule_time_sec = now_sec + 0.001
 
         # Calculate actual wait time
         wait_time_sec = self.last_display_schedule_time_sec - now_sec
         wait_ms = int(wait_time_sec * 1000)
-        
+
         if wait_ms <= 0:
             wait_ms = 1  # Just in case, wait at least 1ms
 
@@ -418,19 +460,19 @@ class VideoProcessor(QObject):
         # We use singleShot for precision.
         if self.processing:
             QTimer.singleShot(wait_ms, self.display_next_frame)
-            
+
         # --- 6. Get the frame to display (if ready) ---
         pixmap = None
         frame = None
-        frame_number_to_display = 0 # Used for UI update
+        frame_number_to_display = 0  # Used for UI update
 
         if self.file_type == "webcam":
             # --- Webcam Logic (Queue) ---
             if self.webcam_frames_to_display.empty():
-                return # Frame not ready, skip display
+                return  # Frame not ready, skip display
             pixmap, frame = self.webcam_frames_to_display.get()
-            frame_number_to_display = 0 # Not relevant for webcam
-        
+            frame_number_to_display = 0  # Not relevant for webcam
+
         else:
             # --- Video/Image Logic (Dictionary) ---
             frame_number_to_display = self.next_frame_to_display
@@ -441,12 +483,11 @@ class VideoProcessor(QObject):
                 return
             pixmap, frame = self.frames_to_display.pop(frame_number_to_display)
 
-        
         # --- 7. Frame is ready: Process and Display ---
         self.current_frame = frame  # Update current frame state
 
         # Emit a signal every 500 frames to notify JobProcessor we are still alive
-        if self.file_type != "webcam": # Don't spam on webcam
+        if self.file_type != "webcam":  # Don't spam on webcam
             self.heartbeat_frame_counter += 1
             if self.heartbeat_frame_counter >= 500:
                 self.heartbeat_frame_counter = 0
@@ -530,7 +571,7 @@ class VideoProcessor(QObject):
         Start video processing.
         This can be either simple playback OR "default-style" recording.
         """
-        
+
         # 1. Determine target FPS
         if self.main_window.control["VideoPlaybackCustomFpsToggle"]:
             # Custom FPS mode is enabled
@@ -539,8 +580,8 @@ class VideoProcessor(QObject):
             # Custom FPS mode is DISABLED, use original
             self.fps = self.media_capture.get(cv2.CAP_PROP_FPS)
             if self.fps <= 0:
-                self.fps = 30 # Fallback
-        
+                self.fps = 30  # Fallback
+
         # 2. Guards
         if self.processing or self.is_processing_segments:  # Check both flags
             print(
@@ -602,7 +643,7 @@ class VideoProcessor(QObject):
         self.frames_to_display.clear()
         self.threads.clear()
 
-       # --- 7. AUDIO/VIDEO SYNC LOGIC (MODIFIED) ---
+        # --- 7. AUDIO/VIDEO SYNC LOGIC (MODIFIED) ---
 
         # 7a. Get the target frame
         actual_start_frame = self.main_window.videoSeekSlider.value()
@@ -612,9 +653,12 @@ class VideoProcessor(QObject):
         self.media_capture.set(cv2.CAP_PROP_POS_FRAMES, actual_start_frame)
 
         # 7c. Read the frame using the LOCKED helper function ONCE for dimensions.
-        print(f"Sync: Reading frame {actual_start_frame} (for dimensions/state) using locked helper...")
+        print(
+            f"Sync: Reading frame {actual_start_frame} (for dimensions/state) using locked helper..."
+        )
         ret, frame_bgr = misc_helpers.read_frame(
-            self.media_capture, preview_mode=False # Always read full frame for consistency
+            self.media_capture,
+            preview_mode=False,  # Always read full frame for consistency
         )
         print(f"Sync: Initial read complete (Result: {ret}).")
 
@@ -623,47 +667,61 @@ class VideoProcessor(QObject):
             # ... [Fallback logic - attempts to read fallback_frame_to_try] ...
             fallback_frame = int(self.media_capture.get(cv2.CAP_PROP_POS_FRAMES))
             fallback_frame_to_try = max(0, fallback_frame - 1)
-            print(f"[WARN] Failed initial read for frame {actual_start_frame}. Retrying from frame {fallback_frame_to_try}.")
+            print(
+                f"[WARN] Failed initial read for frame {actual_start_frame}. Retrying from frame {fallback_frame_to_try}."
+            )
             if fallback_frame_to_try == actual_start_frame:
-                 print(f"[ERROR] Fallback frame is the same. Cannot proceed.")
-                 self.stop_processing()
-                 return
+                print("[ERROR] Fallback frame is the same. Cannot proceed.")
+                self.stop_processing()
+                return
             self.media_capture.set(cv2.CAP_PROP_POS_FRAMES, fallback_frame_to_try)
-            print(f"Sync: Retrying read for frame {fallback_frame_to_try} using locked helper...")
+            print(
+                f"Sync: Retrying read for frame {fallback_frame_to_try} using locked helper..."
+            )
             ret, frame_bgr = misc_helpers.read_frame(
                 self.media_capture, preview_mode=False
             )
             print(f"Sync: Retry read complete (Result: {ret}).")
             if not ret:
-                print(f"[ERROR] Capture failed definitively near frame {actual_start_frame}.")
+                print(
+                    f"[ERROR] Capture failed definitively near frame {actual_start_frame}."
+                )
                 self.stop_processing()
                 return
-            actual_start_frame = fallback_frame_to_try # Use the frame we successfully read
+            actual_start_frame = (
+                fallback_frame_to_try  # Use the frame we successfully read
+            )
 
         # 7d. Frame is valid - Store for potential FFmpeg init, DO NOT PROCESS SYNC
-        frame_rgb = numpy.ascontiguousarray(
-            frame_bgr[..., ::-1]
-        )  # BGR to RGB
-        self.current_frame = frame_rgb # Store for FFmpeg dimensions
+        frame_rgb = numpy.ascontiguousarray(frame_bgr[..., ::-1])  # BGR to RGB
+        self.current_frame = frame_rgb  # Store for FFmpeg dimensions
 
         # !!! CRITICAL: Reset position AGAIN so the feeder reads this frame too !!!
-        print(f"Sync: Resetting position to frame {actual_start_frame} for feeder thread...")
+        print(
+            f"Sync: Resetting position to frame {actual_start_frame} for feeder thread..."
+        )
         self.media_capture.set(cv2.CAP_PROP_POS_FRAMES, actual_start_frame)
-        print(f"Sync: Position reset complete.")
+        print("Sync: Position reset complete.")
 
         # 7e. REMOVE SYNCHRONOUS PROCESSING STEP
         # The feeder thread will now handle queueing frame 'actual_start_frame'
 
         # 7f. Update counters - Feeder will start reading FROM actual_start_frame
-        self.next_frame_to_display = actual_start_frame # Display starts here once buffered
+        self.next_frame_to_display = (
+            actual_start_frame  # Display starts here once buffered
+        )
         self.processing_start_frame = actual_start_frame
-        self.current_frame_number = actual_start_frame # Feeder reads this frame first when it starts
+        self.current_frame_number = (
+            actual_start_frame  # Feeder reads this frame first when it starts
+        )
 
         # Calculate play_start_time based on the confirmed actual_start_frame
         self.play_start_time = (
             float(actual_start_frame / float(self.fps)) if self.fps > 0 else 0.0
         )
-        print(f"Recording audio start time set to: {self.play_start_time:.3f}s (Frame: {actual_start_frame})")
+        print(
+            f"Recording audio start time set to: {self.play_start_time:.3f}s (Frame: {actual_start_frame})"
+        )
 
         # 7g. Update the slider (if needed, ensure signals blocked/unblocked correctly)
         self.main_window.videoSeekSlider.blockSignals(True)
@@ -682,15 +740,21 @@ class VideoProcessor(QObject):
         else:
             if self.main_window.control.get("VideoPlaybackBufferingToggle", False):
                 # Playback: start the preroll monitor
-                print(f"Playback mode: Waiting for preroll buffer (target: {self.preroll_target} frames)...")
-                
+                print(
+                    f"Playback mode: Waiting for preroll buffer (target: {self.preroll_target} frames)..."
+                )
+
                 # Ensure the connection is clean (avoids multiple connections)
                 try:
-                    self.preroll_timer.timeout.disconnect(self._check_preroll_and_start_playback)
+                    self.preroll_timer.timeout.disconnect(
+                        self._check_preroll_and_start_playback
+                    )
                 except RuntimeError:
-                    pass # Disconnection failed, which is normal the first time
-                
-                self.preroll_timer.timeout.connect(self._check_preroll_and_start_playback)
+                    pass  # Disconnection failed, which is normal the first time
+
+                self.preroll_timer.timeout.connect(
+                    self._check_preroll_and_start_playback
+                )
                 self.preroll_timer.start(100)
             else:
                 # Recording: start the display metronome immediately
@@ -716,9 +780,7 @@ class VideoProcessor(QObject):
         if self.processing or self.is_processing_segments:
             print("[INFO] Stopping active processing to process single frame.")
             if not self.stop_processing():
-                print(
-                    "[WARN] Could not stop active processing cleanly."
-                )
+                print("[WARN] Could not stop active processing cleanly.")
 
         # Set frame number for processing
         if self.file_type == "video":
@@ -814,12 +876,12 @@ class VideoProcessor(QObject):
         # 3a. Wait for the feeder thread (ADDED)
         print("Waiting for feeder thread to complete...")
         if self.feeder_thread and self.feeder_thread.is_alive():
-            self.feeder_thread.join(timeout=2.0) # Wait 2 seconds
+            self.feeder_thread.join(timeout=2.0)  # Wait 2 seconds
             if self.feeder_thread.is_alive():
                 print("[WARN] Feeder thread did not join gracefully.")
         self.feeder_thread = None
         print("Feeder thread joined.")
-        
+
         # 3b. Wait for worker threads
         print("Waiting for worker threads to complete...")
         self.join_and_clear_threads()
@@ -871,7 +933,7 @@ class VideoProcessor(QObject):
         self.current_segment_index = -1
         self.temp_segment_files = []
         self.current_segment_end_frame = None
-        self.playback_display_start_time = 0.0 # Reset display start time
+        self.playback_display_start_time = 0.0  # Reset display start time
 
         # 8. Reset capture position
         if self.file_type == "video" and self.media_capture:
@@ -917,22 +979,24 @@ class VideoProcessor(QObject):
         # 11. Final Timing and Logging
         self.end_time = time.perf_counter()
         processing_time_sec = self.end_time - self.start_time
-        
+
         try:
             # Calculate processed frames
-            start_frame_num = getattr(self, 'processing_start_frame', end_frame_for_calc)
+            start_frame_num = getattr(
+                self, "processing_start_frame", end_frame_for_calc
+            )
             num_frames_processed = end_frame_for_calc - start_frame_num
             if num_frames_processed < 0:
                 num_frames_processed = 0
         except Exception:
-            num_frames_processed = 0 # Safety fallback
-        
+            num_frames_processed = 0  # Safety fallback
+
         # Log the summary
         self._log_processing_summary(processing_time_sec, num_frames_processed)
 
         # Emit signal to notify other components (like JobProcessor) that processing has ended
         self.processing_stopped_signal.emit()
-        
+
         return True  # Processing was stopped
 
     def join_and_clear_threads(self):
@@ -953,37 +1017,39 @@ class VideoProcessor(QObject):
     def _format_duration(self, total_seconds: float) -> str:
         """
         Converts a duration in seconds to a human-readable string (e.g., 1h 15m 30.55s).
-        
+
         :param total_seconds: The duration in seconds.
         :return: A formatted string.
         """
         try:
             total_seconds = float(total_seconds)
-            
+
             hours = int(total_seconds // 3600)
             minutes = int((total_seconds % 3600) // 60)
             seconds = total_seconds % 60
-            
+
             parts = []
             if hours > 0:
                 parts.append(f"{hours}h")
             if minutes > 0 or (hours > 0 and seconds == 0):
                 parts.append(f"{minutes}m")
-            
+
             # Always show seconds
             if hours > 0 or minutes > 0:
                 # Show 2 decimal places if we also show hours/minutes
                 parts.append(f"{seconds:05.2f}s")
             else:
                 # Show 3 decimal places if it's only seconds
-                parts.append(f"{seconds:.3f}s") 
-                
+                parts.append(f"{seconds:.3f}s")
+
             return " ".join(parts)
         except Exception:
             # Fallback in case of an error
             return f"{total_seconds:.3f} seconds"
 
-    def _log_processing_summary(self, processing_time_sec: float, num_frames_processed: int):
+    def _log_processing_summary(
+        self, processing_time_sec: float, num_frames_processed: int
+    ):
         """
         Calculates and prints the final processing time and average FPS.
         Uses the actual display duration for FPS calculation if playback occurred.
@@ -999,25 +1065,35 @@ class VideoProcessor(QObject):
         # 2. Calculate and print FPS (based on actual display time)
         display_duration_sec = 0.0
         # Check if playback actually started displaying frames
-        if self.playback_display_start_time > 0 and self.end_time > self.playback_display_start_time:
+        if (
+            self.playback_display_start_time > 0
+            and self.end_time > self.playback_display_start_time
+        ):
             display_duration_sec = self.end_time - self.playback_display_start_time
-            print(f"(Actual display duration: {self._format_duration(display_duration_sec)})")
+            print(
+                f"(Actual display duration: {self._format_duration(display_duration_sec)})"
+            )
         else:
             # Playback might have stopped during preroll or it was a recording-only task
             # Use the overall time, but mention it includes setup/buffering
             display_duration_sec = processing_time_sec
-            if self.start_time != self.playback_display_start_time : # Check if display never started
-                 print("(Note: FPS calculation includes initial buffering/setup time)")
-
+            if (
+                self.start_time != self.playback_display_start_time
+            ):  # Check if display never started
+                print("(Note: FPS calculation includes initial buffering/setup time)")
 
         try:
-            if display_duration_sec > 0.01 and num_frames_processed > 0: # Use a small threshold for duration
+            if (
+                display_duration_sec > 0.01 and num_frames_processed > 0
+            ):  # Use a small threshold for duration
                 avg_fps = num_frames_processed / display_duration_sec
                 print(f"Average Display FPS: {avg_fps:.2f}\n")
             elif num_frames_processed > 0:
                 print("Display duration too short to calculate meaningful FPS.\n")
             else:
-                 print("No frames were displayed or duration was zero, cannot calculate FPS.\n")
+                print(
+                    "No frames were displayed or duration was zero, cannot calculate FPS.\n"
+                )
         except Exception as e:
             print(f"[WARN] Could not calculate average FPS: {e}\n")
 
@@ -1027,12 +1103,12 @@ class VideoProcessor(QObject):
         """
         Creates the FFmpeg subprocess for recording.
         This is a merged function used by both default-style and multi-segment recording.
-        
+
         :param output_filename: The direct output path. If None, it's default-style
                                 recording and a temp file will be generated.
         """
         control = self.main_window.control.copy()
-        is_segment = (output_filename is not None)
+        is_segment = output_filename is not None
 
         # 1. Guards
         if (
@@ -1047,10 +1123,10 @@ class VideoProcessor(QObject):
         if self.fps <= 0:
             print("[ERROR] Invalid FPS.")
             return False
-            
+
         start_time_sec = 0.0
         end_time_sec = 0.0
-        
+
         if is_segment:
             if self.current_segment_index < 0 or self.current_segment_index >= len(
                 self.segments_to_process
@@ -1084,7 +1160,7 @@ class VideoProcessor(QObject):
                 ):
                     frame_height = frame_height * 4
                     frame_width = frame_width * 4
-        
+
         # Calculate downscale dimensions
         frame_height_down = frame_height
         frame_width_down = frame_width
@@ -1148,7 +1224,7 @@ class VideoProcessor(QObject):
         ffquality = control["FFQualitySlider"]
         ffspatial = int(control["FFSpatialAQToggle"])
         fftemporal = int(control["FFTemporalAQToggle"])
-        
+
         # Base args: read raw video from stdin
         args = [
             "ffmpeg",
@@ -1158,7 +1234,7 @@ class VideoProcessor(QObject):
             "-f",
             "rawvideo",
             "-pix_fmt",
-            "bgr24", # The processed frame from FrameWorker is BGR
+            "bgr24",  # The processed frame from FrameWorker is BGR
             "-s",
             f"{frame_width}x{frame_height}",
             "-r",
@@ -1166,7 +1242,7 @@ class VideoProcessor(QObject):
             "-i",
             "pipe:0",  # Read from stdin
         ]
-        
+
         if is_segment:
             # For segments, add the audio source and time limits
             args.extend(
@@ -1178,15 +1254,15 @@ class VideoProcessor(QObject):
                     "-i",
                     self.media_path,
                     "-map",
-                    "0:v:0", # Map video from stdin
+                    "0:v:0",  # Map video from stdin
                     "-map",
-                    "1:a:0?", # Map audio from media_path (if exists)
+                    "1:a:0?",  # Map audio from media_path (if exists)
                     "-c:a",
                     "copy",
                     "-shortest",
                 ]
             )
-        
+
         # Video codec args
         if control["HDREncodeToggle"]:
             # HDR uses X265
@@ -1234,7 +1310,7 @@ class VideoProcessor(QObject):
                     "hvc1",
                 ]
             )
-            
+
         # Downscale filter
         if control["FrameEnhancerDownToggle"]:
             args.extend(
@@ -1243,13 +1319,13 @@ class VideoProcessor(QObject):
                     f"scale={frame_width_down}x{frame_height_down}:flags=lanczos+accurate_rnd+full_chroma_int",
                 ]
             )
-        
+
         # Output file
         if is_segment:
             args.extend([output_filename])
         else:
             args.extend([self.temp_file])
-            
+
         # 5. Start Subprocess
         try:
             self.recording_sp = subprocess.Popen(
@@ -1281,7 +1357,7 @@ class VideoProcessor(QObject):
     def _finalize_default_style_recording(self):
         """Finalizes a successful default-style recording (adds audio, cleans up)."""
         print("Finalizing default-style recording...")
-        self.processing = False # Stop metronome
+        self.processing = False  # Stop metronome
 
         # 1. Stop timers
         self.gpu_memory_update_timer.stop()
@@ -1315,9 +1391,7 @@ class VideoProcessor(QObject):
                 )
             self.recording_sp = None
         else:
-            print(
-                "[WARN] No recording subprocess found during finalization."
-            )
+            print("[WARN] No recording subprocess found during finalization.")
 
         # 4. Calculate audio segment times
         end_frame_for_calc = min(self.next_frame_to_display, self.max_frame_number + 1)
@@ -1361,7 +1435,7 @@ class VideoProcessor(QObject):
             )
 
             output_dir = os.path.dirname(final_file_path)
-            
+
             # Check if output_dir is not an empty string before creating it
             # This prevents [WinError 3] if the path is just a filename.
             if output_dir and not os.path.exists(output_dir):
@@ -1407,28 +1481,26 @@ class VideoProcessor(QObject):
                 "-loglevel",
                 "error",
                 "-i",
-                self.temp_file, # Input 0: temp video (no audio)
+                self.temp_file,  # Input 0: temp video (no audio)
                 "-ss",
-                str(self.play_start_time), # Start time for audio
+                str(self.play_start_time),  # Start time for audio
                 "-to",
-                str(self.play_end_time), # End time for audio
+                str(self.play_end_time),  # End time for audio
                 "-i",
-                self.media_path, # Input 1: original media (for audio)
+                self.media_path,  # Input 1: original media (for audio)
                 "-c:v",
                 "copy",
                 "-map",
-                "0:v:0", # Map video from input 0
+                "0:v:0",  # Map video from input 0
                 "-map",
-                "1:a:0?", # Map audio from input 1 (if exists)
+                "1:a:0?",  # Map audio from input 1 (if exists)
                 "-shortest",
                 "-af",
                 "aresample=async=1000",
                 final_file_path,
             ]
             try:
-                subprocess.run(
-                    args, check=True
-                )
+                subprocess.run(args, check=True)
                 print(
                     f"--- Successfully created final video (default-style): {final_file_path} ---"
                 )
@@ -1475,15 +1547,17 @@ class VideoProcessor(QObject):
         # 6. Final Timing and Logging
         self.end_time = time.perf_counter()
         processing_time_sec = self.end_time - self.start_time
-        
+
         try:
             # Calculate processed frames
-            start_frame_num = getattr(self, 'processing_start_frame', end_frame_for_calc)
+            start_frame_num = getattr(
+                self, "processing_start_frame", end_frame_for_calc
+            )
             num_frames_processed = end_frame_for_calc - start_frame_num
             if num_frames_processed < 0:
                 num_frames_processed = 0
         except Exception:
-            num_frames_processed = 0 # Safety fallback
+            num_frames_processed = 0  # Safety fallback
 
         # Log the summary
         self._log_processing_summary(processing_time_sec, num_frames_processed)
@@ -1541,9 +1615,7 @@ class VideoProcessor(QObject):
             return
 
         if not self.media_capture and not isinstance(self.current_frame, numpy.ndarray):
-            print(
-                "[WARN] Cannot enable virtual camera without media loaded."
-            )
+            print("[WARN] Cannot enable virtual camera without media loaded.")
             return
 
         frame_height, frame_width = 0, 0
@@ -1583,7 +1655,7 @@ class VideoProcessor(QObject):
                 height=frame_height,
                 fps=int(current_fps),
                 backend=backend_to_use,
-                fmt=pyvirtualcam.PixelFormat.BGR, # Processed frame is BGR
+                fmt=pyvirtualcam.PixelFormat.BGR,  # Processed frame is BGR
             )
             print(f"Virtual camera '{self.virtcam.device}' started.")
         except Exception as e:
@@ -1607,11 +1679,11 @@ class VideoProcessor(QObject):
     ):
         """
         Initializes and starts a multi-segment recording job.
-        
+
         :param segments: A list of (start_frame, end_frame) tuples.
         :param triggered_by_job_manager: Flag for Job Manager integration.
         """
-        
+
         # 1. Guards
         if self.processing or self.is_processing_segments:
             print(
@@ -1630,15 +1702,13 @@ class VideoProcessor(QObject):
             return
 
         print("--- Initializing multi-segment recording... ---")
-        
+
         # 2. Set State Flags
         self.is_processing_segments = True
         self.recording = False
-        self.processing = True # Master flag
+        self.processing = True  # Master flag
         self.triggered_by_job_manager = triggered_by_job_manager
-        self.segments_to_process = sorted(
-            segments
-        )
+        self.segments_to_process = sorted(segments)
         self.current_segment_index = -1
         self.temp_segment_files = []
         self.segment_temp_dir = None
@@ -1667,7 +1737,7 @@ class VideoProcessor(QObject):
 
         # 5. Start Process
         self.start_time = time.perf_counter()
-        
+
         # 6. Start the first segment
         self.process_next_segment()
 
@@ -1676,7 +1746,7 @@ class VideoProcessor(QObject):
         Sets up and starts processing for the *next* segment in the list.
         This function is called iteratively by stop_current_segment.
         """
-        
+
         # 1. Increment segment index
         self.current_segment_index += 1
         segment_num = self.current_segment_index + 1
@@ -1710,7 +1780,7 @@ class VideoProcessor(QObject):
                 frame_bgr[..., ::-1]
             )  # BGR to RGB
             # Must re-set position, as read() advances it
-            self.media_capture.set(cv2.CAP_PROP_POS_FRAMES, start_frame) 
+            self.media_capture.set(cv2.CAP_PROP_POS_FRAMES, start_frame)
             self.current_frame_number = start_frame
             self.next_frame_to_display = start_frame
             # Update slider for visual feedback
@@ -1731,9 +1801,7 @@ class VideoProcessor(QObject):
         self.threads.clear()
 
         # 6. Setup FFmpeg subprocess for this segment
-        temp_segment_filename = (
-            f"segment_{self.current_segment_index:03d}.mp4"
-        )
+        temp_segment_filename = f"segment_{self.current_segment_index:03d}.mp4"
         temp_segment_path = os.path.join(self.segment_temp_dir, temp_segment_filename)
         self.temp_segment_files.append(temp_segment_path)
 
@@ -1747,27 +1815,31 @@ class VideoProcessor(QObject):
         # 7. Synchronously process the first frame of the segment
         #    (This mirrors the logic in process_video for a smooth start)
         current_start_frame = self.current_frame_number
-        print(f"Sync: Synchronously processing first frame {current_start_frame} of segment...")
+        print(
+            f"Sync: Synchronously processing first frame {current_start_frame} of segment..."
+        )
         with self.frame_queue.mutex:
             self.frame_queue.queue.clear()
         self.frame_queue.put(current_start_frame)
-        self.start_frame_worker(current_start_frame, self.current_frame, is_single_frame=True)
+        self.start_frame_worker(
+            current_start_frame, self.current_frame, is_single_frame=True
+        )
         # Now, self.frames_to_display[current_start_frame] is ready.
-        
+
         # 8. Update counters
         # self.current_frame_number was set to start_frame (e.g., 100)
         # We must increment it so the *next* read is correct (e.g., 101)
-        self.current_frame_number += 1 
+        self.current_frame_number += 1
 
         # 9. Start Metronome ET Feeder
-        target_fps = 9999.0 # Always max speed for segments
-        is_first = (self.current_segment_index == 0) 
+        target_fps = 9999.0  # Always max speed for segments
+        is_first = self.current_segment_index == 0
 
         # Start the feeder thread
         print(f"Starting feeder thread (Mode: segment {self.current_segment_index})...")
         self.feeder_thread = threading.Thread(target=self._feeder_loop, daemon=True)
         self.feeder_thread.start()
-        
+
         # Start the display metronome
         self._start_metronome(target_fps, is_first_start=is_first)
 
@@ -1782,7 +1854,7 @@ class VideoProcessor(QObject):
 
         segment_num = self.current_segment_index + 1
         print(f"--- Stopping Segment {segment_num} --- ")
-        
+
         # 1. Stop timers
         self.gpu_memory_update_timer.stop()
 
@@ -1790,19 +1862,21 @@ class VideoProcessor(QObject):
         print(f"Waiting for feeder thread from segment {segment_num}...")
         if self.feeder_thread and self.feeder_thread.is_alive():
             self.feeder_thread.join(timeout=2.0)
-            
+
             # Add a check to see if the join timed out
             if self.feeder_thread.is_alive():
-                print(f"[WARN] Feeder thread from segment {segment_num} did not join gracefully.")
+                print(
+                    f"[WARN] Feeder thread from segment {segment_num} did not join gracefully."
+                )
             else:
                 print("Feeder thread joined.")
-            
+
         else:
             # This case is normal if the feeder finished its work very quickly
             print("Feeder thread was already finished.")
 
         self.feeder_thread = None
-        
+
         # 2b. Wait for workers
         print(f"Waiting for workers from segment {segment_num}...")
         self.join_and_clear_threads()
@@ -1876,9 +1950,7 @@ class VideoProcessor(QObject):
                 self.recording_sp.kill()
                 self.recording_sp.wait()
             except Exception as e:
-                print(
-                    f"[ERROR] Error waiting for FFmpeg subprocess: {e}"
-                )
+                print(f"[ERROR] Error waiting for FFmpeg subprocess: {e}")
             self.recording_sp = None
 
         was_triggered_by_job = self.triggered_by_job_manager
@@ -1896,9 +1968,7 @@ class VideoProcessor(QObject):
         ]
 
         if not valid_segment_files:
-            print(
-                "[WARN] No valid temporary segment files found to concatenate."
-            )
+            print("[WARN] No valid temporary segment files found to concatenate.")
             self._cleanup_temp_dir()
             layout_actions.enable_all_parameters_and_control_widget(self.main_window)
             video_control_actions.reset_media_buttons(self.main_window)
@@ -1979,9 +2049,7 @@ class VideoProcessor(QObject):
         concatenation_successful = False
         try:
             print(f"Creating ffmpeg list file: {list_file_path}")
-            with open(
-                list_file_path, "w", encoding="utf-8"
-            ) as f_list:
+            with open(list_file_path, "w", encoding="utf-8") as f_list:
                 for segment_path in valid_segment_files:
                     abs_path = os.path.abspath(segment_path)
                     # FFmpeg concat requires forward slashes, even on Windows
@@ -2009,9 +2077,7 @@ class VideoProcessor(QObject):
                 "aresample=async=1000",
                 final_file_path,
             ]
-            subprocess.run(
-                concat_args, check=True
-            )
+            subprocess.run(concat_args, check=True)
             concatenation_successful = True
             log_prefix = "Job Manager: " if was_triggered_by_job else ""
             print(
@@ -2053,7 +2119,9 @@ class VideoProcessor(QObject):
             # 8. Final timing
             self.end_time = time.perf_counter()
             processing_time_sec = self.end_time - self.start_time
-            formatted_duration = self._format_duration(processing_time_sec) # Use the new helper
+            formatted_duration = self._format_duration(
+                processing_time_sec
+            )  # Use the new helper
 
             if concatenation_successful:
                 print(
@@ -2086,7 +2154,7 @@ class VideoProcessor(QObject):
                     list_view_actions.open_output_media_folder(self.main_window)
                 except Exception:
                     pass
-                    
+
             # Emit signal to notify JobProcessor that processing has finished SUCCESSFULLY
             print("Emitting processing_stopped_signal (multi-segment success).")
             self.processing_stopped_signal.emit()
@@ -2110,8 +2178,10 @@ class VideoProcessor(QObject):
     def start_live_sound(self):
         """Starts ffplay subprocess to play audio synced to the current frame."""
         # Calculate seek time based on the *next* frame to be displayed
-        seek_time = (self.next_frame_to_display) / self.media_capture.get(cv2.CAP_PROP_FPS)
-        
+        seek_time = (self.next_frame_to_display) / self.media_capture.get(
+            cv2.CAP_PROP_FPS
+        )
+
         # Adjust audio speed if custom FPS is used
         fpsdiv = 1.0
         if (
@@ -2123,11 +2193,11 @@ class VideoProcessor(QObject):
             if fpsorig > 0 and fpscust > 0:
                 fpsdiv = fpscust / fpsorig
         if fpsdiv < 0.5:
-            fpsdiv = 0.5 # Don't allow less than 0.5x speed
-  
+            fpsdiv = 0.5  # Don't allow less than 0.5x speed
+
         args = [
             "ffplay",
-            "-vn", # No video
+            "-vn",  # No video
             "-nodisp",
             "-stats",
             "-loglevel",
@@ -2136,9 +2206,9 @@ class VideoProcessor(QObject):
             "audio",
             "-af",
             f"volume={self.main_window.control['LiveSoundVolumeDecimalSlider']}, atempo={fpsdiv}",
-            "-i", # Specify the input...
+            "-i",  # Specify the input...
             self.media_path,
-            "-ss", # ... THEN specify the seek time for a precise seek
+            "-ss",  # ... THEN specify the seek time for a precise seek
             str(seek_time),
         ]
 
@@ -2155,15 +2225,19 @@ class VideoProcessor(QObject):
         if self.main_window.liveSoundButton.isChecked() and not self.recording:
             print("Starting audio subprocess (ffplay)...")
             self.start_live_sound()
-            
+
             # 2. Start video (metronome) AFTER a delay
             # This is to allow ffplay time to initialize.
-            AUDIO_STARTUP_LATENCY_MS = self.main_window.control.get("LiveSoundDelaySlider")
+            AUDIO_STARTUP_LATENCY_MS = self.main_window.control.get(
+                "LiveSoundDelaySlider"
+            )
             print(f"Waiting {AUDIO_STARTUP_LATENCY_MS}ms for audio to initialize...")
-            
+
             # Use the function with the clarified name
-            QTimer.singleShot(AUDIO_STARTUP_LATENCY_MS, self._start_video_metronome_after_audio_delay)
-        
+            QTimer.singleShot(
+                AUDIO_STARTUP_LATENCY_MS, self._start_video_metronome_after_audio_delay
+            )
+
         else:
             # No audio, start video immediately
             print("No audio. Starting video metronome immediately.")
@@ -2174,7 +2248,7 @@ class VideoProcessor(QObject):
         Slot for QTimer.singleShot.
         Starts the video metronome *after* the audio initialization delay has passed.
         """
-        if not self.processing: # Check in case the user stopped processing
+        if not self.processing:  # Check in case the user stopped processing
             return
         print("Audio startup delay complete. Starting video metronome.")
         self._start_metronome(self.fps, is_first_start=True)
@@ -2222,32 +2296,32 @@ class VideoProcessor(QObject):
             print("Error: Unable to open webcam source.")
             video_control_actions.reset_media_buttons(self.main_window)
             return
-            
+
         print("Starting webcam processing setup...")
 
         # 1. Set State Flags
         self.processing = True
         self.is_processing_segments = False
         self.recording = False
-        
+
         # 2. Clear Containers
         self.frames_to_display.clear()
         self.webcam_frames_to_display.queue.clear()
         with self.frame_queue.mutex:
             self.frame_queue.queue.clear()
-        
+
         # 3. Start Metronome ET Feeder
         fps = self.media_capture.get(cv2.CAP_PROP_FPS)
         if fps <= 0:
             fps = 30
         self.fps = fps
-        
+
         print(f"Webcam target FPS: {self.fps}")
 
         # Start the feeder thread
         print("Starting feeder thread (Mode: webcam)...")
         self.feeder_thread = threading.Thread(target=self._feeder_loop, daemon=True)
         self.feeder_thread.start()
-        
+
         # Start the display metronome
         self._start_metronome(self.fps, is_first_start=True)

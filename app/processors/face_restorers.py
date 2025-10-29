@@ -12,13 +12,47 @@ if TYPE_CHECKING:
 class FaceRestorers:
     def __init__(self, models_processor: "ModelsProcessor"):
         self.models_processor = models_processor
+        self.current_restorer_model = None
         self.resize_transforms = {
             512: v2.Resize((512, 512), antialias=True),
             256: v2.Resize((256, 256), antialias=False),
             1024: v2.Resize((1024, 1024), antialias=False),
             2048: v2.Resize((2048, 2048), antialias=False),
         }
-        self._warned_models = set() # To track warnings
+        self._warned_models = set()  # To track warnings
+        self.model_map = {
+            "GFPGAN-v1.4": "GFPGANv1.4",
+            "GFPGAN-1024": "GFPGAN1024",
+            "CodeFormer": "CodeFormer",
+            "GPEN-256": "GPENBFR256",
+            "GPEN-512": "GPENBFR512",
+            "GPEN-1024": "GPENBFR1024",
+            "GPEN-2048": "GPENBFR2048",
+            "RestoreFormer++": "RestoreFormerPlusPlus",
+            "VQFR-v2": "VQFRv2",
+        }
+
+    def ensure_models_loaded(self):
+        with self.models_processor.model_lock:
+            for model_name in self.model_map.values():
+                if not self.models_processor.models.get(model_name):
+                    self.models_processor.models[model_name] = (
+                        self.models_processor.load_model(model_name)
+                    )
+            if not self.models_processor.models.get("RefLDMVAEEncoder"):
+                self.models_processor.models["RefLDMVAEEncoder"] = (
+                    self.models_processor.load_model("RefLDMVAEEncoder")
+                )
+            if not self.models_processor.models.get("RefLDMVAEDecoder"):
+                self.models_processor.models["RefLDMVAEDecoder"] = (
+                    self.models_processor.load_model("RefLDMVAEDecoder")
+                )
+
+    def unload_models(self):
+        with self.models_processor.model_lock:
+            if self.current_restorer_model:
+                self.models_processor.unload_model(self.current_restorer_model)
+                self.current_restorer_model = None
 
     def _get_model_session(self, model_name: str):
         """
@@ -35,17 +69,19 @@ class FaceRestorers:
             # Model isn't loaded. Let's try to load it once.
             ort_session = self.models_processor.load_model(model_name)
             # load_model will set self.models_processor.models[model_name] to None if it fails
-        
+
         if not ort_session:
             # Loading failed or it was already marked as failed (None).
             # Warn once and return None.
             if model_name not in self._warned_models:
-                print(f"WARNING: Model '{model_name}' failed to load or is not available. This operation will be skipped. You could retry loading the model.")
+                print(
+                    f"WARNING: Model '{model_name}' failed to load or is not available. This operation will be skipped. You could retry loading the model."
+                )
                 self._warned_models.add(model_name)
             return None
-            
+
         return ort_session
-        
+
     def apply_facerestorer(
         self,
         swapped_face_upscaled,
@@ -56,6 +92,13 @@ class FaceRestorers:
         detect_score,
         target_kps=None,
     ):
+        new_model_to_load = self.model_map.get(restorer_type)
+
+        if new_model_to_load and self.current_restorer_model != new_model_to_load:
+            if self.current_restorer_model:
+                self.models_processor.unload_model(self.current_restorer_model)
+            self.current_restorer_model = new_model_to_load
+
         temp = swapped_face_upscaled
         t512 = self.resize_transforms[512]
         t256 = self.resize_transforms[256]
@@ -735,6 +778,4 @@ class FaceRestorers:
             torch.cuda.synchronize()
         elif self.models_processor.device != "cpu":
             self.models_processor.syncvec.cpu()
-        ort_session.run_with_iobinding(
-            io_binding
-        )
+        ort_session.run_with_iobinding(io_binding)

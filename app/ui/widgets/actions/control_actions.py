@@ -99,6 +99,7 @@ def enable_virtualcam(main_window: "MainWindow", backend):
         print("Backend: ", backend)
         main_window.video_processor.enable_virtualcam(backend=backend)
 
+
 def handle_denoiser_state_change(
     main_window: "MainWindow",
     new_value_of_toggle_that_just_changed: bool,

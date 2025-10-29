@@ -405,7 +405,7 @@ def load_saved_workspace(main_window: "MainWindow", data_filename: str | bool = 
             )
             common_widget_actions.set_control_widgets_values(main_window)
             # Set output folder using .get() with a default empty string
-            output_folder = control.get("OutputMediaFolder", "") 
+            output_folder = control.get("OutputMediaFolder", "")
             common_widget_actions.create_control(
                 main_window, "OutputMediaFolder", output_folder
             )
@@ -633,8 +633,10 @@ def save_current_workspace(
         current_params_to_save = main_window.current_widget_parameters.copy()
     else:
         # Fallback for safety, log a warning
-        print(f"[WARN] save_current_workspace: Unexpected type for current_widget_parameters: {type(main_window.current_widget_parameters)}. Saving empty dict.")
-        
+        print(
+            f"[WARN] save_current_workspace: Unexpected type for current_widget_parameters: {type(main_window.current_widget_parameters)}. Saving empty dict."
+        )
+
     data = {
         "control": main_window.control.copy(),
         "target_medias_data": target_medias_data,
@@ -649,7 +651,7 @@ def save_current_workspace(
         "last_target_media_folder_path": main_window.last_target_media_folder_path,
         "last_input_media_folder_path": main_window.last_input_media_folder_path,
         "loaded_embedding_filename": main_window.loaded_embedding_filename,
-        "current_widget_parameters": current_params_to_save, # Use the safely prepared dict
+        "current_widget_parameters": current_params_to_save,  # Use the safely prepared dict
         "tab_state": tab_state,  # Add the tab state to the saved data
         "window_state_data": window_state_data,
     }

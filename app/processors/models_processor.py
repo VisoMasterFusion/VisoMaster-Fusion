@@ -1,12 +1,9 @@
 import threading
 import os
-import re
 import subprocess as sp
 import gc
 import traceback
 import multiprocessing
-import sys  # Needed for sys.exit in workers
-import time
 from typing import Dict, TYPE_CHECKING, Optional
 
 from packaging import version
@@ -28,8 +25,6 @@ except ImportError:
     )
 
 from PySide6 import QtCore
-from PySide6.QtWidgets import QProgressDialog
-from PySide6.QtCore import Qt
 
 try:
     import tensorrt as trt
@@ -39,7 +34,6 @@ except ModuleNotFoundError:
     print("No TensorRT Found")
     TENSORRT_AVAILABLE = False
 
-from app.processors.utils.engine_builder import onnx_to_trt as onnx2trt
 from app.processors.utils.tensorrt_predictor import TensorRTPredictor
 from app.processors.face_detectors import FaceDetectors
 from app.processors.face_landmark_detectors import FaceLandmarkDetectors
@@ -73,6 +67,7 @@ SRGB_GAMMA = (
 # These functions run in a separate process to prevent fatal C++/CUDA
 # crashes (like segmentation faults) from killing the main application.
 
+
 def _build_trt_engine_worker(onnx_path, trt_path, precision, plugin_path, verbose):
     """
     Worker function to be run in an isolated process to build a TRT engine.
@@ -82,7 +77,6 @@ def _build_trt_engine_worker(onnx_path, trt_path, precision, plugin_path, verbos
         import os
         import sys
         import traceback
-        import tensorrt as trt # Check if TRT is available in this process
         from app.processors.utils.engine_builder import onnx_to_trt as onnx2trt
 
         print(f"[TRT Worker]: Starting build for {os.path.basename(onnx_path)}...")
@@ -93,17 +87,18 @@ def _build_trt_engine_worker(onnx_path, trt_path, precision, plugin_path, verbos
             custom_plugin_path=plugin_path,
             verbose=verbose,
         )
-        
+
         if not os.path.exists(trt_path):
-             print(f"[TRT Worker]: Build completed but file not found: {trt_path}")
-             sys.exit(1) # Signal failure
+            print(f"[TRT Worker]: Build completed but file not found: {trt_path}")
+            sys.exit(1)  # Signal failure
 
         print(f"[TRT Worker]: Successfully built {trt_path}")
-        sys.exit(0) # Signal success
-    except Exception as e:
+        sys.exit(0)  # Signal success
+    except Exception:
         print(f"[TRT Worker]: ERROR during build process for {onnx_path}.")
         traceback.print_exc()
-        sys.exit(1) # Signal failure
+        sys.exit(1)  # Signal failure
+
 
 def _probe_onnx_model_worker(model_path, providers_list, trt_options):
     """
@@ -117,7 +112,7 @@ def _probe_onnx_model_worker(model_path, providers_list, trt_options):
         import sys
         import traceback
         import onnxruntime
-        
+
         # Reconstruct the providers tuple
         providers = []
         for p in providers_list:
@@ -126,23 +121,23 @@ def _probe_onnx_model_worker(model_path, providers_list, trt_options):
                 providers.append((p, trt_options))
             else:
                 providers.append(p)
-        
+
         print(f"[ONNX Prober]: Attempting to load {os.path.basename(model_path)}...")
         # This line is the one that can crash
-        session = onnxruntime.InferenceSession(
-            model_path, providers=providers
-        )
-        
+        session = onnxruntime.InferenceSession(model_path, providers=providers)
+
         # If we get here, it worked.
         del session
-        print(f"[ONNX Prober]: Load successful. TRT engine cache built.")
-        sys.exit(0) # Success
-    except Exception as e:
-        print(f"[ONNX Prober]: ERROR during model load probe.")
+        print("[ONNX Prober]: Load successful. TRT engine cache built.")
+        sys.exit(0)  # Success
+    except Exception:
+        print("[ONNX Prober]: ERROR during model load probe.")
         traceback.print_exc()
-        sys.exit(1) # Failure
+        sys.exit(1)  # Failure
+
 
 # --- END: Isolated Process Workers ---
+
 
 def gamma_encode_linear_rgb_to_srgb(linear_rgb: torch.Tensor, gamma=SRGB_GAMMA):
     """Converts linear RGB to sRGB. Uses Kornia if available for better accuracy."""
@@ -560,125 +555,43 @@ class ModelsProcessor(QtCore.QObject):
 
     def load_model(self, model_name, session_options=None):
         with self.model_lock:
-            if self.models.get(model_name):
+            # If model is already loaded, return it from the cache
+            if model_name in self.models and self.models[model_name] is not None:
                 return self.models[model_name]
 
             model_instance = None
-            onnx_path = self.models_path[model_name]
-            # --- START: Show build notification dialog ---
-            build_dialog = None
-            
-            # --- START: Isolated Probe for TensorRT ---
-            is_tensorrt_load = False
-            current_providers_list = []
-            for p in self.providers:
-                provider_name = p[0] if isinstance(p, tuple) else p
-                current_providers_list.append(provider_name)
-                if provider_name == "TensorrtExecutionProvider":
-                    is_tensorrt_load = True
 
-            # Only run the isolated probe if TensorRT is the target provider
-            if is_tensorrt_load:
-                
-                # Check if engine config file exists, if yes find the engine id for the model and check if engine cache file exists
-                cache_is_valid = False
-                try:
-                    cache_dir = "tensorrt-engines"
-                    base_onnx_name = os.path.splitext(os.path.basename(onnx_path))[0]
-                    ctx_file_name = f"{base_onnx_name}_ctx.onnx"
-                    ctx_file_path = os.path.join(cache_dir, ctx_file_name)
-
-                    if os.path.exists(ctx_file_path):
-                        with open(ctx_file_path, 'rb') as f:
-                            content = f.read()
-                        
-                        match = re.search(b'TensorrtExecutionProvider_.*?\\.engine', content)
-                        
-                        if match:
-                            engine_name = match.group(0).decode('utf-8')
-                            engine_subdirectory_name = os.path.basename(cache_dir)
-                            engine_file_path = os.path.join(cache_dir, engine_subdirectory_name, engine_name)
-                            
-                            if os.path.exists(engine_file_path):
-                                print(f"Valid TensorRT cache found for '{model_name}'. Build will be skipped.")
-                                cache_is_valid = True
-                            else:
-                                print(f"Context file '{ctx_file_name}' found, but the engine '{engine_name}' is missing from the subdirectory. New build will be prompted through ONNX Probe.")
-                        else:
-                            print(f"Context file '{ctx_file_name}' found, but could not extract the engine name from it. New build will be prompted through ONNX Probe.")
-                    else:
-                        print(f"No cache context file '{ctx_file_name}' found for {model_name}. New build will be prompted through ONNX Probe.")
-
-                except Exception as e:
-                    print(f"Error during TensorRT cache check: {e}")
-                    cache_is_valid = False
-                
-                # If no engine config file or cache file exists run the prob to prevent crash and load the engine creation
-                if not cache_is_valid:
-                    print(f"TensorRT load detected for {model_name}. Running isolated probe...")
-                    
-                    try:
-                        # Create a QProgressDialog to inform the user
-                        build_dialog = QProgressDialog(
-                            self.main_window # Parent
-                        )
-                        build_dialog.setCancelButton(None) # User cannot cancel this process
-                        build_dialog.setWindowModality(Qt.WindowModal) # Block main window
-                        build_dialog.setWindowTitle("Building TensorRT Cache")
-                        build_dialog.setLabelText(
-                            f"Building TensorRT engine cache for:\n"
-                            f"{os.path.basename(onnx_path)}\n\n"
-                            f"This may take several minutes.\n"
-                            f"The application will continue once finished."
-                        )
-                        build_dialog.setRange(0, 0) # Set to indeterminate (busy) mode
-                        build_dialog.show()
-                        
-                        # Process one event loop to ensure the dialog is drawn
-                        QtCore.QCoreApplication.processEvents() 
-
-                        # Use 'spawn' context for CUDA/TRT safety
-                        ctx = multiprocessing.get_context('spawn')
-                        probe_process = ctx.Process(
-                            target=_probe_onnx_model_worker,
-                            args=(
-                                self.models_path[model_name],
-                                current_providers_list, # Pass simple list of names
-                                self.trt_ep_options # Pass TRT options
-                            ),
-                        )
-                        probe_process.start()
-                        
-                        # Replace probe_process.join() with a non-blocking loop
-                        # This keeps the QProgressDialog responsive
-                        while probe_process.is_alive():
-                            QtCore.QCoreApplication.processEvents()
-                            time.sleep(0.1) # Yield to other threads/processes
-                        
-                        # Process finished, get exit code
-                        exitcode = probe_process.exitcode
-
-                        if exitcode != 0:
-                            raise RuntimeError(f"ONNX/TensorRT probe process failed or crashed with exit code {exitcode}.")
-                        print(f"Probe successful for {model_name}. Cache should be built.")
-                    
-                    except Exception as e:
-                        if build_dialog:
-                            build_dialog.close() # Ensure dialog is closed on failure
-                            del build_dialog
-                            build_dialog = None
-                        
-                        print(f"ERROR: Isolated probe failed for {model_name}.")
-                        print("The model will not be loaded. This is likely a fatal TensorRT/CUDA error.")
-                        traceback.print_exc()
-                        self.models[model_name] = None # Ensure it's marked as not loaded
-                        return None # Abort the load
-                        
-            # --- END: Isolated Probe ---
-
-            # Now, proceed with the *actual* load in the main thread.
-            # If the probe worked, this should be fast and just load from cache.
             try:
+                # Check if this is a TensorRT load to provide a warning.
+                is_tensorrt_load = any(
+                    (p[0] if isinstance(p, tuple) else p) == "TensorrtExecutionProvider"
+                    for p in self.providers
+                )
+
+                if is_tensorrt_load:
+                    cache_dir = self.trt_ep_options.get("trt_engine_cache_path")
+                    cache_exists = False
+                    if (
+                        cache_dir
+                        and os.path.exists(cache_dir)
+                        and self.models_path.get(model_name)
+                    ):
+                        model_basename = os.path.splitext(
+                            os.path.basename(self.models_path[model_name])
+                        )[0]
+                        # Check if any file in the cache directory starts with the model's base name.
+                        # This is a heuristic as the exact cache file naming is not documented.
+                        if any(
+                            f.startswith(model_basename) for f in os.listdir(cache_dir)
+                        ):
+                            cache_exists = True
+
+                    if not cache_exists:
+                        print(
+                            f"INFO: PLEASE WAIT... Loading '{model_name}' with TensorRT provider the first time ! "
+                            f"It can take some time to create the model cache. UI will be unresponsive."
+                        )
+
                 if session_options is None:
                     model_instance = onnxruntime.InferenceSession(
                         self.models_path[model_name], providers=self.providers
@@ -690,38 +603,32 @@ class ModelsProcessor(QtCore.QObject):
                         providers=self.providers,
                     )
 
-                # Race condition check
-                if self.models.get(model_name):
-                    del model_instance
-                    gc.collect()
-                    print(f"Unloaded model: {model_name} already in memory")
-                    return self.models.get(model_name)
-
+                print(
+                    f"Successfully loaded model: '{model_name}' with execution provider: '{self.provider_name}'"
+                )
                 self.models[model_name] = model_instance
-                print(f"Loading model: {model_name} with provider: {self.provider_name}")
                 return model_instance
-                
-            except Exception as e:
-                # This catch is still valuable for non-fatal errors
-                print(f"ERROR: Failed to load model {model_name} (even after probe).")
+
+            except Exception:
+                print(f"ERROR: Failed to load model '{model_name}'.")
                 traceback.print_exc()
                 if model_instance is not None:
                     del model_instance
                     gc.collect()
+                # Mark as failed so we don't try to load it again
                 self.models[model_name] = None
                 return None
-                
             finally:
-                if build_dialog:
-                    build_dialog.close() # Close the dialog
-                    del build_dialog
-                    build_dialog = None
+                # REMOVED: self.main_window.model_loaded_signal.emit()
+                # The signal is still emitted by other functions that ARE called from the main thread.
+                # But we remove it from here to ensure thread safety.
+                pass
 
     def load_dfm_model(self, dfm_model):
         with self.model_lock:
-            if self.dfm_models.get(dfm_model): # Simplified check
+            if self.dfm_models.get(dfm_model):  # Simplified check
                 return self.dfm_models[dfm_model]
-            
+
             self.main_window.model_loading_signal.emit()
             try:
                 max_models_to_keep = self.main_window.control["MaxDFMModelsSlider"]
@@ -739,7 +646,7 @@ class ModelsProcessor(QtCore.QObject):
                     self.providers,
                     self.device,
                 )
-            except Exception as e: # Changed bare 'except:' to 'except Exception as e:'
+            except Exception:  # Changed bare 'except:' to 'except Exception as e:'
                 print(f"ERROR: Failed to load DFM model {dfm_model}.")
                 print("Detailed error:")
                 traceback.print_exc()
@@ -747,24 +654,24 @@ class ModelsProcessor(QtCore.QObject):
             finally:
                 # Emit signal *after* try/except is resolved
                 self.main_window.model_loaded_signal.emit()
-            
-            return self.dfm_models.get(dfm_model) # Use .get() for safety
+
+            return self.dfm_models.get(dfm_model)  # Use .get() for safety
 
     def load_model_trt(
         self, model_name, custom_plugin_path=None, precision="fp16", debug=False
     ):
         self.main_window.model_loading_signal.emit()
-        model_instance = None # Initialize
+        model_instance = None  # Initialize
         onnx_path = self.models_path[model_name]
         trt_path = self.models_trt_path[model_name]
 
         try:
             if not os.path.exists(trt_path):
                 print(f"TRT engine file not found. Starting isolated build: {trt_path}")
-                
+
                 # Run the build in an isolated process
                 # We must use 'spawn' or 'forkserver' context for CUDA safety
-                ctx = multiprocessing.get_context('spawn')
+                ctx = multiprocessing.get_context("spawn")
                 build_process = ctx.Process(
                     target=_build_trt_engine_worker,
                     args=(
@@ -772,21 +679,25 @@ class ModelsProcessor(QtCore.QObject):
                         trt_path,
                         precision,
                         custom_plugin_path,
-                        False, # verbose
+                        False,  # verbose
                     ),
                 )
-                
+
                 build_process.start()
-                build_process.join() # Wait for the build process to finish
+                build_process.join()  # Wait for the build process to finish
 
                 if build_process.exitcode != 0:
                     # The build process failed or crashed
-                    raise RuntimeError(f"TRT engine build process failed or crashed with exit code {build_process.exitcode}.")
-                
+                    raise RuntimeError(
+                        f"TRT engine build process failed or crashed with exit code {build_process.exitcode}."
+                    )
+
                 if not os.path.exists(trt_path):
                     # Final check
-                    raise FileNotFoundError(f"TRT engine file still not found after isolated build: {trt_path}")
-                
+                    raise FileNotFoundError(
+                        f"TRT engine file still not found after isolated build: {trt_path}"
+                    )
+
                 print("Isolated build successful.")
 
             # If we are here, the .trt file exists (or was just built)
@@ -799,60 +710,85 @@ class ModelsProcessor(QtCore.QObject):
                 debug=debug,
             )
             print(f"Successfully loaded TRT model: {model_name}")
-        except Exception as e:
+        except Exception:
             print(f"ERROR: Failed to build or load TensorRT model {model_name}.")
-            print("This can happen during the ONNX to TRT conversion or when loading the built engine.")
+            print(
+                "This can happen during the ONNX to TRT conversion or when loading the built engine."
+            )
             print("Detailed error:")
             traceback.print_exc()
-            model_instance = None # Ensure we return None on failure
+            model_instance = None  # Ensure we return None on failure
         finally:
             self.main_window.model_loaded_signal.emit()
-        
+
         return model_instance
 
     def delete_models(self):
-        for model_name, model_instance in self.models.items():
-            del model_instance
-            self.models[model_name] = None
+        model_names_to_unload = list(self.models.keys())
+        for model_name in model_names_to_unload:
+            self.unload_model(model_name)
         self.clip_session = []
-        gc.collect()
 
     def delete_models_trt(self):
         if TENSORRT_AVAILABLE:
-            for model_data in models_trt_list:
-                model_name = model_data["model_name"]
-                if isinstance(self.models_trt[model_name], TensorRTPredictor):
-                    # It is an instance of TensorRTPredictor
-                    self.models_trt[model_name].cleanup()
-                    del self.models_trt[model_name]
-                    self.models_trt[model_name] = None  # Model Instance
-            gc.collect()
+            model_names_to_unload = list(self.models_trt.keys())
+            for model_name in model_names_to_unload:
+                self.unload_model(model_name)
 
     def delete_models_dfm(self):
-        keys_to_remove = []
-        for model_name, model_instance in self.dfm_models.items():
-            del model_instance
-            keys_to_remove.append(model_name)
-
-        for model_name in keys_to_remove:
-            self.dfm_models.pop(model_name)
-
+        model_names_to_unload = list(self.dfm_models.keys())
+        for model_name in model_names_to_unload:
+            self.unload_dfm_model(model_name)
         self.clip_session = []
-        gc.collect()
+
+    def unload_dfm_model(self, model_name_to_unload):
+        with self.model_lock:
+            if (
+                model_name_to_unload
+                and model_name_to_unload in self.dfm_models
+                and self.dfm_models.get(model_name_to_unload) is not None
+            ):
+                print(f"Successfully unloaded model: {model_name_to_unload}")
+                model_instance = self.dfm_models.pop(model_name_to_unload, None)
+                if model_instance:
+                    del model_instance
+                gc.collect()
+                if torch.cuda.is_available():
+                    torch.cuda.empty_cache()
 
     def unload_model(self, model_name_to_unload):
         with self.model_lock:
+            unloaded = False
+            # Handle ONNX models
             if (
-                model_name_to_unload in self.models
+                model_name_to_unload
+                and model_name_to_unload in self.models
                 and self.models.get(model_name_to_unload) is not None
             ):
-                print(f"Unloading model: {model_name_to_unload}")
-                del self.models[model_name_to_unload]
+                print(f"Successfully unloaded model: {model_name_to_unload}")
                 self.models[model_name_to_unload] = None
+                unloaded = True
+
+            # Handle TRT models
+            if (
+                TENSORRT_AVAILABLE
+                and model_name_to_unload
+                and model_name_to_unload in self.models_trt
+                and self.models_trt.get(model_name_to_unload) is not None
+            ):
+                print(f"Successfully unloaded model: {model_name_to_unload}")
+                trt_model = self.models_trt[model_name_to_unload]
+                if isinstance(trt_model, TensorRTPredictor):
+                    trt_model.cleanup()
+                self.models_trt[model_name_to_unload] = None
+                unloaded = True
+
+            if unloaded:
                 gc.collect()
-                torch.cuda.empty_cache()
+                if torch.cuda.is_available():
+                    torch.cuda.empty_cache()
             else:
-                print(f"Model '{model_name_to_unload}' not found or already unloaded.")
+                pass
 
     def showModelLoadingProgressBar(self):
         self.main_window.model_load_dialog.show()
@@ -974,29 +910,18 @@ class ModelsProcessor(QtCore.QObject):
     def ensure_denoiser_models_loaded(self):
         """Loads the UNet and VAE models if they are not already loaded."""
         with self.model_lock:  # Ensure thread safety
-            # print("Ensuring denoiser models (UNet, VAEs) are loaded...")
             unet_model_name = self.main_window.fixed_unet_model_name
             vae_encoder_name = "RefLDMVAEEncoder"
             vae_decoder_name = "RefLDMVAEDecoder"
 
-            if not self.models.get(unet_model_name):  # Use .get() for safety
-                # print(f"  Loading UNet model: {unet_model_name}")
+            if not self.models.get(unet_model_name):
                 self.models[unet_model_name] = self.load_model(unet_model_name)
-            # else:
-            # print(f"  UNet model '{unet_model_name}' already loaded.")
 
             if not self.models.get(vae_encoder_name):
-                # print(f"  Loading VAE Encoder model: {vae_encoder_name}")
                 self.models[vae_encoder_name] = self.load_model(vae_encoder_name)
-            # else:
-            # print(f"  VAE Encoder model '{vae_encoder_name}' already loaded.")
 
             if not self.models.get(vae_decoder_name):
-                # print(f"  Loading VAE Decoder model: {vae_decoder_name}")
                 self.models[vae_decoder_name] = self.load_model(vae_decoder_name)
-            # else:
-            # print(f"  VAE Decoder model '{vae_decoder_name}' already loaded.")
-            # print("Denoiser models loading check complete.")
 
     def unload_denoiser_models(self):
         """Unloads the UNet and VAE models."""
@@ -1018,6 +943,34 @@ class ModelsProcessor(QtCore.QObject):
                 if torch.cuda.is_available():
                     torch.cuda.empty_cache()
                 print("KV Extractor unloaded.")
+
+    def unload_face_detector_models(self):
+        with self.model_lock:
+            self.face_detectors.unload_models()
+
+    def unload_face_landmark_detector_models(self):
+        with self.model_lock:
+            self.face_landmark_detectors.unload_models()
+
+    def unload_face_editor_models(self):
+        with self.model_lock:
+            self.face_editors.unload_models()
+
+    def ensure_face_mask_models_loaded(self):
+        with self.model_lock:
+            self.face_masks.ensure_models_loaded()
+
+    def unload_face_mask_models(self):
+        with self.model_lock:
+            self.face_masks.unload_models()
+
+    def ensure_frame_enhancer_models_loaded(self):
+        with self.model_lock:
+            self.frame_enhancers.ensure_models_loaded()
+
+    def unload_frame_enhancer_models(self):
+        with self.model_lock:
+            self.frame_enhancers.unload_models()
 
     def apply_vgg_mask_simple(
         self,

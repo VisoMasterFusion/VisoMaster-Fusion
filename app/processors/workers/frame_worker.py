@@ -507,8 +507,10 @@ class FrameWorker(threading.Thread):
                 initial_box_count = bboxes_eq_np.shape[0]
 
                 # Use BBox area as a proxy for detection quality/importance.
-                areas = (bboxes_eq_np[:, 2] - bboxes_eq_np[:, 0]) * (bboxes_eq_np[:, 3] - bboxes_eq_np[:, 1])
-                
+                areas = (bboxes_eq_np[:, 2] - bboxes_eq_np[:, 0]) * (
+                    bboxes_eq_np[:, 3] - bboxes_eq_np[:, 1]
+                )
+
                 # Sort indices by area, largest first. This is our confidence proxy.
                 sorted_indices = np.argsort(areas)[::-1]
 
@@ -516,7 +518,7 @@ class FrameWorker(threading.Thread):
                 centers_x = (bboxes_eq_np[:, 0] + bboxes_eq_np[:, 2]) / 2.0
                 centers_y = (bboxes_eq_np[:, 1] + bboxes_eq_np[:, 3]) / 2.0
                 widths = bboxes_eq_np[:, 2] - bboxes_eq_np[:, 0]
-                
+
                 indices_to_keep = []
                 # This will track which ORIGINAL indices are suppressed.
                 suppressed_indices = np.zeros(initial_box_count, dtype=bool)
@@ -525,29 +527,29 @@ class FrameWorker(threading.Thread):
                 for i in range(initial_box_count):
                     # Get the original index of the current highest-scoring detection.
                     idx1 = sorted_indices[i]
-                    
+
                     # If this detection has already been suppressed by a closer, higher-scoring one, skip it.
                     if suppressed_indices[idx1]:
                         continue
-                    
+
                     # This is the best detection in its local area, so we keep it.
                     indices_to_keep.append(idx1)
-                    
+
                     # Now, suppress all other detections that are too close to this one.
                     for j in range(initial_box_count):
                         if idx1 == j or suppressed_indices[j]:
                             continue
-                            
+
                         dist_x = centers_x[idx1] - centers_x[j]
                         dist_y = centers_y[idx1] - centers_y[j]
                         distance = np.sqrt(dist_x**2 + dist_y**2)
-                        
+
                         # Threshold is based on the width of the box we are keeping (the higher-scoring one).
-                        threshold = widths[idx1] * 0.5 
-                        
+                        threshold = widths[idx1] * 0.5
+
                         if distance < threshold:
                             suppressed_indices[j] = True
-                
+
                 # Apply the filter to get the final list of bounding boxes.
                 bboxes_eq_np = bboxes_eq_np[indices_to_keep]
                 final_box_count = len(indices_to_keep)
@@ -4325,4 +4327,3 @@ class FrameWorker(threading.Thread):
         contrast = grayscale.std()
         analysis["low_contrast"] = 1.0 - min(contrast.item() * 10, 1.0)
         return analysis
-

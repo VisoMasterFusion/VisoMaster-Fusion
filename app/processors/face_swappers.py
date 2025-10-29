@@ -32,17 +32,102 @@ def _debug_print_tensor(tensor: torch.Tensor, name: str):
 class FaceSwappers:
     def __init__(self, models_processor: "ModelsProcessor"):
         self.models_processor = models_processor
+        self.current_swapper_model = None
+        self.current_arcface_model = None
         self.resize_112 = v2.Resize(
             (112, 112), interpolation=v2.InterpolationMode.BILINEAR, antialias=False
         )
+        self.swapper_models = [
+            "Inswapper128",
+            "InStyleSwapper256 Version A",
+            "InStyleSwapper256 Version B",
+            "InStyleSwapper256 Version C",
+            "SimSwap512",
+            "GhostFacev1",
+            "GhostFacev2",
+            "GhostFacev3",
+            "CSCS",
+            "CanonSwap",
+        ]
+        self.arcface_models = [
+            "Inswapper128ArcFace",
+            "SimSwapArcFace",
+            "GhostArcFace",
+            "CSCSArcFace",
+            "CanonSwapArcFace",
+            "CSCSIDArcFace",
+        ]
+        self.canonswap_models = [
+            "CanonSwapMotionExtractor",
+            "CanonSwapAppearanceFeatureExtractor",
+            "CanonSwapDenseMotionPart1",
+            "CanonSwapDenseMotionPart2",
+            "CanonSwapSwapModule",
+            "CanonSwapRefineModule",
+            "CanonSwapWarpingDecoder",
+            "CanonSwapSpadeGenerator",
+        ]
+
+    def ensure_models_loaded(self):
+        with self.models_processor.model_lock:
+            for model_name in self.swapper_models:
+                if not self.models_processor.models.get(model_name):
+                    self.models_processor.models[model_name] = (
+                        self.models_processor.load_model(model_name)
+                    )
+            for model_name in self.arcface_models:
+                if not self.models_processor.models.get(model_name):
+                    self.models_processor.models[model_name] = (
+                        self.models_processor.load_model(model_name)
+                    )
+            for model_name in self.canonswap_models:
+                if not self.models_processor.models.get(model_name):
+                    self.models_processor.models[model_name] = (
+                        self.models_processor.load_model(model_name)
+                    )
+
+    def unload_models(self):
+        with self.models_processor.model_lock:
+            for model_name in self.swapper_models:
+                self.models_processor.unload_model(model_name)
+            for model_name in self.arcface_models:
+                self.models_processor.unload_model(model_name)
+            for model_name in self.canonswap_models:
+                self.models_processor.unload_model(model_name)
+
+    def _manage_model(self, new_model_name):
+        if self.current_swapper_model and self.current_swapper_model != new_model_name:
+            if self.current_swapper_model == "CanonSwap":
+                for model_name in self.canonswap_models:
+                    self.models_processor.unload_model(model_name)
+            else:
+                self.models_processor.unload_model(self.current_swapper_model)
+        self.current_swapper_model = new_model_name
+
+    def _load_swapper_model(self, model_name):
+        """Handles loading and swapping of swapper models."""
+        self._manage_model(model_name)
+        model = self.models_processor.models.get(model_name)
+        if not model:
+            model = self.models_processor.load_model(model_name)
+        return model
 
     def run_recognize_direct(
         self, img, kps, similarity_type="Opal", arcface_model="Inswapper128ArcFace"
     ):
-        if not self.models_processor.models[arcface_model]:
-            self.models_processor.models[arcface_model] = (
-                self.models_processor.load_model(arcface_model)
+        if self.current_arcface_model and self.current_arcface_model != arcface_model:
+            self.models_processor.unload_model(self.current_arcface_model)
+        self.current_arcface_model = arcface_model
+
+        ort_session = self.models_processor.models.get(arcface_model)
+        if not ort_session:
+            ort_session = self.models_processor.load_model(arcface_model)
+
+        if not ort_session:
+            print(
+                f"WARNING: ArcFace model '{arcface_model}' failed to load. Skipping recognition."
             )
+            return None, None
 
         if arcface_model == "CSCSArcFace":
             embedding, cropped_image = self.recognize_cscs(img, kps)
@@ -60,6 +145,11 @@ class FaceSwappers:
         return self.run_recognize_direct(img, kps, similarity_type, arcface_model)
 
     def recognize(self, arcface_model, img, face_kps, similarity_type):
+        ort_session = self.models_processor.models.get(arcface_model)
+        if not ort_session:
+            # This is a safety check; run_recognize_direct should prevent this.
+            return None, None
+
         if similarity_type == "Optimal":
             # Find transform & Transform
             img, _ = faceutil.warp_face_by_face_landmark_5(
@@ -128,14 +218,10 @@ class FaceSwappers:
 
         # Prepare data and find model parameters
         img = torch.unsqueeze(img, 0).contiguous()
-        input_name = self.models_processor.models[arcface_model].get_inputs()[0].name
+        input_name = ort_session.get_inputs()[0].name
+        output_names = [o.name for o in ort_session.get_outputs()]
 
-        outputs = self.models_processor.models[arcface_model].get_outputs()
-        output_names = []
-        for o in outputs:
-            output_names.append(o.name)
-
-        io_binding = self.models_processor.models[arcface_model].io_binding()
+        io_binding = ort_session.io_binding()
         io_binding.bind_input(
             name=input_name,
             device_type=self.models_processor.device,
@@ -145,15 +231,15 @@ class FaceSwappers:
             buffer_ptr=img.data_ptr(),
         )
 
-        for i in range(len(output_names)):
-            io_binding.bind_output(output_names[i], self.models_processor.device)
+        for name in output_names:
+            io_binding.bind_output(name, self.models_processor.device)
 
         # Sync and run model
         if self.models_processor.device == "cuda":
             torch.cuda.synchronize()
         elif self.models_processor.device != "cpu":
             self.models_processor.syncvec.cpu()
-        self.models_processor.models[arcface_model].run_with_iobinding(io_binding)
+        ort_session.run_with_iobinding(io_binding)
 
         # Return embedding
         return np.array(io_binding.copy_outputs_to_cpu()).flatten(), cropped_image
@@ -191,7 +277,12 @@ class FaceSwappers:
         # Usa la funzione di preprocessamento
         img, cropped_image = self.preprocess_image_cscs(img, face_kps)
 
-        io_binding = self.models_processor.models["CSCSArcFace"].io_binding()
+        model = self.models_processor.models.get("CSCSArcFace")
+        if not model:
+            print("ERROR: CSCSArcFace model not loaded in recognize_cscs.")
+            return None, None
+
+        io_binding = model.io_binding()
         io_binding.bind_input(
             name="input",
             device_type=self.models_processor.device,
@@ -207,7 +298,7 @@ class FaceSwappers:
         elif self.models_processor.device != "cpu":
             self.models_processor.syncvec.cpu()
 
-        self.models_processor.models["CSCSArcFace"].run_with_iobinding(io_binding)
+        model.run_with_iobinding(io_binding)
 
         output = io_binding.copy_outputs_to_cpu()[0]
         embedding = torch.from_numpy(output).to("cpu")
@@ -220,16 +311,20 @@ class FaceSwappers:
         return embedding, cropped_image
 
     def recognize_cscs_id_adapter(self, img, face_kps):
-        if not self.models_processor.models["CSCSIDArcFace"]:
-            self.models_processor.models["CSCSIDArcFace"] = (
-                self.models_processor.load_model("CSCSIDArcFace")
-            )
+        model_name = "CSCSIDArcFace"
+        model = self.models_processor.models.get(model_name)
+        if not model:
+            model = self.models_processor.load_model(model_name)
+
+        if not model:
+            print(f"WARNING: {model_name} model not loaded.")
+            return np.array([])  # Return empty array on failure
 
         # Use preprocess_image_cscs when face_kps is not None. When it is None img is already preprocessed.
         if face_kps is not None:
             img, _ = self.preprocess_image_cscs(img, face_kps)
 
-        io_binding = self.models_processor.models["CSCSIDArcFace"].io_binding()
+        io_binding = model.io_binding()
         io_binding.bind_input(
             name="input",
             device_type=self.models_processor.device,
@@ -245,7 +340,7 @@ class FaceSwappers:
         elif self.models_processor.device != "cpu":
             self.models_processor.syncvec.cpu()
 
-        self.models_processor.models["CSCSIDArcFace"].run_with_iobinding(io_binding)
+        model.run_with_iobinding(io_binding)
 
         output = io_binding.copy_outputs_to_cpu()[0]
         embedding_id = torch.from_numpy(output).to("cpu")
@@ -258,12 +353,12 @@ class FaceSwappers:
         return latent
 
     def run_swapper_cscs(self, image, embedding, output):
-        if not self.models_processor.models["CSCS"]:
-            self.models_processor.models["CSCS"] = self.models_processor.load_model(
-                "CSCS"
-            )
+        model = self._load_swapper_model("CSCS")
+        if not model:
+            print("ERROR: CSCS model not loaded.")
+            return
 
-        io_binding = self.models_processor.models["CSCS"].io_binding()
+        io_binding = model.io_binding()
         io_binding.bind_input(
             name="input_1",
             device_type=self.models_processor.device,
@@ -293,7 +388,7 @@ class FaceSwappers:
             torch.cuda.synchronize()
         elif self.models_processor.device != "cpu":
             self.models_processor.syncvec.cpu()
-        self.models_processor.models["CSCS"].run_with_iobinding(io_binding)
+        model.run_with_iobinding(io_binding)
 
     def calc_inswapper_latent(self, source_embedding):
         n_e = source_embedding / l2norm(source_embedding)
@@ -303,12 +398,12 @@ class FaceSwappers:
         return latent
 
     def run_inswapper(self, image, embedding, output):
-        if not self.models_processor.models["Inswapper128"]:
-            self.models_processor.models["Inswapper128"] = (
-                self.models_processor.load_model("Inswapper128")
-            )
+        model = self._load_swapper_model("Inswapper128")
+        if not model:
+            print("ERROR: Inswapper128 model not loaded.")
+            return
 
-        io_binding = self.models_processor.models["Inswapper128"].io_binding()
+        io_binding = model.io_binding()
         io_binding.bind_input(
             name="target",
             device_type=self.models_processor.device,
@@ -338,7 +433,7 @@ class FaceSwappers:
             torch.cuda.synchronize()
         elif self.models_processor.device != "cpu":
             self.models_processor.syncvec.cpu()
-        self.models_processor.models["Inswapper128"].run_with_iobinding(io_binding)
+        model.run_with_iobinding(io_binding)
 
     def calc_swapper_latent_ghost(self, source_embedding):
         latent = source_embedding.reshape((1, -1))
@@ -353,13 +448,13 @@ class FaceSwappers:
         return latent
 
     def run_iss_swapper(self, image, embedding, output, version="A"):
-        ISS_MODEL_NAME = f"InStyleSwapper256 Version {version}"
-        if not self.models_processor.models[ISS_MODEL_NAME]:
-            self.models_processor.models[ISS_MODEL_NAME] = (
-                self.models_processor.load_model(ISS_MODEL_NAME)
-            )
+        model_name = f"InStyleSwapper256 Version {version}"
+        model = self._load_swapper_model(model_name)
+        if not model:
+            print(f"ERROR: {model_name} model not loaded.")
+            return
 
-        io_binding = self.models_processor.models[ISS_MODEL_NAME].io_binding()
+        io_binding = model.io_binding()
         io_binding.bind_input(
             name="target",
             device_type=self.models_processor.device,
@@ -389,7 +484,7 @@ class FaceSwappers:
             torch.cuda.synchronize()
         elif self.models_processor.device != "cpu":
             self.models_processor.syncvec.cpu()
-        self.models_processor.models[ISS_MODEL_NAME].run_with_iobinding(io_binding)
+        model.run_with_iobinding(io_binding)
 
     def calc_swapper_latent_simswap512(self, source_embedding):
         latent = source_embedding.reshape(1, -1)
@@ -398,12 +493,12 @@ class FaceSwappers:
         return latent
 
     def run_swapper_simswap512(self, image, embedding, output):
-        if not self.models_processor.models["SimSwap512"]:
-            self.models_processor.models["SimSwap512"] = (
-                self.models_processor.load_model("SimSwap512")
-            )
+        model = self._load_swapper_model("SimSwap512")
+        if not model:
+            print("ERROR: SimSwap512 model not loaded.")
+            return
 
-        io_binding = self.models_processor.models["SimSwap512"].io_binding()
+        io_binding = model.io_binding()
         io_binding.bind_input(
             name="input",
             device_type=self.models_processor.device,
@@ -433,38 +528,27 @@ class FaceSwappers:
             torch.cuda.synchronize()
         elif self.models_processor.device != "cpu":
             self.models_processor.syncvec.cpu()
-        self.models_processor.models["SimSwap512"].run_with_iobinding(io_binding)
+        model.run_with_iobinding(io_binding)
 
     def run_swapper_ghostface(
         self, image, embedding, output, swapper_model="GhostFace-v2"
     ):
-        ghostfaceswap_model, output_name = None, None
+        model_name, output_name = None, None
         if swapper_model == "GhostFace-v1":
-            if not self.models_processor.models["GhostFacev1"]:
-                self.models_processor.models["GhostFacev1"] = (
-                    self.models_processor.load_model("GhostFacev1")
-                )
-
-            ghostfaceswap_model = self.models_processor.models["GhostFacev1"]
-            output_name = "781"
-
+            model_name, output_name = "GhostFacev1", "781"
         elif swapper_model == "GhostFace-v2":
-            if not self.models_processor.models["GhostFacev2"]:
-                self.models_processor.models["GhostFacev2"] = (
-                    self.models_processor.load_model("GhostFacev2")
-                )
-
-            ghostfaceswap_model = self.models_processor.models["GhostFacev2"]
-            output_name = "1165"
-
+            model_name, output_name = "GhostFacev2", "1165"
         elif swapper_model == "GhostFace-v3":
-            if not self.models_processor.models["GhostFacev3"]:
-                self.models_processor.models["GhostFacev3"] = (
-                    self.models_processor.load_model("GhostFacev3")
-                )
+            model_name, output_name = "GhostFacev3", "1549"
 
-            ghostfaceswap_model = self.models_processor.models["GhostFacev3"]
-            output_name = "1549"
+        if not model_name:
+            print(f"ERROR: Unknown GhostFace model version: {swapper_model}")
+            return
+
+        ghostfaceswap_model = self._load_swapper_model(model_name)
+        if not ghostfaceswap_model:
+            print(f"ERROR: {model_name} model not loaded.")
+            return
 
         io_binding = ghostfaceswap_model.io_binding()
         io_binding.bind_input(
@@ -667,11 +751,13 @@ class FaceSwappers:
         ]
         models = {}
         for name in model_names:
-            if not self.models_processor.models.get(name):
-                self.models_processor.models[name] = self.models_processor.load_model(
-                    name
-                )
-            models[name] = self.models_processor.models[name]
+            model = self.models_processor.models.get(name)
+            if not model:
+                model = self.models_processor.load_model(name)
+            if not model:
+                print(f"ERROR: CanonSwap model '{name}' failed to load. Aborting.")
+                return image  # Return original image on failure
+            models[name] = model
 
         # --- 1. Motion Extraction ---
         kp_info_tensors = {
