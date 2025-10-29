@@ -404,6 +404,7 @@ class VideoProcessor(QObject):
             return
 
         # 2. End-of-media / End-of-segment logic
+        is_playback_loop_enabled = self.main_window.control["VideoPlaybackLoopToggle"]
         should_stop_playback = False
         should_finalize_default_recording = False
         if self.file_type == "video":
@@ -423,6 +424,12 @@ class VideoProcessor(QObject):
                 print("End of media reached.")
                 if self.recording:
                     should_finalize_default_recording = True
+                elif is_playback_loop_enabled:
+                    self.next_frame_to_display=1
+                    self.main_window.videoSeekSlider.blockSignals(True)
+                    self.main_window.videoSeekSlider.setValue(self.next_frame_to_display)
+                    self.main_window.videoSeekSlider.blockSignals(False)
+                    should_stop_playback = True
                 else:
                     should_stop_playback = True
 
@@ -431,6 +438,8 @@ class VideoProcessor(QObject):
                 return
             elif should_stop_playback:
                 self.stop_processing()
+                if is_playback_loop_enabled:
+                    self.process_video()
                 return
 
         # --- 3. METRONOME TIMING LOGIC ---
@@ -2325,3 +2334,4 @@ class VideoProcessor(QObject):
 
         # Start the display metronome
         self._start_metronome(self.fps, is_first_start=True)
+
