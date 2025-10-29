@@ -12,7 +12,7 @@ if TYPE_CHECKING:
 class FaceRestorers:
     def __init__(self, models_processor: "ModelsProcessor"):
         self.models_processor = models_processor
-        self.current_restorer_model = None
+        self.active_restorer_models = set()
         self.resize_transforms = {
             512: v2.Resize((512, 512), antialias=True),
             256: v2.Resize((256, 256), antialias=False),
@@ -50,9 +50,9 @@ class FaceRestorers:
 
     def unload_models(self):
         with self.models_processor.model_lock:
-            if self.current_restorer_model:
-                self.models_processor.unload_model(self.current_restorer_model)
-                self.current_restorer_model = None
+            for model_name in list(self.active_restorer_models):
+                self.models_processor.unload_model(model_name)
+            self.active_restorer_models.clear()
 
     def _get_model_session(self, model_name: str):
         """
@@ -92,12 +92,8 @@ class FaceRestorers:
         detect_score,
         target_kps=None,
     ):
-        new_model_to_load = self.model_map.get(restorer_type)
-
-        if new_model_to_load and self.current_restorer_model != new_model_to_load:
-            if self.current_restorer_model:
-                self.models_processor.unload_model(self.current_restorer_model)
-            self.current_restorer_model = new_model_to_load
+        if not self.model_map.get(restorer_type):
+            return swapped_face_upscaled
 
         temp = swapped_face_upscaled
         t512 = self.resize_transforms[512]
@@ -482,6 +478,7 @@ class FaceRestorers:
         if not ort_session:
             return  # Silently skip if model failed to load
 
+        self.active_restorer_models.add(model_name)
         io_binding = ort_session.io_binding()
         io_binding.bind_input(
             name="input",
@@ -512,6 +509,7 @@ class FaceRestorers:
         if not ort_session:
             return  # Silently skip
 
+        self.active_restorer_models.add(model_name)
         io_binding = ort_session.io_binding()
         io_binding.bind_input(
             name="input",
@@ -542,6 +540,7 @@ class FaceRestorers:
         if not ort_session:
             return  # Silently skip
 
+        self.active_restorer_models.add(model_name)
         io_binding = ort_session.io_binding()
         io_binding.bind_input(
             name="input",
@@ -572,6 +571,7 @@ class FaceRestorers:
         if not ort_session:
             return  # Silently skip
 
+        self.active_restorer_models.add(model_name)
         io_binding = ort_session.io_binding()
         io_binding.bind_input(
             name="input",
@@ -602,6 +602,7 @@ class FaceRestorers:
         if not ort_session:
             return  # Silently skip
 
+        self.active_restorer_models.add(model_name)
         io_binding = ort_session.io_binding()
         io_binding.bind_input(
             name="input",
@@ -632,6 +633,7 @@ class FaceRestorers:
         if not ort_session:
             return  # Silently skip
 
+        self.active_restorer_models.add(model_name)
         io_binding = ort_session.io_binding()
         io_binding.bind_input(
             name="input",
@@ -662,6 +664,7 @@ class FaceRestorers:
         if not ort_session:
             return  # Silently skip
 
+        self.active_restorer_models.add(model_name)
         io_binding = ort_session.io_binding()
         io_binding.bind_input(
             name="x",
@@ -694,6 +697,7 @@ class FaceRestorers:
         if not ort_session:
             return  # Silently skip
 
+        self.active_restorer_models.add(model_name)
         assert fidelity_ratio_value >= 0.0 and fidelity_ratio_value <= 1.0, (
             "fidelity_ratio must in range[0,1]"
         )
@@ -742,6 +746,7 @@ class FaceRestorers:
         if not ort_session:
             return  # Silently skip
 
+        self.active_restorer_models.add(model_name)
         io_binding = ort_session.io_binding()
         io_binding.bind_input(
             name="input",

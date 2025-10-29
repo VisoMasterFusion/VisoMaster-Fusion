@@ -972,6 +972,10 @@ class ModelsProcessor(QtCore.QObject):
         with self.model_lock:
             self.frame_enhancers.unload_models()
 
+    def unload_face_restorer_models(self):
+        with self.model_lock:
+            self.face_restorers.unload_models()
+
     def apply_vgg_mask_simple(
         self,
         swapped_face: torch.Tensor,  # [3,512,512] uint8
