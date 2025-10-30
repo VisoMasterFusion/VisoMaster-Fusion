@@ -1,4 +1,4 @@
-from typing import TYPE_CHECKING, Dict
+from typing import TYPE_CHECKING, Dict, Optional
 
 import torch
 import numpy as np
@@ -12,12 +12,44 @@ if TYPE_CHECKING:
 class FaceRestorers:
     def __init__(self, models_processor: "ModelsProcessor"):
         self.models_processor = models_processor
+        self.active_model_slot1: Optional[str] = None
+        self.active_model_slot2: Optional[str] = None
         self.resize_transforms = {
             512: v2.Resize((512, 512), antialias=True),
             256: v2.Resize((256, 256), antialias=False),
             1024: v2.Resize((1024, 1024), antialias=False),
             2048: v2.Resize((2048, 2048), antialias=False),
         }
+        self._warned_models = set()  # To track warnings
+        self.model_map = {
+            "GFPGAN-v1.4": "GFPGANv1.4",
+            "GFPGAN-1024": "GFPGAN1024",
+            "CodeFormer": "CodeFormer",
+            "GPEN-256": "GPENBFR256",
+            "GPEN-512": "GPENBFR512",
+            "GPEN-1024": "GPENBFR1024",
+            "GPEN-2048": "GPENBFR2048",
+            "RestoreFormer++": "RestoreFormerPlusPlus",
+            "VQFR-v2": "VQFRv2",
+        }
+
+    def _get_model_session(self, model_name: str):
+        if model_name in self.models_processor.models:
+            ort_session = self.models_processor.models[model_name]
+        else:
+            ort_session = None
+
+        if not ort_session:
+            ort_session = self.models_processor.load_model(model_name)
+
+        if not ort_session:
+            if model_name not in self._warned_models:
+                print(
+                    f"WARNING: Model '{model_name}' failed to load or is not available. This operation will be skipped."
+                )
+                self._warned_models.add(model_name)
+            return None
+        return ort_session
 
     def apply_facerestorer(
         self,
@@ -28,7 +60,28 @@ class FaceRestorers:
         fidelity_weight,
         detect_score,
         target_kps=None,
+        slot_id: int = 1,
     ):
+        model_name_to_load = self.model_map.get(restorer_type)
+        if not model_name_to_load:
+            return swapped_face_upscaled
+
+        # Granular model tracking and unloading
+        if slot_id == 1:
+            if (
+                self.active_model_slot1
+                and self.active_model_slot1 != model_name_to_load
+            ):
+                self.models_processor.unload_model(self.active_model_slot1)
+            self.active_model_slot1 = model_name_to_load
+        elif slot_id == 2:
+            if (
+                self.active_model_slot2
+                and self.active_model_slot2 != model_name_to_load
+            ):
+                self.models_processor.unload_model(self.active_model_slot2)
+            self.active_model_slot2 = model_name_to_load
+
         temp = swapped_face_upscaled
         t512 = self.resize_transforms[512]
         t256 = self.resize_transforms[256]
@@ -407,12 +460,12 @@ class FaceRestorers:
         ort_session.run_with_iobinding(io_binding)
 
     def run_GFPGAN(self, image, output):
-        if not self.models_processor.models["GFPGANv1.4"]:
-            self.models_processor.models["GFPGANv1.4"] = (
-                self.models_processor.load_model("GFPGANv1.4")
-            )
+        model_name = "GFPGANv1.4"
+        ort_session = self._get_model_session(model_name)
+        if not ort_session:
+            return  # Silently skip if model failed to load
 
-        io_binding = self.models_processor.models["GFPGANv1.4"].io_binding()
+        io_binding = ort_session.io_binding()
         io_binding.bind_input(
             name="input",
             device_type=self.models_processor.device,
@@ -434,15 +487,15 @@ class FaceRestorers:
             torch.cuda.synchronize()
         elif self.models_processor.device != "cpu":
             self.models_processor.syncvec.cpu()
-        self.models_processor.models["GFPGANv1.4"].run_with_iobinding(io_binding)
+        ort_session.run_with_iobinding(io_binding)
 
     def run_GFPGAN1024(self, image, output):
-        if not self.models_processor.models["GFPGAN1024"]:
-            self.models_processor.models["GFPGAN1024"] = (
-                self.models_processor.load_model("GFPGAN1024")
-            )
+        model_name = "GFPGAN1024"
+        ort_session = self._get_model_session(model_name)
+        if not ort_session:
+            return  # Silently skip
 
-        io_binding = self.models_processor.models["GFPGAN1024"].io_binding()
+        io_binding = ort_session.io_binding()
         io_binding.bind_input(
             name="input",
             device_type=self.models_processor.device,
@@ -464,15 +517,15 @@ class FaceRestorers:
             torch.cuda.synchronize()
         elif self.models_processor.device != "cpu":
             self.models_processor.syncvec.cpu()
-        self.models_processor.models["GFPGAN1024"].run_with_iobinding(io_binding)
+        ort_session.run_with_iobinding(io_binding)
 
     def run_GPEN_256(self, image, output):
-        if not self.models_processor.models["GPENBFR256"]:
-            self.models_processor.models["GPENBFR256"] = (
-                self.models_processor.load_model("GPENBFR256")
-            )
+        model_name = "GPENBFR256"
+        ort_session = self._get_model_session(model_name)
+        if not ort_session:
+            return  # Silently skip
 
-        io_binding = self.models_processor.models["GPENBFR256"].io_binding()
+        io_binding = ort_session.io_binding()
         io_binding.bind_input(
             name="input",
             device_type=self.models_processor.device,
@@ -494,15 +547,15 @@ class FaceRestorers:
             torch.cuda.synchronize()
         elif self.models_processor.device != "cpu":
             self.models_processor.syncvec.cpu()
-        self.models_processor.models["GPENBFR256"].run_with_iobinding(io_binding)
+        ort_session.run_with_iobinding(io_binding)
 
     def run_GPEN_512(self, image, output):
-        if not self.models_processor.models["GPENBFR512"]:
-            self.models_processor.models["GPENBFR512"] = (
-                self.models_processor.load_model("GPENBFR512")
-            )
+        model_name = "GPENBFR512"
+        ort_session = self._get_model_session(model_name)
+        if not ort_session:
+            return  # Silently skip
 
-        io_binding = self.models_processor.models["GPENBFR512"].io_binding()
+        io_binding = ort_session.io_binding()
         io_binding.bind_input(
             name="input",
             device_type=self.models_processor.device,
@@ -524,15 +577,15 @@ class FaceRestorers:
             torch.cuda.synchronize()
         elif self.models_processor.device != "cpu":
             self.models_processor.syncvec.cpu()
-        self.models_processor.models["GPENBFR512"].run_with_iobinding(io_binding)
+        ort_session.run_with_iobinding(io_binding)
 
     def run_GPEN_1024(self, image, output):
-        if not self.models_processor.models["GPENBFR1024"]:
-            self.models_processor.models["GPENBFR1024"] = (
-                self.models_processor.load_model("GPENBFR1024")
-            )
+        model_name = "GPENBFR1024"
+        ort_session = self._get_model_session(model_name)
+        if not ort_session:
+            return  # Silently skip
 
-        io_binding = self.models_processor.models["GPENBFR1024"].io_binding()
+        io_binding = ort_session.io_binding()
         io_binding.bind_input(
             name="input",
             device_type=self.models_processor.device,
@@ -554,15 +607,15 @@ class FaceRestorers:
             torch.cuda.synchronize()
         elif self.models_processor.device != "cpu":
             self.models_processor.syncvec.cpu()
-        self.models_processor.models["GPENBFR1024"].run_with_iobinding(io_binding)
+        ort_session.run_with_iobinding(io_binding)
 
     def run_GPEN_2048(self, image, output):
-        if not self.models_processor.models["GPENBFR2048"]:
-            self.models_processor.models["GPENBFR2048"] = (
-                self.models_processor.load_model("GPENBFR2048")
-            )
+        model_name = "GPENBFR2048"
+        ort_session = self._get_model_session(model_name)
+        if not ort_session:
+            return  # Silently skip
 
-        io_binding = self.models_processor.models["GPENBFR2048"].io_binding()
+        io_binding = ort_session.io_binding()
         io_binding.bind_input(
             name="input",
             device_type=self.models_processor.device,
@@ -584,15 +637,15 @@ class FaceRestorers:
             torch.cuda.synchronize()
         elif self.models_processor.device != "cpu":
             self.models_processor.syncvec.cpu()
-        self.models_processor.models["GPENBFR2048"].run_with_iobinding(io_binding)
+        ort_session.run_with_iobinding(io_binding)
 
     def run_codeformer(self, image, output, fidelity_weight_value=0.9):
-        if not self.models_processor.models["CodeFormer"]:
-            self.models_processor.models["CodeFormer"] = (
-                self.models_processor.load_model("CodeFormer")
-            )
+        model_name = "CodeFormer"
+        ort_session = self._get_model_session(model_name)
+        if not ort_session:
+            return  # Silently skip
 
-        io_binding = self.models_processor.models["CodeFormer"].io_binding()
+        io_binding = ort_session.io_binding()
         io_binding.bind_input(
             name="x",
             device_type=self.models_processor.device,
@@ -616,13 +669,13 @@ class FaceRestorers:
             torch.cuda.synchronize()
         elif self.models_processor.device != "cpu":
             self.models_processor.syncvec.cpu()
-        self.models_processor.models["CodeFormer"].run_with_iobinding(io_binding)
+        ort_session.run_with_iobinding(io_binding)
 
     def run_VQFR_v2(self, image, output, fidelity_ratio_value):
-        if not self.models_processor.models["VQFRv2"]:
-            self.models_processor.models["VQFRv2"] = self.models_processor.load_model(
-                "VQFRv2"
-            )
+        model_name = "VQFRv2"
+        ort_session = self._get_model_session(model_name)
+        if not ort_session:
+            return  # Silently skip
 
         assert fidelity_ratio_value >= 0.0 and fidelity_ratio_value <= 1.0, (
             "fidelity_ratio must in range[0,1]"
@@ -631,7 +684,7 @@ class FaceRestorers:
             self.models_processor.device
         )
 
-        io_binding = self.models_processor.models["VQFRv2"].io_binding()
+        io_binding = ort_session.io_binding()
         io_binding.bind_input(
             name="x_lq",
             device_type=self.models_processor.device,
@@ -664,15 +717,15 @@ class FaceRestorers:
             torch.cuda.synchronize()
         elif self.models_processor.device != "cpu":
             self.models_processor.syncvec.cpu()
-        self.models_processor.models["VQFRv2"].run_with_iobinding(io_binding)
+        ort_session.run_with_iobinding(io_binding)
 
     def run_RestoreFormerPlusPlus(self, image, output):
-        if not self.models_processor.models["RestoreFormerPlusPlus"]:
-            self.models_processor.models["RestoreFormerPlusPlus"] = (
-                self.models_processor.load_model("RestoreFormerPlusPlus")
-            )
+        model_name = "RestoreFormerPlusPlus"
+        ort_session = self._get_model_session(model_name)
+        if not ort_session:
+            return  # Silently skip
 
-        io_binding = self.models_processor.models["RestoreFormerPlusPlus"].io_binding()
+        io_binding = ort_session.io_binding()
         io_binding.bind_input(
             name="input",
             device_type=self.models_processor.device,
@@ -708,6 +761,4 @@ class FaceRestorers:
             torch.cuda.synchronize()
         elif self.models_processor.device != "cpu":
             self.models_processor.syncvec.cpu()
-        self.models_processor.models["RestoreFormerPlusPlus"].run_with_iobinding(
-            io_binding
-        )
+        ort_session.run_with_iobinding(io_binding)

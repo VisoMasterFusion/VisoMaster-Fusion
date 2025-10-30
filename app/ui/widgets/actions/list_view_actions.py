@@ -293,10 +293,12 @@ def select_target_medias(
     )
     main_window.video_loader_worker.start()
 
+
 @QtCore.Slot()
 def filter_target_videos(main_window):
     filter_actions.filter_target_videos(main_window)
     load_target_webcams(main_window)
+
 
 @QtCore.Slot()
 def load_target_webcams(
@@ -366,9 +368,7 @@ def select_input_face_images(
     main_window.input_faces_loader_worker.thumbnail_ready.connect(
         partial(add_media_thumbnail_to_source_faces_list, main_window)
     )
-    main_window.input_faces_loader_worker.unload_models_request.connect(
-        main_window.handle_unload_request
-    )
+
     main_window.input_faces_loader_worker.start()
 
 
@@ -442,7 +442,6 @@ def open_output_media_folder(main_window: "MainWindow"):
 
 
 def show_shortcuts(main_window: "MainWindow"):
-    
     # HTML formating
     shortcuts_text = (
         "<b><u>Actions:</u></b><br>"
@@ -450,7 +449,7 @@ def show_shortcuts(main_window: "MainWindow"):
         "<b>Space</b> : Play/Stop<br>"
         "<b>R</b> : Record start/stop<br>"
         "<b>S</b> : Swap face"
-        "<br>" 
+        "<br>"
         "<b><u>Seeking:</u></b><br>"
         "<b>V</b> : Advance 1 frame<br>"
         "<b>C</b> : Rewind 1 frame<br>"
@@ -472,32 +471,28 @@ def show_shortcuts(main_window: "MainWindow"):
         main_window,
     )
 
+
 def show_presets(main_window: "MainWindow"):
-    
     # HTML formating
     presets_text = (
         "<b><u>What are Presets?</u></b><br>"
         "Presets are a functionality that allows saving and applying parameters on swapped faces.<br>"
         "Saved options come from the: 'Face Swap', 'Face Editor', 'Restorers', 'Denoiser', and 'Settings' tabs."
         "<br><br>"
-        
         "<b><u>Option Categories</u></b><br>"
         "There are two distinct categories:"
         "<br><br>"
-
         "<b>1. Parameters (Applied <u>per face</u>)</b><br>"
         "Includes all options from:<br>"
         "&nbsp;&nbsp;&bull; 'Face Swap'<br>"
         "&nbsp;&nbsp;&bull; 'Face Editor'<br>"
         "&nbsp;&nbsp;&bull; 'Restorers'"
         "<br><br>"
-
         "<b>2. Controls (Applied <u>globally</u>)</b><br>"
         "Includes all options from:<br>"
         "&nbsp;&nbsp;&bull; 'Denoiser'<br>"
         "&nbsp;&nbsp;&bull; 'Settings'"
         "<br><br>"
-
         # Une couleur (ex: #FFCC00 pour jaune/orange) aide à attirer l'œil
         "<b><u><font color='#FFCC00'>IMPORTANT</font></u></b><br>"
         "To apply the <b>Controls</b> options (Denoiser/Settings), the "
@@ -508,5 +503,4 @@ def show_presets(main_window: "MainWindow"):
         "Presets",
         presets_text,
         main_window,
-
     )

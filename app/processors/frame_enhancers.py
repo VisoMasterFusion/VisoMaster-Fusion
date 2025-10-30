@@ -12,10 +12,46 @@ if TYPE_CHECKING:
 class FrameEnhancers:
     def __init__(self, models_processor: "ModelsProcessor"):
         self.models_processor = models_processor
+        self.current_enhancer_model = None
+        self.model_map = {
+            "RealEsrgan-x2-Plus": "RealEsrganx2Plus",
+            "RealEsrgan-x4-Plus": "RealEsrganx4Plus",
+            "BSRGan-x2": "BSRGANx2",
+            "BSRGan-x4": "BSRGANx4",
+            "UltraSharp-x4": "UltraSharpx4",
+            "UltraMix-x4": "UltraMixx4",
+            "RealEsr-General-x4v3": "RealEsrx4v3",
+            "Deoldify-Artistic": "DeoldifyArt",
+            "Deoldify-Stable": "DeoldifyStable",
+            "Deoldify-Video": "DeoldifyVideo",
+            "DDColor-Artistic": "DDColorArt",
+            "DDColor": "DDcolor",
+        }
+
+    def ensure_models_loaded(self):
+        with self.models_processor.model_lock:
+            for model_name in self.model_map.values():
+                if not self.models_processor.models.get(model_name):
+                    self.models_processor.models[model_name] = (
+                        self.models_processor.load_model(model_name)
+                    )
+
+    def unload_models(self):
+        with self.models_processor.model_lock:
+            if self.current_enhancer_model:
+                self.models_processor.unload_model(self.current_enhancer_model)
+                self.current_enhancer_model = None
 
     def run_enhance_frame_tile_process(
         self, img, enhancer_type, tile_size=256, scale=1
     ):
+        new_model_to_load = self.model_map.get(enhancer_type)
+
+        if new_model_to_load and self.current_enhancer_model != new_model_to_load:
+            if self.current_enhancer_model:
+                self.models_processor.unload_model(self.current_enhancer_model)
+            self.current_enhancer_model = new_model_to_load
+
         _, _, height, width = img.shape
 
         # Calcolo del numero di tile necessari

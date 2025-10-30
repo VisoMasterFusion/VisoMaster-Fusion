@@ -294,6 +294,8 @@ SETTINGS_LAYOUT_DATA: LayoutDictTypes = {
             "label": "Enable Landmark Detection",
             "default": False,
             "help": "Enable or disable facial landmark detection, which is used to refine face alignment.",
+            "exec_function": control_actions.handle_landmark_state_change,
+            "exec_function_args": ["LandmarkDetectToggle"],
         },
         "LandmarkDetectModelSelection": {
             "level": 2,
@@ -303,6 +305,8 @@ SETTINGS_LAYOUT_DATA: LayoutDictTypes = {
             "parentToggle": "LandmarkDetectToggle",
             "requiredToggleValue": True,
             "help": "Select the landmark detection model, where different models detect varying numbers of facial landmarks.",
+            "exec_function": control_actions.handle_landmark_model_selection_change,
+            "exec_function_args": ["LandmarkDetectModelSelection"],
         },
         "LandmarkDetectScoreSlider": {
             "level": 2,
@@ -342,6 +346,8 @@ SETTINGS_LAYOUT_DATA: LayoutDictTypes = {
             "label": "Enable Frame Enhancer",
             "default": False,
             "help": "Enable frame enhancement for video inputs to improve visual quality.",
+            "exec_function": control_actions.handle_frame_enhancer_state_change,
+            "exec_function_args": ["FrameEnhancerEnableToggle"],
         },
         "FrameEnhancerTypeSelection": {
             "level": 2,

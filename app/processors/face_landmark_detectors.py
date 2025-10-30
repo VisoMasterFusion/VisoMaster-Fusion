@@ -21,6 +21,11 @@ class FaceLandmarkDetectors:
     and post-processing (transforming landmarks back to the original image space).
     """
 
+    def unload_models(self):
+        if self.current_landmark_model:
+            self.models_processor.unload_model(self.current_landmark_model)
+            self.current_landmark_model = None
+
     def __init__(self, models_processor: "ModelsProcessor"):
         """
         Initializes the FaceLandmarkDetectors.
@@ -30,6 +35,7 @@ class FaceLandmarkDetectors:
                                                 which handles model loading and device management.
         """
         self.models_processor = models_processor
+        self.current_landmark_model = None
         # Caches for model-specific data to avoid re-computation.
         self.landmark_5_anchors = []
         self.landmark_5_scale1_cache = {}
@@ -98,13 +104,29 @@ class FaceLandmarkDetectors:
             return kpss_5, kpss, scores
 
         model_name = detector_info["model_name"]
-        detection_function = detector_info["function"]
+        detection_function = detector_info["function"]  # Moved this line here
 
-        # Lazily load the required ONNX model if it's not already in memory.
-        if not self.models_processor.models.get(model_name):
-            self.models_processor.models[model_name] = self.models_processor.load_model(
-                model_name
+        loaded_model_instance = self.models_processor.models.get(model_name)
+        if not loaded_model_instance:
+            loaded_model_instance = self.models_processor.load_model(model_name)
+            if loaded_model_instance:
+                self.current_landmark_model = (
+                    model_name  # Track the currently loaded model
+                )
+
+        # If model still not loaded (e.g., failed to load), print a warning and return empty
+        if not loaded_model_instance:
+            print(
+                f"WARNING: Landmark model '{model_name}' failed to load or is not available. Skipping detection."
             )
+            return kpss_5, kpss, scores
+
+        # ONLY update current_landmark_model if the new model was successfully loaded
+        if (
+            self.current_landmark_model != model_name
+        ):  # Check if it's actually a new model or if it was just re-loaded
+            print(f"Successfully loaded model: {model_name}")
+            self.current_landmark_model = model_name
 
         # Handle special setup cases for certain models.
         if detect_mode == "3d68":

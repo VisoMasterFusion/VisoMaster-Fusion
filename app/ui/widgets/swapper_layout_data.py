@@ -1,4 +1,5 @@
 from app.helpers.typing_helper import LayoutDictTypes
+import app.ui.widgets.actions.control_actions as control_actions
 
 # Widgets in Face Swap tab are created from this Layout
 SWAPPER_LAYOUT_DATA: LayoutDictTypes = {
@@ -222,6 +223,8 @@ SWAPPER_LAYOUT_DATA: LayoutDictTypes = {
             "label": "Occlusion Mask",
             "default": False,
             "help": "Allow objects occluding the face to show up in the swapped image.",
+            "exec_function": control_actions.handle_face_mask_state_change,
+            "exec_function_args": ["OccluderEnableToggle"],
         },
         "OccluderSizeSlider": {
             "level": 2,
@@ -239,6 +242,8 @@ SWAPPER_LAYOUT_DATA: LayoutDictTypes = {
             "label": "DFL XSeg Mask",
             "default": False,
             "help": "Allow objects occluding the face to show up in the swapped image.",
+            "exec_function": control_actions.handle_face_mask_state_change,
+            "exec_function_args": ["DFLXSegEnableToggle"],
         },
         "DFLXSegSizeSlider": {
             "level": 2,
@@ -330,6 +335,8 @@ SWAPPER_LAYOUT_DATA: LayoutDictTypes = {
             "label": "Text Masking",
             "default": False,
             "help": "Use descriptions to identify objects that will be present in the final swapped image.",
+            "exec_function": control_actions.handle_face_mask_state_change,
+            "exec_function_args": ["ClipEnableToggle"],
         },
         "ClipText": {
             "level": 2,
@@ -360,6 +367,8 @@ SWAPPER_LAYOUT_DATA: LayoutDictTypes = {
             "label": "Face Parser Mask",
             "default": False,
             "help": "Allow the unprocessed background from the orginal image to show in the final swap.",
+            "exec_function": control_actions.handle_face_mask_state_change,
+            "exec_function_args": ["FaceParserEnableToggle"],
         },
         "MouthParserInsideToggle": {
             "level": 2,
@@ -1233,14 +1242,13 @@ SWAPPER_LAYOUT_DATA: LayoutDictTypes = {
             "help": "Changes the Gamma.",
         },
         "ColorNoiseDecimalSlider": {
-            "level": 2,
+            "level": 1,
             "label": "Noise",
             "min_value": "0.00",
             "max_value": "20.00",
             "default": "0.00",
             "step": 1.00,
             "decimals": 2,
-            "parentToggle": "ColorEnableToggle",
             "help": "Add noise to swapped face.",
         },
         "JPEGCompressionEnableToggle": {

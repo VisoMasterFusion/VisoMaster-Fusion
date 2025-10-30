@@ -23,6 +23,64 @@ class FaceMasks:
         self._kernel_cache = {}
         self._meshgrid_cache = {}
         self._blur_cache = {}
+        self.clip_model_loaded = False
+
+    def ensure_models_loaded(self):
+        print("FaceMasks.ensure_models_loaded called.")
+        with self.models_processor.model_lock:
+            # Occluder
+            if not self.models_processor.models.get("Occluder"):
+                self.models_processor.models["Occluder"] = (
+                    self.models_processor.load_model("Occluder")
+                )
+                if self.models_processor.models.get("Occluder"):
+                    self.active_models.add("Occluder")
+            else:  # Model already loaded, print message for consistency
+                print(
+                    f"Successfully loaded model: 'Occluder' with execution provider: '{self.models_processor.provider_name}'"
+                )
+                self.active_models.add(
+                    "Occluder"
+                )  # Ensure it's in active_models even if pre-loaded
+
+            # XSeg
+            if not self.models_processor.models.get("XSeg"):
+                self.models_processor.models["XSeg"] = self.models_processor.load_model(
+                    "XSeg"
+                )
+                if self.models_processor.models.get("XSeg"):
+                    self.active_models.add("XSeg")
+            else:  # Model already loaded, print message for consistency
+                print(
+                    f"Successfully loaded model: 'XSeg' with execution provider: '{self.models_processor.provider_name}'"
+                )
+                self.active_models.add(
+                    "XSeg"
+                )  # Ensure it's in active_models even if pre-loaded
+
+            # FaceParser
+            if not self.models_processor.models.get("FaceParser"):
+                self.models_processor.models["FaceParser"] = (
+                    self.models_processor.load_model("FaceParser")
+                )
+                if self.models_processor.models.get("FaceParser"):
+                    self.active_models.add("FaceParser")
+            else:  # Model already loaded, print message for consistency
+                print(
+                    f"Successfully loaded model: 'FaceParser' with execution provider: '{self.models_processor.provider_name}'"
+                )
+                self.active_models.add(
+                    "FaceParser"
+                )  # Ensure it's in active_models even if pre-loaded
+
+    def unload_models(self):
+        print("FaceMasks.unload_models called.")
+        with self.models_processor.model_lock:
+            for model_name in list(
+                self.active_models
+            ):  # Iterate over a copy to allow modification
+                self.models_processor.unload_model(model_name)
+            self.active_models.clear()
 
     def apply_occlusion(self, img, amount):
         img = torch.div(img, 255)
@@ -71,12 +129,15 @@ class FaceMasks:
         return outpred
 
     def run_occluder(self, image, output):
-        if not self.models_processor.models["Occluder"]:
-            self.models_processor.models["Occluder"] = self.models_processor.load_model(
-                "Occluder"
-            )
+        model_name = "Occluder"
+        ort_session = self.models_processor.models.get(model_name)
+        if not ort_session:
+            ort_session = self.models_processor.load_model(model_name)
 
-        io_binding = self.models_processor.models["Occluder"].io_binding()
+        if not ort_session:
+            return
+
+        io_binding = ort_session.io_binding()
         io_binding.bind_input(
             name="img",
             device_type=self.models_processor.device,
@@ -98,7 +159,7 @@ class FaceMasks:
             torch.cuda.synchronize()
         elif self.models_processor.device != "cpu":
             self.models_processor.syncvec.cpu()
-        self.models_processor.models["Occluder"].run_with_iobinding(io_binding)
+        ort_session.run_with_iobinding(io_binding)
 
     def apply_dfl_xseg(self, img, amount, mouth, parameters):
         amount2 = -parameters["DFLXSeg2SizeSlider"]
@@ -236,12 +297,15 @@ class FaceMasks:
         return outpred, outpred_calc, outpred_calc_dill, outpred_noFP
 
     def run_dfl_xseg(self, image, output):
-        if not self.models_processor.models["XSeg"]:
-            self.models_processor.models["XSeg"] = self.models_processor.load_model(
-                "XSeg"
-            )
+        model_name = "XSeg"
+        ort_session = self.models_processor.models.get(model_name)
+        if not ort_session:
+            ort_session = self.models_processor.load_model(model_name)
 
-        io_binding = self.models_processor.models["XSeg"].io_binding()
+        if not ort_session:
+            return
+
+        io_binding = ort_session.io_binding()
         io_binding.bind_input(
             name="in_face:0",
             device_type=self.models_processor.device,
@@ -263,16 +327,21 @@ class FaceMasks:
             torch.cuda.synchronize()
         elif self.models_processor.device != "cpu":
             self.models_processor.syncvec.cpu()
-        self.models_processor.models["XSeg"].run_with_iobinding(io_binding)
+        ort_session.run_with_iobinding(io_binding)
 
     def _faceparser_labels(self, img_uint8_3x512x512: torch.Tensor) -> torch.Tensor:
         """
         Nimmt [3,512,512] uint8, ruft das 512er-Parser-Modell,
         gibt aber **[256,256]** Labels (long, 0..18) zurück.
         """
-        if not self.models_processor.models["FaceParser"]:
-            self.models_processor.models["FaceParser"] = (
-                self.models_processor.load_model("FaceParser")
+        model_name = "FaceParser"
+        ort_session = self.models_processor.models.get(model_name)
+        if not ort_session:
+            ort_session = self.models_processor.load_model(model_name)
+
+        if not ort_session:
+            return torch.zeros(
+                (256, 256), dtype=torch.long, device=img_uint8_3x512x512.device
             )
 
         x = img_uint8_3x512x512.float().div(255.0)
@@ -280,7 +349,7 @@ class FaceMasks:
         x = x.unsqueeze(0).contiguous()  # [1,3,512,512]
 
         out = torch.empty((1, 19, 512, 512), device=self.models_processor.device)
-        io = self.models_processor.models["FaceParser"].io_binding()
+        io = ort_session.io_binding()
         io.bind_input(
             "input",
             self.models_processor.device,
@@ -302,7 +371,7 @@ class FaceMasks:
             torch.cuda.synchronize()
         elif self.models_processor.device != "cpu":
             self.models_processor.syncvec.cpu()
-        self.models_processor.models["FaceParser"].run_with_iobinding(io)
+        ort_session.run_with_iobinding(io)
 
         labels_512 = out.argmax(dim=1).squeeze(0).to(torch.long)  # [512,512]
         # auf 256x256 mit NEAREST (keine Mischklassen)

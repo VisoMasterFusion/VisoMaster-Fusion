@@ -9,7 +9,6 @@ from torchvision.transforms import v2
 import app.ui.widgets.actions.common_actions as common_widget_actions
 from app.ui.widgets.actions import list_view_actions
 import app.helpers.miscellaneous as misc_helpers
-from app.ui.widgets.settings_layout_data import SETTINGS_LAYOUT_DATA
 
 if TYPE_CHECKING:
     from app.ui.main_ui import MainWindow
@@ -164,7 +163,9 @@ def find_target_faces(main_window: "MainWindow"):
 
                         # Only store the embedding for the currently selected recognition model
                         embedding_store: Dict[str, numpy.ndarray] = {}
-                        selected_recognition_model = control["RecognitionModelSelection"]
+                        selected_recognition_model = control[
+                            "RecognitionModelSelection"
+                        ]
 
                         # The embedding for the selected model was already calculated
                         # face[1] holds the embedding calculated using control["RecognitionModelSelection"]

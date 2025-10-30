@@ -35,6 +35,18 @@ class FaceEditors:
             models_processor (ModelsProcessor): A reference to the main ModelsProcessor instance.
         """
         self.models_processor = models_processor
+        self.current_face_editor_type: str | None = None
+        self.editor_models: Dict[str, list[str]] = {
+            "Human-Face": [
+                "LivePortraitMotionExtractor",
+                "LivePortraitAppearanceFeatureExtractor",
+                "LivePortraitStitchingEye",
+                "LivePortraitStitchingLip",
+                "LivePortraitStitching",
+                "LivePortraitWarpingSpade",
+                "LivePortraitWarpingSpadeFix",
+            ]
+        }
         # Pre-create a faded mask for cropping operations to be used in the LivePortrait pipeline.
         self.lp_mask_crop = faceutil.create_faded_inner_mask(
             size=(512, 512),
@@ -62,6 +74,26 @@ class FaceEditors:
         lip_array_path = os.path.join(models_dir, "liveportrait_onnx", "lip_array.pkl")
         with open(lip_array_path, "rb") as f:
             return pickle.load(f)
+
+    def unload_models(self):
+        if self.current_face_editor_type:
+            models_to_unload = self.editor_models.get(self.current_face_editor_type, [])
+            for model_name in models_to_unload:
+                self.models_processor.unload_model(model_name)
+            self.current_face_editor_type = None
+
+    def _manage_editor_models(self, face_editor_type: str):
+        """
+        Manages loading and unloading of model groups for different face editor types.
+        If the editor type changes, it unloads the models of the previous type.
+        """
+
+        if (
+            self.current_face_editor_type
+            and self.current_face_editor_type != face_editor_type
+        ):
+            self.unload_models()
+        self.current_face_editor_type = face_editor_type
 
     def _run_onnx_io_binding(
         self,
@@ -130,6 +162,7 @@ class FaceEditors:
         Returns:
             dict: A dictionary containing the extracted motion parameters.
         """
+        self._manage_editor_models(face_editor_type)
         kp_info = {}
         with torch.no_grad():
             I_s = torch.div(img.type(torch.float32), 255.0)
@@ -286,6 +319,7 @@ class FaceEditors:
         Returns:
             torch.Tensor: The extracted appearance feature volume.
         """
+        self._manage_editor_models(face_editor_type)
         with torch.no_grad():
             I_s = torch.div(img.type(torch.float32), 255.0)
             I_s = torch.clamp(I_s, 0, 1)

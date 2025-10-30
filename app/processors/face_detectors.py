@@ -18,9 +18,15 @@ class FaceDetectors:
     helper methods for image preparation and filtering of detection results.
     """
 
+    def unload_models(self):
+        if self.current_detector_model:
+            self.models_processor.unload_model(self.current_detector_model)
+            self.current_detector_model = None
+
     def __init__(self, models_processor: "ModelsProcessor"):
         self.models_processor = models_processor
         self.center_cache = {}
+        self.current_detector_model = None
 
         # This map links a detector name (from the UI) to its model file and processing function.
         self.detector_map: Dict[str, Dict[str, Any]] = {
@@ -56,7 +62,9 @@ class FaceDetectors:
             new_height = int(new_width * im_ratio)
 
         # Use float for det_scale calculation initially for precision
-        det_scale = torch.tensor(new_height / float(img_height), device=self.models_processor.device) # Ensure float division
+        det_scale = torch.tensor(
+            new_height / float(img_height), device=self.models_processor.device
+        )  # Ensure float division
         resize = v2.Resize((new_height, new_width), antialias=True)
         resized_img = resize(img)
 
@@ -74,15 +82,14 @@ class FaceDetectors:
         )
         # Ensure resized_img is compatible with canvas dtype before assignment
         if canvas_dtype == torch.uint8 and resized_img.dtype != torch.uint8:
-             # Assuming resized_img might be float [0, 255] after resize
-             resized_img_casted = resized_img.byte()
+            # Assuming resized_img might be float [0, 255] after resize
+            resized_img_casted = resized_img.byte()
         elif canvas_dtype == torch.float32 and resized_img.dtype == torch.uint8:
-             resized_img_casted = resized_img.float() # Keep range [0, 255] for now
+            resized_img_casted = resized_img.float()  # Keep range [0, 255] for now
         else:
-             resized_img_casted = resized_img
+            resized_img_casted = resized_img
 
         det_img_canvas[:new_height, :new_width, :] = resized_img_casted.permute(1, 2, 0)
-
 
         # Apply model-specific color space.
         if normalization_mode == "yunet":
@@ -95,7 +102,7 @@ class FaceDetectors:
             # If canvas was uint8 initially (unlikely here but safe check)
             if det_img.dtype == torch.uint8:
                 det_img = det_img.float()
-            det_img = (det_img - 127.5) / 128.0 # Normalize to [-1.0, 1.0] range
+            det_img = (det_img - 127.5) / 128.0  # Normalize to [-1.0, 1.0] range
 
         # For Yolo/Yunet, det_img remains uint8 [0, 255] at this stage.
 
@@ -289,8 +296,12 @@ class FaceDetectors:
         if not detector:
             return [], [], []
 
-        # Ensure the required model is loaded into memory.
         model_name = detector["model_name"]
+        if self.current_detector_model and self.current_detector_model != model_name:
+            self.models_processor.unload_model(self.current_detector_model)
+        self.current_detector_model = model_name
+
+        # Ensure the required model is loaded into memory.
         if not self.models_processor.models.get(model_name):
             self.models_processor.models[model_name] = self.models_processor.load_model(
                 model_name
@@ -317,6 +328,12 @@ class FaceDetectors:
 
     def detect_retinaface(self, **kwargs):
         """Runs the RetinaFace detection pipeline."""
+        model_name = "RetinaFace"
+        ort_session = self.models_processor.models.get(model_name)
+        if not ort_session:
+            print(f"WARNING: {model_name} model not loaded. Skipping detection.")
+            return [], [], []
+
         img, input_size, score, rotation_angles = (
             kwargs.get("img"),
             kwargs.get("input_size"),
@@ -340,6 +357,8 @@ class FaceDetectors:
                 aimg = torch.unsqueeze(aimg, 0).contiguous()
             else:
                 IM, aimg = None, torch.unsqueeze(det_img, 0).contiguous()
+
+            io_binding = ort_session.io_binding()
 
             io_binding = self.models_processor.models["RetinaFace"].io_binding()
             io_binding.bind_input(
@@ -466,6 +485,12 @@ class FaceDetectors:
 
     def detect_scrdf(self, **kwargs):
         """Runs the SCRFD detection pipeline."""
+        model_name = "SCRFD2.5g"
+        ort_session = self.models_processor.models.get(model_name)
+        if not ort_session:
+            print(f"WARNING: {model_name} model not loaded. Skipping detection.")
+            return [], [], []
+
         img, input_size, score, rotation_angles = (
             kwargs.get("img"),
             kwargs.get("input_size"),
@@ -481,10 +506,8 @@ class FaceDetectors:
         scores_list, bboxes_list, kpss_list = [], [], []
         cx, cy = final_input_size[0] / 2, final_input_size[1] / 2
         do_rotation = len(rotation_angles) > 1
-        input_name = self.models_processor.models["SCRFD2.5g"].get_inputs()[0].name
-        output_names = [
-            o.name for o in self.models_processor.models["SCRFD2.5g"].get_outputs()
-        ]
+        input_name = ort_session.get_inputs()[0].name
+        output_names = [o.name for o in ort_session.get_outputs()]
 
         for angle in rotation_angles:
             if angle != 0:
@@ -493,6 +516,9 @@ class FaceDetectors:
                 aimg = torch.unsqueeze(aimg, 0).contiguous()
             else:
                 IM, aimg = None, torch.unsqueeze(det_img, 0).contiguous()
+
+            io_binding = ort_session.io_binding()
+
             io_binding = self.models_processor.models["SCRFD2.5g"].io_binding()
             io_binding.bind_input(
                 name=input_name,
@@ -617,6 +643,12 @@ class FaceDetectors:
 
     def detect_yoloface(self, **kwargs):
         """Runs the Yolov8-face detection pipeline."""
+        model_name = "YoloFace8n"
+        ort_session = self.models_processor.models.get(model_name)
+        if not ort_session:
+            print(f"WARNING: {model_name} model not loaded. Skipping detection.")
+            return [], [], []
+
         img, score, rotation_angles = (
             kwargs.get("img"),
             kwargs.get("score"),
@@ -636,14 +668,20 @@ class FaceDetectors:
 
         for angle in rotation_angles:
             if angle != 0:
-                aimg, M = faceutil.transform(det_img, (cx, cy), 640, 1.0, angle) # Rotates uint8
+                aimg, M = faceutil.transform(
+                    det_img, (cx, cy), 640, 1.0, angle
+                )  # Rotates uint8
                 IM = faceutil.invertAffineTransform(M)
             else:
-                IM, aimg = None, det_img # aimg is uint8 CHW
+                IM, aimg = None, det_img  # aimg is uint8 CHW
 
             # *** CORRECTION: Convert to float and normalize AFTER rotation, before binding ***
             aimg_prepared = aimg.to(torch.float32) / 255.0
-            aimg_prepared = torch.unsqueeze(aimg_prepared, 0).contiguous() # Add batch dim
+            aimg_prepared = torch.unsqueeze(
+                aimg_prepared, 0
+            ).contiguous()  # Add batch dim
+
+            io_binding = ort_session.io_binding()
 
             io_binding = self.models_processor.models["YoloFace8n"].io_binding()
             io_binding.bind_input(
@@ -651,8 +689,8 @@ class FaceDetectors:
                 device_type=self.models_processor.device,
                 device_id=0,
                 element_type=np.float32,
-                shape=aimg_prepared.size(), # Use shape of prepared tensor
-                buffer_ptr=aimg_prepared.data_ptr(), # Use data_ptr of prepared tensor
+                shape=aimg_prepared.size(),  # Use shape of prepared tensor
+                buffer_ptr=aimg_prepared.data_ptr(),  # Use data_ptr of prepared tensor
             )
             io_binding.bind_output("output0", self.models_processor.device)
             if self.models_processor.device == "cuda":
@@ -666,12 +704,13 @@ class FaceDetectors:
             score_raw_flat = score_raw.flatten()
             keep_indices = np.where(score_raw_flat > score)[0]
 
-
-            if keep_indices.size > 0: # Check size instead of any() for numpy arrays
+            if keep_indices.size > 0:  # Check size instead of any() for numpy arrays
                 bbox_raw, kps_raw, score_raw = (
                     bbox_raw[keep_indices],
                     kps_raw[keep_indices],
-                    score_raw[keep_indices], # Keep score_raw as [N, 1] or similar for consistency
+                    score_raw[
+                        keep_indices
+                    ],  # Keep score_raw as [N, 1] or similar for consistency
                 )
                 bboxes_raw = np.stack(
                     (
@@ -716,7 +755,9 @@ class FaceDetectors:
                     ]
                 )
                 if do_rotation:
-                    score_raw_flat_filtered = score_raw.flatten() # Flatten again after filtering
+                    score_raw_flat_filtered = (
+                        score_raw.flatten()
+                    )  # Flatten again after filtering
                     for i in range(len(kpss_raw)):
                         face_size = max(
                             bboxes_raw[i][2] - bboxes_raw[i][0],
@@ -726,7 +767,9 @@ class FaceDetectors:
                             face_size, kpss_raw[i]
                         )
                         if abs(angle_deg_to_front) > 50.00:
-                            score_raw_flat_filtered[i] = 0.0 # Modify the flattened copy
+                            score_raw_flat_filtered[i] = (
+                                0.0  # Modify the flattened copy
+                            )
                         if angle != 0:
                             kpss_raw[i] = faceutil.trans_points2d(kpss_raw[i], IM)
 
@@ -737,18 +780,17 @@ class FaceDetectors:
                     bboxes_raw = bboxes_raw[keep_indices_rot]
                     kpss_raw = kpss_raw[keep_indices_rot]
 
-
                 # Ensure score_raw has the correct shape before appending
                 if score_raw.ndim == 1:
-                     score_raw = score_raw[:, np.newaxis] # Reshape to [N, 1] if it's flat
-
+                    score_raw = score_raw[
+                        :, np.newaxis
+                    ]  # Reshape to [N, 1] if it's flat
 
                 # Check if there are still detections after rotation filtering
                 if score_raw.size > 0:
                     kpss_list.append(kpss_raw)
                     bboxes_list.append(bboxes_raw)
                     scores_list.append(score_raw)
-
 
         det, kpss, score_values = self._filter_detections_gpu(
             scores_list,
@@ -766,6 +808,12 @@ class FaceDetectors:
 
     def detect_yunet(self, **kwargs):
         """Runs the Yunet detection pipeline."""
+        model_name = "YunetN"
+        ort_session = self.models_processor.models.get(model_name)
+        if not ort_session:
+            print(f"WARNING: {model_name} model not loaded. Skipping detection.")
+            return [], [], []
+
         img, score, rotation_angles = (
             kwargs.get("img"),
             kwargs.get("score"),
@@ -782,21 +830,25 @@ class FaceDetectors:
         scores_list, bboxes_list, kpss_list = [], [], []
         cx, cy = final_input_size[0] / 2, final_input_size[1] / 2
         do_rotation = len(rotation_angles) > 1
-        input_name = self.models_processor.models["YunetN"].get_inputs()[0].name
-        output_names = [
-            o.name for o in self.models_processor.models["YunetN"].get_outputs()
-        ]
+        input_name = ort_session.get_inputs()[0].name
+        output_names = [o.name for o in ort_session.get_outputs()]
 
         for angle in rotation_angles:
             if angle != 0:
-                aimg, M = faceutil.transform(det_img, (cx, cy), 640, 1.0, angle) # Rotates uint8 BGR
+                aimg, M = faceutil.transform(
+                    det_img, (cx, cy), 640, 1.0, angle
+                )  # Rotates uint8 BGR
                 IM = faceutil.invertAffineTransform(M)
             else:
-                IM, aimg = None, det_img # aimg is uint8 CHW BGR
+                IM, aimg = None, det_img  # aimg is uint8 CHW BGR
 
             # *** CORRECTION: Convert to float AFTER rotation, before binding ***
             aimg_prepared = aimg.to(dtype=torch.float32)
-            aimg_prepared = torch.unsqueeze(aimg_prepared, 0).contiguous() # Add batch dim
+            aimg_prepared = torch.unsqueeze(
+                aimg_prepared, 0
+            ).contiguous()  # Add batch dim
+
+            io_binding = ort_session.io_binding()
 
             io_binding = self.models_processor.models["YunetN"].io_binding()
             io_binding.bind_input(
@@ -804,8 +856,8 @@ class FaceDetectors:
                 device_type=self.models_processor.device,
                 device_id=0,
                 element_type=np.float32,
-                shape=aimg_prepared.size(), # Use shape of prepared tensor
-                buffer_ptr=aimg_prepared.data_ptr(), # Use data_ptr of prepared tensor
+                shape=aimg_prepared.size(),  # Use shape of prepared tensor
+                buffer_ptr=aimg_prepared.data_ptr(),  # Use data_ptr of prepared tensor
             )
             for name in output_names:
                 io_binding.bind_output(name, self.models_processor.device)
@@ -835,7 +887,7 @@ class FaceDetectors:
                     anchor_centers = (
                         (anchor_centers * stride).astype(np.float32).reshape(-1, 2)
                     )
-                    if len(self.center_cache) < 100: # Added limit to cache size
+                    if len(self.center_cache) < 100:  # Added limit to cache size
                         self.center_cache[key] = anchor_centers
 
                 scores_val = cls_pred * obj_pred
@@ -843,15 +895,14 @@ class FaceDetectors:
                 scores_val_flat = scores_val.flatten()
                 pos_inds = np.where(scores_val_flat >= score)[0]
 
-
                 # Ensure pos_inds is not empty before proceeding
                 if pos_inds.size == 0:
                     continue
 
-
-                bbox_cxy = reg_pred[pos_inds, :2] * stride + anchor_centers[pos_inds, :] # Filter anchor_centers too
+                bbox_cxy = (
+                    reg_pred[pos_inds, :2] * stride + anchor_centers[pos_inds, :]
+                )  # Filter anchor_centers too
                 bbox_wh = np.exp(reg_pred[pos_inds, 2:]) * stride
-
 
                 bboxes = np.stack(
                     [
@@ -862,10 +913,9 @@ class FaceDetectors:
                     ],
                     axis=-1,
                 )
-                 # Filter scores before assignment
+                # Filter scores before assignment
                 pos_scores = scores_val[pos_inds]
-                pos_bboxes = bboxes # bboxes is already filtered
-
+                pos_bboxes = bboxes  # bboxes is already filtered
 
                 if angle != 0 and len(pos_bboxes) > 0:
                     points1, points2 = (
@@ -899,10 +949,12 @@ class FaceDetectors:
                 kps_pred_filtered = kps_pred[pos_inds]
                 anchor_centers_filtered = anchor_centers[pos_inds]
 
-
                 kpss = np.concatenate(
                     [
-                        ((kps_pred_filtered[:, [2 * i, 2 * i + 1]] * stride) + anchor_centers_filtered)
+                        (
+                            (kps_pred_filtered[:, [2 * i, 2 * i + 1]] * stride)
+                            + anchor_centers_filtered
+                        )
                         for i in range(5)
                     ],
                     axis=-1,
@@ -910,11 +962,12 @@ class FaceDetectors:
 
                 # Reshape based on the number of filtered keypoints
                 kpss = kpss.reshape((kpss.shape[0], -1, 2))
-                pos_kpss = kpss # Already filtered
-
+                pos_kpss = kpss  # Already filtered
 
                 if do_rotation:
-                    pos_scores_flat_filtered = pos_scores.flatten() # Flatten again after filtering
+                    pos_scores_flat_filtered = (
+                        pos_scores.flatten()
+                    )  # Flatten again after filtering
                     for i in range(len(pos_kpss)):
                         face_size = max(
                             pos_bboxes[i][2] - pos_bboxes[i][0],
@@ -924,7 +977,9 @@ class FaceDetectors:
                             face_size, pos_kpss[i]
                         )
                         if abs(angle_deg_to_front) > 50.00:
-                            pos_scores_flat_filtered[i] = 0.0 # Modify the flattened copy
+                            pos_scores_flat_filtered[i] = (
+                                0.0  # Modify the flattened copy
+                            )
                         if angle != 0:
                             pos_kpss[i] = faceutil.trans_points2d(pos_kpss[i], IM)
 
@@ -935,18 +990,17 @@ class FaceDetectors:
                     pos_bboxes = pos_bboxes[pos_inds_rot]
                     pos_kpss = pos_kpss[pos_inds_rot]
 
-
                 # Ensure pos_scores has the correct shape before appending
                 if pos_scores.ndim == 1:
-                     pos_scores = pos_scores[:, np.newaxis] # Reshape to [N, 1] if it's flat
-
+                    pos_scores = pos_scores[
+                        :, np.newaxis
+                    ]  # Reshape to [N, 1] if it's flat
 
                 # Check if there are still detections after rotation filtering
                 if pos_scores.size > 0:
                     kpss_list.append(pos_kpss)
                     bboxes_list.append(pos_bboxes)
                     scores_list.append(pos_scores)
-
 
         det, kpss, score_values = self._filter_detections_gpu(
             scores_list,
