@@ -7,47 +7,6 @@
 # ---------------------------------------------------------------------------
 
 from PySide6 import QtWidgets, QtGui, QtCore
-import os
-
-# ---------- Divider ----------
-
-def make_divider(color: str = "#363636") -> QtWidgets.QFrame:
-    """Return a thin horizontal line divider."""
-    divider = QtWidgets.QFrame()
-    divider.setFrameShape(QtWidgets.QFrame.HLine)
-    divider.setStyleSheet(f"color: {color}; background-color: {color};")
-    return divider
-
-
-# ---------- Header Section ----------
-
-def make_header_widget(title_text: str, logo_path: str | None = None, logo_width: int = 160) -> QtWidgets.QWidget:
-    """Return a reusable header section with optional logo and title."""
-    container = QtWidgets.QWidget()
-    v = QtWidgets.QVBoxLayout(container)
-    v.setContentsMargins(10, 10, 10, 10)
-    v.setSpacing(6)
-
-    if logo_path and os.path.exists(logo_path):
-        logo_lbl = QtWidgets.QLabel()
-        pix = QtGui.QPixmap(logo_path)
-        if not pix.isNull():
-            scaled = pix.scaledToWidth(logo_width, QtCore.Qt.SmoothTransformation)
-            logo_lbl.setPixmap(scaled)
-            logo_lbl.setAlignment(QtCore.Qt.AlignCenter)
-            v.addWidget(logo_lbl)
-
-    title = QtWidgets.QLabel(title_text)
-    f = QtGui.QFont("Segoe UI Semibold", 11)
-    title.setFont(f)
-    title.setAlignment(QtCore.Qt.AlignCenter)
-    v.addWidget(title)
-
-    line = make_divider()
-    v.addWidget(line)
-
-    return container
-
 
 # ---------- Toggle Switch ----------
 
@@ -120,4 +79,3 @@ class ToggleSwitch(QtWidgets.QPushButton):
         self._animation.setStartValue(start)
         self._animation.setEndValue(end)
         self._animation.start()
-
