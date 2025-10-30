@@ -1,5 +1,9 @@
-"""
-VisoMaster Fusion Launcher entrypoint.
-Allows running the GUI via `python -m app.ui.launcher`.
-"""
+# __main__.py
+# ---------------------------------------------------------------------------
+# VisoMaster Fusion Launcher Entrypoint
+# ---------------------------------------------------------------------------
+# Runs the VisoMaster Fusion Launcher GUI via:
+#   python -m app.ui.launcher
+# ---------------------------------------------------------------------------
+
 from .main import main; main()

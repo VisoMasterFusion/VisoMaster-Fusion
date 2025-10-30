@@ -2,7 +2,11 @@
 # ---------------------------------------------------------------------------
 # UI Utilities for VisoMaster Fusion Launcher
 # ---------------------------------------------------------------------------
-# Lightweight helpers for time display and user notifications.
+# Provides small reusable helpers for time display and user feedback:
+#   • humanize_elapsed(dt_then, dt_now=None) → human-readable time diff ("5m ago")
+#   • notify_backup_created(parent, zip_path) → message box with optional folder open
+#   • make_divider(color="#363636") → subtle horizontal line divider
+#   • make_header_widget(title_text, logo_path=None, logo_width=160) → styled header
 # ---------------------------------------------------------------------------
 
 from datetime import datetime, timezone

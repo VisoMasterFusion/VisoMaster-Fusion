@@ -1,17 +1,19 @@
-"""
-LauncherWindow — a compact, developer-friendly launcher for VisoMaster Fusion.
-
-Features:
-- Launch and maintenance actions (update, repair, rollback, etc.)
-- Git integration for version control and rollback
-- Extensible button-based UI via ACTIONS_HOME and ACTIONS_MAINT lists
-- Clean console logging with [Launcher] prefix
-
-To extend:
-1. Add a new handler method (def on_launch_safe_mode(self): ...)
-2. Add an entry to ACTIONS_HOME or ACTIONS_MAINT.
-3. The button will appear automatically.
-"""
+# launcher_window.py
+# ---------------------------------------------------------------------------
+# Main Launcher Window for VisoMaster Fusion
+# ---------------------------------------------------------------------------
+# A compact, developer-friendly UI for launching, updating, and maintaining
+# VisoMaster Fusion. Includes:
+#   • Launch and maintenance actions (update, repair, rollback, etc.)
+#   • Git integration for version control and rollback
+#   • Extensible button-based UI via ACTIONS_HOME and ACTIONS_MAINT lists
+#   • Clean console logging with [Launcher] prefix
+#
+# To extend:
+#   1. Add a new handler method (e.g. def on_launch_safe_mode(self): ...)
+#   2. Add an entry to ACTIONS_HOME or ACTIONS_MAINT
+#   3. The button will appear automatically
+# ---------------------------------------------------------------------------
 
 import sys
 from datetime import datetime, timezone
@@ -28,6 +30,8 @@ from .cfgtools import (
     read_version_info, format_last_updated_local
 )
 from .uiutils import notify_backup_created, make_header_widget, make_divider
+from .launcher_widgets import ToggleSwitch
+
 
 
 # Buttons shown on the home screen
@@ -235,36 +239,23 @@ class LauncherWindow(QtWidgets.QWidget):
         footer = QtWidgets.QHBoxLayout()
         footer.setContentsMargins(6, 6, 10, 10)
         footer.addStretch(1)
+
         lbl_toggle = QtWidgets.QLabel("Use launcher on startup")
         lbl_toggle.setFont(QtGui.QFont("Segoe UI Semibold", 10))
         lbl_toggle.setStyleSheet("color: #f0f0f0; margin-right: 6px;")
 
-        self.launcher_toggle = QtWidgets.QCheckBox()
-        self.launcher_toggle.setFixedHeight(18)
-        self.launcher_toggle.setChecked(bool(get_launcher_enabled_from_cfg()))
+        is_enabled = bool(get_launcher_enabled_from_cfg())
+        self.launcher_toggle = ToggleSwitch(checked=is_enabled)
         self.launcher_toggle.toggled.connect(self._on_launcher_toggle_changed)
-        self.launcher_toggle.setStyleSheet("""
-            QCheckBox {
-                color: rgba(255,255,255,0.85);
-            }
-            QCheckBox::indicator {
-                width: 18px;
-                height: 18px;
-                border: 1px solid rgba(255,255,255,0.4);
-                border-radius: 3px;
-                background-color: rgba(255,255,255,0.06);
-            }
-            QCheckBox::indicator:checked {
-                background-color: #3daee9;  /* bright accent blue */
-                border: 1px solid #3daee9;
-            }
-        """)
 
         lbl_toggle.mousePressEvent = lambda _e: self.launcher_toggle.click()
+
         footer.addWidget(lbl_toggle)
         footer.addWidget(self.launcher_toggle)
+
         lay.addLayout(footer)
         footer.setAlignment(QtCore.Qt.AlignRight | QtCore.Qt.AlignBottom)
+
 
     def _build_maint_page(self):
         """Create the maintenance page with update/repair actions."""
