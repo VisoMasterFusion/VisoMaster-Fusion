@@ -27,7 +27,7 @@ from .cfgtools import (
     update_current_commit_in_cfg, update_last_updated_in_cfg,
     read_version_info, format_last_updated_local
 )
-from .uiutils import notify_backup_created
+from .uiutils import notify_backup_created, make_header_widget, make_divider
 
 
 # Buttons shown on the home screen
@@ -134,34 +134,6 @@ class LauncherWindow(QtWidgets.QWidget):
             QtWidgets.QWidget().setLayout(layout)
 
     # ---------- UI Helpers ----------
-    def _header_widget(self, title_text, show_logo=True):
-        """Header section with optional logo and title."""
-        container = QtWidgets.QWidget()
-        v = QtWidgets.QVBoxLayout(container)
-        v.setContentsMargins(10, 10, 10, 10)
-        v.setSpacing(6)
-
-        if show_logo and PATHS["LOGO_PNG"].exists():
-            logo_lbl = QtWidgets.QLabel()
-            pix = QtGui.QPixmap(str(PATHS["LOGO_PNG"]))
-            if not pix.isNull():
-                scaled = pix.scaledToWidth(160, QtCore.Qt.SmoothTransformation)
-                logo_lbl.setPixmap(scaled)
-                logo_lbl.setAlignment(QtCore.Qt.AlignCenter)
-                v.addWidget(logo_lbl)
-
-        title = QtWidgets.QLabel(title_text)
-        f = QtGui.QFont("Segoe UI Semibold", 11)
-        title.setFont(f)
-        title.setAlignment(QtCore.Qt.AlignCenter)
-        v.addWidget(title)
-
-        line = QtWidgets.QFrame()
-        line.setFrameShape(QtWidgets.QFrame.HLine)
-        v.addWidget(line)
-
-        return container
-
     def _build_meta_panel(self, curr_short: str | None, last_nice: str | None) -> QtWidgets.QFrame:
         """Small info panel showing current commit and last updated time."""
         panel = QtWidgets.QFrame()
@@ -231,7 +203,7 @@ class LauncherWindow(QtWidgets.QWidget):
         """Create the home screen with launcher options and status info."""
         self._reset_page(self.page_home)
         lay = QtWidgets.QVBoxLayout(self.page_home)
-        lay.addWidget(self._header_widget("VisoMaster Fusion Launcher", True))
+        lay.addWidget(make_header_widget("VisoMaster Fusion Launcher", PATHS["LOGO_PNG"]))
 
         for text, method, *tip in ACTIONS_HOME:
             fn = getattr(self, method)
@@ -258,10 +230,7 @@ class LauncherWindow(QtWidgets.QWidget):
             lay.addWidget(meta)
 
         lay.addStretch(1)
-        divider = QtWidgets.QFrame()
-        divider.setFrameShape(QtWidgets.QFrame.HLine)
-        divider.setStyleSheet("color: #363636; background-color: #363636;")
-        lay.addWidget(divider)
+        lay.addWidget(make_divider())
 
         footer = QtWidgets.QHBoxLayout()
         footer.setContentsMargins(6, 6, 10, 10)
@@ -291,7 +260,6 @@ class LauncherWindow(QtWidgets.QWidget):
             }
         """)
 
-
         lbl_toggle.mousePressEvent = lambda _e: self.launcher_toggle.click()
         footer.addWidget(lbl_toggle)
         footer.addWidget(self.launcher_toggle)
@@ -302,7 +270,7 @@ class LauncherWindow(QtWidgets.QWidget):
         """Create the maintenance page with update/repair actions."""
         self._reset_page(self.page_maint)
         lay = QtWidgets.QVBoxLayout(self.page_maint)
-        lay.addWidget(self._header_widget("VisoMaster Fusion — Maintenance", False))
+        lay.addWidget(make_header_widget("VisoMaster Fusion — Maintenance"))
 
         for text, method, *tip in ACTIONS_MAINT:
             fn = getattr(self, method)
@@ -321,7 +289,7 @@ class LauncherWindow(QtWidgets.QWidget):
         """Build the rollback page showing commit history."""
         self._reset_page(self.page_rollback)
         lay = QtWidgets.QVBoxLayout(self.page_rollback)
-        lay.addWidget(self._header_widget("Revert to Previous Version", False))
+        lay.addWidget(make_header_widget("Revert to Previous Version"))
         scroll = QtWidgets.QScrollArea()
         scroll.setWidgetResizable(True)
         inner = QtWidgets.QWidget()
