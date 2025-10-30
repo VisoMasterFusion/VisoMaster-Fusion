@@ -106,17 +106,13 @@ class FaceLandmarkDetectors:
         model_name = detector_info["model_name"]
         detection_function = detector_info["function"]  # Moved this line here
 
-        # Unload previous model if different
-        if self.current_landmark_model and self.current_landmark_model != model_name:
-            print(f"Successfully unloaded model: {self.current_landmark_model}")
-            self.models_processor.unload_model(self.current_landmark_model)
-            # Reset current_landmark_model immediately after unloading
-            self.current_landmark_model = None
-
-        # Lazily load the required ONNX model if it's not already in memory.
         loaded_model_instance = self.models_processor.models.get(model_name)
         if not loaded_model_instance:
             loaded_model_instance = self.models_processor.load_model(model_name)
+            if loaded_model_instance:
+                self.current_landmark_model = (
+                    model_name  # Track the currently loaded model
+                )
 
         # If model still not loaded (e.g., failed to load), print a warning and return empty
         if not loaded_model_instance:

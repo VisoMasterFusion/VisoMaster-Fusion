@@ -23,7 +23,6 @@ class FaceMasks:
         self._kernel_cache = {}
         self._meshgrid_cache = {}
         self._blur_cache = {}
-        self.active_models = set()
         self.clip_model_loaded = False
 
     def ensure_models_loaded(self):
@@ -138,7 +137,6 @@ class FaceMasks:
         if not ort_session:
             return
 
-        self.active_models.add(model_name)
         io_binding = ort_session.io_binding()
         io_binding.bind_input(
             name="img",
@@ -307,7 +305,6 @@ class FaceMasks:
         if not ort_session:
             return
 
-        self.active_models.add(model_name)
         io_binding = ort_session.io_binding()
         io_binding.bind_input(
             name="in_face:0",
@@ -346,8 +343,6 @@ class FaceMasks:
             return torch.zeros(
                 (256, 256), dtype=torch.long, device=img_uint8_3x512x512.device
             )
-
-        self.active_models.add(model_name)
 
         x = img_uint8_3x512x512.float().div(255.0)
         x = v2.functional.normalize(x, (0.485, 0.456, 0.406), (0.229, 0.224, 0.225))

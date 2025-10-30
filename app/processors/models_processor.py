@@ -972,6 +972,10 @@ class ModelsProcessor(QtCore.QObject):
         with self.model_lock:
             self.frame_enhancers.unload_models()
 
+    def unload_face_restorer_models(self):
+        with self.model_lock:
+            self.face_restorers.unload_models()
+
     def apply_vgg_mask_simple(
         self,
         swapped_face: torch.Tensor,  # [3,512,512] uint8
@@ -1237,6 +1241,7 @@ class ModelsProcessor(QtCore.QObject):
         fidelity_weight,
         detect_score,
         target_kps,
+        slot_id: int = 1,  # ADD slot_id here
     ):
         return self.face_restorers.apply_facerestorer(
             swapped_face_upscaled,
@@ -1246,6 +1251,7 @@ class ModelsProcessor(QtCore.QObject):
             fidelity_weight,
             detect_score,
             target_kps,
+            slot_id=slot_id,
         )
 
     def apply_occlusion(self, img, amount):

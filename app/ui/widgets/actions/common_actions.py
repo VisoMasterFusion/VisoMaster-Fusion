@@ -115,29 +115,48 @@ def update_parameter(
     current_position = main_window.videoSeekSlider.value()
     face_id = main_window.selected_target_face_id
 
-    # Update marker parameters too
+    # Get the old value for comparison before any updates
+    old_parameter_value = None
+    if (
+        main_window.target_faces
+        and face_id
+        and parameter_name in main_window.parameters[face_id]
+    ):
+        old_parameter_value = main_window.parameters[face_id][parameter_name]
+    elif (
+        main_window.current_widget_parameters
+        and parameter_name in main_window.current_widget_parameters
+    ):
+        old_parameter_value = main_window.current_widget_parameters[parameter_name]
+
+    # --- Update the data dictionaries ---
+
+    # Update marker parameters if applicable
     if main_window.markers.get(current_position) and face_id:
         main_window.markers[current_position]["parameters"][face_id][parameter_name] = (
             parameter_value
         )
 
+    # Update parameters for the selected face
     if main_window.target_faces and face_id:
-        # Store old value and update the parameters with new value
-        old_parameter_value = main_window.parameters[face_id][parameter_name]
         main_window.parameters[face_id][parameter_name] = parameter_value
 
-        if enable_refresh_frame:
-            refresh_frame(main_window)
-
-        if exec_function and face_id:
-            # Only execute the function if the value is different from current
-            if main_window.parameters[face_id][parameter_name] != old_parameter_value:
-                # By default an exec function definition should have atleast one parameter : MainWindow
-                exec_function_args = [main_window, parameter_value] + exec_function_args
-                exec_function(*exec_function_args)
-
+    # Always update the current widget state
     if main_window.current_widget_parameters:
         main_window.current_widget_parameters[parameter_name] = parameter_value
+
+    # --- Trigger actions ---
+
+    # Refresh the frame if needed
+    if enable_refresh_frame:
+        refresh_frame(main_window)
+
+    # Execute the associated function if the value has changed
+    # This now runs even if no face is selected, fixing the unload issue.
+    if exec_function and parameter_value != old_parameter_value:
+        # The first argument is always the main_window, followed by the new value
+        final_exec_args = [main_window, parameter_value] + exec_function_args
+        exec_function(*final_exec_args)
 
 
 def refresh_frame(main_window: "MainWindow"):
