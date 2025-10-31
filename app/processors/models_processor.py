@@ -293,6 +293,11 @@ class ModelsProcessor(QtCore.QObject):
         self.kv_extractor: Optional[KVExtractor] = None
         self.device = device
         self.model_lock = threading.RLock()  # Reentrant lock for model access
+        # A dictionary to hold locks for each TRT model build process.
+        # Key: path to the .trt file, Value: threading.Lock object.
+        self.trt_build_locks: Dict[str, threading.Lock] = {}
+        # A lock to protect the creation of new locks in the dictionary above.
+        self.trt_build_lock_creation_lock = threading.Lock()
         self.trt_ep_options = {
             # 'trt_max_workspace_size': 3 << 30,  # Dimensione massima dello spazio di lavoro in bytes
             "trt_engine_cache_enable": True,
@@ -661,55 +666,65 @@ class ModelsProcessor(QtCore.QObject):
         self, model_name, custom_plugin_path=None, precision="fp16", debug=False
     ):
         self.main_window.model_loading_signal.emit()
-        model_instance = None  # Initialize
+        model_instance = None
         onnx_path = self.models_path[model_name]
         trt_path = self.models_trt_path[model_name]
 
         try:
-            if not os.path.exists(trt_path):
-                print(f"TRT engine file not found. Starting isolated build: {trt_path}")
+            # Get or create a lock specific to this TRT engine file to prevent race conditions.
+            with self.trt_build_lock_creation_lock:
+                if trt_path not in self.trt_build_locks:
+                    self.trt_build_locks[trt_path] = threading.Lock()
+            model_build_lock = self.trt_build_locks[trt_path]
 
-                # Run the build in an isolated process
-                # We must use 'spawn' or 'forkserver' context for CUDA safety
-                ctx = multiprocessing.get_context("spawn")
-                build_process = ctx.Process(
-                    target=_build_trt_engine_worker,
-                    args=(
-                        onnx_path,
-                        trt_path,
-                        precision,
-                        custom_plugin_path,
-                        False,  # verbose
-                    ),
-                )
-
-                build_process.start()
-                build_process.join()  # Wait for the build process to finish
-
-                if build_process.exitcode != 0:
-                    # The build process failed or crashed
-                    raise RuntimeError(
-                        f"TRT engine build process failed or crashed with exit code {build_process.exitcode}."
-                    )
-
+            # Acquire the lock. Only one thread can be in this block for this specific model at a time.
+            with model_build_lock:
+                # Re-check if the file exists *after* acquiring the lock.
+                # Another thread might have just finished building it while this one was waiting.
                 if not os.path.exists(trt_path):
-                    # Final check
-                    raise FileNotFoundError(
-                        f"TRT engine file still not found after isolated build: {trt_path}"
+                    print(
+                        f"TRT engine file not found. Starting isolated build: {trt_path}"
                     )
 
-                print("Isolated build successful.")
+                    # Run the build in an isolated process
+                    ctx = multiprocessing.get_context("spawn")
+                    build_process = ctx.Process(
+                        target=_build_trt_engine_worker,
+                        args=(
+                            onnx_path,
+                            trt_path,
+                            precision,
+                            custom_plugin_path,
+                            False,  # verbose
+                        ),
+                    )
 
-            # If we are here, the .trt file exists (or was just built)
-            # Now, we load it. This part *could* also crash, but the build is the most common failure.
-            model_instance = TensorRTPredictor(
-                model_path=trt_path,
-                custom_plugin_path=custom_plugin_path,
-                pool_size=self.nThreads,
-                device=self.device,
-                debug=debug,
-            )
-            print(f"Successfully loaded TRT model: {model_name}")
+                    build_process.start()
+                    build_process.join()  # Wait for the build process to finish
+
+                    if build_process.exitcode != 0:
+                        raise RuntimeError(
+                            f"TRT engine build process failed or crashed with exit code {build_process.exitcode}."
+                        )
+
+                    if not os.path.exists(trt_path):
+                        raise FileNotFoundError(
+                            f"TRT engine file still not found after isolated build: {trt_path}"
+                        )
+
+                    print("Isolated build successful.")
+
+                # Now, whether it was just built or already existed, we can load it.
+                model_instance = TensorRTPredictor(
+                    model_path=trt_path,
+                    custom_plugin_path=custom_plugin_path,
+                    pool_size=self.nThreads,
+                    device=self.device,
+                    debug=debug,
+                )
+                print(f"Successfully loaded TRT model: {model_name}")
+
+            # The lock is automatically released here.
         except Exception:
             print(f"ERROR: Failed to build or load TensorRT model {model_name}.")
             print(
