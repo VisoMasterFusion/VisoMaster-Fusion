@@ -79,3 +79,28 @@ class ToggleSwitch(QtWidgets.QPushButton):
         self._animation.setStartValue(start)
         self._animation.setEndValue(end)
         self._animation.start()
+
+
+# ---------- Status Pill Label ----------
+
+from PySide6 import QtWidgets, QtGui, QtCore
+
+class StatusPill(QtWidgets.QLabel):
+    """A small non-interactive pill-style label for status indicators."""
+    def __init__(self, text: str, color: str = "rgba(255,255,255,0.08)", parent=None):
+        super().__init__(text, parent)
+        self.setAlignment(QtCore.Qt.AlignCenter)
+
+        font = QtGui.QFont("Segoe UI", 11)
+        self.setFont(font)
+
+        # Basic pill styling
+        self.setStyleSheet(f"""
+            QLabel {{
+                padding: 4px 8px;
+                color: rgba(255,255,255,0.75);
+                background-color: {color};
+                border: 1px solid rgba(255,255,255,0.10);
+                border-radius: 6px;
+            }}
+        """)

@@ -1,6 +1,6 @@
 # core.py
 # ---------------------------------------------------------------------------
-# Core launcher utilities for VisoMaster Fusion
+# Core launcher utilities for VisoMaster Fusion Launcher
 # ---------------------------------------------------------------------------
 # Provides:
 #   • Centralized filesystem path resolution (PATHS)
@@ -66,7 +66,6 @@ def apply_theme_to_app(app: QtWidgets.QApplication):
         return
     try:
         app.setStyleSheet(qss_path.read_text(encoding="utf-8"))
-        print("[Launcher] Theme applied.")
     except Exception as e:
         print(f"[Launcher] Error applying theme: {e}")
 

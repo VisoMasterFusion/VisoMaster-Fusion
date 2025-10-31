@@ -6,4 +6,12 @@
 #   python -m app.ui.launcher
 # ---------------------------------------------------------------------------
 
-from .main import main; main()
+import sys
+
+try:
+    from .main import main
+    print("[Launcher] Starting VisoMaster Fusion Launcher...")
+    main()
+except Exception as e:
+    print(f"[Launcher] Failed to start the VisoMaster Fusion Launcher: {e}")
+    sys.exit(1)

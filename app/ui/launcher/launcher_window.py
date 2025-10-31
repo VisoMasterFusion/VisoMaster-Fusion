@@ -8,11 +8,6 @@
 #   • Git integration for version control and rollback
 #   • Extensible button-based UI via ACTIONS_HOME and ACTIONS_MAINT lists
 #   • Clean console logging with [Launcher] prefix
-#
-# To extend:
-#   1. Add a new handler method (e.g. def on_launch_safe_mode(self): ...)
-#   2. Add an entry to ACTIONS_HOME or ACTIONS_MAINT
-#   3. The button will appear automatically
 # ---------------------------------------------------------------------------
 
 import sys
@@ -30,8 +25,7 @@ from .cfgtools import (
     read_version_info, format_last_updated_local
 )
 from .uiutils import notify_backup_created, make_header_widget, make_divider
-from .launcher_widgets import ToggleSwitch
-
+from .launcher_widgets import ToggleSwitch, StatusPill
 
 
 # Buttons shown on the home screen
@@ -58,7 +52,7 @@ def check_update_status():
     try:
         r = run_git(["fetch", "origin"], capture=True)
         if r.returncode != 0:
-            print(f"[Launcher] Fetch failed (offline?): {r.stderr.strip()}")
+            print(f"[Launcher] Git fetch failed (offline?): {r.stderr.strip()}")
             return "offline"
     except Exception as e:
         print(f"[Launcher] Fetch exception (offline?): {e}")
@@ -69,8 +63,12 @@ def check_update_status():
 
     if head and origin and head.returncode == 0 and origin.returncode == 0:
         head_hash, origin_hash = head.stdout.strip(), origin.stdout.strip()
-        print(f"[Launcher] HEAD={head_hash[:7]}  ORIGIN={origin_hash[:7]}")
-        return "behind" if head_hash != origin_hash else "up_to_date"
+        if head_hash != origin_hash:
+            print(f"[Launcher] Local version behind origin (HEAD={head_hash[:7]} → {origin_hash[:7]})")
+            return "behind"
+        else:
+            print(f"[Launcher] Repository up to date (HEAD={head_hash[:7]})")
+            return "up_to_date"
 
     print("[Launcher] Unable to read HEAD or origin/main; treating as offline.")
     return "offline"
@@ -95,7 +93,7 @@ class LauncherWindow(QtWidgets.QWidget):
         self._build_ui()
         self._resize_to_current_page()
         self._center_on_screen()
-        print("[Launcher] Launcher started successfully.")
+        print("[Launcher] Launcher ready.")
 
     # ---------- Helpers ----------
     def _register_action(self, label, callback, tooltip=None, icon=None):
@@ -105,7 +103,6 @@ class LauncherWindow(QtWidgets.QWidget):
         if tooltip:
             btn.setToolTip(tooltip)
 
-        # Auto-apply warning icon for update actions when behind
         if self.update_status == "behind":
             if "Update / Maintenance" in label or "Update from Git" in label:
                 icon = self.style().standardIcon(QtWidgets.QStyle.SP_MessageBoxWarning)
@@ -252,11 +249,9 @@ class LauncherWindow(QtWidgets.QWidget):
 
         footer.addWidget(lbl_toggle)
         footer.addWidget(self.launcher_toggle)
-
         lay.addLayout(footer)
         footer.setAlignment(QtCore.Qt.AlignRight | QtCore.Qt.AlignBottom)
-
-
+        
     def _build_maint_page(self):
         """Create the maintenance page with update/repair actions."""
         self._reset_page(self.page_maint)
@@ -297,29 +292,27 @@ class LauncherWindow(QtWidgets.QWidget):
                 card = QtWidgets.QFrame()
                 card_lay = QtWidgets.QVBoxLayout(card)
                 card_lay.setContentsMargins(8, 6, 8, 6)
+
                 title_html = f"<b>{c['hash']}</b>  —  <i>{c['date']}</i>"
-                if is_current:
-                    title_html += (
-                        "  <span style='color:rgba(255,255,255,0.65);"
-                        "background-color:rgba(255,255,255,0.08);"
-                        "border:1px solid rgba(255,255,255,0.10);"
-                        "border-radius:6px;padding:1px 6px;font-size:11px;'>Current</span>"
-                    )
                 hash_label = QtWidgets.QLabel(title_html)
                 msg_label = QtWidgets.QLabel(c['msg'])
                 msg_label.setWordWrap(True)
-                btn = QtWidgets.QPushButton()
-                btn.setFixedHeight(26)
-                if is_current:
-                    btn.setText("This is the current version")
-                    btn.setEnabled(False)
-                else:
-                    btn.setText("Revert to this version")
-                    btn.clicked.connect(lambda _, h=c['hash']: self.on_rollback(h))
+
                 card_lay.addWidget(hash_label)
                 card_lay.addWidget(msg_label)
-                card_lay.addWidget(btn)
+
+                if is_current:
+                    pill = StatusPill("This is the current version")
+                    card_lay.addWidget(pill)
+                else:
+                    btn = QtWidgets.QPushButton("Revert to this version")
+                    btn.setFixedHeight(26)
+                    btn.setFocusPolicy(QtCore.Qt.NoFocus)
+                    btn.clicked.connect(lambda _, h=c['hash']: self.on_rollback(h))
+                    card_lay.addWidget(btn)
+
                 v.addWidget(card)
+
         v.addStretch(1)
         inner.setLayout(v)
         scroll.setWidget(inner)
@@ -369,11 +362,13 @@ class LauncherWindow(QtWidgets.QWidget):
             QtWidgets.QMessageBox.Yes | QtWidgets.QMessageBox.No)
         if confirm != QtWidgets.QMessageBox.Yes:
             return
+
         changed = git_changed_files(True)
         if not changed:
             QtWidgets.QMessageBox.information(self, "Repair", "No files to restore.")
             print("[Launcher] Repair skipped — no changed files.")
             return
+
         print(f"[Launcher] Repairing installation ({len(changed)} file(s))...")
         self._set_maintenance_busy(True, "Repairing…")
         try:
@@ -383,6 +378,7 @@ class LauncherWindow(QtWidgets.QWidget):
             r = run_git(["restore", "--worktree", "--source=HEAD", "--", "."], capture=True)
             if not r or r.returncode != 0:
                 run_git(["checkout", "--", "."], capture=False)
+            update_current_commit_in_cfg()
             update_last_updated_in_cfg()
             self.commits = fetch_commit_list(10)
             self._rebuild_page("page_rollback", self._build_rollback_page)
@@ -416,12 +412,14 @@ class LauncherWindow(QtWidgets.QWidget):
             QtWidgets.QMessageBox.Yes | QtWidgets.QMessageBox.No)
         if confirm != QtWidgets.QMessageBox.Yes:
             return
+
         changed = git_changed_files(True)
         if changed:
             print(f"[Launcher] Backing up {len(changed)} changed file(s) before revert...")
             backup_path = backup_changed_files(changed)
             if backup_path:
                 notify_backup_created(self, backup_path)
+
         print(f"[Launcher] Reverting to commit {commit_hash[:7]}...")
         self._set_maintenance_busy(True, "Reverting…")
         try:
