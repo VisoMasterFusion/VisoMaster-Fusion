@@ -4,6 +4,8 @@ import subprocess as sp
 import gc
 import traceback
 import multiprocessing
+import re
+import time
 from typing import Dict, TYPE_CHECKING, Optional
 
 from packaging import version
@@ -25,6 +27,8 @@ except ImportError:
     )
 
 from PySide6 import QtCore
+from PySide6.QtWidgets import QProgressDialog
+from PySide6.QtCore import Qt
 
 try:
     import tensorrt as trt
@@ -162,124 +166,6 @@ def gamma_decode_srgb_to_linear_rgb(srgb: torch.Tensor, gamma=SRGB_GAMMA):
 class ModelsProcessor(QtCore.QObject):
     processing_complete = QtCore.Signal()
     model_loaded = QtCore.Signal()  # Signal emitted with Onnx InferenceSession
-
-    @staticmethod
-    def print_tensor_stats(tensor: torch.Tensor, name: str, enabled: bool = True):
-        if not enabled:
-            return
-        if isinstance(tensor, torch.Tensor):
-            # Cast to float for mean and std calculation if tensor is uint8
-            if tensor.dtype == torch.uint8:
-                tensor_float = tensor.float() / 255.0  # Normalize for meaningful stats
-                print(
-                    f"DEBUG DENOISER STATS for {name}: shape={tensor.shape}, dtype={tensor.dtype}, device={tensor.device}, min={tensor.min().item():.4f}, max={tensor.max().item():.4f}, mean={tensor_float.mean().item():.4f}, std={tensor_float.std().item():.4f} (stats on [0,1] float)"
-                )
-            elif tensor.dtype == torch.float16 or tensor.dtype == torch.float32:
-                print(
-                    f"DEBUG DENOISER STATS for {name}: shape={tensor.shape}, dtype={tensor.dtype}, device={tensor.device}, min={tensor.min().item():.4f}, max={tensor.max().item():.4f}, mean={tensor.mean().item():.4f}, std={tensor.std().item():.4f}"
-                )
-            else:
-                print(
-                    f"DEBUG DENOISER STATS for {name}: shape={tensor.shape}, dtype={tensor.dtype}, device={tensor.device} (stats not computed for this dtype)"
-                )
-        else:
-            print(
-                f"DEBUG DENOISER STATS for {name}: Not a tensor, type is {type(tensor)}"
-            )
-
-    # --- START: Functions integrated from ldm.modules.diffusionmodules.util ---
-    @staticmethod
-    def make_beta_schedule(
-        schedule, n_timestep, linear_start=1e-4, linear_end=2e-2, cosine_s=8e-3
-    ) -> np.ndarray:
-        if schedule == "linear":
-            betas = (
-                torch.linspace(
-                    linear_start**0.5, linear_end**0.5, n_timestep, dtype=torch.float64
-                )
-                ** 2
-            )
-        elif schedule == "cosine":
-            timesteps = (
-                torch.arange(n_timestep + 1, dtype=torch.float64) / n_timestep
-                + cosine_s
-            )
-            alphas = timesteps / (1 + cosine_s) * np.pi / 2  # type: ignore
-            alphas = torch.cos(alphas).pow(2)
-            alphas = alphas / alphas[0]
-            betas = 1 - alphas[1:] / alphas[:-1]
-            betas = np.clip(betas.numpy(), a_min=0, a_max=0.999)  # type: ignore
-        elif schedule == "sqrt_linear":
-            betas = torch.linspace(
-                linear_start, linear_end, n_timestep, dtype=torch.float64
-            )
-        elif schedule == "sqrt":  # Not used by ref-ldm
-            betas = (
-                torch.linspace(
-                    linear_start, linear_end, n_timestep, dtype=torch.float64
-                )
-                ** 0.5
-            )
-        else:
-            raise ValueError(f"schedule '{schedule}' unknown.")
-        return betas.numpy() if isinstance(betas, torch.Tensor) else betas
-
-    @staticmethod
-    def make_ddim_timesteps(
-        ddim_discr_method: str,
-        num_ddim_timesteps: int,
-        num_ddpm_timesteps: int,
-        verbose: bool = True,
-    ) -> np.ndarray:
-        if ddim_discr_method == "uniform":
-            c = num_ddpm_timesteps // num_ddim_timesteps
-            if c == 0:
-                c = 1  # Avoid division by zero or c=0 for small num_ddpm_timesteps
-            ddim_timesteps = np.asarray(list(range(0, num_ddpm_timesteps, c)))
-        elif ddim_discr_method == "uniform_trailing":
-            c = num_ddpm_timesteps // num_ddim_timesteps
-            if c == 0:
-                c = 1
-            ddim_timesteps = (
-                np.arange(num_ddpm_timesteps, 0, -c).astype(int)[::-1] - 2
-            )  # Match LDM util
-            ddim_timesteps = np.clip(
-                ddim_timesteps, 0, num_ddpm_timesteps - 1
-            )  # Ensure valid range
-        elif ddim_discr_method == "quad":
-            ddim_timesteps = (
-                (np.linspace(0, np.sqrt(num_ddpm_timesteps * 0.8), num_ddim_timesteps))
-                ** 2
-            ).astype(int)
-        else:
-            raise NotImplementedError(
-                f'There is no ddim discretization method called "{ddim_discr_method}"'
-            )
-
-        steps_out = np.unique(ddim_timesteps)
-        steps_out.sort()
-
-        if verbose:
-            print(f"Selected DDPM timesteps for DDIM sampler (0-indexed): {steps_out}")
-        return steps_out
-
-    @staticmethod
-    def make_ddim_sampling_parameters(
-        alphacums: np.ndarray,
-        ddim_timesteps: np.ndarray,
-        eta: float,
-        verbose: bool = True,
-    ) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
-        _prev_t = np.concatenate(
-            ([-1], ddim_timesteps[:-1])
-        )  # Use -1 to signify "before first step"
-        _alphas_prev = np.array([alphacums[pt] if pt != -1 else 1.0 for pt in _prev_t])
-        _alphas = alphacums[ddim_timesteps]
-        sigmas = eta * np.sqrt(
-            (1 - _alphas_prev) / (1 - _alphas) * (1 - _alphas / _alphas_prev)
-        )
-        sigmas = np.nan_to_num(sigmas, nan=0.0)
-        return sigmas, _alphas, _alphas_prev
 
     def __init__(self, main_window: "MainWindow", device="cuda"):
         super().__init__()
@@ -560,11 +446,11 @@ class ModelsProcessor(QtCore.QObject):
 
     def load_model(self, model_name, session_options=None):
         with self.model_lock:
-            # If model is already loaded, return it from the cache
-            if model_name in self.models and self.models[model_name] is not None:
+            if self.models.get(model_name):
                 return self.models[model_name]
 
             model_instance = None
+            onnx_path = self.models_path[model_name]
 
             # Prepare providers, with special case for DEIM-S-Face
             providers = self.providers
@@ -572,48 +458,167 @@ class ModelsProcessor(QtCore.QObject):
                 self.provider_name == "TensorRT"
                 or self.provider_name == "TensorRT-Engine"
             ) and model_name == "DEIM-S-Face":
-                print(
-                    "Applying special TensorRT options for DETR-Face (disabling FP16)."
-                )
+                # Applying special TensorRT options for DETR-Face (disabling FP16).
                 specific_trt_options = self.trt_ep_options.copy()
-                specific_trt_options["trt_fp16_enable"] = True
+                specific_trt_options["trt_fp16_enable"] = False
                 providers = [
                     ("TensorrtExecutionProvider", specific_trt_options),
                     ("CUDAExecutionProvider"),
                     ("CPUExecutionProvider"),
                 ]
 
-            try:
-                # Check if this is a TensorRT load to provide a warning.
-                is_tensorrt_load = any(
-                    (p[0] if isinstance(p, tuple) else p) == "TensorrtExecutionProvider"
-                    for p in providers
-                )
+            build_dialog = None
+            build_was_triggered = False
 
-                if is_tensorrt_load:
-                    cache_dir = self.trt_ep_options.get("trt_engine_cache_path")
-                    cache_exists = False
-                    if (
-                        cache_dir
-                        and os.path.exists(cache_dir)
-                        and self.models_path.get(model_name)
-                    ):
-                        model_basename = os.path.splitext(
-                            os.path.basename(self.models_path[model_name])
-                        )[0]
-                        # Check if any file in the cache directory starts with the model's base name.
-                        # This is a heuristic as the exact cache file naming is not documented.
-                        if any(
-                            f.startswith(model_basename) for f in os.listdir(cache_dir)
-                        ):
-                            cache_exists = True
+            is_tensorrt_load = any(
+                (p[0] if isinstance(p, tuple) else p) == "TensorrtExecutionProvider"
+                for p in providers
+            )
 
-                    if not cache_exists:
-                        print(
-                            f"INFO: PLEASE WAIT... Loading '{model_name}' with TensorRT provider the first time ! "
-                            f"It can take some time to create the model cache. UI will be unresponsive."
+            # Only run the isolated probe if TensorRT is the target provider
+            if is_tensorrt_load:
+                # Check if engine config file exists, if yes find the engine id for the model and check if engine cache file exists
+                cache_is_valid = False
+                try:
+                    cache_dir = "tensorrt-engines"
+                    base_onnx_name = os.path.splitext(os.path.basename(onnx_path))[0]
+                    ctx_file_name = f"{base_onnx_name}_ctx.onnx"
+                    ctx_file_path = os.path.join(cache_dir, ctx_file_name)
+
+                    if os.path.exists(ctx_file_path):
+                        with open(ctx_file_path, "rb") as f:
+                            content = f.read()
+
+                        match = re.search(
+                            b"TensorrtExecutionProvider_.*?\.engine", content
                         )
 
+                        if match:
+                            engine_name = match.group(0).decode("utf-8")
+                            engine_subdirectory_name = os.path.basename(cache_dir)
+                            engine_file_path = os.path.join(
+                                cache_dir, engine_subdirectory_name, engine_name
+                            )
+
+                            if os.path.exists(engine_file_path):
+                                cache_is_valid = True
+                            else:
+                                print(
+                                    f"Context file '{ctx_file_name}' found, but the engine '{engine_name}' is missing from the subdirectory. New build will be prompted through ONNX Probe."
+                                )
+                        else:
+                            print(
+                                f"Context file '{ctx_file_name}' found, but could not extract the engine name from it. New build will be prompted through ONNX Probe."
+                            )
+                    else:
+                        print(
+                            f"No cache context file '{ctx_file_name}' found for {model_name}. New build will be prompted through ONNX Probe."
+                        )
+
+                except Exception as e:
+                    print(f"Error during TensorRT cache check: {e}")
+                    cache_is_valid = False
+
+                # If no engine config file or cache file exists run the prob to prevent crash and load the engine creation
+                if not cache_is_valid:
+                    build_was_triggered = True
+                    print(
+                        f"TensorRT load detected for {model_name}. Running isolated probe..."
+                    )
+
+                    try:
+                        # Create a QProgressDialog to inform the user
+                        build_dialog = QProgressDialog(
+                            self.main_window  # Parent
+                        )
+                        build_dialog.setCancelButton(
+                            None
+                        )  # User cannot cancel this process
+                        build_dialog.setWindowModality(
+                            Qt.WindowModal
+                        )  # Block main window
+                        build_dialog.setWindowTitle("Building TensorRT Cache")
+                        build_dialog.setLabelText(
+                            f"Building TensorRT engine cache for:\n"
+                            f"{os.path.basename(onnx_path)}\n\n"
+                            f"This may take several minutes.\n"
+                            f"The application will continue once finished."
+                        )
+                        build_dialog.setRange(0, 0)  # Set to indeterminate (busy) mode
+                        build_dialog.show()
+
+                        # Process one event loop to ensure the dialog is drawn
+                        QtCore.QCoreApplication.processEvents()
+
+                        probe_successful = False
+                        last_exit_code = None
+                        max_retries = 3
+
+                        for attempt in range(max_retries):
+                            print(
+                                f"Probe attempt {attempt + 1} of {max_retries} for {model_name}..."
+                            )
+
+                            # Use 'spawn' context for CUDA/TRT safety
+                            ctx = multiprocessing.get_context("spawn")
+                            current_providers_list = [
+                                p[0] if isinstance(p, tuple) else p for p in providers
+                            ]
+                            probe_process = ctx.Process(
+                                target=_probe_onnx_model_worker,
+                                args=(
+                                    self.models_path[model_name],
+                                    current_providers_list,
+                                    self.trt_ep_options,
+                                ),
+                            )
+                            probe_process.start()
+
+                            while probe_process.is_alive():
+                                QtCore.QCoreApplication.processEvents()
+                                time.sleep(0.1)
+
+                            exitcode = probe_process.exitcode
+                            last_exit_code = exitcode
+
+                            if exitcode == 0:
+                                print(
+                                    f"Probe successful for {model_name}. Cache should be built."
+                                )
+                                probe_successful = True
+                                break
+                            else:
+                                print(
+                                    f"Probe attempt {attempt + 1} failed with exit code {exitcode}."
+                                )
+                                if attempt < max_retries - 1:
+                                    print("Retrying in 2 seconds...")
+                                    time.sleep(2)
+
+                        if not probe_successful:
+                            raise RuntimeError(
+                                f"ONNX/TensorRT probe process failed after {max_retries} attempts. Last exit code: {last_exit_code}"
+                            )
+
+                    except Exception:
+                        if build_dialog:
+                            build_dialog.close()  # Ensure dialog is closed on failure
+                            del build_dialog
+                            build_dialog = None
+
+                        print(f"ERROR: Isolated probe failed for {model_name}.")
+                        print(
+                            "The model will not be loaded. This is likely a fatal TensorRT/CUDA error."
+                        )
+                        traceback.print_exc()
+                        self.models[model_name] = (
+                            None  # Ensure it's marked as not loaded
+                        )
+                        return None  # Abort the load
+
+            # Now, proceed with the *actual* load in the main thread.
+            # If the probe worked, this should be fast and just load from cache.
+            try:
                 if session_options is None:
                     model_instance = onnxruntime.InferenceSession(
                         self.models_path[model_name], providers=providers
@@ -625,26 +630,42 @@ class ModelsProcessor(QtCore.QObject):
                         providers=providers,
                     )
 
+                if build_was_triggered:
+                    if torch.cuda.is_available():
+                        print(
+                            "Synchronizing with CUDA to ensure TRT engine is ready..."
+                        )
+                        torch.cuda.synchronize()
+                        print("Synchronization complete.")
+
+                # Race condition check
+                if self.models.get(model_name):
+                    del model_instance
+                    gc.collect()
+                    print(f"Unloaded model: {model_name} already in memory")
+                    return self.models.get(model_name)
+
+                self.models[model_name] = model_instance
                 print(
                     f"Successfully loaded model: '{model_name}' with execution provider: '{self.provider_name}'"
                 )
-                self.models[model_name] = model_instance
                 return model_instance
 
             except Exception:
-                print(f"ERROR: Failed to load model '{model_name}'.")
+                # This catch is still valuable for non-fatal errors
+                print(f"ERROR: Failed to load model {model_name} (even after probe).")
                 traceback.print_exc()
                 if model_instance is not None:
                     del model_instance
                     gc.collect()
-                # Mark as failed so we don't try to load it again
                 self.models[model_name] = None
                 return None
+
             finally:
-                # REMOVED: self.main_window.model_loaded_signal.emit()
-                # The signal is still emitted by other functions that ARE called from the main thread.
-                # But we remove it from here to ensure thread safety.
-                pass
+                if build_dialog:
+                    build_dialog.close()  # Close the dialog
+                    del build_dialog
+                    build_dialog = None
 
     def load_dfm_model(self, dfm_model):
         with self.model_lock:
@@ -680,7 +701,11 @@ class ModelsProcessor(QtCore.QObject):
             return self.dfm_models.get(dfm_model)  # Use .get() for safety
 
     def load_model_trt(
-        self, model_name, custom_plugin_path=None, precision="fp16", debug=False
+        self,
+        model_name,
+        custom_plugin_path=None,
+        precision="fp16",
+        debug=False,
     ):
         self.main_window.model_loading_signal.emit()
         model_instance = None
@@ -1007,6 +1032,123 @@ class ModelsProcessor(QtCore.QObject):
     def unload_face_restorer_models(self):
         with self.model_lock:
             self.face_restorers.unload_models()
+
+    @staticmethod
+    def print_tensor_stats(tensor: torch.Tensor, name: str, enabled: bool = True):
+        if not enabled:
+            return
+        if isinstance(tensor, torch.Tensor):
+            # Cast to float for mean and std calculation if tensor is uint8
+            if tensor.dtype == torch.uint8:
+                tensor_float = tensor.float() / 255.0  # Normalize for meaningful stats
+                print(
+                    f"DEBUG DENOISER STATS for {name}: shape={tensor.shape}, dtype={tensor.dtype}, device={tensor.device}, min={tensor.min().item():.4f}, max={tensor.max().item():.4f}, mean={tensor_float.mean().item():.4f}, std={tensor_float.std().item():.4f} (stats on [0,1] float)"
+                )
+            elif tensor.dtype == torch.float16 or tensor.dtype == torch.float32:
+                print(
+                    f"DEBUG DENOISER STATS for {name}: shape={tensor.shape}, dtype={tensor.dtype}, device={tensor.device}, min={tensor.min().item():.4f}, max={tensor.max().item():.4f}, mean={tensor.mean().item():.4f}, std={tensor.std().item():.4f}"
+                )
+            else:
+                print(
+                    f"DEBUG DENOISER STATS for {name}: shape={tensor.shape}, dtype={tensor.dtype}, device={tensor.device} (stats not computed for this dtype)"
+                )
+        else:
+            print(
+                f"DEBUG DENOISER STATS for {name}: Not a tensor, type is {type(tensor)}"
+            )
+
+    @staticmethod
+    def make_beta_schedule(
+        schedule, n_timestep, linear_start=1e-4, linear_end=2e-2, cosine_s=8e-3
+    ) -> np.ndarray:
+        if schedule == "linear":
+            betas = (
+                torch.linspace(
+                    linear_start**0.5, linear_end**0.5, n_timestep, dtype=torch.float64
+                )
+                ** 2
+            )
+        elif schedule == "cosine":
+            timesteps = (
+                torch.arange(n_timestep + 1, dtype=torch.float64) / n_timestep
+                + cosine_s
+            )
+            alphas = timesteps / (1 + cosine_s) * np.pi / 2  # type: ignore
+            alphas = torch.cos(alphas).pow(2)
+            alphas = alphas / alphas[0]
+            betas = 1 - alphas[1:] / alphas[:-1]
+            betas = np.clip(betas.numpy(), a_min=0, a_max=0.999)  # type: ignore
+        elif schedule == "sqrt_linear":
+            betas = torch.linspace(
+                linear_start, linear_end, n_timestep, dtype=torch.float64
+            )
+        elif schedule == "sqrt":  # Not used by ref-ldm
+            betas = (
+                torch.linspace(
+                    linear_start, linear_end, n_timestep, dtype=torch.float64
+                )
+                ** 0.5
+            )
+        else:
+            raise ValueError(f"schedule '{schedule}' unknown.")
+        return betas.numpy() if isinstance(betas, torch.Tensor) else betas
+
+    @staticmethod
+    def make_ddim_timesteps(
+        ddim_discr_method: str,
+        num_ddim_timesteps: int,
+        num_ddpm_timesteps: int,
+        verbose: bool = True,
+    ) -> np.ndarray:
+        if ddim_discr_method == "uniform":
+            c = num_ddpm_timesteps // num_ddim_timesteps
+            if c == 0:
+                c = 1  # Avoid division by zero or c=0 for small num_ddpm_timesteps
+            ddim_timesteps = np.asarray(list(range(0, num_ddpm_timesteps, c)))
+        elif ddim_discr_method == "uniform_trailing":
+            c = num_ddpm_timesteps // num_ddim_timesteps
+            if c == 0:
+                c = 1
+            ddim_timesteps = (
+                np.arange(num_ddpm_timesteps, 0, -c).astype(int)[::-1] - 2
+            )  # Match LDM util
+            ddim_timesteps = np.clip(
+                ddim_timesteps, 0, num_ddpm_timesteps - 1
+            )  # Ensure valid range
+        elif ddim_discr_method == "quad":
+            ddim_timesteps = (
+                (np.linspace(0, np.sqrt(num_ddpm_timesteps * 0.8), num_ddim_timesteps))
+                ** 2
+            ).astype(int)
+        else:
+            raise NotImplementedError(
+                f'There is no ddim discretization method called "{ddim_discr_method}"'
+            )
+
+        steps_out = np.unique(ddim_timesteps)
+        steps_out.sort()
+
+        if verbose:
+            print(f"Selected DDPM timesteps for DDIM sampler (0-indexed): {steps_out}")
+        return steps_out
+
+    @staticmethod
+    def make_ddim_sampling_parameters(
+        alphacums: np.ndarray,
+        ddim_timesteps: np.ndarray,
+        eta: float,
+        verbose: bool = True,
+    ) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
+        _prev_t = np.concatenate(
+            ([-1], ddim_timesteps[:-1])
+        )  # Use -1 to signify "before first step"
+        _alphas_prev = np.array([alphacums[pt] if pt != -1 else 1.0 for pt in _prev_t])
+        _alphas = alphacums[ddim_timesteps]
+        sigmas = eta * np.sqrt(
+            (1 - _alphas_prev) / (1 - _alphas) * (1 - _alphas / _alphas_prev)
+        )
+        sigmas = np.nan_to_num(sigmas, nan=0.0)
+        return sigmas, _alphas, _alphas_prev
 
     def apply_vgg_mask_simple(
         self,

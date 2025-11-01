@@ -122,6 +122,7 @@ class FaceDetectors:
         img_width,
         det_scale,
         max_num,
+        skip_nms=False,
     ):
         """
         Performs GPU-accelerated NMS, sorting, and filtering on raw detections from all angles.
@@ -134,6 +135,7 @@ class FaceDetectors:
             img_width (int): The *original* width of the source image.
             det_scale (torch.Tensor): The scaling factor used to resize the image (new_height / original_height).
             max_num (int): The maximum number of faces to return, sorted by size and centrality.
+            skip_nms (bool): If True, skips the Non-Maximum Suppression step.
 
         Returns:
             tuple: (det, kpss_final, score_values)
@@ -175,15 +177,22 @@ class FaceDetectors:
         bboxes_tensor = bboxes_tensor.contiguous()
         scores_tensor = scores_tensor.contiguous()
 
-        # Perform Non-Maximum Suppression on the GPU to remove overlapping boxes.
-        nms_thresh = 0.4
-        keep_indices = nms(bboxes_tensor, scores_tensor, iou_threshold=nms_thresh)
+        if not skip_nms:
+            # Perform Non-Maximum Suppression on the GPU to remove overlapping boxes.
+            nms_thresh = 0.4
+            keep_indices = nms(bboxes_tensor, scores_tensor, iou_threshold=nms_thresh)
 
-        det_boxes, det_kpss, det_scores = (
-            bboxes_tensor[keep_indices],
-            kpss_tensor[keep_indices],
-            scores_tensor[keep_indices],
-        )
+            det_boxes, det_kpss, det_scores = (
+                bboxes_tensor[keep_indices],
+                kpss_tensor[keep_indices],
+                scores_tensor[keep_indices],
+            )
+        else:
+            det_boxes, det_kpss, det_scores = (
+                bboxes_tensor,
+                kpss_tensor,
+                scores_tensor,
+            )
 
         # Sort the remaining detections by their confidence score.
         sorted_indices = torch.argsort(det_scores, descending=True)
@@ -1058,8 +1067,7 @@ class FaceDetectors:
         )
 
         # The reference implementation live_inference-DETR.py does not use rotation.
-        # Aggregating results from multiple angles is the likely source of duplicate boxes.
-        rotation_angles = [0]
+        # We let _filter_detections_gpu handle duplicates from multiple angles.
 
         img_landmark = img.clone()
 
@@ -1142,25 +1150,20 @@ class FaceDetectors:
             if len(pos_inds) == 0:
                 continue
 
-            # Apply NMS on the raw outputs on the canvas to filter duplicates for the same face
-            boxes_for_nms = torch.from_numpy(boxes[pos_inds]).to(
-                self.models_processor.device, dtype=torch.float32
+            # Perform NMS on the canvas-space detections for this angle to remove duplicates for the same face.
+            # This is necessary as the model can output multiple overlapping boxes for a single face.
+            nms_thresh = 0.4
+            pre_nms_bboxes = boxes[pos_inds]
+            pre_nms_scores = scores[pos_inds]
+            keep_indices = nms(
+                torch.from_numpy(pre_nms_bboxes).to(self.models_processor.device),
+                torch.from_numpy(pre_nms_scores).to(self.models_processor.device),
+                iou_threshold=nms_thresh,
             )
-            scores_for_nms = torch.from_numpy(scores[pos_inds]).to(
-                self.models_processor.device, dtype=torch.float32
-            )
+            keep_indices_np = keep_indices.cpu().numpy()
 
-            # Using a threshold to remove highly overlapping boxes.
-            keep_indices = nms(boxes_for_nms, scores_for_nms, iou_threshold=0.3)
-
-            kept_indices_np = keep_indices.cpu().numpy()
-            pos_inds = pos_inds[kept_indices_np]
-
-            if len(pos_inds) == 0:
-                continue
-
-            pos_bboxes = boxes[pos_inds]
-            pos_scores = scores[pos_inds].reshape(-1, 1)
+            pos_bboxes = pre_nms_bboxes[keep_indices_np]
+            pos_scores = pre_nms_scores[keep_indices_np].reshape(-1, 1)
 
             # Create dummy landmarks relative to the boxes on the canvas
             pos_kpss = np.zeros((len(pos_bboxes), 5, 2), dtype=np.float32)
@@ -1194,6 +1197,8 @@ class FaceDetectors:
             all_kpss_list.append(pos_kpss)
 
         # Now, filter detections from all angles. All coordinates are in the original image space.
+        # NMS is skipped here because it was already performed for each angle individually.
+        # This prevents NMS from incorrectly suppressing detections of separate, nearby faces.
         det, kpss, score_values = self._filter_detections_gpu(
             all_scores_list,
             all_bboxes_list,
@@ -1204,6 +1209,7 @@ class FaceDetectors:
                 1.0, device=self.models_processor.device
             ),  # Scale is 1.0 as boxes are now correctly scaled
             max_num,
+            skip_nms=True,
         )
 
         if det is None or len(det) == 0:
