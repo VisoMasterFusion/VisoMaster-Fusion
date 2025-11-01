@@ -1,6 +1,63 @@
 @echo off
 setlocal EnableDelayedExpansion
 
+:: ============================================================
+::  VisoMaster Fusion Portable Launcher
+::  - First run: performs full setup as normal
+::  - Subsequent runs: launches PySide6 GUI launcher
+:: ============================================================
+
+:: --- LAUNCHER INTEGRATION (pre-check) ---
+:: Minimal pre-check — don’t redefine dev’s path variables
+set "BASE_DIR=%~dp0"
+set "VENV_PYTHON=%BASE_DIR%portable-files\venv\Scripts\python.exe"
+set "GIT_DIR_PRESENT=%BASE_DIR%VisoMaster-Fusion\.git"
+set "PORTABLE_CFG=%BASE_DIR%portable.cfg"
+
+:: Read optional toggle from portable.cfg (default 1 = GUI enabled)
+set "LAUNCHER_ENABLED=1"
+if exist "%PORTABLE_CFG%" (
+  for /f "usebackq tokens=1,* delims== " %%A in ("%PORTABLE_CFG%") do (
+    if /I "%%A"=="LAUNCHER_ENABLED" set "LAUNCHER_ENABLED=%%B"
+  )
+)
+if "%LAUNCHER_ENABLED%"=="" set "LAUNCHER_ENABLED=1"
+
+:: If GUI enabled and an installation already exists, start the launcher.
+if "%LAUNCHER_ENABLED%"=="1" (
+  if exist "%VENV_PYTHON%" (
+    if exist "%GIT_DIR_PRESENT%" (
+      echo Existing installation detected.
+      echo Launching VisoMaster Fusion Launcher...
+      echo ========================================
+      echo Reminder:
+      echo If you ever need to re-run the full setup,
+      echo delete "portable.cfg" or rename "VisoMaster-Fusion".
+      echo.
+
+      :: Make sure Python knows where to find 'app'
+      set "PYTHONPATH=%BASE_DIR%VisoMaster-Fusion"
+
+      "%VENV_PYTHON%" -m app.ui.launcher
+      set "LAUNCHER_EXIT_CODE=!ERRORLEVEL!"
+
+      echo.
+      echo Launcher closed. (Exit code: !LAUNCHER_EXIT_CODE!)
+      echo Press any key to exit...
+      pause >nul
+      exit /b !LAUNCHER_EXIT_CODE!
+    )
+  )
+)
+
+:: If GUI disabled (LAUNCHER_ENABLED=0) or missing files, fall through
+:: to the original developer setup logic below unchanged.
+
+
+:: ============================================================
+::  Original Developer Setup Logic (unchanged)
+:: ============================================================
+
 :: --- Basic Setup ---
 :: Define repo details
 set "REPO_URL=https://github.com/VisoMasterFusion/VisoMaster-Fusion.git"
@@ -38,7 +95,6 @@ set "DOWNLOAD_PY=download_models.py"
 set "MAIN_PY=main.py"
 
 :: --- Step 0: User Configuration ---
-:: Read config or prompt user for the first time
 if exist "%CONFIG_FILE%" (
     echo Loading configuration from portable.cfg...
     for /f "usebackq tokens=1,* delims==" %%a in ("%CONFIG_FILE%") do set "%%a=%%b"
@@ -49,7 +105,6 @@ if exist "%CONFIG_FILE%" (
 set "REQ_FILE_NAME=requirements_cu129.txt"
 set "DOWNLOAD_RUN=false"
 
-:: Write to config file in a clean "KEY=VALUE" format.
 (
     echo REQ_FILE_NAME=!REQ_FILE_NAME!
     echo DOWNLOAD_RUN=!DOWNLOAD_RUN!
@@ -61,14 +116,9 @@ echo.
 
 :: Force requirements file to cu129
 set "REQ_FILE_NAME=requirements_cu129.txt"
-
-:: Reconstruct the full path to the requirements file from the config.
 set "REQUIREMENTS=%APP_DIR%\%REQ_FILE_NAME%"
-
-:: This flag will determine if we need to run pip install.
 set "NEEDS_INSTALL=false"
 
-:: Create the directory for portable tools if it doesn't exist
 if not exist "%PORTABLE_DIR%" mkdir "%PORTABLE_DIR%"
 
 :: --- Step 1: Set up portable Git ---
@@ -95,7 +145,6 @@ if not exist "%GIT_DIR%\bin\git.exe" (
 if exist "%APP_DIR%" (
     if exist "%APP_DIR%\.git" (
         echo Repository exists. Checking for updates...
-        :: Folder exists and is a git repo, check for updates
         pushd "%APP_DIR%"
         git --git-dir="%APP_DIR%\.git" --work-tree="%APP_DIR%" checkout %BRANCH%
         git --git-dir="%APP_DIR%\.git" --work-tree="%APP_DIR%" fetch
@@ -116,7 +165,6 @@ if exist "%APP_DIR%" (
                 )
                 echo Repository updated.
                 set "NEEDS_INSTALL=true"
-                :: Reset download flag when updating
                 set "DOWNLOAD_RUN=false"
                 powershell -Command "(Get-Content '%CONFIG_FILE%') -replace 'DOWNLOAD_RUN=.*', 'DOWNLOAD_RUN=false' | Set-Content '%CONFIG_FILE%'"
             )
@@ -161,7 +209,6 @@ if not exist "%PYTHON_DIR%\python.exe" (
     powershell -Command "Expand-Archive -Path '%PYTHON_ZIP%' -DestinationPath '%PYTHON_DIR%' -Force"
     del "%PYTHON_ZIP%"
 
-    :: Enable site packages
     set "PTH_FILE=%PYTHON_DIR%\python311._pth"
     if exist "!PTH_FILE!" (
         echo Enabling site packages in PTH file...
@@ -215,7 +262,7 @@ if /I "!NEEDS_INSTALL!"=="true" (
     set "INSTALL_ERROR=!ERRORLEVEL!"
     popd
     if !INSTALL_ERROR! neq 0 (
-        echo ERROR: Dependency installation failed. Check your requirements file.
+        echo ERROR: Dependency installation failed.
         set "PATH=%OLD_PATH%"
         exit /b 1
     )
@@ -234,7 +281,6 @@ if /I "!DOWNLOAD_RUN!"=="false" (
             echo WARNING: download_models.py encountered an issue.
             echo Continuing anyway...
         ) else (
-            :: Update config file only on success
             powershell -Command "(Get-Content '%CONFIG_FILE%') -replace 'DOWNLOAD_RUN=.*', 'DOWNLOAD_RUN=true' | Set-Content '%CONFIG_FILE%'"
             set "DOWNLOAD_RUN=true"
         )
