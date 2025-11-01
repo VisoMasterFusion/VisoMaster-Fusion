@@ -493,146 +493,147 @@ class ModelsProcessor(QtCore.QObject):
                 for p in providers
             )
 
-            # Only run the isolated probe if TensorRT is the target provider
-            if is_tensorrt_load:
-                # Check if engine config file exists...
-                cache_is_valid = False
-                try:
-                    cache_dir = "tensorrt-engines"
-                    base_onnx_name = os.path.splitext(os.path.basename(onnx_path))[0]
-                    ctx_file_name = f"{base_onnx_name}_ctx.onnx"
-                    ctx_file_path = os.path.join(cache_dir, ctx_file_name)
+            if onnx_path.lower().endswith(".onnx"):
+                # Only run the isolated probe if TensorRT is the target provider
+                if is_tensorrt_load:
+                    # Check if engine config file exists...
+                    cache_is_valid = False
+                    try:
+                        cache_dir = "tensorrt-engines"
+                        base_onnx_name = os.path.splitext(os.path.basename(onnx_path))[0]
+                        ctx_file_name = f"{base_onnx_name}_ctx.onnx"
+                        ctx_file_path = os.path.join(cache_dir, ctx_file_name)
 
-                    if os.path.exists(ctx_file_path):
-                        with open(ctx_file_path, "rb") as f:
-                            content = f.read()
+                        if os.path.exists(ctx_file_path):
+                            with open(ctx_file_path, "rb") as f:
+                                content = f.read()
 
-                        match = re.search(
-                            b"TensorrtExecutionProvider_.*?\\.engine", content
-                        )
-
-                        if match:
-                            engine_name = match.group(0).decode("utf-8")
-                            engine_subdirectory_name = os.path.basename(cache_dir)
-                            engine_file_path = os.path.join(
-                                cache_dir, engine_subdirectory_name, engine_name
+                            match = re.search(
+                                b"TensorrtExecutionProvider_.*?\\.engine", content
                             )
 
-                            if os.path.exists(engine_file_path):
-                                print(
-                                    f"Valid TensorRT cache found for '{model_name}'. Build will be skipped."
+                            if match:
+                                engine_name = match.group(0).decode("utf-8")
+                                engine_subdirectory_name = os.path.basename(cache_dir)
+                                engine_file_path = os.path.join(
+                                    cache_dir, engine_subdirectory_name, engine_name
                                 )
-                                cache_is_valid = True
+
+                                if os.path.exists(engine_file_path):
+                                    print(
+                                        f"Valid TensorRT cache found for '{model_name}'. Build will be skipped."
+                                    )
+                                    cache_is_valid = True
+                                else:
+                                    print(
+                                        f"Context file '{ctx_file_name}' found, but the engine '{engine_name}' is missing from the subdirectory. New build will be prompted through ONNX Probe."
+                                    )
                             else:
                                 print(
-                                    f"Context file '{ctx_file_name}' found, but the engine '{engine_name}' is missing from the subdirectory. New build will be prompted through ONNX Probe."
+                                    f"Context file '{ctx_file_name}' found, but could not extract the engine name from it. New build will be prompted through ONNX Probe."
                                 )
                         else:
                             print(
-                                f"Context file '{ctx_file_name}' found, but could not extract the engine name from it. New build will be prompted through ONNX Probe."
-                            )
-                    else:
-                        print(
-                            f"No cache context file '{ctx_file_name}' found for {model_name}. New build will be prompted through ONNX Probe."
-                        )
-
-                except Exception as e:
-                    print(f"Error during TensorRT cache check: {e}")
-                    cache_is_valid = False
-
-                # If no engine config file or cache file exists run the prob
-                if not cache_is_valid:
-                    build_was_triggered = True  # Mark that a build was attempted
-                    print(
-                        f"TensorRT load detected for {model_name}. Running isolated probe..."
-                    )
-
-                    try:
-                        # We emit signals to ask the main GUI thread to do it for us.
-                        dialog_title = "Building TensorRT Cache"
-                        dialog_text = (
-                            f"Building TensorRT engine cache for:\n"
-                            f"{os.path.basename(onnx_path)}\n\n"
-                            f"This may take several minutes.\n"
-                            f"The application will continue once finished."
-                        )
-
-                        # Ask the main thread to show the dialog
-                        self.show_build_dialog.emit(dialog_title, dialog_text)
-
-                        probe_successful = False
-                        last_exit_code = None
-                        max_retries = 3
-
-                        for attempt in range(max_retries):
-                            print(
-                                f"Probe attempt {attempt + 1} of {max_retries} for {model_name}..."
-                            )
-
-                            # Use 'spawn' context for CUDA/TRT safety
-                            ctx = multiprocessing.get_context("spawn")
-                            # Use the 'providers' variable that has the DEIM-S-Face logic
-                            current_providers_list = [
-                                p[0] if isinstance(p, tuple) else p for p in providers
-                            ]
-                            probe_process = ctx.Process(
-                                target=_probe_onnx_model_worker,
-                                args=(
-                                    self.models_path[model_name],
-                                    current_providers_list,
-                                    self.trt_ep_options,
-                                    session_options,
-                                ),
-                            )
-                            probe_process.start()
-
-                            # Run a local event loop to keep the GUI responsive.
-                            while probe_process.is_alive():
-                                QtCore.QCoreApplication.processEvents()
-                                time.sleep(0.02)  # Yield to other threads/processes
-
-                            # Process finished, get exit code
-                            exitcode = probe_process.exitcode
-                            last_exit_code = exitcode
-
-                            if exitcode == 0:
-                                print(
-                                    f"Probe successful for {model_name}. Cache should be built."
-                                )
-                                probe_successful = True
-                                break  # Exit the retry loop on success
-                            else:
-                                print(
-                                    f"Probe attempt {attempt + 1} failed with exit code {exitcode}."
-                                )
-                                if attempt < max_retries - 1:
-                                    print("Retrying in 2 seconds...")
-                                    # time.sleep(2) would freeze the GUI.
-                                    # We run a 2-second processEvents loop instead.
-                                    start_time = time.time()
-                                    while time.time() - start_time < 2.0:
-                                        QtCore.QCoreApplication.processEvents()
-                                        time.sleep(0.02)
-
-                        if not probe_successful:
-                            raise RuntimeError(
-                                f"ONNX/TensorRT probe process failed after {max_retries} attempts. Last exit code: {last_exit_code}"
+                                f"No cache context file '{ctx_file_name}' found for {model_name}. New build will be prompted through ONNX Probe."
                             )
 
                     except Exception as e:
-                        # Ask the main thread to hide the dialog on failure
-                        # (The final 'finally' will also catch this, but this is safer)
-                        self.hide_build_dialog.emit()
+                        print(f"Error during TensorRT cache check: {e}")
+                        cache_is_valid = False
 
-                        print(f"ERROR: Isolated probe failed for {model_name}.")
+                    # If no engine config file or cache file exists run the prob
+                    if not cache_is_valid:
+                        build_was_triggered = True  # Mark that a build was attempted
                         print(
-                            "The model will not be loaded. This is likely a fatal TensorRT/CUDA error."
+                            f"TensorRT load detected for {model_name}. Running isolated probe..."
                         )
-                        traceback.print_exc()
-                        self.models[model_name] = (
-                            None  # Ensure it's marked as not loaded
-                        )
-                        return None  # Abort the load
+
+                        try:
+                            # We emit signals to ask the main GUI thread to do it for us.
+                            dialog_title = "Building TensorRT Cache"
+                            dialog_text = (
+                                f"Building TensorRT engine cache for:\n"
+                                f"{os.path.basename(onnx_path)}\n\n"
+                                f"This may take several minutes.\n"
+                                f"The application will continue once finished."
+                            )
+
+                            # Ask the main thread to show the dialog
+                            self.show_build_dialog.emit(dialog_title, dialog_text)
+
+                            probe_successful = False
+                            last_exit_code = None
+                            max_retries = 3
+
+                            for attempt in range(max_retries):
+                                print(
+                                    f"Probe attempt {attempt + 1} of {max_retries} for {model_name}..."
+                                )
+
+                                # Use 'spawn' context for CUDA/TRT safety
+                                ctx = multiprocessing.get_context("spawn")
+                                # Use the 'providers' variable that has the DEIM-S-Face logic
+                                current_providers_list = [
+                                    p[0] if isinstance(p, tuple) else p for p in providers
+                                ]
+                                probe_process = ctx.Process(
+                                    target=_probe_onnx_model_worker,
+                                    args=(
+                                        self.models_path[model_name],
+                                        current_providers_list,
+                                        self.trt_ep_options,
+                                        session_options,
+                                    ),
+                                )
+                                probe_process.start()
+
+                                # Run a local event loop to keep the GUI responsive.
+                                while probe_process.is_alive():
+                                    QtCore.QCoreApplication.processEvents()
+                                    time.sleep(0.02)  # Yield to other threads/processes
+
+                                # Process finished, get exit code
+                                exitcode = probe_process.exitcode
+                                last_exit_code = exitcode
+
+                                if exitcode == 0:
+                                    print(
+                                        f"Probe successful for {model_name}. Cache should be built."
+                                    )
+                                    probe_successful = True
+                                    break  # Exit the retry loop on success
+                                else:
+                                    print(
+                                        f"Probe attempt {attempt + 1} failed with exit code {exitcode}."
+                                    )
+                                    if attempt < max_retries - 1:
+                                        print("Retrying in 2 seconds...")
+                                        # time.sleep(2) would freeze the GUI.
+                                        # We run a 2-second processEvents loop instead.
+                                        start_time = time.time()
+                                        while time.time() - start_time < 2.0:
+                                            QtCore.QCoreApplication.processEvents()
+                                            time.sleep(0.02)
+
+                            if not probe_successful:
+                                raise RuntimeError(
+                                    f"ONNX/TensorRT probe process failed after {max_retries} attempts. Last exit code: {last_exit_code}"
+                                )
+
+                        except Exception as e:
+                            # Ask the main thread to hide the dialog on failure
+                            # (The final 'finally' will also catch this, but this is safer)
+                            self.hide_build_dialog.emit()
+
+                            print(f"ERROR: Isolated probe failed for {model_name}.")
+                            print(
+                                "The model will not be loaded. This is likely a fatal TensorRT/CUDA error."
+                            )
+                            traceback.print_exc()
+                            self.models[model_name] = (
+                                None  # Ensure it's marked as not loaded
+                            )
+                            return None  # Abort the load
 
             # Now, proceed with the *actual* load in the main thread.
             # This part is now covered by the dialog, thanks to your change.

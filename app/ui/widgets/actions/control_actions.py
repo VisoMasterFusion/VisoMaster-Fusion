@@ -184,7 +184,6 @@ def handle_face_mask_state_change(
         "OccluderEnableToggle": "Occluder",
         "DFLXSegEnableToggle": "XSeg",
         "FaceParserEnableToggle": "FaceParser",
-        "ClipEnableToggle": "RD64ClipText",  # Assumes this is the model for CLIP
     }
     model_to_change = model_map.get(control_name)
     if not model_to_change:
