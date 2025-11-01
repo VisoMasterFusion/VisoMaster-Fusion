@@ -83,6 +83,7 @@ detection_model_mapping = {
     "SCRFD": "SCRFD2.5g",
     "Yolov8": "YoloFace8n",
     "Yunet": "YunetN",
+    "DEIM-S-Face": "DEIM-S-Face",
 }
 
 landmark_model_mapping = {
@@ -150,6 +151,12 @@ models_list = [
         "local_path": f"{models_dir}/cscs_256.onnx",
         "hash": "664f8f7cab655b825fe8cf57ab90bfbcbb0acf75eab8e7771c824f18bdb28b67",
         "url": f"{assets_repo}/v0.1.0/cscs_256.onnx",
+    },
+    {
+        "model_name": "DEIM-S-Face",
+        "local_path": f"{models_dir}/deim-s-face.onnx",
+        "hash": "f08f8a2cc33fcf5ec30c7bcbeb1e17115fcc7d28614a64bea29b7bbb211b9d2e",
+        "url": "https://github.com/Glat0s/DEIM-S-Face/releases/download/v0.1/deim-s-face.onnx",
     },
     {
         "model_name": "RetinaFace",

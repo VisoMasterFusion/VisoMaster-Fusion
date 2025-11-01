@@ -238,7 +238,7 @@ SETTINGS_LAYOUT_DATA: LayoutDictTypes = {
         "DetectorModelSelection": {
             "level": 1,
             "label": "Face Detect Model",
-            "options": ["RetinaFace", "Yolov8", "SCRFD", "Yunet"],
+            "options": ["RetinaFace", "Yolov8", "SCRFD", "Yunet", "DEIM-S-Face"],
             "default": "RetinaFace",
             "help": "Select the face detection model to use for detecting faces in the input image or video.",
         },

@@ -566,11 +566,28 @@ class ModelsProcessor(QtCore.QObject):
 
             model_instance = None
 
+            # Prepare providers, with special case for DEIM-S-Face
+            providers = self.providers
+            if (
+                self.provider_name == "TensorRT"
+                or self.provider_name == "TensorRT-Engine"
+            ) and model_name == "DEIM-S-Face":
+                print(
+                    "Applying special TensorRT options for DETR-Face (disabling FP16)."
+                )
+                specific_trt_options = self.trt_ep_options.copy()
+                specific_trt_options["trt_fp16_enable"] = True
+                providers = [
+                    ("TensorrtExecutionProvider", specific_trt_options),
+                    ("CUDAExecutionProvider"),
+                    ("CPUExecutionProvider"),
+                ]
+
             try:
                 # Check if this is a TensorRT load to provide a warning.
                 is_tensorrt_load = any(
                     (p[0] if isinstance(p, tuple) else p) == "TensorrtExecutionProvider"
-                    for p in self.providers
+                    for p in providers
                 )
 
                 if is_tensorrt_load:
@@ -599,13 +616,13 @@ class ModelsProcessor(QtCore.QObject):
 
                 if session_options is None:
                     model_instance = onnxruntime.InferenceSession(
-                        self.models_path[model_name], providers=self.providers
+                        self.models_path[model_name], providers=providers
                     )
                 else:
                     model_instance = onnxruntime.InferenceSession(
                         self.models_path[model_name],
                         sess_options=session_options,
-                        providers=self.providers,
+                        providers=providers,
                     )
 
                 print(

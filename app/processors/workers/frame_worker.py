@@ -554,6 +554,10 @@ class FrameWorker(threading.Thread):
                 bboxes_eq_np = bboxes_eq_np[indices_to_keep]
                 final_box_count = len(indices_to_keep)
 
+            if isinstance(bboxes_eq_np, np.ndarray):
+                for bbox in bboxes_eq_np:
+                    det_faces_data_for_display.append({"bbox": bbox})
+
             processed_perspective_crops_details = {}
             analyzed_faces_for_vr = []
             # This loop now iterates over the correctly de-duplicated bounding boxes.
@@ -948,11 +952,7 @@ class FrameWorker(threading.Thread):
             processed_tensor_rgb_uint8 = img
 
         # --- Common Post-Processing ---
-        if (
-            control["ShowAllDetectedFacesBBoxToggle"]
-            and det_faces_data_for_display
-            and not control.get("VR180ModeEnableToggle", False)
-        ):
+        if control["ShowAllDetectedFacesBBoxToggle"] and det_faces_data_for_display:
             processed_tensor_rgb_uint8 = self.draw_bounding_boxes_on_detected_faces(
                 processed_tensor_rgb_uint8, det_faces_data_for_display, control
             )
@@ -1061,10 +1061,20 @@ class FrameWorker(threading.Thread):
             color_rgb = [0, 255, 0]
             bbox = fface["bbox"]
             x_min, y_min, x_max, y_max = map(int, bbox)
+
+            if x_min > x_max:
+                x_min, x_max = x_max, x_min
+            if y_min > y_max:
+                y_min, y_max = y_max, y_min
+
             # Ensure bounding box is within the image dimensions
             _, h, w = img.shape
             x_min, y_min = max(0, x_min), max(0, y_min)
             x_max, y_max = min(w - 1, x_max), min(h - 1, y_max)
+
+            if x_min >= x_max or y_min >= y_max:
+                continue
+
             # Dynamically compute thickness based on the image resolution
             max_dimension = max(
                 img.shape[1], img.shape[2]
