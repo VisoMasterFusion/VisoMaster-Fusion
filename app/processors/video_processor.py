@@ -560,6 +560,8 @@ class VideoProcessor(QObject):
 
     def set_number_of_threads(self, value):
         """Stops processing and updates the thread count for workers."""
+        if not value:
+            value = 1
         self.stop_processing()  # Stop any active processing before changing threads
         self.main_window.models_processor.set_number_of_threads(value)
         self.num_threads = value
