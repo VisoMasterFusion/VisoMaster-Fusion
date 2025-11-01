@@ -104,7 +104,7 @@ def _build_trt_engine_worker(onnx_path, trt_path, precision, plugin_path, verbos
         sys.exit(1)  # Signal failure
 
 
-def _probe_onnx_model_worker(model_path, providers_list, trt_options):
+def _probe_onnx_model_worker(model_path, providers_list, trt_options, session_options):
     """
     Worker function to be run in an isolated process to "warm up"
     an ONNX model, especially for the TensorRT provider.
@@ -130,7 +130,9 @@ def _probe_onnx_model_worker(model_path, providers_list, trt_options):
         print(f"[ONNX Prober]: Attempting to load {os.path.basename(model_path)}...")
         # This line is the one that triggers the build
         session = onnxruntime.InferenceSession(
-            model_path, providers=providers
+            model_path,
+            sess_options=session_options,
+            providers=providers
         )
 
         # Force this prober process to wait until all CUDA operations
@@ -485,7 +487,7 @@ class ModelsProcessor(QtCore.QObject):
 
             # This variable is needed to synchronize CUDA after the load
             build_was_triggered = False
-
+            
             is_tensorrt_load = any(
                 (p[0] if isinstance(p, tuple) else p) == "TensorrtExecutionProvider"
                 for p in providers
@@ -579,6 +581,7 @@ class ModelsProcessor(QtCore.QObject):
                                     self.models_path[model_name],
                                     current_providers_list,
                                     self.trt_ep_options,
+                                    session_options,
                                 ),
                             )
                             probe_process.start()
