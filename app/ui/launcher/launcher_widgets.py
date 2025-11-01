@@ -4,6 +4,10 @@
 # ---------------------------------------------------------------------------
 # Defines reusable visual elements and custom controls for the launcher.
 # Keeps styling and interaction logic separate from layout construction.
+#
+# Developer Notes:
+#   • Add new custom widgets here — keep each widget class self-contained
+#     and focused on a single UI element or behavior.
 # ---------------------------------------------------------------------------
 
 from PySide6 import QtWidgets, QtGui, QtCore
@@ -82,8 +86,6 @@ class ToggleSwitch(QtWidgets.QPushButton):
 
 
 # ---------- Status Pill Label ----------
-
-from PySide6 import QtWidgets, QtGui, QtCore
 
 class StatusPill(QtWidgets.QLabel):
     """A small non-interactive pill-style label for status indicators."""

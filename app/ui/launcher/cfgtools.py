@@ -5,12 +5,17 @@
 # Handles reading/writing of portable.cfg — a lightweight key=value config file
 # used to store runtime metadata such as:
 #   CURRENT_COMMIT, LAST_UPDATED, LAUNCHER_ENABLED, etc.
-# Unknown keys are preserved to avoid overwriting user-defined fields.
+# Also manages dependency and model checksum state (DEPS_SHA, MODELS_SHA)
+# for maintenance verification and repair operations.
+#
+# Developer Notes:
+#   • Add new persistent keys via write_portable_cfg({"KEY": value})
+#     — unknown keys are preserved automatically.
+#   • Read existing values with read_portable_cfg() or helper functions.
 # ---------------------------------------------------------------------------
 
 from datetime import datetime, timezone
 from .core import PATHS
-import sys
 
 
 # ---------- Core File I/O ----------
@@ -127,3 +132,84 @@ def read_version_info():
     last = cfg.get("LAST_UPDATED")
     nice_last = format_last_updated_local(last) if last else None
     return curr, nice_last
+
+
+# ---------- Checksum Tracking ----------
+
+import hashlib, json
+
+def compute_file_sha256(path) -> str | None:
+    """Return SHA256 checksum of the given file, or None if not found."""
+    try:
+        if not path.exists():
+            print(f"[Launcher] Warning: File missing for checksum: {path}")
+            return None
+        h = hashlib.sha256()
+        with open(path, "rb") as f:
+            for chunk in iter(lambda: f.read(65536), b""):
+                h.update(chunk)
+        return h.hexdigest()
+    except Exception as e:
+        print(f"[Launcher] Error computing file checksum: {e}")
+        return None
+
+
+def compute_models_sha256(models_list) -> str | None:
+    """Return SHA256 of the serialized models list for consistency tracking."""
+    try:
+        # Normalize and sort models list for deterministic hashing
+        normalized = []
+        for item in models_list:
+            if isinstance(item, dict):
+                normalized.append({k: item[k] for k in sorted(item.keys())})
+            else:
+                normalized.append(str(item))
+        payload = json.dumps(normalized, sort_keys=True, separators=(',', ':')).encode("utf-8")
+        return hashlib.sha256(payload).hexdigest()
+    except Exception as e:
+        print(f"[Launcher] Error computing models checksum: {e}")
+        return None
+
+
+# ---------------------------------------------------------------------------
+# Model Presence Check
+# ---------------------------------------------------------------------------
+
+from app.processors.models_data import models_list
+from pathlib import Path
+
+def check_models_presence() -> tuple[bool, list]:
+    """Quickly check if any expected model files are missing (no hash check)."""
+    missing = []
+    for model in models_list:
+        model_path = Path(model.get("local_path"))
+        if not model_path.exists():
+            missing.append(str(model_path))
+            print(f"[Launcher] Warning: Missing model file → {model_path}")
+    return bool(missing), missing
+
+
+# ---------- Checksum State ----------
+
+def read_checksum_state() -> dict[str, str]:
+    """Read current checksum values from portable.cfg."""
+    cfg = read_portable_cfg()
+    return {
+        "DEPS_SHA": cfg.get("DEPS_SHA"),
+        "MODELS_SHA": cfg.get("MODELS_SHA"),
+        "LAST_MAINT_TS": cfg.get("LAST_MAINT_TS"),
+    }
+
+
+def write_checksum_state(deps_sha: str | None = None, models_sha: str | None = None):
+    """Update checksum values in portable.cfg and record maintenance timestamp."""
+    updated = {}
+    if deps_sha:
+        updated["DEPS_SHA"] = deps_sha
+    if models_sha:
+        updated["MODELS_SHA"] = models_sha
+    if updated:
+        iso_utc = datetime.now(timezone.utc).replace(microsecond=0).isoformat()
+        updated["LAST_MAINT_TS"] = iso_utc
+        if write_portable_cfg(updated):
+            print(f"[Launcher] Updated checksum state in config.")

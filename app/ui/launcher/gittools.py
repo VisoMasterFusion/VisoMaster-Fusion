@@ -5,6 +5,7 @@
 # Provides simple Git integration for update checks, commit info, backups,
 # and rollback operations. All commands are executed using the portable
 # Git binary bundled with the app to ensure consistent behavior across systems.
+# Also manages dependency/model checksum state (DEPS_SHA, MODELS_SHA) for maintenance tracking.
 # ---------------------------------------------------------------------------
 
 import os

@@ -1,12 +1,12 @@
 # core.py
 # ---------------------------------------------------------------------------
-# Core launcher utilities for VisoMaster Fusion Launcher
+# Core Utilities for VisoMaster Fusion Launcher
 # ---------------------------------------------------------------------------
 # Provides:
-#   • Centralized filesystem path resolution (PATHS)
+#   • Centralized filesystem path resolution via PATHS
 #   • Basic runtime validation (must_exist)
-#   • Theme loading (True-Dark QSS)
-#   • Lightweight subprocess helpers (Python / UV)
+#   • Theme application (True-Dark QSS)
+#   • Portable subprocess helpers for Python and UV operations
 # ---------------------------------------------------------------------------
 
 from pathlib import Path

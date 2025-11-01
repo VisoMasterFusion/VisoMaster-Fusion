@@ -1,43 +1,17 @@
-# uiutils.py
 # ---------------------------------------------------------------------------
 # UI Utilities for VisoMaster Fusion Launcher
 # ---------------------------------------------------------------------------
-# Provides small reusable helpers for time display and user feedback:
-#   • humanize_elapsed(dt_then, dt_now=None) → human-readable time diff ("5m ago")
-#   • notify_backup_created(parent, zip_path) → message box with optional folder open
-#   • make_divider(color="#363636") → subtle horizontal line divider
-#   • make_header_widget(title_text, logo_path=None, logo_width=160) → styled header
+# Provides shared UI helpers:
+#   • make_header_widget() / make_divider() for layout styling
+#   • notify_backup_created() for user messages
+#   • with_busy_state() context manager for temporary UI locking
 # ---------------------------------------------------------------------------
 
-from datetime import datetime, timezone
+from datetime import datetime
 from PySide6 import QtWidgets, QtGui, QtCore
 import subprocess
 import os
-
-
-# ---------- Time Formatting ----------
-
-def humanize_elapsed(dt_then: datetime, dt_now: datetime | None = None) -> str:
-    """Return a short human-readable time difference string (e.g. '5m ago')."""
-    if dt_now is None:
-        dt_now = datetime.now(timezone.utc)
-    delta = int((dt_now - dt_then).total_seconds())
-
-    if delta < 10:
-        return "just now"
-    if delta < 60:
-        return f"{delta}s ago"
-
-    mins = delta // 60
-    if mins < 60:
-        return f"{mins}m ago"
-
-    hours = mins // 60
-    if hours < 24:
-        return f"{hours}h ago"
-
-    days = hours // 24
-    return f"{days}d ago"
+from contextlib import contextmanager
 
 
 # ---------- Notifications ----------
@@ -97,3 +71,32 @@ def make_header_widget(title_text: str, logo_path: str | None = None, logo_width
     v.addWidget(line)
 
     return container
+
+
+# ---------- Busy State Management (Context Manager) ----------
+
+@contextmanager
+def with_busy_state(widget: QtWidgets.QWidget, busy: bool, text: str | None = None):
+    """Context manager for setting a busy state in the UI."""
+    # Disable buttons and show loading text during long operations
+    for button in widget.findChildren(QtWidgets.QPushButton):
+        button.setEnabled(not busy)
+
+    # Set the window title to indicate the busy state
+    if busy and text:
+        widget.setWindowTitle(f"VisoMaster Fusion Launcher — {text}")
+    else:
+        widget.setWindowTitle("VisoMaster Fusion Launcher")
+
+    # Process events and make sure the UI is updated
+    QtWidgets.QApplication.processEvents()
+
+    try:
+        yield
+    finally:
+        # Re-enable buttons and reset window title after operation
+        for button in widget.findChildren(QtWidgets.QPushButton):
+            button.setEnabled(True)
+
+        widget.setWindowTitle("VisoMaster Fusion Launcher")
+        QtWidgets.QApplication.processEvents()
