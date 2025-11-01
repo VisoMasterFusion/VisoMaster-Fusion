@@ -116,6 +116,7 @@ def _probe_onnx_model_worker(model_path, providers_list, trt_options):
         import sys
         import traceback
         import onnxruntime
+        import torch  # <-- Make sure torch is imported here
 
         # Reconstruct the providers tuple
         providers = []
@@ -127,18 +128,27 @@ def _probe_onnx_model_worker(model_path, providers_list, trt_options):
                 providers.append(p)
 
         print(f"[ONNX Prober]: Attempting to load {os.path.basename(model_path)}...")
-        # This line is the one that can crash
-        session = onnxruntime.InferenceSession(model_path, providers=providers)
+        # This line is the one that triggers the build
+        session = onnxruntime.InferenceSession(
+            model_path, providers=providers
+        )
 
-        # If we get here, it worked.
+        # Force this prober process to wait until all CUDA operations
+        # (i.e., the engine build and serialization to disk)
+        # are *fully* complete before this process exits.
+        if torch.cuda.is_available():
+            print(f"[ONNX Prober]: Synchronizing CUDA to finalize engine build...")
+            torch.cuda.synchronize()
+            print(f"[ONNX Prober]: Synchronization complete.")
+
+        # If we get here, the load and the synchronization worked.
         del session
-        print("[ONNX Prober]: Load successful. TRT engine cache built.")
-        sys.exit(0)  # Success
-    except Exception:
-        print("[ONNX Prober]: ERROR during model load probe.")
+        print(f"[ONNX Prober]: Load successful. TRT engine cache built and flushed.")
+        sys.exit(0) # Success
+    except Exception as e:
+        print(f"[ONNX Prober]: ERROR during model load probe.")
         traceback.print_exc()
-        sys.exit(1)  # Failure
-
+        sys.exit(1) # Failure
 
 # --- END: Isolated Process Workers ---
 
@@ -166,6 +176,12 @@ def gamma_decode_srgb_to_linear_rgb(srgb: torch.Tensor, gamma=SRGB_GAMMA):
 class ModelsProcessor(QtCore.QObject):
     processing_complete = QtCore.Signal()
     model_loaded = QtCore.Signal()  # Signal emitted with Onnx InferenceSession
+    
+    # Signal to request the GUI thread to show the build dialog
+    # Arguments: (str: window_title, str: label_text)
+    show_build_dialog = QtCore.Signal(str, str)
+    # Signal to request the GUI thread to hide the build dialog
+    hide_build_dialog = QtCore.Signal()
 
     def __init__(self, main_window: "MainWindow", device="cuda"):
         super().__init__()
@@ -467,7 +483,7 @@ class ModelsProcessor(QtCore.QObject):
                     ("CPUExecutionProvider"),
                 ]
 
-            build_dialog = None
+            # This variable is needed to synchronize CUDA after the load
             build_was_triggered = False
 
             is_tensorrt_load = any(
@@ -477,7 +493,7 @@ class ModelsProcessor(QtCore.QObject):
 
             # Only run the isolated probe if TensorRT is the target provider
             if is_tensorrt_load:
-                # Check if engine config file exists, if yes find the engine id for the model and check if engine cache file exists
+                # Check if engine config file exists...
                 cache_is_valid = False
                 try:
                     cache_dir = "tensorrt-engines"
@@ -490,7 +506,7 @@ class ModelsProcessor(QtCore.QObject):
                             content = f.read()
 
                         match = re.search(
-                            b"TensorrtExecutionProvider_.*?\.engine", content
+                            b"TensorrtExecutionProvider_.*?\\.engine", content
                         )
 
                         if match:
@@ -501,6 +517,9 @@ class ModelsProcessor(QtCore.QObject):
                             )
 
                             if os.path.exists(engine_file_path):
+                                print(
+                                    f"Valid TensorRT cache found for '{model_name}'. Build will be skipped."
+                                )
                                 cache_is_valid = True
                             else:
                                 print(
@@ -519,36 +538,25 @@ class ModelsProcessor(QtCore.QObject):
                     print(f"Error during TensorRT cache check: {e}")
                     cache_is_valid = False
 
-                # If no engine config file or cache file exists run the prob to prevent crash and load the engine creation
+                # If no engine config file or cache file exists run the prob
                 if not cache_is_valid:
-                    build_was_triggered = True
+                    build_was_triggered = True  # Mark that a build was attempted
                     print(
                         f"TensorRT load detected for {model_name}. Running isolated probe..."
                     )
 
                     try:
-                        # Create a QProgressDialog to inform the user
-                        build_dialog = QProgressDialog(
-                            self.main_window  # Parent
-                        )
-                        build_dialog.setCancelButton(
-                            None
-                        )  # User cannot cancel this process
-                        build_dialog.setWindowModality(
-                            Qt.WindowModal
-                        )  # Block main window
-                        build_dialog.setWindowTitle("Building TensorRT Cache")
-                        build_dialog.setLabelText(
+                        # We emit signals to ask the main GUI thread to do it for us.
+                        dialog_title = "Building TensorRT Cache"
+                        dialog_text = (
                             f"Building TensorRT engine cache for:\n"
                             f"{os.path.basename(onnx_path)}\n\n"
                             f"This may take several minutes.\n"
                             f"The application will continue once finished."
                         )
-                        build_dialog.setRange(0, 0)  # Set to indeterminate (busy) mode
-                        build_dialog.show()
 
-                        # Process one event loop to ensure the dialog is drawn
-                        QtCore.QCoreApplication.processEvents()
+                        # Ask the main thread to show the dialog
+                        self.show_build_dialog.emit(dialog_title, dialog_text)
 
                         probe_successful = False
                         last_exit_code = None
@@ -561,6 +569,7 @@ class ModelsProcessor(QtCore.QObject):
 
                             # Use 'spawn' context for CUDA/TRT safety
                             ctx = multiprocessing.get_context("spawn")
+                            # Use the 'providers' variable that has the DEIM-S-Face logic
                             current_providers_list = [
                                 p[0] if isinstance(p, tuple) else p for p in providers
                             ]
@@ -574,10 +583,12 @@ class ModelsProcessor(QtCore.QObject):
                             )
                             probe_process.start()
 
+                            # Run a local event loop to keep the GUI responsive.
                             while probe_process.is_alive():
                                 QtCore.QCoreApplication.processEvents()
-                                time.sleep(0.1)
+                                time.sleep(0.02)  # Yield to other threads/processes
 
+                            # Process finished, get exit code
                             exitcode = probe_process.exitcode
                             last_exit_code = exitcode
 
@@ -586,25 +597,29 @@ class ModelsProcessor(QtCore.QObject):
                                     f"Probe successful for {model_name}. Cache should be built."
                                 )
                                 probe_successful = True
-                                break
+                                break  # Exit the retry loop on success
                             else:
                                 print(
                                     f"Probe attempt {attempt + 1} failed with exit code {exitcode}."
                                 )
                                 if attempt < max_retries - 1:
                                     print("Retrying in 2 seconds...")
-                                    time.sleep(2)
+                                    # time.sleep(2) would freeze the GUI.
+                                    # We run a 2-second processEvents loop instead.
+                                    start_time = time.time()
+                                    while time.time() - start_time < 2.0:
+                                        QtCore.QCoreApplication.processEvents()
+                                        time.sleep(0.02)
 
                         if not probe_successful:
                             raise RuntimeError(
                                 f"ONNX/TensorRT probe process failed after {max_retries} attempts. Last exit code: {last_exit_code}"
                             )
 
-                    except Exception:
-                        if build_dialog:
-                            build_dialog.close()  # Ensure dialog is closed on failure
-                            del build_dialog
-                            build_dialog = None
+                    except Exception as e:
+                        # Ask the main thread to hide the dialog on failure
+                        # (The final 'finally' will also catch this, but this is safer)
+                        self.hide_build_dialog.emit()
 
                         print(f"ERROR: Isolated probe failed for {model_name}.")
                         print(
@@ -617,19 +632,21 @@ class ModelsProcessor(QtCore.QObject):
                         return None  # Abort the load
 
             # Now, proceed with the *actual* load in the main thread.
-            # If the probe worked, this should be fast and just load from cache.
+            # This part is now covered by the dialog, thanks to your change.
             try:
                 if session_options is None:
                     model_instance = onnxruntime.InferenceSession(
-                        self.models_path[model_name], providers=providers
+                        self.models_path[model_name], providers=providers # Use the correct 'providers'
                     )
                 else:
                     model_instance = onnxruntime.InferenceSession(
                         self.models_path[model_name],
                         sess_options=session_options,
-                        providers=providers,
+                        providers=providers, # Use the correct 'providers'
                     )
 
+                # This ensures the CUDA context is synchronized after a new TRT
+                # engine build, before we try to load it.
                 if build_was_triggered:
                     if torch.cuda.is_available():
                         print(
@@ -647,11 +664,11 @@ class ModelsProcessor(QtCore.QObject):
 
                 self.models[model_name] = model_instance
                 print(
-                    f"Successfully loaded model: '{model_name}' with execution provider: '{self.provider_name}'"
+                    f"Loading model: {model_name} with provider: {self.provider_name}"
                 )
                 return model_instance
 
-            except Exception:
+            except Exception as e:
                 # This catch is still valuable for non-fatal errors
                 print(f"ERROR: Failed to load model {model_name} (even after probe).")
                 traceback.print_exc()
@@ -662,10 +679,9 @@ class ModelsProcessor(QtCore.QObject):
                 return None
 
             finally:
-                if build_dialog:
-                    build_dialog.close()  # Close the dialog
-                    del build_dialog
-                    build_dialog = None
+                # Always hide the dialog at the very end,
+                # covering both the probe and the actual load.
+                self.hide_build_dialog.emit()
 
     def load_dfm_model(self, dfm_model):
         with self.model_lock:

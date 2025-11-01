@@ -79,6 +79,10 @@ class MainWindow(QtWidgets.QMainWindow, Ui_MainWindow):
         )
         self.video_processor = VideoProcessor(self)
         self.models_processor = ModelsProcessor(self)
+        # Connect the signals from the worker thread to our new slots
+        self.models_processor.show_build_dialog.connect(self.show_build_dialog)
+        self.models_processor.hide_build_dialog.connect(self.hide_build_dialog)
+
         self.target_videos: Dict[
             int, widget_components.TargetMediaCardButton
         ] = {}  # Contains button objects of target videos (Set as list instead of single video to support batch processing in future)
@@ -464,6 +468,14 @@ class MainWindow(QtWidgets.QMainWindow, Ui_MainWindow):
                 "After", initial_mode_after
             )
 
+        # Initialize the dedicated progress dialog for TensorRT builds.
+        # This object is created here, in the main GUI thread.
+        self.build_progress_dialog = QtWidgets.QProgressDialog(self)
+        self.build_progress_dialog.setCancelButton(None)
+        self.build_progress_dialog.setWindowModality(QtCore.Qt.WindowModality.WindowModal)
+        self.build_progress_dialog.setRange(0, 0)  # Indeterminate (busy) mode
+        self.build_progress_dialog.close() # Ensure it's hidden on startup
+        
     def update_denoiser_controls_visibility_for_pass(
         self, pass_suffix: str, current_mode_text: str
     ):
@@ -634,6 +646,28 @@ class MainWindow(QtWidgets.QMainWindow, Ui_MainWindow):
         ):
             if new_kv_file_name:
                 common_widget_actions.refresh_frame(self)
+
+    @QtCore.Slot(str, str)
+    def show_build_dialog(self, title, text):
+        """
+        Slot to show or update the TensorRT build progress dialog.
+        This function is guaranteed to run in the main GUI thread.
+        """
+        if self.build_progress_dialog:
+            self.build_progress_dialog.setWindowTitle(title)
+            self.build_progress_dialog.setLabelText(text)
+            self.build_progress_dialog.show()
+            # Force the GUI to update immediately
+            QtCore.QCoreApplication.processEvents()
+
+    @QtCore.Slot()
+    def hide_build_dialog(self):
+        """
+        Slot to hide the TensorRT build progress dialog.
+        This function is guaranteed to run in the main GUI thread.
+        """
+        if self.build_progress_dialog:
+            self.build_progress_dialog.close()
 
     def __init__(self):
         super(MainWindow, self).__init__()
