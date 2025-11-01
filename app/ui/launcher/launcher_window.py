@@ -95,7 +95,9 @@ class LauncherWindow(QtWidgets.QWidget):
         self.setWindowTitle("VisoMaster Fusion Launcher")
         if PATHS["SMALL_ICON"].exists():
             self.setWindowIcon(QtGui.QIcon(str(PATHS["SMALL_ICON"])))
-
+        
+        # Safety defaults for checksum flags (prevents AttributeError if checksum load fails)
+        self.deps_changed = self.models_changed = self.files_changed = False
         self._user_moved = False
         self.last_checked_utc: datetime | None = None
         self.update_status = self._check_and_log_update_status()
@@ -283,7 +285,7 @@ class LauncherWindow(QtWidgets.QWidget):
         elif self.update_status == "offline":
             lay.addWidget(StatusPill("Offline — can’t check for updates", color="rgba(255,255,255,0.08)"))
 
-        if getattr(self, "deps_changed", False) or getattr(self, "models_changed", False):
+        if self.deps_changed or self.models_changed or self.files_changed:
             if self.deps_changed:
                 lay.addWidget(StatusPill("⚠️ Dependencies changed"))
             if self.models_changed:
