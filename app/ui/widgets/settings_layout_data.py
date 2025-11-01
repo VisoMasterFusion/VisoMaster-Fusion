@@ -78,6 +78,12 @@ SETTINGS_LAYOUT_DATA: LayoutDictTypes = {
             "default": False,
             "help": "Activates buffering for smoother video playback.",
         },
+        "VideoPlaybackLoopToggle": {
+            "level": 1,
+            "label": "Playback Loop",
+            "default": False,
+            "help": "Auto start over when video playing to the end.(Not work for recording)",
+        },
         "LiveSoundVolumeDecimalSlider": {
             "level": 1,
             "label": "Audio Playback Volume",
@@ -598,3 +604,4 @@ CAMERA_BACKENDS = {
     "V4L2": cv2.CAP_V4L2,
     "GSTREAMER": cv2.CAP_GSTREAMER,
 }
+
