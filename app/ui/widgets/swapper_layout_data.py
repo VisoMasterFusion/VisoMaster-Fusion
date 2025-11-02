@@ -370,6 +370,14 @@ SWAPPER_LAYOUT_DATA: LayoutDictTypes = {
             "exec_function": control_actions.handle_face_mask_state_change,
             "exec_function_args": ["FaceParserEnableToggle"],
         },
+        "FaceParserEndToggle": {
+            "level": 2,
+            "label": "Parse at Pipeline End",
+            "default": False,
+            "parentToggle": "FaceParserEnableToggle",
+            "requiredToggleValue": True,
+            "help": "Run the Parser Mask at Pipeline End.",
+        },
         "MouthParserInsideToggle": {
             "level": 2,
             "label": "Mouth Inside toggle",
