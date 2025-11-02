@@ -312,6 +312,12 @@ class MainWindow(QtWidgets.QMainWindow, Ui_MainWindow):
         self.saveImageButton.clicked.connect(
             partial(video_control_actions.save_current_frame_to_file, self)
         )
+        self.batchImageButton.clicked.connect(
+            partial(video_control_actions.process_batch_images, self, False)
+        )
+        self.batchallImageButton.clicked.connect(
+            partial(video_control_actions.process_batch_images, self, True)
+        )
         self.clearMemoryButton.clicked.connect(
             partial(common_widget_actions.clear_gpu_memory, self)
         )

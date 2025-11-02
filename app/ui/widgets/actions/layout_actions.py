@@ -589,6 +589,8 @@ def set_up_menu_actions(main_window: "MainWindow"):
 def disable_all_parameters_and_control_widget(main_window: "MainWindow"):
     # Disable all bottom buttons
     main_window.saveImageButton.setDisabled(True)
+    main_window.batchImageButton.setDisabled(True)
+    main_window.batchallImageButton.setDisabled(True)
     main_window.findTargetFacesButton.setDisabled(True)
     main_window.clearTargetFacesButton.setDisabled(True)
     main_window.swapfacesButton.setDisabled(True)
@@ -632,6 +634,8 @@ def disable_all_parameters_and_control_widget(main_window: "MainWindow"):
 def enable_all_parameters_and_control_widget(main_window: "MainWindow"):
     # Enable all bottom buttons
     main_window.saveImageButton.setDisabled(False)
+    main_window.batchImageButton.setDisabled(False)
+    main_window.batchallImageButton.setDisabled(False)
     main_window.findTargetFacesButton.setDisabled(False)
     main_window.clearTargetFacesButton.setDisabled(False)
     main_window.swapfacesButton.setDisabled(False)
