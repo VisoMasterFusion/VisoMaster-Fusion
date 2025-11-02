@@ -111,6 +111,8 @@ def handle_denoiser_state_change(
     """
     # Determine the state of denoisers *as they were* before this change
     # main_window.control still holds the old values for all controls at this point within exec_function
+    # 1. Get the current state of all toggles from the UI's control dictionary.
+    #    This represents the state *before* the change is applied.
     old_before_enabled = main_window.control.get(
         "DenoiserUNetEnableBeforeRestorersToggle", False
     )
@@ -118,30 +120,50 @@ def handle_denoiser_state_change(
         "DenoiserAfterFirstRestorerToggle", False
     )
     old_after_enabled = main_window.control.get("DenoiserAfterRestorersToggle", False)
-    denoiser_was_active = (
-        old_before_enabled or old_after_first_enabled or old_after_enabled
+    old_exclusive_path_enabled = main_window.control.get(
+        "UseReferenceExclusivePathToggle", False
     )
 
-    # Determine the state of denoisers *as they will be* after this change
-    is_now_before_enabled = old_before_enabled  # Default to old state
-    is_now_after_enabled = old_after_enabled  # Default to old state
-    is_now_after_first_enabled = old_after_first_enabled  # Default to old state
+    # 2. Determine the *new* state of all toggles by applying the incoming change.
+    is_now_before_enabled = (
+        new_value_of_toggle_that_just_changed
+        if control_name_that_changed == "DenoiserUNetEnableBeforeRestorersToggle"
+        else old_before_enabled
+    )
+    is_now_after_first_enabled = (
+        new_value_of_toggle_that_just_changed
+        if control_name_that_changed == "DenoiserAfterFirstRestorerToggle"
+        else old_after_first_enabled
+    )
+    is_now_after_enabled = (
+        new_value_of_toggle_that_just_changed
+        if control_name_that_changed == "DenoiserAfterRestorersToggle"
+        else old_after_enabled
+    )
+    is_now_exclusive_path_enabled = (
+        new_value_of_toggle_that_just_changed
+        if control_name_that_changed == "UseReferenceExclusivePathToggle"
+        else old_exclusive_path_enabled
+    )
 
-    if control_name_that_changed == "DenoiserUNetEnableBeforeRestorersToggle":
-        is_now_before_enabled = new_value_of_toggle_that_just_changed
-    elif control_name_that_changed == "DenoiserAfterFirstRestorerToggle":
-        is_now_after_first_enabled = new_value_of_toggle_that_just_changed
-    elif control_name_that_changed == "DenoiserAfterRestorersToggle":
-        is_now_after_enabled = new_value_of_toggle_that_just_changed
-
+    # 3. Determine if any denoiser pass will be active after this change.
     any_denoiser_will_be_active = (
         is_now_before_enabled or is_now_after_first_enabled or is_now_after_enabled
     )
 
+    # 4.Load models based on the combined future state.
     if any_denoiser_will_be_active:
-        main_window.models_processor.ensure_kv_extractor_loaded()
+        # The UNet and VAEs are needed if any pass is active.
         main_window.models_processor.ensure_denoiser_models_loaded()
-        # If a denoiser section was just activated, update its control visibility
+
+        # The KV Extractor is ONLY needed if a pass is active AND the exclusive path is enabled.
+        if is_now_exclusive_path_enabled:
+            main_window.models_processor.ensure_kv_extractor_loaded()
+        else:
+            # If the exclusive path is being turned off, unload the KV Extractor.
+            main_window.models_processor.unload_kv_extractor()
+
+        # This part for updating UI visibility remains the same.
         pass_suffix_to_update = None
         if (
             control_name_that_changed == "DenoiserUNetEnableBeforeRestorersToggle"
@@ -167,11 +189,10 @@ def handle_denoiser_state_change(
                 main_window.update_denoiser_controls_visibility_for_pass(
                     pass_suffix_to_update, current_mode_text
                 )
-
-    else:  # No denoiser will be active
-        if denoiser_was_active:  # Was on, now off
-            main_window.models_processor.unload_denoiser_models()
-            main_window.models_processor.unload_kv_extractor()
+    else:
+        # If NO denoiser pass will be active, unload everything.
+        main_window.models_processor.unload_denoiser_models()
+        main_window.models_processor.unload_kv_extractor()
 
     # Frame refresh is handled by common_actions.update_control after this function returns.
 

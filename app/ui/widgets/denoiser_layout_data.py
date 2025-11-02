@@ -10,6 +10,8 @@ DENOISER_LAYOUT_DATA: LayoutDictTypes = {
             "control_name": "UseReferenceExclusivePathToggle",
             "default": True,
             "help": "If enabled, forces the UNet to use only reference K/V for attention, maximizing focus on the reference features.",
+            "exec_function": control_actions.handle_denoiser_state_change,
+            "exec_function_args": ["UseReferenceExclusivePathToggle"],
         },
         "DenoiserBaseSeedSlider": {
             "level": 1,
