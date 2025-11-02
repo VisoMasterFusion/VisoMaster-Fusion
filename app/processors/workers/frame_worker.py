@@ -68,7 +68,7 @@ class FrameWorker(threading.Thread):
         # VR specific constants
         self.VR_PERSPECTIVE_RENDER_SIZE = 512  # Pixels, for rendering perspective crops
         self.VR_DYNAMIC_FOV_PADDING_FACTOR = (
-            1.5  # Padding factor for dynamic FOV calculation
+            1.0  # Padding factor for dynamic FOV calculation
         )
         self.is_view_face_compare: bool = False
         self.is_view_face_mask: bool = False
@@ -124,8 +124,8 @@ class FrameWorker(threading.Thread):
                 or self.main_window.editFacesButton.isChecked()
                 or current_control_state.get("FrameEnhancerEnableToggle", False)
                 or current_control_state.get(
-                    "VR180ModeEnableToggle", False
-                )  # VR180 always processes
+                    "ModeEnableToggle", False
+                )  #  always processes
             )
 
             if needs_processing:
@@ -597,22 +597,30 @@ class FrameWorker(threading.Thread):
                 if face_crop_tensor is None or face_crop_tensor.numel() == 0:
                     continue
 
-                _, kpss_5_crop, kpss_crop = self.models_processor.run_detect(
-                    face_crop_tensor,
-                    control["DetectorModelSelection"],
-                    max_num=1,
-                    score=control["DetectorScoreSlider"] / 100.0,
-                    input_size=(
-                        self.VR_PERSPECTIVE_RENDER_SIZE,
-                        self.VR_PERSPECTIVE_RENDER_SIZE,
-                    ),
-                    use_landmark_detection=True,
-                    landmark_detect_mode="203",
-                    landmark_score=control["LandmarkDetectScoreSlider"] / 100.0,
-                    from_points=False,
-                    rotation_angles=[0],
+                # 1. Get the landmark model selected in the UI from the 'control' dictionary.
+                landmark_model_from_ui = control["LandmarkDetectModelSelection"]
+
+                # 2. Create a "dummy" bounding box that covers the central 95% of the crop.
+                #    This assumes the face is well-centered by the dewarping process.
+                crop_size = self.VR_PERSPECTIVE_RENDER_SIZE
+                padding = int(crop_size * 0.025)  # 2.5% padding on each side
+                dummy_bbox_on_crop = np.array([padding, padding, crop_size - padding, crop_size - padding])
+
+                # 3. Directly call the landmark detector, skipping the redundant face detector.
+                #    We pass the 'dummy_bbox_on_crop' to tell the landmark detector where to look.
+                kpss_5_crop_list, kpss_crop_list, _ = self.models_processor.run_detect_landmark(
+                    img=face_crop_tensor,
+                    bbox=dummy_bbox_on_crop,
+                    det_kpss=[],  # Not needed since we're providing a bounding box
+                    detect_mode=landmark_model_from_ui,  # <-- Use the model selected in the UI
+                    score=control["LandmarkDetectScoreSlider"] / 100.0,
+                    from_points=False,  # We are using a bbox, not a set of points
                 )
 
+                # 4. The landmark detector returns lists; we extract the first (and only) result.
+                kpss_5_crop = [kpss_5_crop_list] if len(kpss_5_crop_list) > 0 else []
+                kpss_crop = [kpss_crop_list] if len(kpss_crop_list) > 0 else []
+                
                 if not (
                     isinstance(kpss_5_crop, np.ndarray)
                     and kpss_5_crop.shape[0] > 0
@@ -4340,4 +4348,5 @@ class FrameWorker(threading.Thread):
         contrast = grayscale.std()
         analysis["low_contrast"] = 1.0 - min(contrast.item() * 10, 1.0)
         return analysis
+
 
