@@ -452,6 +452,12 @@ SETTINGS_LAYOUT_DATA: LayoutDictTypes = {
             "default": False,
             "help": "Include all files from Subfolders when choosing Input Faces Folder",
         },
+        "ImageFormatToggle": {
+            "level": 1,
+            "label": "Save Output Image in JPG Format",
+            "default": False,
+            "help": "Saves the output image from Save Image or Batch Process to JPG format instead of PNG.",
+        },
         "CommandLineDebugEnableToggle": {
             "level": 1,
             "label": "Commandline Infos",

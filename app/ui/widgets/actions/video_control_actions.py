@@ -917,11 +917,15 @@ def save_current_frame_to_file(main_window: "MainWindow"):
         )
         return
     frame = main_window.video_processor.current_frame.copy()
+    image_format = "image"
+    if main_window.control["ImageFormatToggle"]:    
+        image_format = "jpegimage"
+        
     if isinstance(frame, numpy.ndarray):
         save_filename = misc_helpers.get_output_file_path(
             main_window.video_processor.media_path,
             main_window.control["OutputMediaFolder"],
-            media_type="image",
+            media_type=image_format,
         )
         if save_filename:
             # frame is main_window.video_processor.current_frame, which is already RGB.
@@ -929,7 +933,10 @@ def save_current_frame_to_file(main_window: "MainWindow"):
             pil_image = Image.fromarray(
                 frame
             )  # Correct: Pass RGB frame directly to Pillow.
-            pil_image.save(save_filename, "PNG")
+            if main_window.control["ImageFormatToggle"]:
+                pil_image.save(save_filename, "JPEG", quality = 95)
+            else:
+                pil_image.save(save_filename, "PNG")
             common_widget_actions.create_and_show_toast_message(
                 main_window,
                 "Image Saved",
@@ -1139,17 +1146,23 @@ def process_batch_images(main_window: "MainWindow", process_all_faces: bool):
                     raise Exception("Processing returned an invalid frame.")
 
                 # Save the processed image
+                image_format = "image"
+                if main_window.control["ImageFormatToggle"]:    
+                    image_format = "jpegimage"
                 save_filename = misc_helpers.get_output_file_path(
                     image_path,
                     main_window.control["OutputMediaFolder"],
-                    media_type="jpegimage", # Use jpeg for batch
+                    media_type=image_format, # Use jpeg for batch
                 )
 
                 if save_filename:
                     # 'frame' from processor is RGB, convert to BGR for saving
                     frame_bgr = frame[..., ::-1]
                     pil_image = Image.fromarray(frame_bgr)
-                    pil_image.save(save_filename, "JPEG", quality = 95)
+                    if main_window.control["ImageFormatToggle"]:
+                        pil_image.save(save_filename, "JPEG", quality = 95)
+                    else:
+                        pil_image.save(save_filename, "PNG")
                     processed_count += 1
                 else:
                     raise Exception("Could not generate output filename.")
