@@ -1,6 +1,8 @@
 from typing import TYPE_CHECKING
 import copy
 from functools import partial
+import os
+import traceback
 
 from PySide6.QtCore import QPoint
 from PySide6.QtWidgets import QMenu
@@ -15,6 +17,7 @@ import app.helpers.miscellaneous as misc_helpers
 from app.ui.widgets.actions import common_actions as common_widget_actions
 from app.ui.widgets.actions import graphics_view_actions
 import app.ui.widgets.actions.layout_actions as layout_actions
+from app.ui.widgets.actions import card_actions
 
 
 def set_up_video_seek_line_edit(main_window: "MainWindow"):
@@ -941,6 +944,273 @@ def save_current_frame_to_file(main_window: "MainWindow"):
             parent_widget=main_window.saveImageButton,
         )
 
+def process_batch_images(main_window: "MainWindow", process_all_faces: bool):
+    """
+    Processes a batch of images from the target list.
+
+    If 'process_all_faces' is True, it finds all faces in each image and applies
+    the current settings to all of them.
+
+    If 'process_all_faces' is False, it applies the current UI settings
+    (which implies processing only the currently selected/configured target face).
+    """
+    # 1. Check if output folder is set
+    if not main_window.outputFolderLineEdit.text():
+        common_widget_actions.create_and_show_messagebox(
+            main_window,
+            "No Output Folder Selected",
+            "Please select an Output folder to save the Images/Videos before Saving/Recording!",
+            main_window,
+        )
+        return
+
+    # 2. Collect all image paths from the target list
+    image_files_to_process = []
+    # Iterate through the TargetVideosList to find items marked as 'image'
+    for i in range(main_window.targetVideosList.count()):
+        item = main_window.targetVideosList.item(i)
+        widget = main_window.targetVideosList.itemWidget(item)
+        if widget and widget.file_type == "image":
+            image_files_to_process.append(widget.media_path)
+
+    # 3. Check if any images were found
+    if not image_files_to_process:
+        common_widget_actions.create_and_show_messagebox(
+            main_window,
+            "No Images Found",
+            "There are no images in the target list to process.",
+            main_window,
+        )
+        return
+
+    # We need a copy of the current UI parameters (for 'all faces' mode)
+    saved_current_parameters = None
+    if process_all_faces:
+        saved_current_parameters = main_window.current_widget_parameters.copy()
+        
+    # Get the currently selected source faces and embeddings (for both modes)
+    saved_input_faces = [
+        face for face in main_window.input_faces.values() if face.isChecked()
+    ]
+    saved_embeddings = [
+        embed for embed in main_window.merged_embeddings.values() if embed.isChecked()
+    ]
+
+    # Check if at least one source is selected (for both modes)
+    if not saved_input_faces and not saved_embeddings:
+        common_widget_actions.create_and_show_messagebox(
+            main_window,
+            "No Input Faces",
+            "Please select at least one Input Face or Embedding to use for swapping.",
+            main_window,
+        )
+        return
+
+    # 4. Confirmation Dialog
+    if process_all_faces:
+        confirm_title = "Confirm Batch Swap (All Faces)"
+        confirm_msg = (
+            f"Found {len(image_files_to_process)} images in the target list.\n\n"
+            "This will find ALL faces in each image and process them using the "
+            "currently selected input faces and parameters.\n\n"
+            "Proceed with batch swap?"
+        )
+    else:
+        confirm_title = "Confirm Batch Swap (Current Config)"
+        confirm_msg = (
+            f"Found {len(image_files_to_process)} images in the target list.\n\n"
+            "This will process each image using the currently selected input faces "
+            "and the *existing* target face configuration.\n\n"
+            "Proceed with batch swap?"
+        )
+        
+    reply = QtWidgets.QMessageBox.question(
+        main_window,
+        confirm_title,
+        confirm_msg,
+        QtWidgets.QMessageBox.Yes | QtWidgets.QMessageBox.No,
+        QtWidgets.QMessageBox.No,
+    )
+
+    if reply == QtWidgets.QMessageBox.No:
+        return
+
+    # 5. Store original state to restore it later
+    original_media_path = main_window.video_processor.media_path
+    original_file_type = main_window.video_processor.file_type
+    original_frame_num = main_window.video_processor.current_frame_number
+    original_media_capture = main_window.video_processor.media_capture
+    
+    # Store target faces only if NOT in 'all faces' mode, otherwise they get cleared
+    original_target_faces = {}
+    if not process_all_faces:
+        original_target_faces = main_window.target_faces.copy()
+
+
+    # 6. Setup Progress Dialog
+    progress_dialog = QtWidgets.QProgressDialog(
+        "Starting batch processing...",
+        "Cancel",
+        0,
+        len(image_files_to_process),
+        main_window,
+    )
+    progress_dialog.setWindowModality(QtCore.Qt.WindowModal)
+    progress_dialog.setWindowTitle("Batch Processing Images")
+    progress_dialog.setValue(0)
+    progress_dialog.show()
+
+    processed_count = 0
+    failed_count = 0
+
+    try:
+        # 7. Processing Loop
+        for i, image_path in enumerate(image_files_to_process):
+            # Update progress and check for cancellation
+            progress_dialog.setValue(i)
+            progress_dialog.setLabelText(f"Processing: {os.path.basename(image_path)}")
+            QtWidgets.QApplication.processEvents()  # Keep UI responsive
+
+            if progress_dialog.wasCanceled():
+                break
+
+            try:
+                # --- PROCESSING LOGIC ---
+
+                # 7a. Set the video_processor state to the new image
+                main_window.video_processor.media_path = image_path
+                main_window.video_processor.file_type = "image"
+                main_window.video_processor.current_frame_number = 0
+                main_window.video_processor.media_capture = (
+                    False  # Ensure no video capture is active
+                )
+
+                if process_all_faces:
+                    # --- "ALL FACES" LOGIC ---
+                    
+                    # 7b. Clear target faces from the previous iteration
+                    # refresh_frame=False to avoid unnecessary UI updates
+                    card_actions.clear_target_faces(main_window, refresh_frame=False)
+
+                    # 7c. Find all faces in the new image (simulates "Find Faces")
+                    # This populates main_window.target_faces and main_window.parameters
+                    card_actions.find_target_faces(main_window)
+
+                    if not main_window.target_faces:
+                        print(f"No faces found in {image_path}. Skipping.")
+                        failed_count += 1
+                        continue  # Move to the next image
+
+                    # 7d. Apply the saved configuration to ALL found faces
+                    for target_face in main_window.target_faces.values():
+                        # Apply UI parameters (masks, filters, etc.)
+                        main_window.parameters[target_face.face_id] = saved_current_parameters.copy()
+
+                        # Assign saved source faces
+                        for input_face in saved_input_faces:
+                            target_face.assigned_input_faces[
+                                input_face.face_id
+                            ] = input_face.embedding_store
+
+                        # Assign saved embeddings
+                        for embed in saved_embeddings:
+                            target_face.assigned_merged_embeddings[
+                                embed.embedding_id
+                            ] = embed.embedding_store
+
+                        # Recalculate the combined embedding for the swap
+                        target_face.calculate_assigned_input_embedding()
+
+                    # 7e. Process the image (runs swap on all configured faces)
+                    main_window.video_processor.process_current_frame()
+                
+                else:
+                    # --- "CURRENT CONFIG" LOGIC ---
+                    # This assumes the input faces are already selected in the UI.
+                    # It will use the existing target_faces data (if any)
+                    # for the image, applying the selected inputs.
+                    main_window.video_processor.process_current_frame()
+
+                # --- END OF PROCESSING LOGIC ---
+
+                # 7f. Get and save the processed image
+                frame = main_window.video_processor.current_frame
+                if not isinstance(frame, numpy.ndarray) or frame.size == 0:
+                    raise Exception("Processing returned an invalid frame.")
+
+                # Save the processed image
+                save_filename = misc_helpers.get_output_file_path(
+                    image_path,
+                    main_window.control["OutputMediaFolder"],
+                    media_type="jpegimage", # Use jpeg for batch
+                )
+
+                if save_filename:
+                    # 'frame' from processor is RGB, convert to BGR for saving
+                    frame_bgr = frame[..., ::-1]
+                    pil_image = Image.fromarray(frame_bgr)
+                    pil_image.save(save_filename, "JPEG", quality = 95)
+                    processed_count += 1
+                else:
+                    raise Exception("Could not generate output filename.")
+
+            except Exception as e:
+                # Log the error for this specific file and continue
+                print(f"Failed to process {image_path}: {e}")
+                traceback.print_exc()
+                failed_count += 1
+
+    finally:
+        # 8. Close the progress dialog
+        progress_dialog.close()
+
+        # 9. Show completion message
+        if progress_dialog.wasCanceled():
+            result_msg = (
+                f"Batch processing cancelled.\n\n"
+                f"Processed: {processed_count}\n"
+                f"Failed: {failed_count}"
+            )
+        else:
+            result_msg = (
+                f"Batch processing complete.\n\n"
+                f"Successfully processed: {processed_count}\n"
+                f"Failed to process: {failed_count}"
+            )
+
+        common_widget_actions.create_and_show_messagebox(
+            main_window, "Batch Complete", result_msg, main_window
+        )
+
+        # 10. Restore original state
+        
+        # Clear faces from the last processed image IF we were in 'all faces' mode
+        if process_all_faces:
+            card_actions.clear_target_faces(main_window, refresh_frame=False)
+        else:
+            # Otherwise, restore the original target faces
+             main_window.target_faces = original_target_faces
+        
+        main_window.video_processor.media_path = original_media_path
+        main_window.video_processor.file_type = original_file_type
+        main_window.video_processor.current_frame_number = original_frame_num
+        main_window.video_processor.media_capture = original_media_capture
+
+        # Restore the view to its original state
+        if main_window.video_processor.media_path:
+            # Reload and re-process the frame that was active before the batch
+            if main_window.video_processor.file_type == "video":
+                main_window.video_processor.media_capture.set(
+                    cv2.CAP_PROP_POS_FRAMES, original_frame_num
+                )
+            main_window.video_processor.process_current_frame()
+        else:
+            # If no media was loaded, clear the scene
+            main_window.scene.clear()
+            # Manually update graphics view to show nothing
+            graphics_view_actions.update_graphics_view(
+                main_window, QtGui.QPixmap(), 0
+            )
 
 def toggle_live_sound(main_window: "MainWindow", toggle_value: bool):
     video_processor = main_window.video_processor

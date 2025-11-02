@@ -16,7 +16,7 @@
    </font>
   </property>
   <property name="windowTitle">
-   <string>VisoMaster v0.1.6 - Fusion</string>
+   <string>VisoMaster - Fusion - 1.0.0</string>
   </property>
   <property name="windowIcon">
    <iconset resource="media.qrc">
@@ -665,6 +665,30 @@
              <widget class="QPushButton" name="saveImageButton">
               <property name="text">
                <string>Save Image</string>
+              </property>
+              <property name="flat">
+               <bool>true</bool>
+              </property>
+             </widget>
+            </item>
+           </layout>
+          </item>
+		  <item row="0" column="1">
+           <layout class="QHBoxLayout" name="batchLayout_1">
+            <item>
+             <widget class="QPushButton" name="batchImageButton">
+              <property name="text">
+               <string>Batch Process Selected Face</string>
+              </property>
+              <property name="flat">
+               <bool>true</bool>
+              </property>
+             </widget>
+            </item>
+			<item>
+             <widget class="QPushButton" name="batchallImageButton">
+              <property name="text">
+               <string>Batch Process All Faces</string>
               </property>
               <property name="flat">
                <bool>true</bool>

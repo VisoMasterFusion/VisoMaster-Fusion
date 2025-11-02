@@ -1964,9 +1964,10 @@ class FrameWorker(threading.Thread):
                 parameters,
                 control,
             )
-            FaceParser_mask_128 = out.get(
-                "FaceParser_mask", None
-            )  # [1,128,128], 1=behalten
+            if not parameters["FaceParserEndToggle"]:
+                FaceParser_mask_128 = out.get(
+                    "FaceParser_mask", None
+                )  # [1,128,128], 1=behalten
             texture_exclude_512 = out.get(
                 "texture_mask", texture_exclude_512
             )  # [1,512,512], 1=ausschließen
@@ -2694,6 +2695,21 @@ class FrameWorker(threading.Thread):
         # Third denoiser pass - After restorers
         if control.get("DenoiserAfterRestorersToggle", False):
             swap = self._apply_denoiser_pass(swap, control, "After", kv_map)
+
+        # Face parser at end
+        if parameters["FaceParserEnableToggle"] and parameters["FaceParserEndToggle"]:
+            out = self.models_processor.process_masks_and_masks(
+                swap,  # aktueller Swap-Stand (uint8, 3x512x512)
+                original_face_512,  # original (uint8, 3x512x512)
+                parameters,
+                control,
+            )
+            FaceParser_mask_128 = out.get(
+                "FaceParser_mask", None
+            )
+            # FaceParser-Maske (128) auf swap_mask anwenden (wenn vorhanden)
+            if FaceParser_mask_128 is not None:
+                swap_mask = swap_mask * FaceParser_mask_128
 
         # -------------------------------
         # AutoColor (Maske 512) - second pass at the end (to color the restored and denoized faces after the first pipeline pass)

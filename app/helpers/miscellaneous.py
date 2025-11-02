@@ -577,6 +577,8 @@ def get_output_file_path(
         extension = ".mp4"
     elif media_type == "image":
         extension = ".png"  # Default to PNG for processed images.
+    elif media_type == "jpegimage":
+        extension = ".jpg"  # Default to PNG for processed images.
     else:
         # If media type is unknown, try to preserve the original extension or default to nothing.
         extension = temp_path.suffix if temp_path.suffix else ""
