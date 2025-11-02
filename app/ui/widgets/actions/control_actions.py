@@ -286,19 +286,13 @@ def handle_landmark_model_selection_change(
     """Unloads the old landmark model and loads the new one."""
     from app.processors.models_data import landmark_model_mapping
 
-    fld_processor = main_window.models_processor.face_landmark_detectors
     is_enabled = main_window.control.get("LandmarkDetectToggle", False)
-    old_model_name = fld_processor.current_landmark_model
     new_model_name = landmark_model_mapping.get(new_detect_mode)
 
-    if old_model_name and old_model_name != new_model_name:
-        main_window.models_processor.unload_model(old_model_name)
-        fld_processor.current_landmark_model = None
-
+    # If landmark detection is active, ensure the newly selected model is loaded.
+    # It will not unload any other models, preventing the reloading issue.
     if is_enabled and new_model_name:
-        instance = main_window.models_processor.load_model(new_model_name)
-        if instance:
-            fld_processor.current_landmark_model = new_model_name
+        main_window.models_processor.load_model(new_model_name)
 
 
 def handle_frame_enhancer_state_change(

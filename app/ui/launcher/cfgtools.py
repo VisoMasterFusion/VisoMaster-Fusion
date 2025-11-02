@@ -20,6 +20,7 @@ from .core import PATHS
 
 # ---------- Core File I/O ----------
 
+
 def read_portable_cfg() -> dict:
     """Read portable.cfg as a simple key=value dict."""
     cfg = {}
@@ -82,11 +83,16 @@ def write_portable_cfg(updated: dict) -> bool:
 
 # ---------- Launcher Settings ----------
 
+
 def get_launcher_enabled_from_cfg() -> int:
     """Return 1 if launcher should run on startup (based on 'LAUNCHER_ENABLED' in portable.cfg), else return 0."""
     cfg = read_portable_cfg()
     v = cfg.get("LAUNCHER_ENABLED")
-    return 1 if v is None else (1 if str(v).strip() in ("1", "true", "True", "yes", "on") else 0)
+    return (
+        1
+        if v is None
+        else (1 if str(v).strip() in ("1", "true", "True", "yes", "on") else 0)
+    )
 
 
 def set_launcher_enabled_to_cfg(value: int):
@@ -98,9 +104,11 @@ def set_launcher_enabled_to_cfg(value: int):
 
 # ---------- Version Tracking ----------
 
+
 def update_current_commit_in_cfg():
     """Fetch the current Git commit hash and save it to portable.cfg under 'CURRENT_COMMIT'."""
     from .gittools import run_git
+
     r = run_git(["rev-parse", "HEAD"], capture=True)
     if r and r.returncode == 0:
         commit = r.stdout.strip()
@@ -115,6 +123,7 @@ def update_last_updated_in_cfg():
 
 
 # ---------- Formatting / Read Utilities ----------
+
 
 def format_last_updated_local(iso_str: str) -> str:
     """Convert a UTC ISO timestamp string to a local time string for display."""
@@ -136,7 +145,9 @@ def read_version_info():
 
 # ---------- Checksum Tracking ----------
 
-import hashlib, json
+import hashlib
+import json
+
 
 def compute_file_sha256(path) -> str | None:
     """Return SHA256 checksum of the given file, or None if not found."""
@@ -164,7 +175,9 @@ def compute_models_sha256(models_list) -> str | None:
                 normalized.append({k: item[k] for k in sorted(item.keys())})
             else:
                 normalized.append(str(item))
-        payload = json.dumps(normalized, sort_keys=True, separators=(',', ':')).encode("utf-8")
+        payload = json.dumps(normalized, sort_keys=True, separators=(",", ":")).encode(
+            "utf-8"
+        )
         return hashlib.sha256(payload).hexdigest()
     except Exception as e:
         print(f"[Launcher] Error computing models checksum: {e}")
@@ -178,6 +191,7 @@ def compute_models_sha256(models_list) -> str | None:
 from app.processors.models_data import models_list
 from pathlib import Path
 
+
 def check_models_presence() -> tuple[bool, list]:
     """Quickly check if any expected model files are missing (no hash check)."""
     missing = []
@@ -190,6 +204,7 @@ def check_models_presence() -> tuple[bool, list]:
 
 
 # ---------- Checksum State ----------
+
 
 def read_checksum_state() -> dict[str, str]:
     """Read current checksum values from portable.cfg."""
@@ -212,4 +227,4 @@ def write_checksum_state(deps_sha: str | None = None, models_sha: str | None = N
         iso_utc = datetime.now(timezone.utc).replace(microsecond=0).isoformat()
         updated["LAST_MAINT_TS"] = iso_utc
         if write_portable_cfg(updated):
-            print(f"[Launcher] Updated checksum state in config.")
+            print("[Launcher] Updated checksum state in config.")

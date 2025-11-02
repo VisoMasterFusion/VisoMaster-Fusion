@@ -25,6 +25,7 @@ def main():
 
         # --- Enable Ctrl+C in console ---
         import signal
+
         signal.signal(signal.SIGINT, signal.SIG_DFL)
 
         # --- Create and run UI ---
@@ -39,4 +40,3 @@ def main():
     except Exception as e:
         print(f"[Launcher] Failed to start the VisoMaster Fusion Launcher: {e}")
         sys.exit(1)
-

@@ -16,15 +16,14 @@ from app.processors.utils import faceutil
 class FaceLandmarkDetectors:
     """
     Manages and executes various face landmark detection models.
-    This class acts as a dispatcher to select the appropriate detector based on a given mode.
-    It handles model loading, pre-processing (image warping), inference execution,
-    and post-processing (transforming landmarks back to the original image space).
+    This class acts as a dispatcher to select the appropriate detector and provides
+    helper methods for image preparation and filtering of detection results.
     """
 
     def unload_models(self):
-        if self.current_landmark_model:
-            self.models_processor.unload_model(self.current_landmark_model)
-            self.current_landmark_model = None
+        for model_name in list(self.active_landmark_models):
+            self.models_processor.unload_model(model_name)
+        self.active_landmark_models.clear()
 
     def __init__(self, models_processor: "ModelsProcessor"):
         """
@@ -35,7 +34,7 @@ class FaceLandmarkDetectors:
                                                 which handles model loading and device management.
         """
         self.models_processor = models_processor
-        self.current_landmark_model = None
+        self.active_landmark_models = set()
         # Caches for model-specific data to avoid re-computation.
         self.landmark_5_anchors = []
         self.landmark_5_scale1_cache = {}
@@ -80,20 +79,7 @@ class FaceLandmarkDetectors:
     ):
         """
         Main dispatcher function to run a specific landmark detector.
-
-        Args:
-            img (torch.Tensor): The full source image.
-            bbox (np.ndarray): The bounding box of the face. Used if 'from_points' is False.
-            det_kpss (np.ndarray): The initial keypoints (e.g., from a face detector). Used if 'from_points' is True.
-            detect_mode (str): The identifier for the desired landmark model (e.g., '68', '203').
-            score (float): The minimum confidence score to accept the detection.
-            from_points (bool): If True, use 'det_kpss' to align the face. If False, use 'bbox'.
-
-        Returns:
-            Tuple[np.ndarray, np.ndarray, np.ndarray]: A tuple containing:
-                - 5-point landmarks.
-                - Full landmarks (e.g., 68 points).
-                - Confidence scores for the landmarks.
+        ...
         """
         kpss_5, kpss, scores = [], [], []
 
@@ -104,15 +90,16 @@ class FaceLandmarkDetectors:
             return kpss_5, kpss, scores
 
         model_name = detector_info["model_name"]
-        detection_function = detector_info["function"]  # Moved this line here
+        detection_function = detector_info["function"]
 
+        # Load model if it is not already loaded.
         loaded_model_instance = self.models_processor.models.get(model_name)
         if not loaded_model_instance:
             loaded_model_instance = self.models_processor.load_model(model_name)
             if loaded_model_instance:
-                self.current_landmark_model = (
-                    model_name  # Track the currently loaded model
-                )
+                self.active_landmark_models.add(model_name)
+                # This message will now only appear on the first-time load.
+                print(f"Successfully loaded model: {model_name}")
 
         # If model still not loaded (e.g., failed to load), print a warning and return empty
         if not loaded_model_instance:
@@ -120,13 +107,6 @@ class FaceLandmarkDetectors:
                 f"WARNING: Landmark model '{model_name}' failed to load or is not available. Skipping detection."
             )
             return kpss_5, kpss, scores
-
-        # ONLY update current_landmark_model if the new model was successfully loaded
-        if (
-            self.current_landmark_model != model_name
-        ):  # Check if it's actually a new model or if it was just re-loaded
-            print(f"Successfully loaded model: {model_name}")
-            self.current_landmark_model = model_name
 
         # Handle special setup cases for certain models.
         if detect_mode == "3d68":

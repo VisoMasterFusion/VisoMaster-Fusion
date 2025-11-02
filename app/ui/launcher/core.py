@@ -17,13 +17,14 @@ from PySide6 import QtWidgets
 
 # ---------- Path Resolution ----------
 
+
 def resolve_paths():
     """Return all filesystem paths used by the launcher."""
     script_path = Path(__file__).resolve()
-    ui_dir = script_path.parent.parent        # .../app/ui
-    app_dir = ui_dir.parent                   # .../app
-    repo_dir = app_dir.parent                 # .../VisoMaster-Fusion
-    base_dir = repo_dir.parent                # .../VisoMaster
+    ui_dir = script_path.parent.parent  # .../app/ui
+    app_dir = ui_dir.parent  # .../app
+    repo_dir = app_dir.parent  # .../VisoMaster-Fusion
+    base_dir = repo_dir.parent  # .../VisoMaster
     portable_dir = base_dir / "portable-files"
 
     return {
@@ -49,6 +50,7 @@ PATHS = resolve_paths()
 
 # ---------- Validation ----------
 
+
 def must_exist(p: Path, what: str):
     """Exit early with a clear message if a required path is missing."""
     if not Path(p).exists():
@@ -57,6 +59,7 @@ def must_exist(p: Path, what: str):
 
 
 # ---------- Theme Handling ----------
+
 
 def apply_theme_to_app(app: QtWidgets.QApplication):
     """Apply the True-Dark QSS theme to the launcher."""
@@ -72,12 +75,11 @@ def apply_theme_to_app(app: QtWidgets.QApplication):
 
 # ---------- Subprocess Helpers ----------
 
+
 def run_python(script_path: Path):
     """Run a Python script using the portable Python interpreter."""
     subprocess.run(
-        [str(PATHS["PYTHON_EXE"]), str(script_path)],
-        cwd=PATHS["APP_DIR"],
-        shell=False
+        [str(PATHS["PYTHON_EXE"]), str(script_path)], cwd=PATHS["APP_DIR"], shell=False
     )
 
 
@@ -94,5 +96,5 @@ def uv_pip_install():
             str(PATHS["PYTHON_EXE"]),
         ],
         cwd=PATHS["APP_DIR"],
-        shell=False
+        shell=False,
     )

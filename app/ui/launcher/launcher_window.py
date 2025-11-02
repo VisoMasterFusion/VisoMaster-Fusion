@@ -22,17 +22,32 @@ from PySide6 import QtWidgets, QtGui, QtCore
 
 from .core import PATHS, run_python, uv_pip_install
 from .gittools import (
-    run_git, fetch_commit_list, git_changed_files,
-    backup_changed_files, get_current_short_commit
+    run_git,
+    fetch_commit_list,
+    git_changed_files,
+    backup_changed_files,
+    get_current_short_commit,
 )
 from .cfgtools import (
-    read_portable_cfg, get_launcher_enabled_from_cfg, set_launcher_enabled_to_cfg,
-    update_current_commit_in_cfg, update_last_updated_in_cfg,
-    read_version_info, format_last_updated_local,
-    read_checksum_state, write_checksum_state,
-    compute_file_sha256, compute_models_sha256, check_models_presence
+    read_portable_cfg,
+    get_launcher_enabled_from_cfg,
+    set_launcher_enabled_to_cfg,
+    update_current_commit_in_cfg,
+    update_last_updated_in_cfg,
+    read_version_info,
+    format_last_updated_local,
+    read_checksum_state,
+    write_checksum_state,
+    compute_file_sha256,
+    compute_models_sha256,
+    check_models_presence,
 )
-from .uiutils import notify_backup_created, make_header_widget, make_divider, with_busy_state
+from .uiutils import (
+    notify_backup_created,
+    make_header_widget,
+    make_divider,
+    with_busy_state,
+)
 from .launcher_widgets import ToggleSwitch, StatusPill
 
 
@@ -56,6 +71,7 @@ ACTIONS_MAINT = [
 
 # ---------- Update Check ----------
 
+
 def check_update_status():
     """Return 'behind', 'up_to_date', or 'offline' after a quick origin fetch."""
     print("[Launcher] Checking for updates...")
@@ -74,7 +90,9 @@ def check_update_status():
     if head and origin and head.returncode == 0 and origin.returncode == 0:
         head_hash, origin_hash = head.stdout.strip(), origin.stdout.strip()
         if head_hash != origin_hash:
-            print(f"[Launcher] Local version behind origin (HEAD={head_hash[:7]} → {origin_hash[:7]})")
+            print(
+                f"[Launcher] Local version behind origin (HEAD={head_hash[:7]} → {origin_hash[:7]})"
+            )
             return "behind"
         else:
             print(f"[Launcher] Repository up to date (HEAD={head_hash[:7]})")
@@ -95,7 +113,7 @@ class LauncherWindow(QtWidgets.QWidget):
         self.setWindowTitle("VisoMaster Fusion Launcher")
         if PATHS["SMALL_ICON"].exists():
             self.setWindowIcon(QtGui.QIcon(str(PATHS["SMALL_ICON"])))
-        
+
         # Safety defaults for checksum flags (prevents AttributeError if checksum load fails)
         self.deps_changed = self.models_changed = self.files_changed = False
         self._user_moved = False
@@ -147,10 +165,14 @@ class LauncherWindow(QtWidgets.QWidget):
         btn.clicked.connect(callback)
         return btn
 
+    def _go_home(self):
+        self._navigate_to("page_home")
 
-    def _go_home(self): self._navigate_to("page_home")
-    def _go_maint(self): self._navigate_to("page_maint")
-    def _go_rollback(self): self._navigate_to("page_rollback")
+    def _go_maint(self):
+        self._navigate_to("page_maint")
+
+    def _go_rollback(self):
+        self._navigate_to("page_rollback")
 
     # ---------- Navigation ----------
 
@@ -160,13 +182,14 @@ class LauncherWindow(QtWidgets.QWidget):
             self.stack.setCurrentWidget(page)
             self._resize_to_current_page()
         else:
-            print(f"[Launcher] Warning: Cannot navigate to '{page_name}' (not in stack).")
+            print(
+                f"[Launcher] Warning: Cannot navigate to '{page_name}' (not in stack)."
+            )
 
     def _reset_page(self, page_widget: QtWidgets.QWidget):
         layout = page_widget.layout()
         if layout is not None:
             QtWidgets.QWidget().setLayout(layout)
-
 
     # ---------- Checksum Handling ----------
 
@@ -200,7 +223,6 @@ class LauncherWindow(QtWidgets.QWidget):
             print(f"[Launcher] Warning: Could not check tracked files: {e}")
             self.files_changed = False
 
-
     # ---------- Meta Panel ----------
 
     def _build_meta_panel(self, curr_short, last_nice):
@@ -213,14 +235,18 @@ class LauncherWindow(QtWidgets.QWidget):
 
         def klabel(text):
             lbl = QtWidgets.QLabel(text)
-            lbl.setStyleSheet("color: rgba(255,255,255,0.75); font-size: 13px; font-weight: 600;")
+            lbl.setStyleSheet(
+                "color: rgba(255,255,255,0.75); font-size: 13px; font-weight: 600;"
+            )
             return lbl
 
         def vlabel(text, mono=False, tooltip=None):
             lbl = QtWidgets.QLabel(text)
             if mono:
                 fam = "Consolas, 'Cascadia Mono', 'Fira Code', monospace"
-                lbl.setStyleSheet(f"color: rgba(255,255,255,0.92); font-size: 13px; font-family: {fam};")
+                lbl.setStyleSheet(
+                    f"color: rgba(255,255,255,0.92); font-size: 13px; font-family: {fam};"
+                )
             else:
                 lbl.setStyleSheet("color: rgba(255,255,255,0.85); font-size: 13px;")
             if tooltip:
@@ -229,7 +255,13 @@ class LauncherWindow(QtWidgets.QWidget):
 
         if curr_short:
             layout.addWidget(klabel("Current build"), 0, 0)
-            layout.addWidget(vlabel(curr_short, mono=True, tooltip="Full commit hash in portable.cfg"), 0, 1)
+            layout.addWidget(
+                vlabel(
+                    curr_short, mono=True, tooltip="Full commit hash in portable.cfg"
+                ),
+                0,
+                1,
+            )
         if last_nice:
             layout.addWidget(klabel("Last updated"), 0, 2)
             layout.addWidget(vlabel(last_nice, tooltip="UTC ISO in portable.cfg"), 0, 3)
@@ -242,7 +274,6 @@ class LauncherWindow(QtWidgets.QWidget):
             }
         """)
         return panel
-
 
     # ---------- Build UI ----------
 
@@ -269,7 +300,9 @@ class LauncherWindow(QtWidgets.QWidget):
         """Create the home screen with launcher options and status info."""
         self._reset_page(self.page_home)
         lay = QtWidgets.QVBoxLayout(self.page_home)
-        lay.addWidget(make_header_widget("VisoMaster Fusion Launcher", PATHS["LOGO_PNG"]))
+        lay.addWidget(
+            make_header_widget("VisoMaster Fusion Launcher", PATHS["LOGO_PNG"])
+        )
 
         for text, method, *tip in ACTIONS_HOME:
             fn = getattr(self, method)
@@ -283,7 +316,11 @@ class LauncherWindow(QtWidgets.QWidget):
         if self.update_status == "behind":
             lay.addWidget(StatusPill("⚠️ Git updates available"))
         elif self.update_status == "offline":
-            lay.addWidget(StatusPill("Offline — can’t check for updates", color="rgba(255,255,255,0.08)"))
+            lay.addWidget(
+                StatusPill(
+                    "Offline — can’t check for updates", color="rgba(255,255,255,0.08)"
+                )
+            )
 
         if self.deps_changed or self.models_changed or self.files_changed:
             if self.deps_changed:
@@ -337,7 +374,9 @@ class LauncherWindow(QtWidgets.QWidget):
         nice_last = format_last_updated_local(last) if last else "—"
         self.lbl_last_updated = QtWidgets.QLabel(f"Last updated: {nice_last}")
         self.lbl_last_updated.setAlignment(QtCore.Qt.AlignRight)
-        self.lbl_last_updated.setStyleSheet("color: rgba(255,255,255,0.58); font-size: 12px; padding: 2px;")
+        self.lbl_last_updated.setStyleSheet(
+            "color: rgba(255,255,255,0.58); font-size: 12px; padding: 2px;"
+        )
         lay.addWidget(self.lbl_last_updated)
         lay.addStretch(1)
 
@@ -357,14 +396,14 @@ class LauncherWindow(QtWidgets.QWidget):
             v.addWidget(QtWidgets.QLabel("No commits found (or git unavailable)."))
         else:
             for c in self.commits:
-                is_current = current_short and c['hash'] == current_short
+                is_current = current_short and c["hash"] == current_short
                 card = QtWidgets.QFrame()
                 card_lay = QtWidgets.QVBoxLayout(card)
                 card_lay.setContentsMargins(8, 6, 8, 6)
 
                 title_html = f"<b>{c['hash']}</b>  —  <i>{c['date']}</i>"
                 hash_label = QtWidgets.QLabel(title_html)
-                msg_label = QtWidgets.QLabel(c['msg'])
+                msg_label = QtWidgets.QLabel(c["msg"])
                 msg_label.setWordWrap(True)
 
                 card_lay.addWidget(hash_label)
@@ -377,7 +416,7 @@ class LauncherWindow(QtWidgets.QWidget):
                     btn = QtWidgets.QPushButton("Revert to this version")
                     btn.setFixedHeight(26)
                     btn.setFocusPolicy(QtCore.Qt.NoFocus)
-                    btn.clicked.connect(lambda _, h=c['hash']: self.on_rollback(h))
+                    btn.clicked.connect(lambda _, h=c["hash"]: self.on_rollback(h))
                     card_lay.addWidget(btn)
 
                 v.addWidget(card)
@@ -395,8 +434,12 @@ class LauncherWindow(QtWidgets.QWidget):
         QtWidgets.QApplication.processEvents()
         print("[Launcher] Launching VisoMaster Fusion...")
         import subprocess
-        subprocess.run([str(PATHS["PYTHON_EXE"]), str(PATHS["MAIN_PY"])],
-                       cwd=PATHS["APP_DIR"], shell=False)
+
+        subprocess.run(
+            [str(PATHS["PYTHON_EXE"]), str(PATHS["MAIN_PY"])],
+            cwd=PATHS["APP_DIR"],
+            shell=False,
+        )
         QtWidgets.QApplication.quit()
 
     def on_update_git(self):
@@ -416,11 +459,13 @@ class LauncherWindow(QtWidgets.QWidget):
 
     def on_repair_installation(self):
         confirm = QtWidgets.QMessageBox.question(
-            self, "Repair installation",
+            self,
+            "Repair installation",
             "Restore official app files for this version?\n\n"
             "This will overwrite modified tracked files with the current version (HEAD).\n"
             "Your personal files are not touched.",
-            QtWidgets.QMessageBox.Yes | QtWidgets.QMessageBox.No)
+            QtWidgets.QMessageBox.Yes | QtWidgets.QMessageBox.No,
+        )
         if confirm != QtWidgets.QMessageBox.Yes:
             return
 
@@ -436,15 +481,18 @@ class LauncherWindow(QtWidgets.QWidget):
                 backup_path = backup_changed_files(changed)
                 if backup_path:
                     notify_backup_created(self, backup_path)
-                r = run_git(["restore", "--worktree", "--source=HEAD", "--", "."], capture=True)
+                r = run_git(
+                    ["restore", "--worktree", "--source=HEAD", "--", "."], capture=True
+                )
                 if not r or r.returncode != 0:
                     run_git(["checkout", "--", "."], capture=False)
                 update_current_commit_in_cfg()
                 update_last_updated_in_cfg()
                 from app.processors.models_data import models_list
+
                 write_checksum_state(
                     deps_sha=compute_file_sha256(PATHS["REQ_FILE"]),
-                    models_sha=compute_models_sha256(models_list)
+                    models_sha=compute_models_sha256(models_list),
                 )
                 self._load_checksum_status()
                 self._refresh_update_indicators()
@@ -467,6 +515,7 @@ class LauncherWindow(QtWidgets.QWidget):
             run_python(PATHS["DOWNLOAD_PY"])
             try:
                 from app.processors.models_data import models_list
+
                 write_checksum_state(models_sha=compute_models_sha256(models_list))
             except Exception as e:
                 print(f"[Launcher] Warning: Could not update model checksum: {e}")
@@ -476,15 +525,19 @@ class LauncherWindow(QtWidgets.QWidget):
 
     def on_rollback(self, commit_hash: str):
         confirm = QtWidgets.QMessageBox.question(
-            self, "Confirm Revert",
+            self,
+            "Confirm Revert",
             f"Revert to commit {commit_hash}?\n\nThis will discard all local changes.",
-            QtWidgets.QMessageBox.Yes | QtWidgets.QMessageBox.No)
+            QtWidgets.QMessageBox.Yes | QtWidgets.QMessageBox.No,
+        )
         if confirm != QtWidgets.QMessageBox.Yes:
             return
 
         changed = git_changed_files(True)
         if changed:
-            print(f"[Launcher] Backing up {len(changed)} changed file(s) before revert...")
+            print(
+                f"[Launcher] Backing up {len(changed)} changed file(s) before revert..."
+            )
             backup_path = backup_changed_files(changed)
             if backup_path:
                 notify_backup_created(self, backup_path)
@@ -507,7 +560,7 @@ class LauncherWindow(QtWidgets.QWidget):
     def _rebuild_page(self, attr_name: str, builder_fn):
         current_before = self.stack.currentWidget()
         old_page = getattr(self, attr_name, None)
-        was_current = (current_before is old_page)
+        was_current = current_before is old_page
         idx = self.stack.indexOf(old_page) if old_page else -1
 
         if old_page:
@@ -522,7 +575,9 @@ class LauncherWindow(QtWidgets.QWidget):
         else:
             self.stack.addWidget(new_page)
 
-        QtCore.QTimer.singleShot(0, lambda: self._safe_restore_page(current_before, new_page, was_current))
+        QtCore.QTimer.singleShot(
+            0, lambda: self._safe_restore_page(current_before, new_page, was_current)
+        )
         QtCore.QTimer.singleShot(50, self._resize_to_current_page)
 
     def _safe_restore_page(self, old_widget, new_widget, was_current):
@@ -549,7 +604,9 @@ class LauncherWindow(QtWidgets.QWidget):
                 if scroll and scroll.widget():
                     inner = scroll.widget()
                     inner.adjustSize()
-                    content_height = inner.height() + scroll.horizontalScrollBar().height() + 80
+                    content_height = (
+                        inner.height() + scroll.horizontalScrollBar().height() + 80
+                    )
                 else:
                     content_height = current.sizeHint().height() + 40
 
@@ -561,7 +618,9 @@ class LauncherWindow(QtWidgets.QWidget):
                 self.setMinimumSize(BASE_WIDTH, MIN_HEIGHT)
                 self.setMaximumSize(BASE_WIDTH, max_height)
                 self.resize(BASE_WIDTH, initial_height)
-                self.setSizePolicy(QtWidgets.QSizePolicy.Fixed, QtWidgets.QSizePolicy.Expanding)
+                self.setSizePolicy(
+                    QtWidgets.QSizePolicy.Fixed, QtWidgets.QSizePolicy.Expanding
+                )
 
             QtCore.QTimer.singleShot(0, finalize_resize)
 

@@ -10,6 +10,7 @@ import sys
 
 try:
     from .main import main
+
     print("[Launcher] Starting VisoMaster Fusion Launcher...")
     main()
 except Exception as e:

@@ -17,6 +17,7 @@ from .core import PATHS
 
 # ---------- Git Command Wrapper ----------
 
+
 def run_git(args: list[str], capture: bool = False, check: bool = False):
     """Run a Git command in the app repo context using the portable git.exe."""
     exe = str(PATHS["GIT_EXE"])
@@ -39,7 +40,7 @@ def run_git(args: list[str], capture: bool = False, check: bool = False):
             text=True,
             capture_output=capture,
             check=check,
-            shell=False
+            shell=False,
         )
     except FileNotFoundError:
         print(f"[Launcher] ERROR: Git executable missing or inaccessible: {exe}")
@@ -52,12 +53,13 @@ def run_git(args: list[str], capture: bool = False, check: bool = False):
 
 # ---------- Commit Utilities ----------
 
+
 def fetch_commit_list(n: int = 10):
     """Return a list of recent commits (hash, date, message)."""
     try:
         result = run_git(
             ["log", "--pretty=format:%h|%ad|%s", "--date=short", "-n", str(n)],
-            capture=True
+            capture=True,
         )
         if not result or result.returncode != 0:
             msg = result.stderr.strip() if result else "No response from Git."
@@ -79,6 +81,7 @@ def get_current_short_commit() -> str | None:
     """Return the current 7-character commit hash."""
     try:
         from .cfgtools import read_portable_cfg  # avoid circular import
+
         cfg = read_portable_cfg()
         curr = cfg.get("CURRENT_COMMIT")
         if curr and len(curr) >= 7:
@@ -92,6 +95,7 @@ def get_current_short_commit() -> str | None:
 
 
 # ---------- Change Detection ----------
+
 
 def git_changed_files(tracked_only: bool = True) -> list[str]:
     """Return a list of modified or changed tracked files."""
@@ -115,11 +119,13 @@ def git_changed_files(tracked_only: bool = True) -> list[str]:
 
 # ---------- Backup ----------
 
+
 def backup_changed_files(changed: list[str]) -> str | None:
     """Create a zip backup of modified tracked files and return its path."""
     if not changed:
         return None
     import zipfile
+
     repo_dir = PATHS["APP_DIR"]
     backups_dir = PATHS["PORTABLE_DIR"] / "backups"
     backups_dir.mkdir(parents=True, exist_ok=True)

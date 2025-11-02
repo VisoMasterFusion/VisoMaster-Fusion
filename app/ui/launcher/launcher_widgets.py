@@ -14,6 +14,7 @@ from PySide6 import QtWidgets, QtGui, QtCore
 
 # ---------- Toggle Switch ----------
 
+
 class ToggleSwitch(QtWidgets.QPushButton):
     """A minimalist animated toggle switch styled for dark UI themes."""
 
@@ -87,8 +88,10 @@ class ToggleSwitch(QtWidgets.QPushButton):
 
 # ---------- Status Pill Label ----------
 
+
 class StatusPill(QtWidgets.QLabel):
     """A small non-interactive pill-style label for status indicators."""
+
     def __init__(self, text: str, color: str = "rgba(255,255,255,0.08)", parent=None):
         super().__init__(text, parent)
         self.setAlignment(QtCore.Qt.AlignCenter)

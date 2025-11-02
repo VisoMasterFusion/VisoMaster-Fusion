@@ -7,7 +7,6 @@
 #   • with_busy_state() context manager for temporary UI locking
 # ---------------------------------------------------------------------------
 
-from datetime import datetime
 from PySide6 import QtWidgets, QtGui, QtCore
 import subprocess
 import os
@@ -15,6 +14,7 @@ from contextlib import contextmanager
 
 
 # ---------- Notifications ----------
+
 
 def notify_backup_created(parent: QtWidgets.QWidget, zip_path: str):
     """Show a message box when a backup zip is created, with option to open folder."""
@@ -37,6 +37,7 @@ def notify_backup_created(parent: QtWidgets.QWidget, zip_path: str):
 
 # ---------- UI Elements ----------
 
+
 def make_divider(color: str = "#363636") -> QtWidgets.QFrame:
     """Return a thin horizontal line divider."""
     divider = QtWidgets.QFrame()
@@ -45,7 +46,9 @@ def make_divider(color: str = "#363636") -> QtWidgets.QFrame:
     return divider
 
 
-def make_header_widget(title_text: str, logo_path: str | None = None, logo_width: int = 160) -> QtWidgets.QWidget:
+def make_header_widget(
+    title_text: str, logo_path: str | None = None, logo_width: int = 160
+) -> QtWidgets.QWidget:
     """Return a reusable header section with optional logo and horizontal line divider."""
     container = QtWidgets.QWidget()
     v = QtWidgets.QVBoxLayout(container)
@@ -74,6 +77,7 @@ def make_header_widget(title_text: str, logo_path: str | None = None, logo_width
 
 
 # ---------- Busy State Management (Context Manager) ----------
+
 
 @contextmanager
 def with_busy_state(widget: QtWidgets.QWidget, busy: bool, text: str | None = None):

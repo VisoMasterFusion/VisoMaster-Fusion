@@ -604,23 +604,27 @@ class FrameWorker(threading.Thread):
                 #    This assumes the face is well-centered by the dewarping process.
                 crop_size = self.VR_PERSPECTIVE_RENDER_SIZE
                 padding = int(crop_size * 0.025)  # 2.5% padding on each side
-                dummy_bbox_on_crop = np.array([padding, padding, crop_size - padding, crop_size - padding])
+                dummy_bbox_on_crop = np.array(
+                    [padding, padding, crop_size - padding, crop_size - padding]
+                )
 
                 # 3. Directly call the landmark detector, skipping the redundant face detector.
                 #    We pass the 'dummy_bbox_on_crop' to tell the landmark detector where to look.
-                kpss_5_crop_list, kpss_crop_list, _ = self.models_processor.run_detect_landmark(
-                    img=face_crop_tensor,
-                    bbox=dummy_bbox_on_crop,
-                    det_kpss=[],  # Not needed since we're providing a bounding box
-                    detect_mode=landmark_model_from_ui,  # <-- Use the model selected in the UI
-                    score=control["LandmarkDetectScoreSlider"] / 100.0,
-                    from_points=False,  # We are using a bbox, not a set of points
+                kpss_5_crop_list, kpss_crop_list, _ = (
+                    self.models_processor.run_detect_landmark(
+                        img=face_crop_tensor,
+                        bbox=dummy_bbox_on_crop,
+                        det_kpss=[],  # Not needed since we're providing a bounding box
+                        detect_mode=landmark_model_from_ui,  # <-- Use the model selected in the UI
+                        score=control["LandmarkDetectScoreSlider"] / 100.0,
+                        from_points=False,  # We are using a bbox, not a set of points
+                    )
                 )
 
                 # 4. The landmark detector returns lists; we extract the first (and only) result.
                 kpss_5_crop = [kpss_5_crop_list] if len(kpss_5_crop_list) > 0 else []
                 kpss_crop = [kpss_crop_list] if len(kpss_crop_list) > 0 else []
-                
+
                 if not (
                     isinstance(kpss_5_crop, np.ndarray)
                     and kpss_5_crop.shape[0] > 0
@@ -4348,5 +4352,3 @@ class FrameWorker(threading.Thread):
         contrast = grayscale.std()
         analysis["low_contrast"] = 1.0 - min(contrast.item() * 10, 1.0)
         return analysis
-
-

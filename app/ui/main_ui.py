@@ -472,10 +472,12 @@ class MainWindow(QtWidgets.QMainWindow, Ui_MainWindow):
         # This object is created here, in the main GUI thread.
         self.build_progress_dialog = QtWidgets.QProgressDialog(self)
         self.build_progress_dialog.setCancelButton(None)
-        self.build_progress_dialog.setWindowModality(QtCore.Qt.WindowModality.WindowModal)
+        self.build_progress_dialog.setWindowModality(
+            QtCore.Qt.WindowModality.WindowModal
+        )
         self.build_progress_dialog.setRange(0, 0)  # Indeterminate (busy) mode
-        self.build_progress_dialog.close() # Ensure it's hidden on startup
-        
+        self.build_progress_dialog.close()  # Ensure it's hidden on startup
+
     def update_denoiser_controls_visibility_for_pass(
         self, pass_suffix: str, current_mode_text: str
     ):

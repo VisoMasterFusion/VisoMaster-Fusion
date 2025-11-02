@@ -425,9 +425,11 @@ class VideoProcessor(QObject):
                 if self.recording:
                     should_finalize_default_recording = True
                 elif is_playback_loop_enabled:
-                    self.next_frame_to_display=1
+                    self.next_frame_to_display = 1
                     self.main_window.videoSeekSlider.blockSignals(True)
-                    self.main_window.videoSeekSlider.setValue(self.next_frame_to_display)
+                    self.main_window.videoSeekSlider.setValue(
+                        self.next_frame_to_display
+                    )
                     self.main_window.videoSeekSlider.blockSignals(False)
                     should_stop_playback = True
                 else:
@@ -2336,4 +2338,3 @@ class VideoProcessor(QObject):
 
         # Start the display metronome
         self._start_metronome(self.fps, is_first_start=True)
-

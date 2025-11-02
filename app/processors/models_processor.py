@@ -27,8 +27,6 @@ except ImportError:
     )
 
 from PySide6 import QtCore
-from PySide6.QtWidgets import QProgressDialog
-from PySide6.QtCore import Qt
 
 try:
     import tensorrt as trt
@@ -130,27 +128,26 @@ def _probe_onnx_model_worker(model_path, providers_list, trt_options, session_op
         print(f"[ONNX Prober]: Attempting to load {os.path.basename(model_path)}...")
         # This line is the one that triggers the build
         session = onnxruntime.InferenceSession(
-            model_path,
-            sess_options=session_options,
-            providers=providers
+            model_path, sess_options=session_options, providers=providers
         )
 
         # Force this prober process to wait until all CUDA operations
         # (i.e., the engine build and serialization to disk)
         # are *fully* complete before this process exits.
         if torch.cuda.is_available():
-            print(f"[ONNX Prober]: Synchronizing CUDA to finalize engine build...")
+            print("[ONNX Prober]: Synchronizing CUDA to finalize engine build...")
             torch.cuda.synchronize()
-            print(f"[ONNX Prober]: Synchronization complete.")
+            print("[ONNX Prober]: Synchronization complete.")
 
         # If we get here, the load and the synchronization worked.
         del session
-        print(f"[ONNX Prober]: Load successful. TRT engine cache built and flushed.")
-        sys.exit(0) # Success
-    except Exception as e:
-        print(f"[ONNX Prober]: ERROR during model load probe.")
+        print("[ONNX Prober]: Load successful. TRT engine cache built and flushed.")
+        sys.exit(0)  # Success
+    except Exception:
+        print("[ONNX Prober]: ERROR during model load probe.")
         traceback.print_exc()
-        sys.exit(1) # Failure
+        sys.exit(1)  # Failure
+
 
 # --- END: Isolated Process Workers ---
 
@@ -178,7 +175,7 @@ def gamma_decode_srgb_to_linear_rgb(srgb: torch.Tensor, gamma=SRGB_GAMMA):
 class ModelsProcessor(QtCore.QObject):
     processing_complete = QtCore.Signal()
     model_loaded = QtCore.Signal()  # Signal emitted with Onnx InferenceSession
-    
+
     # Signal to request the GUI thread to show the build dialog
     # Arguments: (str: window_title, str: label_text)
     show_build_dialog = QtCore.Signal(str, str)
@@ -487,7 +484,7 @@ class ModelsProcessor(QtCore.QObject):
 
             # This variable is needed to synchronize CUDA after the load
             build_was_triggered = False
-            
+
             is_tensorrt_load = any(
                 (p[0] if isinstance(p, tuple) else p) == "TensorrtExecutionProvider"
                 for p in providers
@@ -500,7 +497,9 @@ class ModelsProcessor(QtCore.QObject):
                     cache_is_valid = False
                     try:
                         cache_dir = "tensorrt-engines"
-                        base_onnx_name = os.path.splitext(os.path.basename(onnx_path))[0]
+                        base_onnx_name = os.path.splitext(os.path.basename(onnx_path))[
+                            0
+                        ]
                         ctx_file_name = f"{base_onnx_name}_ctx.onnx"
                         ctx_file_path = os.path.join(cache_dir, ctx_file_name)
 
@@ -574,7 +573,8 @@ class ModelsProcessor(QtCore.QObject):
                                 ctx = multiprocessing.get_context("spawn")
                                 # Use the 'providers' variable that has the DEIM-S-Face logic
                                 current_providers_list = [
-                                    p[0] if isinstance(p, tuple) else p for p in providers
+                                    p[0] if isinstance(p, tuple) else p
+                                    for p in providers
                                 ]
                                 probe_process = ctx.Process(
                                     target=_probe_onnx_model_worker,
@@ -620,7 +620,7 @@ class ModelsProcessor(QtCore.QObject):
                                     f"ONNX/TensorRT probe process failed after {max_retries} attempts. Last exit code: {last_exit_code}"
                                 )
 
-                        except Exception as e:
+                        except Exception:
                             # Ask the main thread to hide the dialog on failure
                             # (The final 'finally' will also catch this, but this is safer)
                             self.hide_build_dialog.emit()
@@ -640,13 +640,14 @@ class ModelsProcessor(QtCore.QObject):
             try:
                 if session_options is None:
                     model_instance = onnxruntime.InferenceSession(
-                        self.models_path[model_name], providers=providers # Use the correct 'providers'
+                        self.models_path[model_name],
+                        providers=providers,  # Use the correct 'providers'
                     )
                 else:
                     model_instance = onnxruntime.InferenceSession(
                         self.models_path[model_name],
                         sess_options=session_options,
-                        providers=providers, # Use the correct 'providers'
+                        providers=providers,  # Use the correct 'providers'
                     )
 
                 # This ensures the CUDA context is synchronized after a new TRT
@@ -672,7 +673,7 @@ class ModelsProcessor(QtCore.QObject):
                 )
                 return model_instance
 
-            except Exception as e:
+            except Exception:
                 # This catch is still valuable for non-fatal errors
                 print(f"ERROR: Failed to load model {model_name} (even after probe).")
                 traceback.print_exc()
