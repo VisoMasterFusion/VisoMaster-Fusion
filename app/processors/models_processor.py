@@ -65,7 +65,7 @@ SRGB_GAMMA = (
     2.2  # More precise sRGB gamma handling is complex, this is an approximation
 )
 
-# --- START: Isolated Process Workers ---
+# Isolated Process Workers ---
 # These functions run in a separate process to prevent fatal C++/CUDA
 # crashes (like segmentation faults) from killing the main application.
 
@@ -114,7 +114,7 @@ def _probe_onnx_model_worker(model_path, providers_list, trt_options, session_op
         import sys
         import traceback
         import onnxruntime
-        import torch  # <-- Make sure torch is imported here
+        import torch
 
         # Reconstruct the providers tuple
         providers = []
@@ -147,9 +147,6 @@ def _probe_onnx_model_worker(model_path, providers_list, trt_options, session_op
         print("[ONNX Prober]: ERROR during model load probe.")
         traceback.print_exc()
         sys.exit(1)  # Failure
-
-
-# --- END: Isolated Process Workers ---
 
 
 def gamma_encode_linear_rgb_to_srgb(linear_rgb: torch.Tensor, gamma=SRGB_GAMMA):
@@ -1587,6 +1584,8 @@ class ModelsProcessor(QtCore.QObject):
                 image_cxhxw_uint8, "Initial input image_cxhxw_uint8", DEBUG_DENOISER
             )
 
+        # The model_lock now protects the entire function to ensure thread safety
+        # for the stateful DDIM sampling process and global RNG state.
         with self.model_lock:
             self.ensure_denoiser_models_loaded()
             if not (
@@ -1636,254 +1635,273 @@ class ModelsProcessor(QtCore.QObject):
                 )
                 return image_cxhxw_uint8
 
-        target_proc_dim = 512
-        _, h_input, w_input = image_cxhxw_uint8.shape
-        if h_input != target_proc_dim or w_input != target_proc_dim:
-            image_to_process_cxhxw_uint8 = v2.Resize(
-                (target_proc_dim, target_proc_dim),
-                interpolation=v2.InterpolationMode.BILINEAR,
-                antialias=True,
-            )(image_cxhxw_uint8)
-        else:
-            image_to_process_cxhxw_uint8 = image_cxhxw_uint8
+            target_proc_dim = 512
+            _, h_input, w_input = image_cxhxw_uint8.shape
+            if h_input != target_proc_dim or w_input != target_proc_dim:
+                image_to_process_cxhxw_uint8 = v2.Resize(
+                    (target_proc_dim, target_proc_dim),
+                    interpolation=v2.InterpolationMode.BILINEAR,
+                    antialias=True,
+                )(image_cxhxw_uint8)
+            else:
+                image_to_process_cxhxw_uint8 = image_cxhxw_uint8
 
-        h_proc, w_proc = (
-            image_to_process_cxhxw_uint8.shape[1],
-            image_to_process_cxhxw_uint8.shape[2],
-        )
+            h_proc, w_proc = (
+                image_to_process_cxhxw_uint8.shape[1],
+                image_to_process_cxhxw_uint8.shape[2],
+            )
 
-        # --- VAE Encoder Input Preparation ---
-        # Convert sRGB uint8 [0,255] to sRGB float [-1,1] for VAE Encoder
-        # This assumes the VAE expects sRGB-like data normalized to [-1,1].
-        image_srgb_float_minus1_1 = (image_to_process_cxhxw_uint8.float() / 127.5) - 1.0
-        image_srgb_float_minus1_1_batched = image_srgb_float_minus1_1.unsqueeze(
-            0
-        ).contiguous()
+            image_srgb_float_minus1_1 = (
+                image_to_process_cxhxw_uint8.float() / 127.5
+            ) - 1.0
+            image_srgb_float_minus1_1_batched = image_srgb_float_minus1_1.unsqueeze(
+                0
+            ).contiguous()
 
-        latent_h, latent_w = h_proc // 8, w_proc // 8
-        encoded_latent_direct_vae_out_bchw = torch.empty(
-            (1, 8, latent_h, latent_w), dtype=torch.float32, device=self.device
-        ).contiguous()
-        # Pass the sRGB [-1,1] tensor to the VAE encoder
-        self.face_restorers.run_vae_encoder(
-            image_srgb_float_minus1_1_batched, encoded_latent_direct_vae_out_bchw
-        )
-
-        lq_latent_x0_scaled_for_unet = (
-            encoded_latent_direct_vae_out_bchw * self.vae_scale_factor
-        )  # self.vae_scale_factor is 1.0
-
-        final_denoised_latent_x0_scaled = None
-        should_use_kv_in_unet = use_reference_exclusive_path and (
-            kv_tensor_map_for_this_run is not None
-        )
-        # Both flags are now controlled by the 'use_reference_exclusive_path' UI toggle.
-        # is_ref_flag_input: Tells the UNet it's operating in a mode that might involve external K/V (like encoding a reference or using one exclusively).
-        # use_reference_exclusive_path_globally_input: Specifically tells the UNet it MUST use external K/V if provided.
-        is_ref_flag_tensor_for_unet = torch.tensor(
-            [use_reference_exclusive_path], dtype=torch.bool, device=self.device
-        ).contiguous()
-        actual_use_exclusive_path_tensor_for_unet = torch.tensor(
-            [use_reference_exclusive_path], dtype=torch.bool, device=self.device
-        ).contiguous()
-
-        if denoiser_mode == "Single Step (Fast)":
-            torch.manual_seed(base_seed + denoiser_single_step_t)
-            noise_sample = torch.randn_like(lq_latent_x0_scaled_for_unet)
-            current_t_idx = min(
-                max(0, denoiser_single_step_t), len(self.alphas_cumprod_np) - 1
-            )
-            alpha_t_bar_val = self.alphas_cumprod_np[current_t_idx]
-            sqrt_alpha_bar_t_torch = torch.sqrt(
-                torch.tensor(alpha_t_bar_val, device=self.device, dtype=torch.float32)
-            )
-            sqrt_one_minus_alpha_bar_t_torch = torch.sqrt(
-                1.0
-                - torch.tensor(alpha_t_bar_val, device=self.device, dtype=torch.float32)
-            )
-            xt_noisy_scaled_8_channel = (
-                lq_latent_x0_scaled_for_unet * sqrt_alpha_bar_t_torch
-                + noise_sample * sqrt_one_minus_alpha_bar_t_torch
-            )
-            unet_input_16_channel = torch.cat(
-                (xt_noisy_scaled_8_channel, lq_latent_x0_scaled_for_unet), dim=1
-            )
-            timesteps_tensor_unet = torch.tensor(
-                [current_t_idx], dtype=torch.int64, device=self.device
-            )
-            predicted_noise_from_unet = torch.empty(
+            latent_h, latent_w = h_proc // 8, w_proc // 8
+            encoded_latent_direct_vae_out_bchw = torch.empty(
                 (1, 8, latent_h, latent_w), dtype=torch.float32, device=self.device
             ).contiguous()
 
-            self.face_restorers.run_ref_ldm_unet(
-                x_noisy_plus_lq_latent=unet_input_16_channel,
-                timesteps_tensor=timesteps_tensor_unet,
-                is_ref_flag_tensor=is_ref_flag_tensor_for_unet,
-                use_reference_exclusive_path_globally_tensor=actual_use_exclusive_path_tensor_for_unet,
-                kv_tensor_map=kv_tensor_map_for_this_run,  # Pass directly, can be None
-                output_unet_tensor=predicted_noise_from_unet,
+            self.face_restorers.run_vae_encoder(
+                image_srgb_float_minus1_1_batched, encoded_latent_direct_vae_out_bchw
             )
-            final_denoised_latent_x0_scaled = (
-                xt_noisy_scaled_8_channel
-                - sqrt_one_minus_alpha_bar_t_torch * predicted_noise_from_unet
-            ) / sqrt_alpha_bar_t_torch
 
-        elif denoiser_mode == "Full Restore (DDIM)":
-            with torch.cuda.stream(torch.cuda.current_stream()):
-                torch.cuda.manual_seed_all(
-                    base_seed
-                )  # Seed once before the loop for initial x_T and subsequent noise in DDIM step
+            lq_latent_x0_scaled_for_unet = (
+                encoded_latent_direct_vae_out_bchw * self.vae_scale_factor
+            )
 
-                num_ddpm_timesteps = self.alphas_cumprod_np.shape[0]
-                _ddim_raw_ddpm_timesteps_np = ModelsProcessor.make_ddim_timesteps(
-                    ddim_discr_method="uniform",
-                    num_ddim_timesteps=denoiser_ddim_steps,
-                    num_ddpm_timesteps=num_ddpm_timesteps,
-                    verbose=DEBUG_DENOISER,
+            final_denoised_latent_x0_scaled = None
+            should_use_kv_in_unet = use_reference_exclusive_path and (
+                kv_tensor_map_for_this_run is not None
+            )
+
+            is_ref_flag_tensor_for_unet = torch.tensor(
+                [use_reference_exclusive_path], dtype=torch.bool, device=self.device
+            ).contiguous()
+            actual_use_exclusive_path_tensor_for_unet = torch.tensor(
+                [use_reference_exclusive_path], dtype=torch.bool, device=self.device
+            ).contiguous()
+
+            if denoiser_mode == "Single Step (Fast)":
+                # Use torch.cuda.manual_seed_all for GPU tensors.
+                torch.cuda.manual_seed_all(base_seed + denoiser_single_step_t)
+                noise_sample = torch.randn_like(lq_latent_x0_scaled_for_unet)
+                current_t_idx = min(
+                    max(0, denoiser_single_step_t), len(self.alphas_cumprod_np) - 1
                 )
-                _ddim_sigmas_np, _ddim_alphas_np, _ddim_alphas_prev_np = (
-                    ModelsProcessor.make_ddim_sampling_parameters(
-                        alphacums=self.alphas_cumprod_np,
-                        ddim_timesteps=_ddim_raw_ddpm_timesteps_np,
-                        eta=denoiser_ddim_eta,
+                alpha_t_bar_val = self.alphas_cumprod_np[current_t_idx]
+                sqrt_alpha_bar_t_torch = torch.sqrt(
+                    torch.tensor(
+                        alpha_t_bar_val, device=self.device, dtype=torch.float32
+                    )
+                )
+                sqrt_one_minus_alpha_bar_t_torch = torch.sqrt(
+                    1.0
+                    - torch.tensor(
+                        alpha_t_bar_val, device=self.device, dtype=torch.float32
+                    )
+                )
+                xt_noisy_scaled_8_channel = (
+                    lq_latent_x0_scaled_for_unet * sqrt_alpha_bar_t_torch
+                    + noise_sample * sqrt_one_minus_alpha_bar_t_torch
+                )
+                unet_input_16_channel = torch.cat(
+                    (xt_noisy_scaled_8_channel, lq_latent_x0_scaled_for_unet), dim=1
+                )
+                timesteps_tensor_unet = torch.tensor(
+                    [current_t_idx], dtype=torch.int64, device=self.device
+                )
+                predicted_noise_from_unet = torch.empty(
+                    (1, 8, latent_h, latent_w),
+                    dtype=torch.float32,
+                    device=self.device,
+                ).contiguous()
+
+                self.face_restorers.run_ref_ldm_unet(
+                    x_noisy_plus_lq_latent=unet_input_16_channel,
+                    timesteps_tensor=timesteps_tensor_unet,
+                    is_ref_flag_tensor=is_ref_flag_tensor_for_unet,
+                    use_reference_exclusive_path_globally_tensor=actual_use_exclusive_path_tensor_for_unet,
+                    kv_tensor_map=kv_tensor_map_for_this_run,
+                    output_unet_tensor=predicted_noise_from_unet,
+                )
+                final_denoised_latent_x0_scaled = (
+                    xt_noisy_scaled_8_channel
+                    - sqrt_one_minus_alpha_bar_t_torch * predicted_noise_from_unet
+                ) / sqrt_alpha_bar_t_torch
+
+            elif denoiser_mode == "Full Restore (DDIM)":
+                with torch.cuda.stream(torch.cuda.current_stream()):
+                    torch.cuda.manual_seed_all(
+                        base_seed
+                    )  # Seed once before the loop for initial x_T and subsequent noise in DDIM step
+
+                    num_ddpm_timesteps = self.alphas_cumprod_np.shape[0]
+                    _ddim_raw_ddpm_timesteps_np = ModelsProcessor.make_ddim_timesteps(
+                        ddim_discr_method="uniform",
+                        num_ddim_timesteps=denoiser_ddim_steps,
+                        num_ddpm_timesteps=num_ddpm_timesteps,
                         verbose=DEBUG_DENOISER,
                     )
-                )
-                ddim_sigmas = torch.from_numpy(_ddim_sigmas_np).float().to(self.device)
-                ddim_alphas = torch.from_numpy(_ddim_alphas_np).float().to(self.device)
-                ddim_alphas_prev = (
-                    torch.from_numpy(_ddim_alphas_prev_np).float().to(self.device)
-                )
-                ddim_sqrt_one_minus_alphas = torch.sqrt(
-                    torch.clamp(1.0 - ddim_alphas, min=0.0)
-                )
-                current_latent_xt_scaled = torch.randn_like(
-                    lq_latent_x0_scaled_for_unet
-                )
-
-                time_range_ddpm_indices = np.flip(_ddim_raw_ddpm_timesteps_np)
-                total_steps = len(time_range_ddpm_indices)
-                pred_x0_scaled_current_step = torch.empty_like(
-                    lq_latent_x0_scaled_for_unet
-                )
-
-                for i, step_ddpm_idx in enumerate(time_range_ddpm_indices):
-                    torch.cuda.manual_seed_all(base_seed)
-                    index_for_schedules = total_steps - 1 - i
-                    ts_unet = torch.full(
-                        (1,), step_ddpm_idx, device=self.device, dtype=torch.int64
+                    _ddim_sigmas_np, _ddim_alphas_np, _ddim_alphas_prev_np = (
+                        ModelsProcessor.make_ddim_sampling_parameters(
+                            alphacums=self.alphas_cumprod_np,
+                            ddim_timesteps=_ddim_raw_ddpm_timesteps_np,
+                            eta=denoiser_ddim_eta,
+                            verbose=DEBUG_DENOISER,
+                        )
                     )
-                    unet_input_cond = torch.cat(
-                        [current_latent_xt_scaled, lq_latent_x0_scaled_for_unet], dim=1
+                    ddim_sigmas = (
+                        torch.from_numpy(_ddim_sigmas_np).float().to(self.device)
                     )
-                    e_t_cond = torch.empty_like(lq_latent_x0_scaled_for_unet)
-
-                    self.face_restorers.run_ref_ldm_unet(
-                        x_noisy_plus_lq_latent=unet_input_cond,
-                        timesteps_tensor=ts_unet,
-                        is_ref_flag_tensor=is_ref_flag_tensor_for_unet,
-                        use_reference_exclusive_path_globally_tensor=actual_use_exclusive_path_tensor_for_unet,
-                        kv_tensor_map=kv_tensor_map_for_this_run,  # Pass directly, can be None
-                        output_unet_tensor=e_t_cond,
+                    ddim_alphas = (
+                        torch.from_numpy(_ddim_alphas_np).float().to(self.device)
                     )
-                    e_t = e_t_cond
+                    ddim_alphas_prev = (
+                        torch.from_numpy(_ddim_alphas_prev_np).float().to(self.device)
+                    )
+                    ddim_sqrt_one_minus_alphas = torch.sqrt(
+                        torch.clamp(1.0 - ddim_alphas, min=0.0)
+                    )
+                    current_latent_xt_scaled = torch.randn_like(
+                        lq_latent_x0_scaled_for_unet
+                    )
 
-                    if denoiser_cfg_scale != 1.0:
-                        unet_input_uncond = torch.cat(
+                    time_range_ddpm_indices = np.flip(_ddim_raw_ddpm_timesteps_np)
+                    total_steps = len(time_range_ddpm_indices)
+                    pred_x0_scaled_current_step = torch.empty_like(
+                        lq_latent_x0_scaled_for_unet
+                    )
+
+                    for i, step_ddpm_idx in enumerate(time_range_ddpm_indices):
+                        # The RNG will now evolve naturally
+                        # from the initial seed, producing different noise at each step as required by DDIM.
+                        # torch.cuda.manual_seed_all(base_seed) # <-- REMOVED
+
+                        index_for_schedules = total_steps - 1 - i
+                        ts_unet = torch.full(
+                            (1,), step_ddpm_idx, device=self.device, dtype=torch.int64
+                        )
+                        unet_input_cond = torch.cat(
                             [current_latent_xt_scaled, lq_latent_x0_scaled_for_unet],
                             dim=1,
                         )
-                        e_t_uncond = torch.empty_like(lq_latent_x0_scaled_for_unet)
-                        # For uncond path, exclusive_path_globally is effectively False, and no K/V map is used.
+                        e_t_cond = torch.empty_like(lq_latent_x0_scaled_for_unet)
+
                         self.face_restorers.run_ref_ldm_unet(
-                            x_noisy_plus_lq_latent=unet_input_uncond,
+                            x_noisy_plus_lq_latent=unet_input_cond,
                             timesteps_tensor=ts_unet,
                             is_ref_flag_tensor=is_ref_flag_tensor_for_unet,
-                            use_reference_exclusive_path_globally_tensor=torch.tensor(
-                                [False], dtype=torch.bool, device=self.device
-                            ).contiguous(),
-                            kv_tensor_map=None,
-                            output_unet_tensor=e_t_uncond,
+                            use_reference_exclusive_path_globally_tensor=actual_use_exclusive_path_tensor_for_unet,
+                            kv_tensor_map=kv_tensor_map_for_this_run,
+                            output_unet_tensor=e_t_cond,
                         )
-                        e_t = e_t_uncond + denoiser_cfg_scale * (e_t_cond - e_t_uncond)
+                        e_t = e_t_cond
 
-                    schedule_idx_tensor = torch.tensor(
-                        [index_for_schedules], device=self.device, dtype=torch.long
-                    )
-                    a_t = ModelsProcessor.extract_into_tensor_torch(
-                        ddim_alphas, schedule_idx_tensor, current_latent_xt_scaled.shape
-                    )
-                    a_prev = ModelsProcessor.extract_into_tensor_torch(
-                        ddim_alphas_prev,
-                        schedule_idx_tensor,
-                        current_latent_xt_scaled.shape,
-                    )
-                    sigma_t = ModelsProcessor.extract_into_tensor_torch(
-                        ddim_sigmas, schedule_idx_tensor, current_latent_xt_scaled.shape
-                    )
-                    sqrt_one_minus_a_t = ModelsProcessor.extract_into_tensor_torch(
-                        ddim_sqrt_one_minus_alphas,
-                        schedule_idx_tensor,
-                        current_latent_xt_scaled.shape,
-                    )
-                    pred_x0_scaled_current_step = (
-                        current_latent_xt_scaled - sqrt_one_minus_a_t * e_t
-                    ) / torch.sqrt(a_t).clamp(
-                        min=1e-8
-                    )  # Clamp to avoid div by zero if a_t is 0
-                    dir_xt = (
-                        torch.sqrt(torch.clamp(1.0 - a_prev - sigma_t**2, min=1e-8))
-                        * e_t
-                    )  # Clamp to avoid sqrt of negative
-                    # torch.manual_seed(base_seed + step_ddpm_idx) # Seeding here per DDIM step is valid, but let's test seeding once before loop
-                    noise_ddim = sigma_t * torch.randn_like(current_latent_xt_scaled)
-                    current_latent_xt_scaled = (
-                        torch.sqrt(a_prev) * pred_x0_scaled_current_step
-                        + dir_xt
-                        + noise_ddim
-                    )
-                final_denoised_latent_x0_scaled = pred_x0_scaled_current_step
+                        if denoiser_cfg_scale != 1.0:
+                            unet_input_uncond = torch.cat(
+                                [
+                                    current_latent_xt_scaled,
+                                    lq_latent_x0_scaled_for_unet,
+                                ],
+                                dim=1,
+                            )
+                            e_t_uncond = torch.empty_like(lq_latent_x0_scaled_for_unet)
+                            self.face_restorers.run_ref_ldm_unet(
+                                x_noisy_plus_lq_latent=unet_input_uncond,
+                                timesteps_tensor=ts_unet,
+                                is_ref_flag_tensor=is_ref_flag_tensor_for_unet,
+                                use_reference_exclusive_path_globally_tensor=torch.tensor(
+                                    [False], dtype=torch.bool, device=self.device
+                                ).contiguous(),
+                                kv_tensor_map=None,
+                                output_unet_tensor=e_t_uncond,
+                            )
+                            e_t = e_t_uncond + denoiser_cfg_scale * (
+                                e_t_cond - e_t_uncond
+                            )
 
-        else:
-            print(f"Denoiser: Unknown mode '{denoiser_mode}'. Skipping denoiser pass.")
-            return image_cxhxw_uint8
+                        schedule_idx_tensor = torch.tensor(
+                            [index_for_schedules],
+                            device=self.device,
+                            dtype=torch.long,
+                        )
+                        a_t = ModelsProcessor.extract_into_tensor_torch(
+                            ddim_alphas,
+                            schedule_idx_tensor,
+                            current_latent_xt_scaled.shape,
+                        )
+                        a_prev = ModelsProcessor.extract_into_tensor_torch(
+                            ddim_alphas_prev,
+                            schedule_idx_tensor,
+                            current_latent_xt_scaled.shape,
+                        )
+                        sigma_t = ModelsProcessor.extract_into_tensor_torch(
+                            ddim_sigmas,
+                            schedule_idx_tensor,
+                            current_latent_xt_scaled.shape,
+                        )
+                        sqrt_one_minus_a_t = ModelsProcessor.extract_into_tensor_torch(
+                            ddim_sqrt_one_minus_alphas,
+                            schedule_idx_tensor,
+                            current_latent_xt_scaled.shape,
+                        )
+                        pred_x0_scaled_current_step = (
+                            current_latent_xt_scaled - sqrt_one_minus_a_t * e_t
+                        ) / torch.sqrt(a_t).clamp(min=1e-8)
+                        dir_xt = (
+                            torch.sqrt(torch.clamp(1.0 - a_prev - sigma_t**2, min=1e-8))
+                            * e_t
+                        )
+                        noise_ddim = sigma_t * torch.randn_like(
+                            current_latent_xt_scaled
+                        )
+                        current_latent_xt_scaled = (
+                            torch.sqrt(a_prev) * pred_x0_scaled_current_step
+                            + dir_xt
+                            + noise_ddim
+                        )
+                    final_denoised_latent_x0_scaled = pred_x0_scaled_current_step
 
-        if final_denoised_latent_x0_scaled is None:
-            return image_cxhxw_uint8
+            else:
+                print(
+                    f"Denoiser: Unknown mode '{denoiser_mode}'. Skipping denoiser pass."
+                )
+                return image_cxhxw_uint8
 
-        latent_for_vae_decoder = final_denoised_latent_x0_scaled / self.vae_scale_factor
-        decoded_image_normalized_bchw = torch.empty(
-            (1, 3, h_proc, w_proc), dtype=torch.float32, device=self.device
-        ).contiguous()
+            if final_denoised_latent_x0_scaled is None:
+                return image_cxhxw_uint8
 
-        # Run VAE Decoder
-        self.face_restorers.run_vae_decoder(
-            latent_for_vae_decoder, decoded_image_normalized_bchw
-        )
+            latent_for_vae_decoder = (
+                final_denoised_latent_x0_scaled / self.vae_scale_factor
+            )
+            decoded_image_normalized_bchw = torch.empty(
+                (1, 3, h_proc, w_proc), dtype=torch.float32, device=self.device
+            ).contiguous()
 
-        # --- VAE Decoder Output Post-processing ---
-        # Apply tanh to softly map the VAE output to strictly [-1, 1] range.
-        # This helps prevent hard clipping if the VAE overshoots its nominal range.
-        decoded_image_soft_clamped_bchw = torch.tanh(decoded_image_normalized_bchw)
+            self.face_restorers.run_vae_decoder(
+                latent_for_vae_decoder, decoded_image_normalized_bchw
+            )
 
-        # Convert sRGB float [-1,1] to sRGB float [0,1].
-        # A final clamp to [0,1] is good practice for safety, though tanh helps.
-        image_after_postproc_float_0_1 = (
-            decoded_image_soft_clamped_bchw.squeeze(0) + 1.0
-        ) / 2.0
-        image_after_postproc_float_0_1 = torch.clamp(
-            image_after_postproc_float_0_1, 0.0, 1.0
-        )
+            decoded_image_soft_clamped_bchw = torch.tanh(decoded_image_normalized_bchw)
 
-        final_image_uint8 = (image_after_postproc_float_0_1 * 255.0).byte()
+            image_after_postproc_float_0_1 = (
+                decoded_image_soft_clamped_bchw.squeeze(0) + 1.0
+            ) / 2.0
+            image_after_postproc_float_0_1 = torch.clamp(
+                image_after_postproc_float_0_1, 0.0, 1.0
+            )
 
-        if h_proc != h_input or w_proc != w_input:
-            output_image_cxhxw_uint8 = v2.Resize(
-                (h_input, w_input),
-                interpolation=v2.InterpolationMode.BILINEAR,
-                antialias=True,
-            )(final_image_uint8)
-        else:
-            output_image_cxhxw_uint8 = final_image_uint8
+            final_image_uint8 = (image_after_postproc_float_0_1 * 255.0).byte()
 
-        return output_image_cxhxw_uint8
+            if h_proc != h_input or w_proc != w_input:
+                output_image_cxhxw_uint8 = v2.Resize(
+                    (h_input, w_input),
+                    interpolation=v2.InterpolationMode.BILINEAR,
+                    antialias=True,
+                )(final_image_uint8)
+            else:
+                output_image_cxhxw_uint8 = final_image_uint8
+
+            return output_image_cxhxw_uint8
