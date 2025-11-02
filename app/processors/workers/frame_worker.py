@@ -68,7 +68,7 @@ class FrameWorker(threading.Thread):
         # VR specific constants
         self.VR_PERSPECTIVE_RENDER_SIZE = 512  # Pixels, for rendering perspective crops
         self.VR_DYNAMIC_FOV_PADDING_FACTOR = (
-            1.0  # Padding factor for dynamic FOV calculation
+            1.5  # Padding factor for dynamic FOV calculation
         )
         self.is_view_face_compare: bool = False
         self.is_view_face_mask: bool = False
@@ -4340,3 +4340,4 @@ class FrameWorker(threading.Thread):
         contrast = grayscale.std()
         analysis["low_contrast"] = 1.0 - min(contrast.item() * 10, 1.0)
         return analysis
+
