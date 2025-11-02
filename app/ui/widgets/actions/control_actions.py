@@ -298,8 +298,42 @@ def handle_landmark_model_selection_change(
 def handle_frame_enhancer_state_change(
     main_window: "MainWindow", new_value: bool, control_name: str
 ):
-    """Loads or unloads frame enhancer models."""
+    """Loads or unloads the currently selected frame enhancer model."""
+    frame_enhancers = main_window.models_processor.frame_enhancers
+
     if new_value:
-        main_window.models_processor.frame_enhancers.ensure_models_loaded()
+        # Get the currently selected enhancer type from the UI controls
+        enhancer_type = main_window.control.get("FrameEnhancerTypeSelection")
+        if enhancer_type:
+            model_to_load = frame_enhancers.model_map.get(enhancer_type)
+            if model_to_load:
+                # Load only the selected model
+                main_window.models_processor.load_model(model_to_load)
+                frame_enhancers.current_enhancer_model = model_to_load
     else:
-        main_window.models_processor.frame_enhancers.unload_models()
+        # Unload the currently active model
+        frame_enhancers.unload_models()
+
+
+def handle_enhancer_model_selection_change(
+    main_window: "MainWindow", new_enhancer_type: str, control_name: str
+):
+    """Unloads the old enhancer model and loads the new one when the selection changes."""
+    frame_enhancers = main_window.models_processor.frame_enhancers
+    is_enabled = main_window.control.get("FrameEnhancerEnableToggle", False)
+
+    # Get the actual ONNX model name from the user-friendly type
+    new_model_name = frame_enhancers.model_map.get(new_enhancer_type)
+    old_model_name = frame_enhancers.current_enhancer_model
+
+    # Unload the old model if it's different from the new one
+    if old_model_name and old_model_name != new_model_name:
+        main_window.models_processor.unload_model(old_model_name)
+
+    # If the enhancer is enabled, load the new model
+    if is_enabled and new_model_name:
+        main_window.models_processor.load_model(new_model_name)
+        frame_enhancers.current_enhancer_model = new_model_name
+    else:
+        # If disabled, just ensure the current model is cleared
+        frame_enhancers.current_enhancer_model = new_model_name

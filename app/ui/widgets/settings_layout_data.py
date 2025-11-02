@@ -229,7 +229,6 @@ SETTINGS_LAYOUT_DATA: LayoutDictTypes = {
                 "SimSwapArcFace",
                 "GhostArcFace",
                 "CSCSArcFace",
-                "CanonSwapArcFace",
             ],
             "default": "Inswapper128ArcFace",
             "help": "Choose the ArcFace model to be used for comparing the similarity of faces.",
@@ -244,7 +243,7 @@ SETTINGS_LAYOUT_DATA: LayoutDictTypes = {
         "DetectorModelSelection": {
             "level": 1,
             "label": "Face Detect Model",
-            "options": ["RetinaFace", "Yolov8", "SCRFD", "Yunet", "DEIM-S-Face"],
+            "options": ["RetinaFace", "Yolov8", "SCRFD", "Yunet"],
             "default": "RetinaFace",
             "help": "Select the face detection model to use for detecting faces in the input image or video.",
         },
@@ -370,6 +369,8 @@ SETTINGS_LAYOUT_DATA: LayoutDictTypes = {
             "parentToggle": "FrameEnhancerEnableToggle",
             "requiredToggleValue": True,
             "help": "Select the type of frame enhancement to apply, based on the content and resolution requirements.",
+            "exec_function": control_actions.handle_enhancer_model_selection_change,
+            "exec_function_args": ["FrameEnhancerTypeSelection"],
         },
         "FrameEnhancerBlendSlider": {
             "level": 2,

@@ -5,10 +5,6 @@ from pathlib import Path
 refldm_ckpts_path = "model_assets/ref-ldm_embedding/ckpts"
 os.makedirs(refldm_ckpts_path, exist_ok=True)
 
-# ensure canonswap path exist
-canonswap_model_path = "model_assets/canonswap"
-os.makedirs(canonswap_model_path, exist_ok=True)
-
 models_dir = str(
     Path(__file__).resolve().parent.parent.parent / "model_assets"
 )  # More robust path
@@ -75,7 +71,6 @@ arcface_mapping_model_dict = {
     "GhostFace-v2": "GhostArcFace",
     "GhostFace-v3": "GhostArcFace",
     "CSCS": "CSCSArcFace",
-    "CanonSwap": "CanonSwapArcFace",
 }
 
 detection_model_mapping = {
@@ -83,7 +78,6 @@ detection_model_mapping = {
     "SCRFD": "SCRFD2.5g",
     "Yolov8": "YoloFace8n",
     "Yunet": "YunetN",
-    "DEIM-S-Face": "DEIM-S-Face",
 }
 
 landmark_model_mapping = {
@@ -151,12 +145,6 @@ models_list = [
         "local_path": f"{models_dir}/cscs_256.onnx",
         "hash": "664f8f7cab655b825fe8cf57ab90bfbcbb0acf75eab8e7771c824f18bdb28b67",
         "url": f"{assets_repo}/v0.1.0/cscs_256.onnx",
-    },
-    {
-        "model_name": "DEIM-S-Face",
-        "local_path": f"{models_dir}/deim-s-face.onnx",
-        "hash": "f08f8a2cc33fcf5ec30c7bcbeb1e17115fcc7d28614a64bea29b7bbb211b9d2e",
-        "url": "https://github.com/Glat0s/DEIM-S-Face/releases/download/v0.1/deim-s-face.onnx",
     },
     {
         "model_name": "RetinaFace",
@@ -475,60 +463,6 @@ models_list = [
         "local_path": f"{models_dir}/liveportrait_onnx/warping_spade-fix.onnx",
         "hash": "a6164debbf1e851c3dcefa622111c42a78afd9bb8f1540e7d01172ddf642c3b5",
         "url": f"{assets_repo}/v0.1.0_lp/warping_spade-fix.onnx",
-    },
-    {
-        "model_name": "CanonSwapArcFace",
-        "local_path": f"{models_dir}/canonswap/id_extractor.onnx",
-        "hash": "f50db9f77158582c5b94c6183e16447e006dfb3499c0b6d21df635505cdcb308",
-        "url": "https://github.com/Glat0s/CanonSwap-onnx/releases/download/v0.1/id_extractor.onnx",
-    },
-    {
-        "model_name": "CanonSwapAppearanceFeatureExtractor",
-        "local_path": f"{models_dir}/canonswap/appearance_feature_extractor.onnx",
-        "hash": "fb61c42c72fb421638c0c6fbc3702e7ce3bcb4b9cd391109b627dd6e8937fe69",
-        "url": "https://github.com/Glat0s/CanonSwap-onnx/releases/download/v0.1/appearance_feature_extractor.onnx",
-    },
-    {
-        "model_name": "CanonSwapMotionExtractor",
-        "local_path": f"{models_dir}/canonswap/motion_extractor.onnx",
-        "hash": "f54f7cc8647733c7a0ea0194c520dac909b194030ef5b017314c0ee1211ce186",
-        "url": "https://github.com/Glat0s/CanonSwap-onnx/releases/download/v0.1/motion_extractor.onnx",
-    },
-    {
-        "model_name": "CanonSwapSwapModule",
-        "local_path": f"{models_dir}/canonswap/swap_module.onnx",
-        "hash": "a1d16f64a565d55d815282e61a2a32fa9bed16a6a6d4f3f26358122258f1b45f",
-        "url": "https://github.com/Glat0s/CanonSwap-onnx/releases/download/v0.1/swap_module.onnx",
-    },
-    {
-        "model_name": "CanonSwapRefineModule",
-        "local_path": f"{models_dir}/canonswap/refine_module.onnx",
-        "hash": "322357cd97f03d6879c163ed634dc88c8e610b0378ee16c2b242c0146bdb3e04",
-        "url": "https://github.com/Glat0s/CanonSwap-onnx/releases/download/v0.1/refine_module.onnx",
-    },
-    {
-        "model_name": "CanonSwapDenseMotionPart1",
-        "local_path": f"{models_dir}/canonswap/dense_motion_part1.onnx",
-        "hash": "194d2cdac97236bf862f670c5b40d337146ae2036cb82cde668f4904def74381",
-        "url": "https://github.com/Glat0s/CanonSwap-onnx/releases/download/v0.1/dense_motion_part1.onnx",
-    },
-    {
-        "model_name": "CanonSwapDenseMotionPart2",
-        "local_path": f"{models_dir}/canonswap/dense_motion_part2.onnx",
-        "hash": "ba6a03038a4971961dc519159f714460390ac28086f6297058ec4eb4e03ea940",
-        "url": "https://github.com/Glat0s/CanonSwap-onnx/releases/download/v0.1/dense_motion_part2.onnx",
-    },
-    {
-        "model_name": "CanonSwapWarpingDecoder",
-        "local_path": f"{models_dir}/canonswap/warping_decoder.onnx",
-        "hash": "c06e4edc10b510fe7b3a245999d6528f4c504dd24b87ef9e16d43161bfb7577a",
-        "url": "https://github.com/Glat0s/CanonSwap-onnx/releases/download/v0.1/warping_decoder.onnx",
-    },
-    {
-        "model_name": "CanonSwapSpadeGenerator",
-        "local_path": f"{models_dir}/canonswap/spade_generator.onnx",
-        "hash": "46ccc2f024e87e28a5b1ad16acf8ee6d6b574e0b36f1cb62c79ca2b2fccb9372",
-        "url": "https://github.com/Glat0s/CanonSwap-onnx/releases/download/v0.1/spade_generator.onnx",
     },
     {
         "model_name": "RefLdm",

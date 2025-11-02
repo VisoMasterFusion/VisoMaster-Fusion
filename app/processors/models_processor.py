@@ -467,27 +467,12 @@ class ModelsProcessor(QtCore.QObject):
             model_instance = None
             onnx_path = self.models_path[model_name]
 
-            # Prepare providers, with special case for DEIM-S-Face
-            providers = self.providers
-            if (
-                self.provider_name == "TensorRT"
-                or self.provider_name == "TensorRT-Engine"
-            ) and model_name == "DEIM-S-Face":
-                # Applying special TensorRT options for DETR-Face (disabling FP16).
-                specific_trt_options = self.trt_ep_options.copy()
-                specific_trt_options["trt_fp16_enable"] = False
-                providers = [
-                    ("TensorrtExecutionProvider", specific_trt_options),
-                    ("CUDAExecutionProvider"),
-                    ("CPUExecutionProvider"),
-                ]
-
             # This variable is needed to synchronize CUDA after the load
             build_was_triggered = False
 
             is_tensorrt_load = any(
                 (p[0] if isinstance(p, tuple) else p) == "TensorrtExecutionProvider"
-                for p in providers
+                for p in self.providers
             )
 
             if onnx_path.lower().endswith(".onnx"):
@@ -571,10 +556,10 @@ class ModelsProcessor(QtCore.QObject):
 
                                 # Use 'spawn' context for CUDA/TRT safety
                                 ctx = multiprocessing.get_context("spawn")
-                                # Use the 'providers' variable that has the DEIM-S-Face logic
+                                # Use the 'providers' variable
                                 current_providers_list = [
                                     p[0] if isinstance(p, tuple) else p
-                                    for p in providers
+                                    for p in self.providers
                                 ]
                                 probe_process = ctx.Process(
                                     target=_probe_onnx_model_worker,
@@ -641,13 +626,13 @@ class ModelsProcessor(QtCore.QObject):
                 if session_options is None:
                     model_instance = onnxruntime.InferenceSession(
                         self.models_path[model_name],
-                        providers=providers,  # Use the correct 'providers'
+                        providers=self.providers,  # Use the correct 'providers'
                     )
                 else:
                     model_instance = onnxruntime.InferenceSession(
                         self.models_path[model_name],
                         sess_options=session_options,
-                        providers=providers,  # Use the correct 'providers'
+                        providers=self.providers,  # Use the correct 'providers'
                     )
 
                 # This ensures the CUDA context is synchronized after a new TRT
@@ -1325,12 +1310,6 @@ class ModelsProcessor(QtCore.QObject):
 
     def run_swapper_cscs(self, image, embedding, output):
         self.face_swappers.run_swapper_cscs(image, embedding, output)
-
-    def calc_swapper_latent_canonswap(self, source_embedding):
-        return self.face_swappers.calc_swapper_latent_canonswap(source_embedding)
-
-    def run_swapper_canonswap(self, image, embedding, output):
-        return self.face_swappers.run_canonswap(image, embedding, output)
 
     def run_enhance_frame_tile_process(
         self, img, enhancer_type, tile_size=256, scale=1

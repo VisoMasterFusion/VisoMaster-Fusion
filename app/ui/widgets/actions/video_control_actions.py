@@ -918,9 +918,9 @@ def save_current_frame_to_file(main_window: "MainWindow"):
         return
     frame = main_window.video_processor.current_frame.copy()
     image_format = "image"
-    if main_window.control["ImageFormatToggle"]:    
+    if main_window.control["ImageFormatToggle"]:
         image_format = "jpegimage"
-        
+
     if isinstance(frame, numpy.ndarray):
         save_filename = misc_helpers.get_output_file_path(
             main_window.video_processor.media_path,
@@ -934,7 +934,7 @@ def save_current_frame_to_file(main_window: "MainWindow"):
                 frame
             )  # Correct: Pass RGB frame directly to Pillow.
             if main_window.control["ImageFormatToggle"]:
-                pil_image.save(save_filename, "JPEG", quality = 95)
+                pil_image.save(save_filename, "JPEG", quality=95)
             else:
                 pil_image.save(save_filename, "PNG")
             common_widget_actions.create_and_show_toast_message(
@@ -950,6 +950,7 @@ def save_current_frame_to_file(main_window: "MainWindow"):
             "Cannot save the current frame!",
             parent_widget=main_window.saveImageButton,
         )
+
 
 def process_batch_images(main_window: "MainWindow", process_all_faces: bool):
     """
@@ -994,7 +995,7 @@ def process_batch_images(main_window: "MainWindow", process_all_faces: bool):
     saved_current_parameters = None
     if process_all_faces:
         saved_current_parameters = main_window.current_widget_parameters.copy()
-        
+
     # Get the currently selected source faces and embeddings (for both modes)
     saved_input_faces = [
         face for face in main_window.input_faces.values() if face.isChecked()
@@ -1030,7 +1031,7 @@ def process_batch_images(main_window: "MainWindow", process_all_faces: bool):
             "and the *existing* target face configuration.\n\n"
             "Proceed with batch swap?"
         )
-        
+
     reply = QtWidgets.QMessageBox.question(
         main_window,
         confirm_title,
@@ -1047,12 +1048,11 @@ def process_batch_images(main_window: "MainWindow", process_all_faces: bool):
     original_file_type = main_window.video_processor.file_type
     original_frame_num = main_window.video_processor.current_frame_number
     original_media_capture = main_window.video_processor.media_capture
-    
+
     # Store target faces only if NOT in 'all faces' mode, otherwise they get cleared
     original_target_faces = {}
     if not process_all_faces:
         original_target_faces = main_window.target_faces.copy()
-
 
     # 6. Setup Progress Dialog
     progress_dialog = QtWidgets.QProgressDialog(
@@ -1094,7 +1094,7 @@ def process_batch_images(main_window: "MainWindow", process_all_faces: bool):
 
                 if process_all_faces:
                     # --- "ALL FACES" LOGIC ---
-                    
+
                     # 7b. Clear target faces from the previous iteration
                     # refresh_frame=False to avoid unnecessary UI updates
                     card_actions.clear_target_faces(main_window, refresh_frame=False)
@@ -1111,13 +1111,15 @@ def process_batch_images(main_window: "MainWindow", process_all_faces: bool):
                     # 7d. Apply the saved configuration to ALL found faces
                     for target_face in main_window.target_faces.values():
                         # Apply UI parameters (masks, filters, etc.)
-                        main_window.parameters[target_face.face_id] = saved_current_parameters.copy()
+                        main_window.parameters[target_face.face_id] = (
+                            saved_current_parameters.copy()
+                        )
 
                         # Assign saved source faces
                         for input_face in saved_input_faces:
-                            target_face.assigned_input_faces[
-                                input_face.face_id
-                            ] = input_face.embedding_store
+                            target_face.assigned_input_faces[input_face.face_id] = (
+                                input_face.embedding_store
+                            )
 
                         # Assign saved embeddings
                         for embed in saved_embeddings:
@@ -1130,7 +1132,7 @@ def process_batch_images(main_window: "MainWindow", process_all_faces: bool):
 
                     # 7e. Process the image (runs swap on all configured faces)
                     main_window.video_processor.process_current_frame()
-                
+
                 else:
                     # --- "CURRENT CONFIG" LOGIC ---
                     # This assumes the input faces are already selected in the UI.
@@ -1147,12 +1149,12 @@ def process_batch_images(main_window: "MainWindow", process_all_faces: bool):
 
                 # Save the processed image
                 image_format = "image"
-                if main_window.control["ImageFormatToggle"]:    
+                if main_window.control["ImageFormatToggle"]:
                     image_format = "jpegimage"
                 save_filename = misc_helpers.get_output_file_path(
                     image_path,
                     main_window.control["OutputMediaFolder"],
-                    media_type=image_format, # Use jpeg for batch
+                    media_type=image_format,  # Use jpeg for batch
                 )
 
                 if save_filename:
@@ -1160,7 +1162,7 @@ def process_batch_images(main_window: "MainWindow", process_all_faces: bool):
                     frame_bgr = frame[..., ::-1]
                     pil_image = Image.fromarray(frame_bgr)
                     if main_window.control["ImageFormatToggle"]:
-                        pil_image.save(save_filename, "JPEG", quality = 95)
+                        pil_image.save(save_filename, "JPEG", quality=95)
                     else:
                         pil_image.save(save_filename, "PNG")
                     processed_count += 1
@@ -1196,14 +1198,14 @@ def process_batch_images(main_window: "MainWindow", process_all_faces: bool):
         )
 
         # 10. Restore original state
-        
+
         # Clear faces from the last processed image IF we were in 'all faces' mode
         if process_all_faces:
             card_actions.clear_target_faces(main_window, refresh_frame=False)
         else:
             # Otherwise, restore the original target faces
-             main_window.target_faces = original_target_faces
-        
+            main_window.target_faces = original_target_faces
+
         main_window.video_processor.media_path = original_media_path
         main_window.video_processor.file_type = original_file_type
         main_window.video_processor.current_frame_number = original_frame_num
@@ -1221,9 +1223,8 @@ def process_batch_images(main_window: "MainWindow", process_all_faces: bool):
             # If no media was loaded, clear the scene
             main_window.scene.clear()
             # Manually update graphics view to show nothing
-            graphics_view_actions.update_graphics_view(
-                main_window, QtGui.QPixmap(), 0
-            )
+            graphics_view_actions.update_graphics_view(main_window, QtGui.QPixmap(), 0)
+
 
 def toggle_live_sound(main_window: "MainWindow", toggle_value: bool):
     video_processor = main_window.video_processor

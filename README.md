@@ -7,15 +7,76 @@ This version integrates major features developed by the community to create a si
 ---
 <img src=".github/screenshot.png" height="auto"/>
 
-## Fusion Features
+## Fusion Features - Changelog v1.0.0
 
-VisoMaster Fusion includes all the great features of the original plus major enhancements from community mods:
+VisoMaster Fusion includes all the great features of the original plus major enhancements from community mods. Many thanks to GlatOs, Hans, Raven, Tenka, UnloadingVirus, Nyny, forgotten others and of course the original authors, Argenspin and Alucard24.
 
--   **Job Manager & Batch Processing**: A complete UI to save workspace configurations as "jobs" and run them sequentially for unattended batch processing. Features segmented recording to combine multiple clips into a single output.
--   **VR180 Mode**: Process and swap faces in hemispherical 180-degree VR videos, with optimizations for memory and speed.
--   **Experimental Enhancements**: Gain finer control with features like "swap only best match," advanced texture transfer modes, improved AutoColor with mask testing, and deeper integration of occlusion masks (XSeg) for more precise results.
--   **New Models**: Includes the **GFPGAN-1024** face restorer and the  **ReF-LDM** reference-based denoiser.
--   **Virtual Camera Streaming**: Send the processed video output directly to a virtual camera for use in OBS, Twitch, Zoom, and other applications.
+- User Interface :
+	- Version is now : VisoMaster - Fusion - 1.0.0
+	- Separate widgets panels for 'Target Videos/Images', 'Input Faces', 'Jobs' with each a hide/show toggle. 'Faces' panel toggle puts primary function on the 'Control Options' tabs.
+	- Keep track of filters for 'Target Videos/Images'.
+	- Added Send to Trash and Open File Location to Media 'Target Videos/Images' and 'Input Faces'.
+	- Added new Themes : True-Dark, Solarized-Dark, Solarized-Light, Dracula, Nord, Gruvbox.
+	- Open Output folder button.
+	- Improved Parameters and Controls sorting and placement in 'Control Options' tabs with added categories.
+	- Added 'Help' Menu with two help panels.
+	- Added complete 'Embedding Editor'.
+	- Save and restore 'Main Window' and 'Widgets' states within the workspace .json.
+	- Updated and complete Start_Portable.bat file with new Launcher functions.
+
+- Models :
+	- Added 512 resolution for InstyleSwapper256 model A, B and C.
+	- Added VGG_Combo_relu3 model for Differencing and Texture Transfer.
+	- Added GFPGAN-1024 restorer model.
+	- Added REF-LDM model as Denoiser.
+
+- Improvements :
+	- Inswapper128 Auto resolution.
+	- Pre Swap Sharpness slider.
+	- Face parser option to run at Pipeline End and Mouth Inside toggle to parse only the inside area of the mouth.
+	- New Differencing method.
+	- Improved AutoColor Transfer with added function for a secondary pass at Pipeline end.
+	- Face Editor Pipeline position selection for added control.
+	- Face Restorers 'Auto Restore' function to automaticaly adjust Blend value and sharpness and Face Restorer 2 at end toggle.
+	- Face Expression Restorer rework to separate the Eyes and Lips options for fine tuning, added Normalize Eyes (to prevent 'fish eyes'), added Relative position toggle and added Pipeline position selection.
+
+- New Features :
+	- VR video support.
+	- Job Manager.
+	- Embedding Editor.
+	- Images Batch Processing.
+	- Xseg Mouth masks for added masking control of mouth area.
+	- Mask View selection for 'Swap Mask', 'Differencing' and 'Texture Transfer'.
+	- Transfer Texture function for added realism with mask manipulation for finetuning.
+	- MPEG compression artifacts simulation.
+	- REF-LDM Denoiser with included K/V map extraction function, Single Step and Full Restore modes, three Pipeline passes options.
+	- Keep Controls Active toggle during recording option.
+	- Audio function during playback with Volume and Delay sliders.
+	- Playback Buffering option.
+	- Playback Loop option.
+	- Video Recording options, Frame Resize to 1920*1080, Open Output folder after recording, HDR Encoding (CPU), FFMPEG controls.
+	- Segment recording with added Start/Stop position Markers.
+	- Swap Input Face only once function to prevent false face swapping with multiple similar faces on scene.
+	- Auto Save warkspace.
+	- Auto Load Last Workspace.
+	- Experimental settings.
+	- Complet Presets function to save and apply per face parameters and global controls.
+
+- Performance :
+	- Reviewed memory usage with new and improved model loading and unloading to only keep necessary models in memory.
+	- Improved Expression Restorer / Face Editor with async cuda threads for multithread usage.
+	- Optimized Detection method using GPU instead of CPU.
+	- No recording speed limit.
+
+- Fixes :
+	- Corrected many typos.
+	- Unified requirements.txt file.
+	- Keep Markers visible after VRAM clear.
+	- Fixed VM crashes from ONNXRUNTIME Engine Cache creation by using a separate ONNX PROBE process that allows multiple retrys if it fails.
+	- Corrected and optimized python code with pre-commit, and AI passes for added and translated comments.
+	- Lots of bug fixes during implementation of new features and changes.
+	- Added more relevant Debugging lines in console for better understanding what is happening.
+	- Improved checks for file paths or general function calls with try...except.
 
 ---
 
@@ -220,6 +281,3 @@ Liability and Responsibility: We, as the creators and providers of the deep fake
 By using this software, users acknowledge that they have read, understood, and agreed to abide by the above guidelines and disclaimers. We strongly encourage users to approach this technology with caution, integrity, and respect for the well-being and rights of others.
 
 Remember, technology should be used to empower and inspire, not to harm or deceive. Let's strive for ethical and responsible use of deep fake technology for the betterment of society.
-
-Here is also an attribution to the original work for CanonSwap - https://github.com/Pixel-Talk/CanonSwap
-And here is a clear statement that the usage of the CanonSwap is subject to the restrictions outlined in Section III in the full copy of the LICENSE-CanonSwap.txt license file in this repo.

@@ -4,7 +4,6 @@ import torch
 from torchvision.transforms import v2
 from torchvision.ops import nms
 import numpy as np
-import cv2
 
 if TYPE_CHECKING:
     from app.processors.models_processor import ModelsProcessor
@@ -38,10 +37,6 @@ class FaceDetectors:
             "SCRFD": {"model_name": "SCRFD2.5g", "function": self.detect_scrdf},
             "Yolov8": {"model_name": "YoloFace8n", "function": self.detect_yoloface},
             "Yunet": {"model_name": "YunetN", "function": self.detect_yunet},
-            "DEIM-S-Face": {
-                "model_name": "DEIM-S-Face",
-                "function": self.detect_deim_s_face,
-            },
         }
 
     def _prepare_detection_image(
@@ -202,53 +197,41 @@ class FaceDetectors:
             det_scores[sorted_indices],
         )
 
-        # For DEIM-S-Face, if more than one face is found, always sort by size/centrality to ensure stable ordering.
-        # For other detectors, this is only done when the number of faces exceeds max_num.
-        needs_resort = (
-            self.current_detector_model == "DEIM-S-Face" and det_boxes.shape[0] > 1
-        ) or (max_num > 0 and det_boxes.shape[0] > max_num)
-
-        if needs_resort and det_boxes.shape[0] > 1:
-            # Score faces based on a combination of their size and proximity to the image center.
-            area = (det_boxes[:, 2] - det_boxes[:, 0]) * (
-                det_boxes[:, 3] - det_boxes[:, 1]
-            )
-
-            # Center coordinates are now in the original image space.
-            det_img_center_x = img_width / 2.0
-            det_img_center_y = img_height / 2.0
-
-            center_x = (det_boxes[:, 0] + det_boxes[:, 2]) / 2 - det_img_center_x
-            center_y = (det_boxes[:, 1] + det_boxes[:, 3]) / 2 - det_img_center_y
-
-            offset_dist_squared = center_x**2 + center_y**2
-            # This score favors large faces (area) that are close to the center
-            # (low offset_dist_squared).
-            values = area - offset_dist_squared * 2.0
-            bindex = torch.argsort(values, descending=True)
-            det_boxes, det_kpss, det_scores = (
-                det_boxes[bindex],
-                det_kpss[bindex],
-                det_scores[bindex],
-            )
-
-        # If more faces are detected than max_num, truncate the list.
+        # If more faces are detected than max_num, select the best ones.
         if max_num > 0 and det_boxes.shape[0] > max_num:
-            det_boxes = det_boxes[:max_num]
-            det_kpss = det_kpss[:max_num]
-            det_scores = det_scores[:max_num]
+            if det_boxes.shape[0] > 1:
+                # Score faces based on a combination of their size and proximity to the image center.
+                # This filtering happens on *unscaled* coordinates (relative to the padded detection image).
+                area = (det_boxes[:, 2] - det_boxes[:, 0]) * (
+                    det_boxes[:, 3] - det_boxes[:, 1]
+                )
+                # The old logic (img_height / det_scale) was mathematically incorrect and
+                # produced extreme values for non-standard aspect ratios (like VR videos).
+                # The correct logic is to find the center of the *active image area*
+                # on the padded canvas.
+                # new_height_on_canvas = img_height * det_scale
+                # new_width_on_canvas = img_width * det_scale
+                det_img_center_y = (img_height * det_scale) / 2.0
+                det_img_center_x = (img_width * det_scale) / 2.0
+                # --- END BUG FIX ---
+
+                center_x = (det_boxes[:, 0] + det_boxes[:, 2]) / 2 - det_img_center_x
+                center_y = (det_boxes[:, 1] + det_boxes[:, 3]) / 2 - det_img_center_y
+
+                offset_dist_squared = center_x**2 + center_y**2
+                # This score favors large faces (area) that are close to the center
+                # (low offset_dist_squared).
+                values = area - offset_dist_squared * 2.0
+                bindex = torch.argsort(values, descending=True)[:max_num]
+            else:
+                bindex = torch.arange(
+                    det_boxes.shape[0], device=self.models_processor.device
+                )[:max_num]
 
         # Transfer final results back to CPU and scale them to the original image dimensions.
         det_scale_val = det_scale.cpu().item()
-
-        # If det_scale_val is not 1.0, it means the boxes are not in the final coordinate space.
-        # This will be true for RetinaFace/SCRFD but should be 1.0 for DEIM-S-Face.
-        if det_scale_val != 1.0:
-            det = det_boxes.cpu().numpy() / det_scale_val
-            kpss_final = det_kpss.cpu().numpy() / det_scale_val
-        else:
-            det = det_boxes.cpu().numpy()
-            kpss_final = det_kpss.cpu().numpy()
+        det = det_boxes.cpu().numpy() / det_scale_val
+        kpss_final = det_kpss.cpu().numpy() / det_scale_val
 
         score_values = det_scores.cpu().numpy()
 
@@ -268,21 +251,10 @@ class FaceDetectors:
     ):
         """
         Optionally runs a secondary, more detailed landmark detector on the detected faces
-        to refine the keypoints. For DEIM-S-Face, this is mandatory as it lacks integrated landmarks.
+        to refine the keypoints.
         """
         kpss_5 = kpss.copy()
-        force_landmark_detection = self.current_detector_model == "DEIM-S-Face"
-
-        if (use_landmark_detection or force_landmark_detection) and len(kpss_5) > 0:
-            # If landmark detection is forced, we must have an image.
-            if img_landmark is None:
-                return det, kpss_5, kpss
-
-            # For DEIM-S-Face, initial landmarks are dummies, so always use the bounding box for detection.
-            landmark_from_points = (
-                from_points and self.current_detector_model != "DEIM-S-Face"
-            )
-
+        if use_landmark_detection and len(kpss_5) > 0:
             refined_kpss = []
             for i in range(kpss_5.shape[0]):
                 landmark_kpss_5, landmark_kpss, landmark_scores = (
@@ -292,7 +264,7 @@ class FaceDetectors:
                         kpss_5[i],
                         landmark_detect_mode,
                         landmark_score,
-                        landmark_from_points,
+                        from_points,
                     )
                 )
                 refined_kpss.append(
@@ -1043,176 +1015,6 @@ class FaceDetectors:
             kwargs.get("max_num"),
         )
         if det is None:
-            return [], [], []
-
-        return self._refine_landmarks(img_landmark, det, kpss, score_values, **kwargs)
-
-    def detect_deim_s_face(self, **kwargs):
-        """
-        Runs the DEIM/DETR face detection pipeline.
-        This function is specifically adapted for ONNX models exported from the deimkit,
-        which include built-in preprocessing and postprocessing.
-        """
-        model_name = "DEIM-S-Face"
-        ort_session = self.models_processor.models.get(model_name)
-        if not ort_session:
-            print(f"WARNING: {model_name} model not loaded. Skipping detection.")
-            return [], [], []
-
-        img, score, max_num, rotation_angles = (
-            kwargs.get("img"),
-            kwargs.get("score"),
-            kwargs.get("max_num"),
-            kwargs.get("rotation_angles"),
-        )
-
-        # The reference implementation live_inference-DETR.py does not use rotation.
-        # We let _filter_detections_gpu handle duplicates from multiple angles.
-
-        img_landmark = img.clone()
-
-        original_img_height, original_img_width = img.shape[1], img.shape[2]
-
-        all_scores_list, all_bboxes_list, all_kpss_list = [], [], []
-
-        input_names = [i.name for i in ort_session.get_inputs()]
-        image_input_name = input_names[0]  # Should be 'input_bgr'
-        size_input_name = input_names[1]  # Should be 'orig_target_sizes'
-
-        # The model was trained and exported for a 640x640 canvas.
-        canvas_size = 640
-
-        for angle in rotation_angles:
-            current_img_tensor = img
-
-            if angle != 0:
-                rotated_img_tensor = v2.functional.rotate(
-                    current_img_tensor, angle, expand=True
-                )
-                # The inverse matrix will map from the rotated space back to the original.
-                M = cv2.getRotationMatrix2D(
-                    center=(original_img_width / 2, original_img_height / 2),
-                    angle=angle,
-                    scale=1.0,
-                )
-                cos, sin = np.abs(M[0, 0]), np.abs(M[0, 1])
-                new_w, new_h = (
-                    int(original_img_height * sin + original_img_width * cos),
-                    int(original_img_height * cos + original_img_width * sin),
-                )
-                M[0, 2] += (new_w / 2) - (original_img_width / 2)
-                M[1, 2] += (new_h / 2) - (original_img_height / 2)
-                IM = cv2.invertAffineTransform(M)
-                current_img_tensor = rotated_img_tensor
-            else:
-                IM = None
-
-            # 1. Manually create the padded square canvas (similar to deimkit's live_inference.py)
-            h, w = current_img_tensor.shape[1:]
-            scale = canvas_size / max(h, w)
-            new_h, new_w = int(h * scale), int(w * scale)
-            y_offset, x_offset = (canvas_size - new_h) // 2, (canvas_size - new_w) // 2
-
-            # Convert to BGR numpy for resizing
-            np_rgb_image = (
-                current_img_tensor.permute(1, 2, 0).cpu().numpy().astype(np.uint8)
-            )
-            np_bgr_image = cv2.cvtColor(np_rgb_image, cv2.COLOR_RGB2BGR)
-
-            # Create canvas and paste resized image
-            model_input_canvas = np.full(
-                (canvas_size, canvas_size, 3), 0, dtype=np.uint8
-            )
-            resized_bgr = cv2.resize(np_bgr_image, (new_w, new_h))
-            model_input_canvas[
-                y_offset : y_offset + new_h, x_offset : x_offset + new_w
-            ] = resized_bgr
-
-            # 2. Prepare inputs for ONNX
-            # The ONNX model expects a float32 CHW BGR tensor.
-            im_data = np.ascontiguousarray(
-                model_input_canvas.transpose(2, 0, 1), dtype=np.float32
-            )
-            im_data = np.expand_dims(im_data, axis=0)
-
-            # `orig_target_sizes` MUST be the canvas size for the internal post-processor to work correctly.
-            orig_size = np.array([[canvas_size, canvas_size]], dtype=np.int64)
-
-            # 3. Run inference
-            outputs = ort_session.run(
-                None, {image_input_name: im_data, size_input_name: orig_size}
-            )
-
-            # The model's output boxes are now in the coordinate space of the 640x640 canvas.
-            labels, boxes, scores = outputs[0][0], outputs[1][0], outputs[2][0]
-
-            pos_inds = np.where(scores >= score)[0]
-            if len(pos_inds) == 0:
-                continue
-
-            # Perform NMS on the canvas-space detections for this angle to remove duplicates for the same face.
-            # This is necessary as the model can output multiple overlapping boxes for a single face.
-            nms_thresh = 0.4
-            pre_nms_bboxes = boxes[pos_inds]
-            pre_nms_scores = scores[pos_inds]
-            keep_indices = nms(
-                torch.from_numpy(pre_nms_bboxes).to(self.models_processor.device),
-                torch.from_numpy(pre_nms_scores).to(self.models_processor.device),
-                iou_threshold=nms_thresh,
-            )
-            keep_indices_np = keep_indices.cpu().numpy()
-
-            pos_bboxes = pre_nms_bboxes[keep_indices_np]
-            pos_scores = pre_nms_scores[keep_indices_np].reshape(-1, 1)
-
-            # Create dummy landmarks relative to the boxes on the canvas
-            pos_kpss = np.zeros((len(pos_bboxes), 5, 2), dtype=np.float32)
-            for i, bbox in enumerate(pos_bboxes):
-                box_w, box_h = bbox[2] - bbox[0], bbox[3] - bbox[1]
-                pos_kpss[i, 0] = [bbox[0] + 0.30 * box_w, bbox[1] + 0.40 * box_h]
-                pos_kpss[i, 1] = [bbox[0] + 0.70 * box_w, bbox[1] + 0.40 * box_h]
-                # ... (rest of dummy kps code is fine)
-                pos_kpss[i, 2] = [bbox[0] + 0.50 * box_w, bbox[1] + 0.55 * box_h]
-                pos_kpss[i, 3] = [bbox[0] + 0.35 * box_w, bbox[1] + 0.75 * box_h]
-                pos_kpss[i, 4] = [bbox[0] + 0.65 * box_w, bbox[1] + 0.75 * box_h]
-
-            # 4. Manually perform inverse transformation to get back to original image space
-            # Un-pad and un-scale the coordinates
-            pos_bboxes[:, [0, 2]] = (pos_bboxes[:, [0, 2]] - x_offset) / scale
-            pos_bboxes[:, [1, 3]] = (pos_bboxes[:, [1, 3]] - y_offset) / scale
-            pos_kpss[:, :, 0] = (pos_kpss[:, :, 0] - x_offset) / scale
-            pos_kpss[:, :, 1] = (pos_kpss[:, :, 1] - y_offset) / scale
-
-            # If rotated, apply the inverse affine transform
-            if angle != 0:
-                pos_bboxes = faceutil.trans_points(
-                    pos_bboxes.reshape(-1, 2), IM
-                ).reshape(-1, 4)
-                pos_kpss = faceutil.trans_points(pos_kpss.reshape(-1, 2), IM).reshape(
-                    -1, 5, 2
-                )
-
-            all_bboxes_list.append(pos_bboxes)
-            all_scores_list.append(pos_scores)
-            all_kpss_list.append(pos_kpss)
-
-        # Now, filter detections from all angles. All coordinates are in the original image space.
-        # NMS is skipped here because it was already performed for each angle individually.
-        # This prevents NMS from incorrectly suppressing detections of separate, nearby faces.
-        det, kpss, score_values = self._filter_detections_gpu(
-            all_scores_list,
-            all_bboxes_list,
-            all_kpss_list,
-            original_img_height,
-            original_img_width,
-            torch.tensor(
-                1.0, device=self.models_processor.device
-            ),  # Scale is 1.0 as boxes are now correctly scaled
-            max_num,
-            skip_nms=True,
-        )
-
-        if det is None or len(det) == 0:
             return [], [], []
 
         return self._refine_landmarks(img_landmark, det, kpss, score_values, **kwargs)

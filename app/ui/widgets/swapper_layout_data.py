@@ -18,7 +18,6 @@ SWAPPER_LAYOUT_DATA: LayoutDictTypes = {
                 "GhostFace-v2",
                 "GhostFace-v3",
                 "CSCS",
-                "CanonSwap",
             ],
             "default": "Inswapper128",
             "help": "Choose which swapper model to use for face swapping.",

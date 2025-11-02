@@ -28,14 +28,6 @@ class FrameEnhancers:
             "DDColor": "DDcolor",
         }
 
-    def ensure_models_loaded(self):
-        with self.models_processor.model_lock:
-            for model_name in self.model_map.values():
-                if not self.models_processor.models.get(model_name):
-                    self.models_processor.models[model_name] = (
-                        self.models_processor.load_model(model_name)
-                    )
-
     def unload_models(self):
         with self.models_processor.model_lock:
             if self.current_enhancer_model:
