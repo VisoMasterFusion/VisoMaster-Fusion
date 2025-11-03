@@ -157,13 +157,24 @@ class TargetMediaCardButton(CardButton):
 
         # Set up videoSeekLineEdit
         video_control_actions.set_up_video_seek_line_edit(main_window)
-        # Clear current target faces
+        # Clear current target faces (they belong to the previous media)
         card_actions.clear_target_faces(main_window, refresh_frame=False)
-        # Uncheck input faces
-        card_actions.uncheck_all_input_faces(main_window)
-        # Uncheck merged embeddings
-        card_actions.uncheck_all_merged_embeddings(main_window)
-        # Remove all markers
+
+        # Check if the user wants to keep input faces/embeddings selected
+        # --- MODIFICATION ---
+        # Garder les inputs cochés si KeepInput, AutoSwap ou Batch est actif
+        if not (
+            main_window.control.get("KeepInputToggle", False)
+            or getattr(main_window, "is_batch_processing", False)
+            or main_window.control.get("AutoSwapToggle", False)
+        ):
+            # Default behavior: Uncheck input faces
+            card_actions.uncheck_all_input_faces(main_window)
+            # Default behavior: Uncheck merged embeddings
+            card_actions.uncheck_all_merged_embeddings(main_window)
+        # --- FIN DE LA MODIFICATION ---
+        
+        # Always remove markers, as they are specific to the media's timeline
         video_control_actions.remove_all_markers(main_window)
 
         main_window.cur_selected_target_face_button = False
@@ -281,22 +292,27 @@ class TargetMediaCardButton(CardButton):
         common_widget_actions.refresh_frame(main_window)
 
         if main_window.control.get("AutoSwapToggle"):
+            # Mémoriser les inputs cochés (nécessaire car find_target_faces va cliquer sur un visage)
+            prev_selected_input_faces = [
+                face for _, face in main_window.input_faces.items() if face.isChecked()
+            ]
+            prev_selected_embeddings = [
+                embed
+                for _, embed in main_window.merged_embeddings.items()
+                if embed.isChecked()
+            ]
+            
+            # Déclencher la détection sur la frame actuelle (0 ou image)
             card_actions.find_target_faces(main_window)
-            for _, target_face in main_window.target_faces.items():
-                for input_face in prev_selected_input_faces:
-                    target_face.assigned_input_faces[input_face.face_id] = (
-                        input_face.embedding_store
-                    )
-                for embedding in prev_selected_embeddings:
-                    target_face.assigned_merged_embeddings[embedding.embedding_id] = (
-                        embedding.embedding_store
-                    )
-                target_face.calculate_assigned_input_embedding()
-            if main_window.target_faces:
+            
+            # find_target_faces a déjà assigné les inputs grâce à notre Modif 1
+            # Il faut juste s'assurer que le premier visage est cliqué (sélectionné)
+            if main_window.target_faces and not main_window.selected_target_face_id:
                 list(main_window.target_faces.values())[0].click()
+            
             common_widget_actions.refresh_frame(main_window)
             layout_actions.fit_image_to_view_onchange(main_window)
-
+            
         if (
             main_window.control["SendVirtCamFramesEnableToggle"]
             and self.file_type != "image"
@@ -586,13 +602,46 @@ class TargetFaceCardButton(CardButton):
             if target_face_button != self:
                 target_face_button.setChecked(False)
 
-        card_actions.uncheck_all_input_faces(main_window)
-        card_actions.uncheck_all_merged_embeddings(main_window)
+        # --- LOGIQUE MODIFIÉE (CONDITION MISE À JOUR) ---
+        # Vérifie si le toggle est coché OU si un batch est en cours OU si l'AutoSwap est activé
+        if (
+            main_window.control.get("KeepInputToggle", False)
+            or getattr(main_window, "is_batch_processing", False)
+            or main_window.control.get("AutoSwapToggle", False)
+        ):
+            # KeepInputToggle/Batch/AutoSwap est ACTIVÉ
+            # 1. Mettre à jour les assignations de ce visage cible pour qu'elles correspondent à la sélection globale
+            self.assigned_input_faces.clear()
+            self.assigned_merged_embeddings.clear()
 
-        for input_face_id in self.assigned_input_faces.keys():
-            main_window.input_faces[input_face_id].setChecked(True)
-        for embedding_id in self.assigned_merged_embeddings.keys():
-            main_window.merged_embeddings[embedding_id].setChecked(True)
+            for input_face_id, input_face_button in main_window.input_faces.items():
+                if input_face_button.isChecked():
+                    self.assigned_input_faces[input_face_id] = input_face_button.embedding_store
+            
+            for embedding_id, embed_button in main_window.merged_embeddings.items():
+                if embed_button.isChecked():
+                    self.assigned_merged_embeddings[embedding_id] = embed_button.embedding_store
+            
+            # 2. Recalculer l'embedding (les inputs ont peut-être changé)
+            self.calculate_assigned_input_embedding()
+
+            # 3. Ne PAS décocher ou re-cocher les inputs. La sélection de l'utilisateur est prioritaire.
+
+        else:
+            # KeepInputToggle/Batch/AutoSwap sont DÉSACTIVÉS (Comportement par défaut)
+            # 1. Décocher tous les inputs/embeddings
+            card_actions.uncheck_all_input_faces(main_window)
+            card_actions.uncheck_all_merged_embeddings(main_window)
+
+            # 2. Cocher uniquement les inputs/embeddings assignés à ce visage spécifique
+            for input_face_id in self.assigned_input_faces.keys():
+                if main_window.input_faces.get(input_face_id):
+                    main_window.input_faces[input_face_id].setChecked(True)
+            for embedding_id in self.assigned_merged_embeddings.keys():
+                if main_window.merged_embeddings.get(embedding_id):
+                    main_window.merged_embeddings[embedding_id].setChecked(True)
+        # --- FIN DE LA LOGIQUE MODIFIÉE ---
+
 
         main_window.selected_target_face_id = self.face_id
         main_window.current_kv_tensors_map = self.assigned_kv_map

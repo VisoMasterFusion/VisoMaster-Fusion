@@ -827,6 +827,18 @@ def on_change_video_seek_slider(main_window: "MainWindow", new_position=0):
             graphics_view_actions.update_graphics_view(
                 main_window, pixmap, new_position
             )
+            
+            # --- DÉBUT DE LA MODIFICATION ---
+            # Si l'AutoSwap est activé, on cherche de nouveaux visages
+            # sur la frame actuellement affichée.
+            if main_window.control.get("AutoSwapToggle", False):
+                # find_target_faces utilisera la frame actuelle (new_position)
+                # pour détecter et créer de NOUVEAUX visages cibles.
+                # Notre logique "KeepInputToggle" précédente (dans find_target_faces)
+                # assignera automatiquement les inputs sélectionnés à ces nouveaux visages.
+                card_actions.find_target_faces(main_window)
+            # --- FIN DE LA MODIFICATION ---
+
             # if video_processor.current_frame_number == video_processor.max_frame_number:
             #     video_processor.media_capture.set(cv2.CAP_PROP_POS_FRAMES, new_position)
             update_parameters_and_control_from_marker(main_window, new_position)
@@ -1069,6 +1081,7 @@ def process_batch_images(main_window: "MainWindow", process_all_faces: bool):
 
     processed_count = 0
     failed_count = 0
+    main_window.is_batch_processing = True
 
     try:
         # 7. Processing Loop
@@ -1176,6 +1189,7 @@ def process_batch_images(main_window: "MainWindow", process_all_faces: bool):
                 failed_count += 1
 
     finally:
+        main_window.is_batch_processing = False
         # 8. Close the progress dialog
         progress_dialog.close()
 

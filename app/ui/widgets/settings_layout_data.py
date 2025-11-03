@@ -191,6 +191,12 @@ SETTINGS_LAYOUT_DATA: LayoutDictTypes = {
             "default": False,
             "help": "Automatically Swap all faces using selected Source Faces/Embeddings when loading an video/image file",
         },
+        "KeepInputToggle": {
+            "level": 1,
+            "label": "Keep Selected Input Faces / Embeddings",
+            "default": False,
+            "help": "Keep the selected Input Faces Or Embeddings when switching Target Media.",
+        },
         "SwapOnlyBestMatchEnableToggle": {
             "level": 1,
             "label": "Swap Input Face only once",
