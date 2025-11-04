@@ -134,6 +134,7 @@ class MainWindow(QtWidgets.QMainWindow, Ui_MainWindow):
         self.last_input_media_folder_path = ""
 
         self.is_full_screen = False
+        self.is_batch_processing = False
 
         # This flag is used to make sure new loaded media is properly fit into the graphics frame on the first load
         self.project_root_path = Path(__file__).resolve().parent.parent.parent

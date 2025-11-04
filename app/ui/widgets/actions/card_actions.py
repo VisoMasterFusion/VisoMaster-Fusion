@@ -175,6 +175,35 @@ def find_target_faces(main_window: "MainWindow"):
                         list_view_actions.add_media_thumbnail_to_target_faces_list(
                             main_window, face_img, embedding_store, pixmap, face_id
                         )
+
+                        if control.get("KeepInputToggle", False) or control.get(
+                            "AutoSwapToggle", False
+                        ):
+                            new_target_face = main_window.target_faces.get(face_id)
+                            if new_target_face:
+                                # Assign checked Input Faces
+                                for (
+                                    input_face_id,
+                                    input_face_button,
+                                ) in main_window.input_faces.items():
+                                    if input_face_button.isChecked():
+                                        new_target_face.assigned_input_faces[
+                                            input_face_id
+                                        ] = input_face_button.embedding_store
+
+                                # Assign checked Embeddings
+                                for (
+                                    embed_id,
+                                    embed_button,
+                                ) in main_window.merged_embeddings.items():
+                                    if embed_button.isChecked():
+                                        new_target_face.assigned_merged_embeddings[
+                                            embed_id
+                                        ] = embed_button.embedding_store
+
+                                # Recalculate assigned embeddings
+                                new_target_face.calculate_assigned_input_embedding()
+
             # Select the first target face if no target face is already selected
         if main_window.target_faces and not main_window.selected_target_face_id:
             list(main_window.target_faces.values())[0].click()
