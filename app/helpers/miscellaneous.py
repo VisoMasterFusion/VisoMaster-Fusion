@@ -9,6 +9,7 @@ from functools import wraps
 from datetime import datetime
 from pathlib import Path
 from torchvision.transforms import v2
+from typing import Dict, Tuple, Optional
 import threading
 
 lock = threading.Lock()
@@ -16,7 +17,7 @@ lock = threading.Lock()
 # --- Global Scope ---
 
 # scaling transforms cache dictionary at the module level
-_transform_cache = {}
+_transform_cache: Dict[tuple, tuple] = {}
 image_extensions = (
     ".jpg",
     ".jpeg",
@@ -93,7 +94,7 @@ class ThumbnailManager:
         hash_input = f"{name}_{file_size}"
         return hashlib.md5(hash_input.encode("utf-8")).hexdigest()
 
-    def get_thumbnail_path(self, file_path: str) -> (str, str):
+    def get_thumbnail_path(self, file_path: str) -> Tuple[str, str]:
         """
         Generates the potential paths for a thumbnail (PNG and JPG).
 
@@ -186,7 +187,7 @@ class DFMModelManager:
             models_path (str): The path to the directory containing DFM model files.
         """
         self.models_path = models_path
-        self.models_data = {}
+        self.models_data: Dict[str, str] = {}
         self.refresh_models()
 
     def refresh_models(self) -> None:
@@ -419,11 +420,11 @@ def get_file_type(file_name):
 
 
 def get_scaled_resolution(
-    media_width: int = None,
-    media_height: int = None,
-    max_width: int = None,
-    max_height: int = None,
-    media_capture: cv2.VideoCapture = None,
+    media_width: Optional[int] = None,
+    media_height: Optional[int] = None,
+    max_width: Optional[int] = None,
+    max_height: Optional[int] = None,
+    media_capture: Optional[cv2.VideoCapture] = None,
 ) -> tuple[int, int]:
     """
     Calculates scaled dimensions for media to fit within given bounds while maintaining aspect ratio.
@@ -530,9 +531,9 @@ def get_output_file_path(
     original_media_path: str,
     output_folder: str,
     media_type: str = "video",
-    job_name: str = None,
+    job_name: Optional[str] = None,
     use_job_name_for_output: bool = False,
-    output_file_name: str = None,
+    output_file_name: Optional[str] = None,
 ) -> str:
     """
     Determines the full output path for a processed media file based on a priority system.

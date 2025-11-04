@@ -3,7 +3,7 @@ import os
 import traceback
 from functools import partial
 import uuid
-from typing import TYPE_CHECKING, Dict
+from typing import TYPE_CHECKING, Any, Dict
 from send2trash import send2trash
 import subprocess
 import sys
@@ -15,11 +15,9 @@ import numpy as np
 import torch
 
 import app.ui.widgets.actions.common_actions as common_widget_actions
-import app.ui.widgets.actions.layout_actions as layout_actions
 from app.ui.widgets.actions import video_control_actions
 from app.ui.widgets.actions import graphics_view_actions
 from app.ui.widgets.actions import card_actions
-from app.ui.widgets.actions import list_view_actions
 from app.ui.widgets.actions import save_load_actions
 import app.helpers.miscellaneous as misc_helpers
 
@@ -311,6 +309,8 @@ class TargetMediaCardButton(CardButton):
                 list(main_window.target_faces.values())[0].click()
             
             common_widget_actions.refresh_frame(main_window)
+            from app.ui.widgets.actions import layout_actions
+
             layout_actions.fit_image_to_view_onchange(main_window)
             
         if (
@@ -461,7 +461,9 @@ class TargetFaceCardButton(CardButton):
         self.assigned_merged_embeddings: Dict[
             str, Dict[str, np.ndarray]
         ] = {}  # Key: embedding_swap_model, Value: EmbeddingCardButton.embedding_store
-        self.assigned_input_embedding = {}  # Key: embedding_swap_model, Value: np.ndarray
+        self.assigned_input_embedding: Dict[
+            str, np.ndarray
+        ] = {}  # Key: embedding_swap_model, Value: np.ndarray
         self.assigned_kv_map: Dict | None = None
 
         self.setCheckable(True)
@@ -1267,7 +1269,7 @@ class EmbeddingCardButton(CardButton):
 
 
 class CreateEmbeddingDialog(QtWidgets.QDialog):
-    def __init__(self, main_window: "MainWindow", embedding_stores: list = None):
+    def __init__(self, main_window: "MainWindow", embedding_stores: list | None = None):
         super().__init__()
         self.embedding_stores = embedding_stores or []
         self.main_window = main_window
@@ -1333,6 +1335,8 @@ class CreateEmbeddingDialog(QtWidgets.QDialog):
                     final_embedding_store[swap_model] = np.median(embeddings, axis=0)
 
             # Crea e aggiungi il nuovo embedding_store con tutti i modelli di swap
+            from app.ui.widgets.actions import list_view_actions
+
             list_view_actions.create_and_add_embed_button_to_list(
                 main_window=self.main_window,
                 embedding_name=self.embedding_name,
@@ -1521,8 +1525,8 @@ class ParametersWidget:
         self.default_value = kwargs.get("default_value", False)
         self.min_value = kwargs.get("min_value", False)
         self.max_value = kwargs.get("max_value", False)
-        self.group_layout_data: Dict[str, Dict[str, str | int | float | bool]] = (
-            kwargs.get("group_layout_data", {})
+        self.group_layout_data: Dict[str, Dict[str, Any]] = kwargs.get(
+            "group_layout_data", {}
         )
         self.widget_name = kwargs.get("widget_name", False)
         self.label_widget: QtWidgets.QLabel = kwargs.get("label_widget", False)
@@ -1607,14 +1611,16 @@ class ToggleButton(QtWidgets.QPushButton, ParametersWidget):
         )
 
     # Property for animation
-    @QtCore.Property(int)
-    def circle_position(self):
+    def _get_circle_position(self):
         return self._circle_position
 
-    @circle_position.setter
-    def circle_position(self, pos):
+    def _set_circle_position(self, pos: int):
         self._circle_position = pos
         self.update()  # Update the widget to trigger paintEvent
+
+    circle_position = QtCore.Property(
+        int, fget=_get_circle_position, fset=_set_circle_position
+    )
 
     def start_animation(self):
         # Animate circle position when toggled
@@ -2027,7 +2033,7 @@ class ParameterLineDecimalEdit(QtWidgets.QLineEdit):
         self.step_size = step_size
         self.min_value = min_value
         self.max_value = max_value
-        default_value = float(default_value)
+        float_default_value = float(default_value)
         self.setMaxLength(max_length)
         self.setValidator(QtGui.QDoubleValidator(min_value, max_value, decimals))
         # Optional: Align text to the right for better readability
@@ -2037,7 +2043,7 @@ class ParameterLineDecimalEdit(QtWidgets.QLineEdit):
             self.setAlignment(QtGui.Qt.AlignCenter)
         else:
             self.setAlignment(QtGui.Qt.AlignRight)
-        self.setText(f"{default_value:.{self.decimals}f}")
+        self.setText(f"{float_default_value:.{self.decimals}f}")
 
     def set_value(self, value: float):
         """Set the line edit's value with proper handling for step size and rounding."""

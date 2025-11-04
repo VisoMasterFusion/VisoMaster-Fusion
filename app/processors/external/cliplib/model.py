@@ -1,5 +1,5 @@
 from collections import OrderedDict
-from typing import Tuple, Union
+from typing import Tuple, Union, Optional
 
 import numpy as np
 import torch
@@ -56,7 +56,7 @@ class Bottleneck(nn.Module):
 
 
 class AttentionPool2d(nn.Module):
-    def __init__(self, spacial_dim: int, embed_dim: int, num_heads: int, output_dim: int = None):
+    def __init__(self, spacial_dim: int, embed_dim: int, num_heads: int, output_dim: Optional[int] = None):
         super().__init__()
         self.positional_embedding = nn.Parameter(torch.randn(spacial_dim ** 2 + 1, embed_dim) / embed_dim ** 0.5)
         self.k_proj = nn.Linear(embed_dim, embed_dim)
@@ -398,6 +398,7 @@ def convert_weights(model: nn.Module):
 
 def build_model(state_dict: dict):
     vit = "visual.proj" in state_dict
+    vision_layers: Union[Tuple[int, int, int, int], int]
 
     if vit:
         vision_width = state_dict["visual.conv1.weight"].shape[0]

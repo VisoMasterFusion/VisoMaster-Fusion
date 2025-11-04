@@ -21,9 +21,9 @@ def clear_target_faces(main_window: "MainWindow", refresh_frame=True):
     for _, target_face in main_window.target_faces.items():
         target_face.deleteLater()
     main_window.target_faces = {}
-    main_window.parameters = {}
+    main_window.parameters.clear()
 
-    main_window.selected_target_face_id = False
+    main_window.selected_target_face_id = None
     # Set Parameter widget values to default
     common_widget_actions.set_widgets_values_using_face_id_parameters(
         main_window=main_window, face_id=False
@@ -108,11 +108,11 @@ def find_target_faces(main_window: "MainWindow"):
                 img,
                 control["DetectorModelSelection"],
                 max_num=control["MaxFacesToDetectSlider"],
-                score=control["DetectorScoreSlider"] / 100.0,
+                score=float(control["DetectorScoreSlider"]) / 100.0,
                 input_size=(512, 512),
                 use_landmark_detection=control["LandmarkDetectToggle"],
                 landmark_detect_mode=control["LandmarkDetectModelSelection"],
-                landmark_score=control["LandmarkDetectScoreSlider"] / 100.0,
+                landmark_score=float(control["LandmarkDetectScoreSlider"]) / 100.0,
                 from_points=control["DetectFromPointsToggle"],
                 rotation_angles=[0]
                 if not control["AutoRotationToggle"]
@@ -139,15 +139,12 @@ def find_target_faces(main_window: "MainWindow"):
                     for face_id, target_face in main_window.target_faces.items():
                         parameters = main_window.parameters[target_face.face_id]
                         threshhold = parameters["SimilarityThresholdSlider"]
-                        if (
-                            main_window.models_processor.findCosineDistance(
-                                target_face.get_embedding(
-                                    control["RecognitionModelSelection"]
-                                ),
-                                face[1],
-                            )
-                            >= threshhold
-                        ):
+                        if main_window.models_processor.findCosineDistance(
+                            target_face.get_embedding(
+                                str(control["RecognitionModelSelection"])
+                            ),
+                            face[1],
+                        ) >= float(threshhold):
                             found = True
                             break
                     if not found:
@@ -169,10 +166,10 @@ def find_target_faces(main_window: "MainWindow"):
 
                         # The embedding for the selected model was already calculated
                         # face[1] holds the embedding calculated using control["RecognitionModelSelection"]
-                        embedding_store[selected_recognition_model] = face[1]
+                        embedding_store[str(selected_recognition_model)] = face[1]
                         # --- MODIFICATION END ---
 
-                        face_id = str(uuid.uuid1().int)
+                        face_id = str(uuid.uuid1())
 
                         # Pass the embedding_store containing only the selected model's embedding
                         list_view_actions.add_media_thumbnail_to_target_faces_list(

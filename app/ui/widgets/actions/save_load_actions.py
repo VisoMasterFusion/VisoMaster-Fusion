@@ -4,7 +4,7 @@ from pathlib import Path
 import uuid
 import copy
 from functools import partial
-from typing import TYPE_CHECKING, Dict
+from typing import TYPE_CHECKING, Dict, Union, cast
 
 from PySide6 import QtWidgets
 import numpy as np
@@ -116,31 +116,35 @@ def save_embeddings_to_file(main_window: "MainWindow", save_as=False):
 # Parameters are converted to ParametersDict when reading from JSON
 def convert_parameters_to_supported_type(
     main_window: "MainWindow",
-    parameters: dict | ParametersTypes,
-    convert_type: dict | misc_helpers.ParametersDict,
+    parameters: Union[dict, ParametersTypes],
+    convert_type: type,
 ):
-    if convert_type == dict:
-        parameters = parameters.data
-    elif convert_type == misc_helpers.ParametersDict:
-        parameters = misc_helpers.ParametersDict(
-            parameters, main_window.default_parameters
-        )
+    if convert_type is dict:
+        if isinstance(parameters, misc_helpers.ParametersDict):
+            return parameters.data
+    elif convert_type is misc_helpers.ParametersDict:
+        if isinstance(parameters, dict):
+            return misc_helpers.ParametersDict(
+                parameters,
+                cast(misc_helpers.ParametersDict, main_window.default_parameters).data,
+            )
     return parameters
 
 
 def convert_markers_to_supported_type(
     main_window: "MainWindow",
     markers: MarkerTypes,
-    convert_type: dict | misc_helpers.ParametersDict,
+    convert_type: type,
 ):
     # Convert Parameters inside the markers from ParametersDict to dict
     for _, marker_data in markers.items():
-        for target_face_id, target_parameters in marker_data["parameters"].items():
-            marker_data["parameters"][target_face_id] = (
-                convert_parameters_to_supported_type(
-                    main_window, target_parameters, convert_type
+        if "parameters" in marker_data:
+            for target_face_id, target_parameters in marker_data["parameters"].items():
+                marker_data["parameters"][target_face_id] = (
+                    convert_parameters_to_supported_type(
+                        main_window, target_parameters, convert_type
+                    )
                 )
-            )
     return markers
 
 
@@ -193,7 +197,7 @@ def get_auto_load_workspace_toggle(
             main_window, filter="JSON (*.json)"
         )
     # Check if File exists (In cases when filename is passed as function argument instead of from the file picker)
-    if not Path(data_filename).is_file():
+    if isinstance(data_filename, str) and not Path(data_filename).is_file():
         data_filename = False
     if data_filename:
         with open(data_filename, "r") as data_file:  # pylint: disable=unspecified-encoding
@@ -202,13 +206,15 @@ def get_auto_load_workspace_toggle(
             return control.get("AutoLoadWorkspaceToggle", False)
 
 
-def load_saved_workspace(main_window: "MainWindow", data_filename: str | bool = False):
+def load_saved_workspace(
+    main_window: "MainWindow", data_filename: Union[str, bool] = False
+):
     if not data_filename:
         data_filename, _ = QtWidgets.QFileDialog.getOpenFileName(
             main_window, filter="JSON (*.json)"
         )
     # Check if File exists (In cases when filename is passed as function argument instead of from the file picker)
-    if not Path(data_filename).is_file():
+    if not (isinstance(data_filename, str) and Path(data_filename).is_file()):
         data_filename = False
     if data_filename:
         with open(data_filename, "r") as data_file:  # pylint: disable=unspecified-encoding
@@ -294,7 +300,7 @@ def load_saved_workspace(main_window: "MainWindow", data_filename: str | bool = 
             # Add embeddings
             embeddings_data = data["embeddings_data"]
             for embedding_id, embedding_data in embeddings_data.items():
-                embedding_store = {
+                embedding_store_loaded = {
                     embed_model: np.array(embedding)
                     for embed_model, embedding in embedding_data[
                         "embedding_store"
@@ -304,7 +310,7 @@ def load_saved_workspace(main_window: "MainWindow", data_filename: str | bool = 
                 list_view_actions.create_and_add_embed_button_to_list(
                     main_window,
                     embedding_name,
-                    embedding_store,
+                    embedding_store_loaded,
                     embedding_id=embedding_id,
                 )
 
@@ -452,9 +458,14 @@ def load_saved_workspace(main_window: "MainWindow", data_filename: str | bool = 
                 main_window.current_widget_parameters = data.get(
                     "current_widget_parameters", main_window.default_parameters.copy()
                 )
-                main_window.current_widget_parameters = misc_helpers.ParametersDict(
-                    main_window.current_widget_parameters,
-                    main_window.default_parameters,
+                main_window.current_widget_parameters = cast(
+                    ParametersTypes,
+                    misc_helpers.ParametersDict(
+                        main_window.current_widget_parameters,
+                        cast(
+                            misc_helpers.ParametersDict, main_window.default_parameters
+                        ).data,
+                    ),
                 )
                 common_widget_actions.set_widgets_values_using_face_id_parameters(
                     main_window, face_id=False
@@ -583,7 +594,7 @@ def save_current_workspace(
                 for embed_model, embedding in target_face.embedding_store.items()
             },
             "parameters": main_window.parameters.get(
-                face_id, main_window.default_parameters
+                str(face_id), main_window.default_parameters
             ).data.copy(),  # Use .get with default, ensure it's dict
             "assigned_input_faces": list(target_face.assigned_input_faces.keys()),
             "assigned_merged_embeddings": list(
@@ -641,7 +652,9 @@ def save_current_workspace(
         "control": main_window.control.copy(),
         "target_medias_data": target_medias_data,
         "selected_media_id": main_window.selected_video_button.media_id
-        if main_window.selected_video_button
+        if isinstance(
+            main_window.selected_video_button, widget_components.TargetMediaCardButton
+        )
         else False,
         "input_faces_data": input_faces_data,
         "target_faces_data": target_faces_data,
@@ -667,7 +680,9 @@ def save_current_workspace(
                     data, indent=4
                 )  # Salva con indentazione per leggibilità
                 data_file.write(data_as_json)
-            if data_filename.endswith("last_workspace.json"):
+            if isinstance(data_filename, str) and data_filename.endswith(
+                "last_workspace.json"
+            ):
                 print(f"Last workspace saved to: {data_filename}")
             else:
                 common_widget_actions.create_and_show_toast_message(
@@ -677,8 +692,9 @@ def save_current_workspace(
                 )
         except Exception as e:
             print(f"[ERROR] Failed to save workspace {data_filename}: {e}")
-            if not data_filename.endswith(
-                "last_workspace.json"
+            if not (
+                isinstance(data_filename, str)
+                and data_filename.endswith("last_workspace.json")
             ):  # Don't show error for auto-save
                 common_widget_actions.create_and_show_messagebox(
                     main_window,
@@ -725,18 +741,56 @@ def save_current_job(main_window: "MainWindow"):
     else:
         return  # User cancelled
 
+    # --- Check if Denoiser is enabled ---
+    control = main_window.control
+    is_denoiser_enabled = (
+        control.get("DenoiserUNetEnableBeforeRestorersToggle", False)
+        or control.get("DenoiserAfterFirstRestorerToggle", False)
+        or control.get("DenoiserAfterRestorersToggle", False)
+    )
+
+    # --- Serialize Input Faces ---
+    input_faces_data = {}
+    for face_id, input_face in main_window.input_faces.items():
+        kv_map_path = None
+        if is_denoiser_enabled and hasattr(input_face, "kv_map") and input_face.kv_map:
+            kv_data_dir = os.path.join("model_assets", "reference_kv_data")
+            os.makedirs(kv_data_dir, exist_ok=True)
+            kv_map_path = os.path.join(kv_data_dir, f"input_{input_face.face_id}.pt")
+            try:
+                payload = {"kv_map": input_face.kv_map}
+                torch.save(payload, kv_map_path)
+            except Exception as e:
+                print(
+                    f"Error saving K/V map for input face {input_face.face_id} to {kv_map_path}: {e}"
+                )
+                kv_map_path = None
+        input_faces_data[face_id] = {
+            "media_path": input_face.media_path,
+            "kv_map": kv_map_path,
+        }
+
     # Prepare job data
     job_data = {
         "job_name": job_name,
         "use_job_name_for_output": use_job_name,
         "output_file_name": output_filename,
-        "target_media_path": main_window.selected_video_button.media_path,
-        "target_media_id": main_window.selected_video_button.media_id,
-        "target_media_type": main_window.selected_video_button.file_type,
-        "input_faces_data": {
-            fid: {"media_path": face.media_path}
-            for fid, face in main_window.input_faces.items()
-        },
+        "target_media_path": main_window.selected_video_button.media_path
+        if isinstance(
+            main_window.selected_video_button, widget_components.TargetMediaCardButton
+        )
+        else None,
+        "target_media_id": main_window.selected_video_button.media_id
+        if isinstance(
+            main_window.selected_video_button, widget_components.TargetMediaCardButton
+        )
+        else None,
+        "target_media_type": main_window.selected_video_button.file_type
+        if isinstance(
+            main_window.selected_video_button, widget_components.TargetMediaCardButton
+        )
+        else None,
+        "input_faces_data": input_faces_data,
         "target_faces_data": {},
         "embeddings_data": {
             eid: {
@@ -761,7 +815,7 @@ def save_current_job(main_window: "MainWindow"):
                 m: e.tolist() for m, e in target_face.embedding_store.items()
             },
             "parameters": main_window.parameters.get(
-                face_id, main_window.default_parameters
+                str(face_id), main_window.default_parameters
             ).data.copy(),
             "assigned_input_faces": list(target_face.assigned_input_faces.keys()),
             "assigned_merged_embeddings": list(

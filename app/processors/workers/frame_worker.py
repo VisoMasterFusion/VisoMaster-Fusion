@@ -1,5 +1,5 @@
 import traceback
-from typing import TYPE_CHECKING, Dict
+from typing import TYPE_CHECKING, Dict, cast
 import threading
 import math
 from math import floor, ceil
@@ -24,29 +24,15 @@ import app.ui.widgets.actions.common_actions as common_widget_actions
 from app.ui.widgets.actions import video_control_actions
 from app.helpers.miscellaneous import ParametersDict, get_scaling_transforms
 from app.helpers.vr_utils import EquirectangularConverter, PerspectiveConverter
+from app.helpers.typing_helper import ParametersTypes
 
 if TYPE_CHECKING:
     from app.ui.main_ui import MainWindow
 
 torchvision.disable_beta_transforms_warning()
 
+
 # These will be dynamically set per frame based on control parameters
-(
-    t512,
-    t384,
-    t256,
-    t128,
-    interpolation_get_cropped_face_kps,
-    interpolation_original_face_128_384,
-    interpolation_original_face_512,
-    interpolation_Untransform,
-    interpolation_scaleback,
-    t256_face,
-    interpolation_expression_faceeditor_back,
-    interpolation_block_shift,
-) = None, None, None, None, None, None, None, None, None, None, None, None
-
-
 class FrameWorker(threading.Thread):
     def __init__(
         self,
@@ -57,6 +43,19 @@ class FrameWorker(threading.Thread):
         is_single_frame=False,
     ):
         super().__init__()
+        self.t512 = None
+        self.t384 = None
+        self.t256 = None
+        self.t128 = None
+        self.interpolation_get_cropped_face_kps = None
+        self.interpolation_original_face_128_384 = None
+        self.interpolation_original_face_512 = None
+        self.interpolation_Untransform = None
+        self.interpolation_scaleback = None
+        self.t256_face = None
+        self.interpolation_expression_faceeditor_back = None
+        self.interpolation_block_shift = None
+
         self.frame_queue = frame_queue
         self.frame = frame  # Expected to be HxWxC RGB uint8 NumPy array
         self.main_window = main_window
@@ -64,7 +63,9 @@ class FrameWorker(threading.Thread):
         self.models_processor = main_window.models_processor
         self.video_processor = main_window.video_processor
         self.is_single_frame = is_single_frame
-        self.parameters = {}  # Will be populated from main_window.parameters
+        self.parameters: Dict[
+            str, ParametersTypes
+        ] = {}  # Will be populated from main_window.parameters
         # VR specific constants
         self.VR_PERSPECTIVE_RENDER_SIZE = 512  # Pixels, for rendering perspective crops
         self.VR_DYNAMIC_FOV_PADDING_FACTOR = (
@@ -75,32 +76,19 @@ class FrameWorker(threading.Thread):
         self.lock = threading.Lock()
 
     def set_scaling_transforms(self, control_params):
-        global \
-            t512, \
-            t384, \
-            t256, \
-            t128, \
-            interpolation_get_cropped_face_kps, \
-            interpolation_original_face_128_384, \
-            interpolation_original_face_512, \
-            interpolation_Untransform, \
-            interpolation_scaleback, \
-            t256_face, \
-            interpolation_expression_faceeditor_back, \
-            interpolation_block_shift
         (
-            t512,
-            t384,
-            t256,
-            t128,
-            interpolation_get_cropped_face_kps,
-            interpolation_original_face_128_384,
-            interpolation_original_face_512,
-            interpolation_Untransform,
-            interpolation_scaleback,
-            t256_face,
-            interpolation_expression_faceeditor_back,
-            interpolation_block_shift,
+            self.t512,
+            self.t384,
+            self.t256,
+            self.t128,
+            self.interpolation_get_cropped_face_kps,
+            self.interpolation_original_face_128_384,
+            self.interpolation_original_face_512,
+            self.interpolation_Untransform,
+            self.interpolation_scaleback,
+            self.t256_face,
+            self.interpolation_expression_faceeditor_back,
+            self.interpolation_block_shift,
         ) = get_scaling_transforms(control_params)
 
     def run(self):
@@ -205,9 +193,10 @@ class FrameWorker(threading.Thread):
 
         if not kv_map:
             if use_exclusive_path:
-                print(
-                    f"Denoiser {pass_suffix}: No source face for K/V, but 'Exclusive Reference Path' is ON. Skipping."
-                )
+                if control.get("CommandLineDebugEnableToggle", False):
+                    print(
+                        f"Denoiser {pass_suffix}: No source face for K/V, but 'Exclusive Reference Path' is ON. Skipping."
+                    )
                 return image_tensor_cxhxw_uint8
 
         denoised_image = self.models_processor.apply_denoiser_unet(
@@ -234,11 +223,11 @@ class FrameWorker(threading.Thread):
             default_params_dict = (
                 dict(self.main_window.default_parameters)
                 if isinstance(self.main_window.default_parameters, ParametersDict)
-                else self.main_window.default_parameters
+                else dict(self.main_window.default_parameters)
             )
 
             current_params_pd = ParametersDict(
-                dict(face_specific_params_dict), default_params_dict
+                dict(face_specific_params_dict), cast(dict, default_params_dict)
             )
             target_embedding_np = target_button_widget.get_embedding(
                 control_global["RecognitionModelSelection"]
@@ -327,7 +316,7 @@ class FrameWorker(threading.Thread):
                     kps=kps_all_on_crop_param,
                     s_e=s_e_for_swap_core,
                     t_e=t_e_for_swap_np,
-                    parameters=parameters_for_face,
+                    parameters=parameters_for_face.data,
                     control=control_global,
                     dfm_model_name=parameters_for_face["DFMModelSelection"],
                     is_perspective_crop=True,
@@ -338,7 +327,7 @@ class FrameWorker(threading.Thread):
                     f"Error in swap_core for VR crop {eye_side_for_debug}: {e_swap_core}"
                 )
                 traceback.print_exc()
-                swapped_face_512_torch_rgb_uint8 = t512(
+                swapped_face_512_torch_rgb_uint8 = cast(v2.Resize, self.t512)(
                     perspective_crop_torch_rgb_uint8
                 )
                 comprehensive_mask_1x512x512_from_swap_core = torch.zeros(
@@ -356,7 +345,9 @@ class FrameWorker(threading.Thread):
                 or comprehensive_mask_1x512x512_from_swap_core.numel() == 0
             ):
                 persp_final_combined_mask_1x512x512_float_for_paste = (
-                    t512(self.get_border_mask(parameters_for_face)[0]).float()
+                    cast(v2.Resize, self.t512)(
+                        self.get_border_mask(parameters_for_face)[0]
+                    ).float()
                     if swap_button_is_checked_global
                     else torch.zeros(
                         (1, 512, 512),
@@ -440,7 +431,7 @@ class FrameWorker(threading.Thread):
                     processed_crop_torch_rgb_uint8 = self.swap_edit_face_core(
                         processed_crop_torch_rgb_uint8,
                         processed_crop_torch_rgb_uint8,
-                        parameters_for_face,
+                        parameters_for_face.data,
                         control_global,
                     )
                     if any(
@@ -455,8 +446,8 @@ class FrameWorker(threading.Thread):
                         processed_crop_torch_rgb_uint8 = (
                             self.swap_edit_face_core_makeup(
                                 processed_crop_torch_rgb_uint8,
-                                kps_all_for_editor_on_crop,
-                                parameters_for_face,
+                                kps_all_on_crop_param,
+                                parameters_for_face.data,
                                 control_global,
                             )
                         )
@@ -552,7 +543,6 @@ class FrameWorker(threading.Thread):
 
                 # Apply the filter to get the final list of bounding boxes.
                 bboxes_eq_np = bboxes_eq_np[indices_to_keep]
-                final_box_count = len(indices_to_keep)
 
             processed_perspective_crops_details = {}
             analyzed_faces_for_vr = []
@@ -778,7 +768,7 @@ class FrameWorker(threading.Thread):
                 and len(kpss_5) > 0
             ):
                 # if kpss_5.shape[0] > 0:
-                for i in range(kpss_5.shape[0]):
+                for i in range(len(kpss_5)):
                     face_emb, _ = self.models_processor.run_recognize_direct(
                         img,
                         kpss_5[i],
@@ -801,7 +791,7 @@ class FrameWorker(threading.Thread):
                     for _, target_face in self.main_window.target_faces.items():
                         params = ParametersDict(
                             self.parameters[target_face.face_id],
-                            self.main_window.default_parameters,
+                            self.main_window.default_parameters.data,
                         )
 
                         best_fface, best_score = None, -1.0
@@ -861,7 +851,7 @@ class FrameWorker(threading.Thread):
                                 best_fface["kps_all"],
                                 s_e=s_e,
                                 t_e=target_face.get_embedding(arcface_model),
-                                parameters=params,
+                                parameters=params.data,
                                 control=control,
                                 dfm_model_name=params["DFMModelSelection"],
                                 kv_map=kv_map_for_swap,
@@ -876,7 +866,7 @@ class FrameWorker(threading.Thread):
                                 )
                             ):
                                 img = self.swap_edit_face_core_makeup(
-                                    img, best_fface["kps_all"], params, control
+                                    img, best_fface["kps_all"], params.data, control
                                 )
                 else:
                     for fface in det_faces_data_for_display:
@@ -925,7 +915,7 @@ class FrameWorker(threading.Thread):
                                     fface["kps_all"],
                                     s_e=s_e,
                                     t_e=best_target.get_embedding(arcface_model),
-                                    parameters=params,
+                                    parameters=params.data,
                                     control=control,
                                     dfm_model_name=params["DFMModelSelection"],
                                     kv_map=kv_map_for_swap,
@@ -941,7 +931,7 @@ class FrameWorker(threading.Thread):
                                 )
                             ):
                                 img = self.swap_edit_face_core_makeup(
-                                    img, fface["kps_all"], params, control
+                                    img, fface["kps_all"], params.data, control
                                 )
 
             if control["ManualRotationEnableToggle"]:
@@ -954,7 +944,7 @@ class FrameWorker(threading.Thread):
             if scale_applied:
                 img = v2.Resize(
                     (img_y, img_x),
-                    interpolation=interpolation_scaleback,
+                    interpolation=self.interpolation_scaleback,
                     antialias=False,
                 )(img)
             processed_tensor_rgb_uint8 = img
@@ -1101,7 +1091,7 @@ class FrameWorker(threading.Thread):
         return img
 
     def get_compare_faces_image(
-        self, img: torch.Tensor, det_faces_data: dict, control: dict
+        self, img: torch.Tensor, det_faces_data: list, control: dict
     ) -> torch.Tensor:
         imgs_to_vstack = []  # Renamed for vertical stacking
         for _, fface in enumerate(det_faces_data):
@@ -1176,7 +1166,7 @@ class FrameWorker(threading.Thread):
             scale=tform.scale,
             shear=(0.0, 0.0),
             center=(0, 0),
-            interpolation=interpolation_get_cropped_face_kps,
+            interpolation=self.interpolation_get_cropped_face_kps,
         )
         return v2.functional.crop(face_512_aligned, 0, 0, 512, 512)
 
@@ -1210,12 +1200,12 @@ class FrameWorker(threading.Thread):
             tform.scale,
             0,
             center=(0, 0),
-            interpolation=interpolation_original_face_512,
+            interpolation=self.interpolation_original_face_512,
         )
         original_face_512 = v2.functional.crop(original_face_512, 0, 0, 512, 512)
-        original_face_384 = t384(original_face_512)
-        original_face_256 = t256(original_face_512)
-        original_face_128 = t128(original_face_256)
+        original_face_384 = self.t384(original_face_512)
+        original_face_256 = self.t256(original_face_512)
+        original_face_128 = self.t128(original_face_256)
         return (
             original_face_512,
             original_face_384,
@@ -1245,7 +1235,6 @@ class FrameWorker(threading.Thread):
         latent = None
 
         if swapper_model == "Inswapper128":
-            self.models_processor.load_inswapper_iss_emap("Inswapper128")
             latent = (
                 torch.from_numpy(self.models_processor.calc_inswapper_latent(s_e))
                 .float()
@@ -1294,7 +1283,6 @@ class FrameWorker(threading.Thread):
             "InStyleSwapper256 Version C",
         ):
             version = swapper_model[-1]
-            self.models_processor.load_inswapper_iss_emap(swapper_model)
             latent = (
                 torch.from_numpy(
                     self.models_processor.calc_swapper_latent_iss(s_e, version)
@@ -1584,7 +1572,7 @@ class FrameWorker(threading.Thread):
             output = out_celeb.clone()
 
         output = output.permute(2, 0, 1)
-        swap = t512(output)
+        swap = self.t512(output)
         return swap, prev_face
 
     def get_border_mask(self, parameters):
@@ -1688,11 +1676,13 @@ class FrameWorker(threading.Thread):
         is_perspective_crop: bool = False,
         kv_map: Dict | None = None,
     ) -> tuple[torch.Tensor, torch.Tensor | None, torch.Tensor | None]:
+        # global t512
         valid_s_e = s_e if isinstance(s_e, np.ndarray) else None
         valid_t_e = t_e if isinstance(t_e, np.ndarray) else None
         parameters = parameters if parameters is not None else {}
         control = control if control is not None else {}
         swapper_model = parameters["SwapModelSelection"]
+        self.set_scaling_transforms(control)
 
         debug = control.get("CommandLineDebugEnableToggle", False)
         debug_info: dict[str, str] = {}
@@ -1794,7 +1784,7 @@ class FrameWorker(threading.Thread):
                 prev_face = torch.clamp(prev_face, 0, 255)
                 prev_face = prev_face.permute(2, 0, 1)
                 # if dim != 4: prev_face = t512(prev_face)
-                prev_face = t512(prev_face)
+                prev_face = cast(v2.Resize, self.t512)(prev_face)
                 swap = torch.mul(swap, alpha)
                 prev_face = torch.mul(prev_face, 1 - alpha)
                 swap = torch.add(swap, prev_face)
@@ -1815,8 +1805,6 @@ class FrameWorker(threading.Thread):
         diff_mask = BgExclude.clone()
         texture_mask_view = BgExclude.clone()
         restore_mask = BgExclude.clone()
-        texture_mask = BgExclude.clone()
-        mask_forcalc = BgExclude.clone()
         texture_exclude_512 = BgExclude.clone()
         swap_mask_noFP = (
             swap_mask.clone()
@@ -1838,7 +1826,7 @@ class FrameWorker(threading.Thread):
             and parameters["FaceExpressionBeforeTypeSelection"] == "Beginning"
         ):
             swap = self.apply_face_expression_restorer(
-                original_face_512, swap, parameters
+                original_face_512, swap, cast(dict, parameters)
             )
 
         # Face editor beginning
@@ -1925,16 +1913,14 @@ class FrameWorker(threading.Thread):
                 parameters,
                 control,
             )
-            if not parameters["FaceParserEndToggle"]:
+            if not parameters.get("FaceParserEndToggle", False):
                 FaceParser_mask_128 = out.get(
                     "FaceParser_mask", None
                 )  # [1,128,128], 1=behalten
             texture_exclude_512 = out.get(
                 "texture_mask", texture_exclude_512
             )  # [1,512,512], 1=ausschließen
-            bg_exclude_512 = out.get(
-                "bg_mask", t512_mask(swap_mask)
-            )  # [1,512,512], 1=ausschließen
+            out.get("bg_mask", t512_mask(swap_mask))  # [1,512,512], 1=ausschließen
             mouth_512 = out.get("mouth", None)  # [512,512]
 
         # FaceParser-Maske (128) auf swap_mask anwenden (wenn vorhanden)
@@ -2658,7 +2644,9 @@ class FrameWorker(threading.Thread):
             swap = self._apply_denoiser_pass(swap, control, "After", kv_map)
 
         # Face parser at end
-        if parameters["FaceParserEnableToggle"] and parameters["FaceParserEndToggle"]:
+        if parameters.get("FaceParserEnableToggle") and parameters.get(
+            "FaceParserEndToggle"
+        ):
             out = self.models_processor.process_masks_and_masks(
                 swap,  # aktueller Swap-Stand (uint8, 3x512x512)
                 original_face_512,  # original (uint8, 3x512x512)
@@ -2861,7 +2849,7 @@ class FrameWorker(threading.Thread):
             (tform.inverse.translation[0], tform.inverse.translation[1]),
             tform.inverse.scale,
             0,
-            interpolation=interpolation_Untransform,
+            interpolation=self.interpolation_Untransform,
             center=(0, 0),
         )
         swap = swap[0:3, top:bottom, left:right]
@@ -3117,7 +3105,7 @@ class FrameWorker(threading.Thread):
                 from_points=False,
             )
             driving_face_512 = driving.clone()
-            driving_face_256 = t256_face(driving_face_512)
+            driving_face_256 = self.t256_face(driving_face_512)
 
             c_d_eyes_lst = faceutil.calc_eye_close_ratio(driving_lmk_crop[None])
             c_d_lip_lst = faceutil.calc_lip_close_ratio(driving_lmk_crop[None])
@@ -3125,7 +3113,7 @@ class FrameWorker(threading.Thread):
             x_d_i_info = self.models_processor.lp_motion_extractor(
                 driving_face_256, "Human-Face"
             )
-            R_d_i = faceutil.get_rotation_matrix(
+            faceutil.get_rotation_matrix(
                 x_d_i_info["pitch"], x_d_i_info["yaw"], x_d_i_info["roll"]
             )
 
@@ -3169,7 +3157,7 @@ class FrameWorker(threading.Thread):
             flag_relative_motion_eyes = parameters["FaceExpressionRelativeEyesToggle"]
             flag_relative_motion_lips = parameters["FaceExpressionRelativeLipsToggle"]
 
-            lip_delta_before_animation, eye_delta_before_animation = None, None
+            lip_delta_before_animation = None
 
             target = torch.clamp(target, 0, 255).type(torch.uint8)
             # ---------------------------------------------------
@@ -3194,7 +3182,7 @@ class FrameWorker(threading.Thread):
                 interpolation=v2.InterpolationMode.BILINEAR,
             )
 
-            target_face_256 = t256_face(target_face_512)
+            target_face_256 = self.t256_face(target_face_512)
 
             x_s_info = self.models_processor.lp_motion_extractor(
                 target_face_256, "Human-Face"
@@ -3227,7 +3215,6 @@ class FrameWorker(threading.Thread):
                     )
 
             if flag_normalize_eyes and source_lmk is not None:
-                combined_eyes_ratio_tensor_before_animation = None
                 c_d_eyes_normalize = c_d_eyes_lst
                 eyes_ratio = np.array([c_d_eyes_normalize[0][0]], dtype=np.float32)
                 eyes_ratio_normalize = max(eyes_ratio, 0.10)
@@ -3480,9 +3467,9 @@ class FrameWorker(threading.Thread):
                     dsize=512,
                     scale=parameters["FaceEditorCropScaleDecimalSlider"],
                     vy_ratio=parameters["FaceEditorVYRatioDecimalSlider"],
-                    interpolation=interpolation_expression_faceeditor_back,
+                    interpolation=self.interpolation_expression_faceeditor_back,
                 )
-                original_face_256 = t256_face(original_face_512)
+                original_face_256 = self.t256_face(original_face_512)
 
                 # ASYNC CANDIDATE 2: Motion Extractor
                 x_s_info = self.models_processor.lp_motion_extractor(
@@ -3672,7 +3659,7 @@ class FrameWorker(threading.Thread):
                 translate=(t.translation[0], t.translation[1]),
                 scale=t.scale,
                 shear=(0.0, 0.0),
-                interpolation=interpolation_expression_faceeditor_back,
+                interpolation=self.interpolation_expression_faceeditor_back,
                 center=(0, 0),
             )
             out = v2.functional.crop(out, 0, 0, dsize[0], dsize[1])  # cols, rows
@@ -3708,7 +3695,7 @@ class FrameWorker(threading.Thread):
                 dsize=512,
                 scale=parameters["FaceEditorCropScaleDecimalSlider"],
                 vy_ratio=parameters["FaceEditorVYRatioDecimalSlider"],
-                interpolation=interpolation_expression_faceeditor_back,
+                interpolation=self.interpolation_expression_faceeditor_back,
             )
 
             out, mask_out = self.models_processor.apply_face_makeup(
@@ -3750,7 +3737,7 @@ class FrameWorker(threading.Thread):
         """
 
         C, H, W = image.shape
-        eps = 1e-6
+        # eps = 1e-6
         image = image.float() / 255.0
         mask = mask.bool()
 

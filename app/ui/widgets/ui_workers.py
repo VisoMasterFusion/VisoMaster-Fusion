@@ -245,7 +245,7 @@ class InputFacesLoaderWorker(qtc.QThread):
                 self.main_window.control["InputFacesFolderRecursiveToggle"],
             )
         elif files_list:
-            image_files = files_list
+            image_files = list(files_list)
 
         i = 0
         image_files.sort()

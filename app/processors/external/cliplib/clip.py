@@ -2,7 +2,7 @@ import hashlib
 import os
 import urllib
 import warnings
-from typing import Any, Union, List
+from typing import Union, List, Optional
 from pkg_resources import packaging
 
 import torch
@@ -91,7 +91,7 @@ def available_models() -> List[str]:
     return list(_MODELS.keys())
 
 
-def load(name: str, device: Union[str, torch.device] = "cuda" if torch.cuda.is_available() else "cpu", jit: bool = False, download_root: str = None):
+def load(name: str, device: Union[str, torch.device] = "cuda" if torch.cuda.is_available() else "cpu", jit: bool = False, download_root: Optional[str] = None):
     """Load a CLIP model
 
     Parameters

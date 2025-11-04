@@ -1,5 +1,5 @@
 import threading
-from typing import TYPE_CHECKING, Callable
+from typing import TYPE_CHECKING, Callable, Optional
 from functools import partial
 
 import cv2
@@ -61,8 +61,8 @@ def update_control(
     main_window: "MainWindow",
     control_name,
     control_value,
-    exec_function=None,
-    exec_function_args: list = None,
+    exec_function: Optional[Callable] = None,
+    exec_function_args: Optional[list] = None,
 ):
     exec_function_args = exec_function_args or []
     current_position = main_window.videoSeekSlider.value()
@@ -88,14 +88,14 @@ def create_default_parameter(
     main_window.default_parameters[parameter_name] = parameter_value
 
 
-def create_parameter_dict_for_face_id(main_window: "MainWindow", face_id=0):
+def create_parameter_dict_for_face_id(main_window: "MainWindow", face_id: str):
     if not main_window.parameters.get(face_id):
         parameters = (
             main_window.parameters.get(main_window.selected_target_face_id)
             or main_window.current_widget_parameters
             or main_window.default_parameters
         )
-        if type(parameters) == dict:
+        if isinstance(parameters, dict):
             parameters = misc_helpers.ParametersDict(
                 parameters, main_window.default_parameters
             )
@@ -108,8 +108,8 @@ def update_parameter(
     parameter_name,
     parameter_value,
     enable_refresh_frame=True,
-    exec_function: Callable = None,
-    exec_function_args: list = None,
+    exec_function: Optional[Callable] = None,
+    exec_function_args: Optional[list] = None,
 ):
     exec_function_args = exec_function_args or []
     current_position = main_window.videoSeekSlider.value()
@@ -155,7 +155,7 @@ def update_parameter(
     # This now runs even if no face is selected, fixing the unload issue.
     if exec_function and parameter_value != old_parameter_value:
         # The first argument is always the main_window, followed by the new value
-        final_exec_args = [main_window, parameter_value] + exec_function_args
+        final_exec_args: list = [main_window, parameter_value] + exec_function_args
         exec_function(*final_exec_args)
 
 
@@ -179,7 +179,7 @@ def show_hide_related_widgets(
             # Loop through all widgets data in the parent widget's group layout data
             for widget_name in group_layout_data.keys():
                 # Store the widget object (instance) from the parameters_widgets Dictionary
-                current_widget = main_window.parameter_widgets.get(widget_name, False)
+                current_widget = main_window.parameter_widgets.get(widget_name)
                 # Check if the current_widget depends on the Parent Widget's (selection) value
                 if (
                     group_layout_data[widget_name].get("parentSelection", "")
@@ -294,7 +294,7 @@ def show_hide_related_widgets(
                             current_widget.label_widget.show()
                             current_widget.reset_default_button.show()
                             if current_widget.line_edit:
-                                current_widget.line_edit.show()
+                                current_widget.line_edit.hide()
 
                     else:
                         parentToggle_ischecked = main_window.parameter_widgets[
@@ -466,11 +466,41 @@ def set_widgets_values_using_face_id_parameters(
         parameters = main_window.parameters[face_id].copy()
     parameter_widgets = main_window.parameter_widgets
     for parameter_name, parameter_value in parameters.items():
-        # temporarily disable refreshing the frame to prevent slowing due to unnecessary processing
-        if parameter_widgets.get(parameter_name):
-            parameter_widgets[parameter_name].enable_refresh_frame = False
-            parameter_widgets[parameter_name].set_value(parameter_value)
-            parameter_widgets[parameter_name].enable_refresh_frame = True
+        widget = parameter_widgets.get(parameter_name)
+        if widget:
+            # temporarily disable refreshing the frame to prevent slowing due to unnecessary processing
+            widget.enable_refresh_frame = False
+            if isinstance(
+                widget,
+                (
+                    widget_components.ParameterLineEdit,
+                    widget_components.ParameterSlider,
+                ),
+            ):
+                try:
+                    int_value = int(float(parameter_value))
+                    widget.set_value(int_value)
+                except (ValueError, TypeError):
+                    pass
+            elif isinstance(
+                widget,
+                (
+                    widget_components.ParameterLineDecimalEdit,
+                    widget_components.ParameterDecimalSlider,
+                ),
+            ):
+                try:
+                    float_value = float(parameter_value)
+                    widget.set_value(float_value)
+                except (ValueError, TypeError):
+                    pass
+            elif isinstance(widget, widget_components.ToggleButton):
+                widget.set_value(bool(parameter_value))
+            elif isinstance(widget, widget_components.SelectionBox):
+                widget.set_value(str(parameter_value))
+            else:
+                widget.set_value(parameter_value)
+            widget.enable_refresh_frame = True
 
 
 def set_control_widgets_values(main_window: "MainWindow", enable_exec_func=True):
@@ -502,7 +532,36 @@ def set_control_widgets_values(main_window: "MainWindow", enable_exec_func=True)
             widget.enable_refresh_frame = False
 
             # Set the widget value
-            widget.set_value(control_value)
+            if isinstance(
+                widget,
+                (
+                    widget_components.ParameterLineEdit,
+                    widget_components.ParameterSlider,
+                ),
+            ):
+                try:
+                    int_value = int(float(control_value))
+                    widget.set_value(int_value)
+                except (ValueError, TypeError):
+                    pass
+            elif isinstance(
+                widget,
+                (
+                    widget_components.ParameterLineDecimalEdit,
+                    widget_components.ParameterDecimalSlider,
+                ),
+            ):
+                try:
+                    float_value = float(control_value)
+                    widget.set_value(float_value)
+                except (ValueError, TypeError):
+                    pass
+            elif isinstance(widget, widget_components.ToggleButton):
+                widget.set_value(bool(control_value))
+            elif isinstance(widget, widget_components.SelectionBox):
+                widget.set_value(str(control_value))
+            else:
+                widget.set_value(control_value)
 
             if enable_exec_func:
                 # Execute any associated function, if defined

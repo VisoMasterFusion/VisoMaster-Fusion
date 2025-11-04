@@ -1,4 +1,4 @@
-from typing import Dict, Callable, NewType
+from typing import Dict, Callable, NewType, TypedDict
 from app.helpers.miscellaneous import ParametersDict
 
 LayoutDictTypes = NewType(
@@ -7,10 +7,14 @@ LayoutDictTypes = NewType(
 )
 
 ParametersTypes = NewType("ParametersTypes", ParametersDict)
-FacesParametersTypes = NewType("FacesParametersTypes", dict[int, ParametersTypes])
+FacesParametersTypes = NewType("FacesParametersTypes", dict[str, ParametersTypes])
 
 ControlTypes = NewType("ControlTypes", Dict[str, bool | int | float | str])
 
-MarkerTypes = NewType(
-    "MarkerTypes", Dict[int, Dict[str, FacesParametersTypes | ControlTypes]]
-)
+
+class MarkerData(TypedDict):
+    parameters: FacesParametersTypes
+    control: ControlTypes
+
+
+MarkerTypes = NewType("MarkerTypes", Dict[int, MarkerData])

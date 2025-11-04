@@ -1,6 +1,6 @@
-from app.helpers.typing_helper import LayoutDictTypes
+from typing import Any
 
-FACE_EDITOR_LAYOUT_DATA: LayoutDictTypes = {
+FACE_EDITOR_LAYOUT_DATA: Any = {  # noqa: F811
     "": {
         "FaceEditorBeforeTypeSelection": {
             "level": 1,

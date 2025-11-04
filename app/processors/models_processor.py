@@ -229,7 +229,7 @@ class ModelsProcessor(QtCore.QObject):
 
         if TENSORRT_AVAILABLE:
             # Initialize models_trt and models_trt_path
-            self.models_trt = {}
+            self.models_trt: Dict[str, Optional[TensorRTPredictor]] = {}
             self.models_trt_path = {}
             for model_data in models_trt_list:
                 model_name, model_path = (
@@ -275,7 +275,7 @@ class ModelsProcessor(QtCore.QObject):
         )
         self.vae_scale_factor = 1.0  # Confirmed by user
 
-        self.clip_session = []
+        self.clip_session: list = []
         self.arcface_dst = np.array(
             [
                 [38.2946, 51.6963],
@@ -295,9 +295,9 @@ class ModelsProcessor(QtCore.QObject):
                 [313.08905, 371.15118],
             ]
         )
-        self.mean_lmk = []
-        self.anchors = []
-        self.emap = []
+        self.mean_lmk: list = []
+        self.anchors: list = []
+        self.emap: list = []
         self.LandmarksSubsetIdxs = [
             0,
             1,
@@ -653,6 +653,21 @@ class ModelsProcessor(QtCore.QObject):
                 print(
                     f"Loading model: {model_name} with provider: {self.provider_name}"
                 )
+                if model_name == "Inswapper128":
+                    graph = onnx.load(self.models_path[model_name]).graph
+                    emap_initializer = None
+                    for initializer in graph.initializer:
+                        if initializer.name == "emap":
+                            emap_initializer = initializer
+                            break
+
+                    if emap_initializer:
+                        self.emap = onnx.numpy_helper.to_array(emap_initializer)
+                    else:
+                        print(
+                            f"WARNING: 'emap' not found in the initializers of model {model_name}. Using fallback to last initializer."
+                        )
+                        self.emap = onnx.numpy_helper.to_array(graph.initializer[-1])
                 return model_instance
 
             except Exception:
@@ -1219,14 +1234,6 @@ class ModelsProcessor(QtCore.QObject):
 
         return x_512.clamp(0, 1), diff_norm_128  # ([1,512,512], [1,128,128])
 
-    def load_inswapper_iss_emap(self, model_name):
-        with self.model_lock:
-            if not self.models[model_name]:
-                self.main_window.model_loading_signal.emit()
-                graph = onnx.load(self.models_path[model_name]).graph
-                self.emap = onnx.numpy_helper.to_array(graph.initializer[-1])
-                self.main_window.model_loaded_signal.emit()
-
     def run_detect(
         self,
         img,
@@ -1672,9 +1679,6 @@ class ModelsProcessor(QtCore.QObject):
             )
 
             final_denoised_latent_x0_scaled = None
-            should_use_kv_in_unet = use_reference_exclusive_path and (
-                kv_tensor_map_for_this_run is not None
-            )
 
             is_ref_flag_tensor_for_unet = torch.tensor(
                 [use_reference_exclusive_path], dtype=torch.bool, device=self.device

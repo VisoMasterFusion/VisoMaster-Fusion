@@ -16,6 +16,11 @@
 
 from datetime import datetime, timezone
 from .core import PATHS
+import hashlib
+import json
+from typing import Dict, Any
+from app.processors.models_data import models_list
+from pathlib import Path
 
 
 # ---------- Core File I/O ----------
@@ -23,7 +28,7 @@ from .core import PATHS
 
 def read_portable_cfg() -> dict:
     """Read portable.cfg as a simple key=value dict."""
-    cfg = {}
+    cfg: Dict[str, str] = {}
     p = PATHS["PORTABLE_CFG"]
     if not p.exists():
         return cfg
@@ -145,9 +150,6 @@ def read_version_info():
 
 # ---------- Checksum Tracking ----------
 
-import hashlib
-import json
-
 
 def compute_file_sha256(path) -> str | None:
     """Return SHA256 checksum of the given file, or None if not found."""
@@ -165,16 +167,14 @@ def compute_file_sha256(path) -> str | None:
         return None
 
 
-def compute_models_sha256(models_list) -> str | None:
+def compute_models_sha256(models_list: list) -> str | None:
     """Return SHA256 of the serialized models list for consistency tracking."""
     try:
         # Normalize and sort models list for deterministic hashing
-        normalized = []
+        normalized: list[Dict[str, Any] | str] = []
         for item in models_list:
             if isinstance(item, dict):
                 normalized.append({k: item[k] for k in sorted(item.keys())})
-            else:
-                normalized.append(str(item))
         payload = json.dumps(normalized, sort_keys=True, separators=(",", ":")).encode(
             "utf-8"
         )
@@ -188,16 +188,13 @@ def compute_models_sha256(models_list) -> str | None:
 # Model Presence Check
 # ---------------------------------------------------------------------------
 
-from app.processors.models_data import models_list
-from pathlib import Path
-
 
 def check_models_presence() -> tuple[bool, list]:
     """Quickly check if any expected model files are missing (no hash check)."""
     missing = []
     for model in models_list:
-        model_path = Path(model.get("local_path"))
-        if not model_path.exists():
+        model_path = model.get("local_path")
+        if model_path and not Path(model_path).exists():
             missing.append(str(model_path))
             print(f"[Launcher] Warning: Missing model file → {model_path}")
     return bool(missing), missing
@@ -206,7 +203,7 @@ def check_models_presence() -> tuple[bool, list]:
 # ---------- Checksum State ----------
 
 
-def read_checksum_state() -> dict[str, str]:
+def read_checksum_state() -> dict[str, str | None]:
     """Read current checksum values from portable.cfg."""
     cfg = read_portable_cfg()
     return {

@@ -716,7 +716,7 @@ class EmbeddingGUI(QWidget):
         additive_button = msg_box.addButton(
             "Load (Additive)", QMessageBox.ButtonRole.ActionRole
         )
-        cancel_button = msg_box.addButton(QMessageBox.StandardButton.Cancel)
+        msg_box.addButton(QMessageBox.StandardButton.Cancel)
         msg_box.exec()
 
         clicked_button = msg_box.clickedButton()

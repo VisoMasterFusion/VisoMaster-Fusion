@@ -1,7 +1,7 @@
-from app.helpers.typing_helper import LayoutDictTypes
+from typing import Any
 import app.ui.widgets.actions.control_actions as control_actions
 
-DENOISER_LAYOUT_DATA: LayoutDictTypes = {
+DENOISER_LAYOUT_DATA: Any = {
     "ReF-LDM Denoiser": {
         "UseReferenceExclusivePathToggle": {  # New ToggleButton
             "level": 1,
