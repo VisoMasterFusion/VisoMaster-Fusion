@@ -809,7 +809,8 @@ class FrameWorker(threading.Thread):
                                     best_score = score
                                     best_fface = fface
 
-                        if best_fface is not None:
+                        # Check if a best face was found AND if swap or edit is actually enabled
+                        if best_fface is not None and (swap_button_is_checked_global or edit_button_is_checked_global):
                             denoiser_on = (
                                 control.get(
                                     "DenoiserUNetEnableBeforeRestorersToggle", False
@@ -873,7 +874,8 @@ class FrameWorker(threading.Thread):
                         best_target, params, _ = self._find_best_target_match(
                             fface["embedding"], control
                         )
-                        if best_target:
+                        # Check if a target was matched AND if swap or edit is actually enabled
+                        if best_target and (swap_button_is_checked_global or edit_button_is_checked_global):
                             denoiser_on = (
                                 control.get(
                                     "DenoiserUNetEnableBeforeRestorersToggle", False
