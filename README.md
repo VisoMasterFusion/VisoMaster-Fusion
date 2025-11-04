@@ -228,6 +228,18 @@ In Windows - Either via:
 5.  To process, select one or more jobs and click **"Process Selected"**, or click **"Process All"** to run the entire queue.
 6.  Processing will begin automatically. A pop-up will notify you when all jobs are complete.
 
+## Development
+
+- Please use pre-commit before doing git add & commit. And fix found issues before the commit.
+
+  ```
+  # Install pre-commit
+  uv pip install pre-commit
+  
+  # Usage before commits - (run twice in case of found auto corrections)
+  pre-commit run --all-files
+  ```
+
 ---
 
 ## [Join Discord](https://discord.gg/5rx4SQuDbp)
