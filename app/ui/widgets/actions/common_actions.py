@@ -294,7 +294,7 @@ def show_hide_related_widgets(
                             current_widget.label_widget.show()
                             current_widget.reset_default_button.show()
                             if current_widget.line_edit:
-                                current_widget.line_edit.hide()
+                                current_widget.line_edit.show()
 
                     else:
                         parentToggle_ischecked = main_window.parameter_widgets[
