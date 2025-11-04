@@ -235,7 +235,7 @@ In Windows - Either via:
   ```
   # Install pre-commit
   uv pip install pre-commit
-  
+
   # Usage before commits - (run twice in case of found auto corrections)
   pre-commit run --all-files
   ```
