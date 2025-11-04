@@ -223,17 +223,14 @@ def handle_restorer_state_change(
     params = main_window.current_widget_parameters
     model_map = main_window.models_processor.face_restorers.model_map
 
-    slot_id = 0
     model_type_key = None
     active_model_attr = None
 
     if control_name == "FaceRestorerEnableToggle":
         model_type_key = "FaceRestorerTypeSelection"
-        slot_id = 1
         active_model_attr = "active_model_slot1"
     elif control_name == "FaceRestorerEnable2Toggle":
         model_type_key = "FaceRestorerType2Selection"
-        slot_id = 2
         active_model_attr = "active_model_slot2"
 
     if not model_type_key:
@@ -245,16 +242,18 @@ def handle_restorer_state_change(
     if model_to_change:
         if new_value:
             main_window.models_processor.load_model(model_to_change)
-            setattr(
-                main_window.models_processor.face_restorers,
-                active_model_attr,
-                model_to_change,
-            )
+            if active_model_attr:
+                setattr(
+                    main_window.models_processor.face_restorers,
+                    active_model_attr,
+                    model_to_change,
+                )
         else:
             main_window.models_processor.unload_model(model_to_change)
-            setattr(
-                main_window.models_processor.face_restorers, active_model_attr, None
-            )
+            if active_model_attr:
+                setattr(
+                    main_window.models_processor.face_restorers, active_model_attr, None
+                )
 
 
 def handle_model_selection_change(
@@ -284,12 +283,13 @@ def handle_model_selection_change(
 
     if is_enabled and new_model_name:
         main_window.models_processor.load_model(new_model_name)
-        setattr(
-            main_window.models_processor.face_restorers,
-            active_model_attr,
-            new_model_name,
-        )
-    else:
+        if active_model_attr:
+            setattr(
+                main_window.models_processor.face_restorers,
+                active_model_attr,
+                new_model_name,
+            )
+    elif active_model_attr:
         setattr(main_window.models_processor.face_restorers, active_model_attr, None)
 
 

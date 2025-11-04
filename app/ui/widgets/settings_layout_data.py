@@ -1,8 +1,8 @@
 from app.ui.widgets.actions import control_actions
 import cv2
-from app.helpers.typing_helper import LayoutDictTypes
+from typing import Any
 
-SETTINGS_LAYOUT_DATA: LayoutDictTypes = {
+SETTINGS_LAYOUT_DATA: Any = {  # noqa: F811
     "Appearance": {
         "ThemeSelection": {
             "level": 1,

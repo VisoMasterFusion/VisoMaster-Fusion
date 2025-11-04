@@ -1,4 +1,5 @@
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, cast
+
 import copy
 from functools import partial
 import os
@@ -11,6 +12,8 @@ import numpy
 from PIL import Image
 from PySide6 import QtGui, QtWidgets, QtCore
 
+from app.helpers.typing_helper import ControlTypes, FacesParametersTypes
+
 if TYPE_CHECKING:
     from app.ui.main_ui import MainWindow
 import app.helpers.miscellaneous as misc_helpers
@@ -18,6 +21,7 @@ from app.ui.widgets.actions import common_actions as common_widget_actions
 from app.ui.widgets.actions import graphics_view_actions
 import app.ui.widgets.actions.layout_actions as layout_actions
 from app.ui.widgets.actions import card_actions
+from app.ui.widgets import widget_components
 
 
 def set_up_video_seek_line_edit(main_window: "MainWindow"):
@@ -165,7 +169,12 @@ def set_up_video_seek_slider(main_window: "MainWindow"):
 
 
 def add_video_slider_marker(main_window: "MainWindow"):
-    if main_window.selected_video_button.file_type != "video":
+    if (
+        not isinstance(
+            main_window.selected_video_button, widget_components.TargetMediaCardButton
+        )
+        or main_window.selected_video_button.file_type != "video"
+    ):
         common_widget_actions.create_and_show_messagebox(
             main_window,
             "Markers Not Available",
@@ -201,7 +210,9 @@ def add_video_slider_marker(main_window: "MainWindow"):
 def show_add_marker_menu(main_window: "MainWindow"):
     """Shows a context menu for adding different types of markers."""
     if (
-        not main_window.selected_video_button
+        not isinstance(
+            main_window.selected_video_button, widget_components.TargetMediaCardButton
+        )
         or main_window.selected_video_button.file_type != "video"
     ):
         common_widget_actions.create_and_show_messagebox(
@@ -303,7 +314,9 @@ def set_job_end_frame(main_window: "MainWindow"):
 
 def remove_video_slider_marker(main_window: "MainWindow"):
     if (
-        not main_window.selected_video_button
+        not isinstance(
+            main_window.selected_video_button, widget_components.TargetMediaCardButton
+        )
         or main_window.selected_video_button.file_type != "video"
     ):
         common_widget_actions.create_and_show_messagebox(
@@ -317,7 +330,6 @@ def remove_video_slider_marker(main_window: "MainWindow"):
     current_position = int(main_window.videoSeekSlider.value())
     pair_removed = False
 
-    new_marker_pairs = []
     removed_pair_indices = []
     for i, (start_frame, end_frame) in enumerate(main_window.job_marker_pairs):
         if start_frame == current_position or end_frame == current_position:
@@ -428,10 +440,10 @@ def remove_all_markers(main_window: "MainWindow"):
     standard_markers_positions = list(main_window.markers.keys())
     for marker_position in standard_markers_positions:
         remove_marker(main_window, marker_position)
+    main_window.markers.clear()
     if main_window.job_marker_pairs:
         print("Clearing job marker pairs.")
         main_window.job_marker_pairs.clear()
-        main_window.videoSeekSlider.update()
 
 
 def advance_video_slider_by_n_frames(main_window: "MainWindow", n=30):
@@ -459,7 +471,7 @@ def rewind_video_slider_by_n_frames(main_window: "MainWindow", n=30):
 def delete_all_markers(main_window: "MainWindow"):
     main_window.videoSeekSlider.markers = set()
     main_window.videoSeekSlider.update()
-    main_window.markers = {}
+    main_window.markers.clear()
 
 
 def view_fullscreen(main_window: "MainWindow"):
@@ -636,7 +648,7 @@ def record_video(main_window: "MainWindow", checked: bool):
             main_window.buttonMediaRecord.blockSignals(False)
             set_record_button_icon_to_stop(main_window)
             return
-        if not main_window.control.get("OutputMediaFolder", "").strip():
+        if not str(main_window.control.get("OutputMediaFolder", "")).strip():
             common_widget_actions.create_and_show_messagebox(
                 main_window,
                 "No Output Folder Selected",
@@ -844,18 +856,23 @@ def update_parameters_and_control_from_marker(
     marker_data = main_window.markers.get(new_position)
     if marker_data:
         # Load parameters from the marker as a base
-        loaded_marker_params = copy.deepcopy(marker_data["parameters"])
+        loaded_marker_params: FacesParametersTypes = copy.deepcopy(
+            marker_data["parameters"]
+        )
         main_window.parameters = loaded_marker_params
         active_target_face_ids = list(
             main_window.target_faces.keys()
         )  # Get current face IDs
         for face_id_key in active_target_face_ids:
-            # common_actions.create_parameter_dict_for_face_id handles if face_id already exists
+            # common_actions.create_parameter_dict_for_face_id handles if face_id already.
             common_widget_actions.create_parameter_dict_for_face_id(
-                main_window, face_id_key
+                main_window, str(face_id_key)
             )
         # Update control settings
-        main_window.control.update(marker_data["control"].copy())
+        if "control" in marker_data:
+            control_data = marker_data["control"]
+            if isinstance(control_data, dict):
+                main_window.control.update(cast(ControlTypes, control_data).copy())
 
 
 def update_widget_values_from_markers(main_window: "MainWindow", new_position: int):
@@ -871,12 +888,12 @@ def update_widget_values_from_markers(main_window: "MainWindow", new_position: i
 
 def on_slider_moved(main_window: "MainWindow"):
     # print("Called on_slider_moved()")
-    position = main_window.videoSeekSlider.value()
+    main_window.videoSeekSlider.value()
     # print(f"\nSlider Moved. position: {position}\n")
 
 
 def on_slider_pressed(main_window: "MainWindow"):
-    position = main_window.videoSeekSlider.value()
+    main_window.videoSeekSlider.value()
     # print(f"\nSlider Pressed. position: {position}\n")
 
 
@@ -884,7 +901,7 @@ def on_slider_pressed(main_window: "MainWindow"):
 def on_slider_released(main_window: "MainWindow"):
     # print("Called on_slider_released()")
 
-    new_position = main_window.videoSeekSlider.value()
+    main_window.videoSeekSlider.value()
     # print(f"\nSlider released. New position: {new_position}\n")
     # Perform the update to the new frame
     video_processor = main_window.video_processor
@@ -924,7 +941,7 @@ def save_current_frame_to_file(main_window: "MainWindow"):
     if isinstance(frame, numpy.ndarray):
         save_filename = misc_helpers.get_output_file_path(
             main_window.video_processor.media_path,
-            main_window.control["OutputMediaFolder"],
+            str(main_window.control["OutputMediaFolder"]),
             media_type=image_format,
         )
         if save_filename:
@@ -994,7 +1011,8 @@ def process_batch_images(main_window: "MainWindow", process_all_faces: bool):
     # We need a copy of the current UI parameters (for 'all faces' mode)
     saved_current_parameters = None
     if process_all_faces:
-        saved_current_parameters = main_window.current_widget_parameters.copy()
+        if main_window.current_widget_parameters is not None:
+            saved_current_parameters = main_window.current_widget_parameters.copy()
 
     # Get the currently selected source faces and embeddings (for both modes)
     saved_input_faces = [
@@ -1111,9 +1129,10 @@ def process_batch_images(main_window: "MainWindow", process_all_faces: bool):
                     # 7d. Apply the saved configuration to ALL found faces
                     for target_face in main_window.target_faces.values():
                         # Apply UI parameters (masks, filters, etc.)
-                        main_window.parameters[target_face.face_id] = (
-                            saved_current_parameters.copy()
-                        )
+                        if saved_current_parameters:
+                            main_window.parameters[target_face.face_id] = (
+                                saved_current_parameters.copy()
+                            )
 
                         # Assign saved source faces
                         for input_face in saved_input_faces:
@@ -1153,7 +1172,7 @@ def process_batch_images(main_window: "MainWindow", process_all_faces: bool):
                     image_format = "jpegimage"
                 save_filename = misc_helpers.get_output_file_path(
                     image_path,
-                    main_window.control["OutputMediaFolder"],
+                    str(main_window.control["OutputMediaFolder"]),
                     media_type=image_format,  # Use jpeg for batch
                 )
 

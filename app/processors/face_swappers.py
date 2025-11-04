@@ -349,6 +349,23 @@ class FaceSwappers:
         model.run_with_iobinding(io_binding)
 
     def calc_inswapper_latent(self, source_embedding):
+        if (
+            not hasattr(self.models_processor, "emap")
+            or not isinstance(self.models_processor.emap, np.ndarray)
+            or self.models_processor.emap.size == 0
+        ):
+            print("emap not found, loading Inswapper128 to get it.")
+            self.models_processor.load_model("Inswapper128")
+
+        if (
+            not hasattr(self.models_processor, "emap")
+            or not isinstance(self.models_processor.emap, np.ndarray)
+            or self.models_processor.emap.size == 0
+        ):
+            print("ERROR: emap could not be loaded for latent calculation.")
+            n_e = source_embedding / l2norm(source_embedding)
+            return n_e.reshape((1, -1))
+
         n_e = source_embedding / l2norm(source_embedding)
         latent = n_e.reshape((1, -1))
         latent = np.dot(latent, self.models_processor.emap)
@@ -399,6 +416,23 @@ class FaceSwappers:
         return latent
 
     def calc_swapper_latent_iss(self, source_embedding, version="A"):
+        if (
+            not hasattr(self.models_processor, "emap")
+            or not isinstance(self.models_processor.emap, np.ndarray)
+            or self.models_processor.emap.size == 0
+        ):
+            print("emap not found, loading Inswapper128 to get it.")
+            self.models_processor.load_model("Inswapper128")
+
+        if (
+            not hasattr(self.models_processor, "emap")
+            or not isinstance(self.models_processor.emap, np.ndarray)
+            or self.models_processor.emap.size == 0
+        ):
+            print("ERROR: emap could not be loaded for latent calculation.")
+            n_e = source_embedding / l2norm(source_embedding)
+            return n_e.reshape((1, -1))
+
         n_e = source_embedding / l2norm(source_embedding)
         latent = n_e.reshape((1, -1))
         latent = np.dot(latent, self.models_processor.emap)

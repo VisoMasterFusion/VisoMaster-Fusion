@@ -1499,11 +1499,11 @@ def parse_rect_from_landmark(
     )
 
     uy = pt2[1] - pt2[0]
-    l = np.linalg.norm(uy)
-    if l <= 1e-3:
+    norm_uy = np.linalg.norm(uy)
+    if norm_uy <= 1e-3:
         uy = np.array([0, 1], dtype=np.float32)
     else:
-        uy /= l
+        uy /= norm_uy
     ux = np.array((uy[1], -uy[0]), dtype=np.float32)
 
     # the rotation degree of the x-axis, the clockwise is positive, the counterclockwise is negative (image coordinate system)
@@ -2906,6 +2906,7 @@ def invertAffineTransform_t(M):
 
 
 def get_face_orientation_t(face_size, lmk):
+    global arcface_src_cuda
     assert lmk.shape == (5, 2), "lmk deve essere un tensore di forma (5, 2)"
     device = lmk.device
 

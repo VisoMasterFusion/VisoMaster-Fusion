@@ -1,6 +1,5 @@
-import os
-import sys
 import cv2
+from typing import Dict, Any
 import numpy as np
 import torch
 import torch.nn.functional as F
@@ -20,7 +19,7 @@ class Equirectangular:
         self._img_tensor_cxhxw_rgb_float = img_tensor_cxhxw_rgb_uint8.float() / 255.0 # Normalize to [0,1]
         self.device = img_tensor_cxhxw_rgb_uint8.device
         self._channels, self._height, self._width = self._img_tensor_cxhxw_rgb_float.shape
-        self._persp_cache = {}
+        self._persp_cache: Dict[Any, Any] = {}
 
     def GetPerspective(self, FOV: float, THETA: float, PHI: float, height: int, width: int) -> torch.Tensor:
         #

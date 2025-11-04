@@ -2,11 +2,11 @@ import json
 from pathlib import Path
 import copy
 from functools import partial
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Optional, Dict, Any, cast, TypedDict
 import os
 import shutil
 import time
-from PySide6.QtCore import QThread, Signal, Slot, QMetaObject, Qt
+from PySide6.QtCore import QThread, Signal, Slot, QMetaObject, Qt, QEventLoop
 from PySide6 import QtWidgets
 from PySide6.QtWidgets import QMessageBox
 import numpy as np
@@ -29,6 +29,13 @@ if TYPE_CHECKING:
     from app.ui.main_ui import MainWindow
 
 
+# --- TypedDict for MasterData ---
+class MasterData(TypedDict):
+    target_medias_data: list[dict[str, Any]]
+    input_faces_data: dict[str, dict[str, str]]
+    embeddings_data: dict[str, dict[str, Any]]
+
+
 # --- Constants ---
 
 jobs_dir = os.path.join(os.getcwd(), "jobs")
@@ -39,12 +46,12 @@ os.makedirs(jobs_dir, exist_ok=True)  # Ensure the directory exists
 
 def convert_parameters_to_job_type(
     main_window: "MainWindow", parameters: dict | ParametersTypes, convert_type: type
-) -> dict | ParametersTypes:
+) -> Any:
     """
     Converts a parameter object to the specified type (dict or ParametersDict).
     Useful for JSON serialization (to dict) and deserialization (to ParametersDict).
     """
-    if convert_type == dict:
+    if convert_type is dict:
         if isinstance(parameters, misc_helpers.ParametersDict):
             # Convert ParametersDict to a plain dict for JSON saving
             return parameters.data.copy()
@@ -61,7 +68,7 @@ def convert_parameters_to_job_type(
             if isinstance(parameters, dict):
                 # Convert a plain dict back to ParametersDict after loading
                 return misc_helpers.ParametersDict(
-                    parameters, main_window.default_parameters
+                    parameters, main_window.default_parameters.data
                 )
             else:
                 print(
@@ -70,7 +77,7 @@ def convert_parameters_to_job_type(
                 return parameters
         else:
             # Already a ParametersDict, return it
-            return parameters
+            return cast(ParametersTypes, parameters)
     else:
         print(
             f"[WARN] Invalid convert_type {convert_type} specified in convert_parameters_to_job_type."
@@ -81,13 +88,16 @@ def convert_parameters_to_job_type(
 def convert_markers_to_job_type(
     main_window: "MainWindow",
     markers: MarkerTypes,
-    convert_type: dict | misc_helpers.ParametersDict,
+    convert_type: type,
 ) -> MarkerTypes:
     """
     Recursively converts parameter dictionaries within a markers object
     to the specified type (dict or ParametersDict).
     """
-    for _, marker_data in markers.items():
+    # Create a deep copy to avoid modifying the original markers during conversion
+    converted_markers = copy.deepcopy(markers)
+
+    for marker_position, marker_data in converted_markers.items():
         # Convert parameters for each face_id within the marker
         if "parameters" in marker_data and isinstance(marker_data["parameters"], dict):
             for target_face_id, target_parameters in marker_data["parameters"].items():
@@ -102,7 +112,11 @@ def convert_markers_to_job_type(
             marker_data["control"] = convert_parameters_to_job_type(
                 main_window, marker_data["control"], convert_type
             )
-    return markers
+
+    if convert_type is dict:
+        return converted_markers
+    else:
+        return cast(MarkerTypes, converted_markers)
 
 
 # --- Job File Management ---
@@ -112,7 +126,7 @@ def save_job(
     main_window: "MainWindow",
     job_name: str,
     use_job_name_for_output: bool = True,
-    output_file_name: str = None,
+    output_file_name: Optional[str] = None,
 ):
     """
     Saves the current workspace as a job JSON file in the 'jobs' directory.
@@ -317,7 +331,11 @@ def _load_job_input_faces(main_window: "MainWindow", data: dict):
         else ([], [])
     )
 
-    # Create the worker, but DO NOT start it yet.
+    if not input_media_paths:
+        main_window.input_faces_loader_worker = False
+        return
+
+    # Create the worker and run it to load the faces.
     main_window.input_faces_loader_worker = ui_workers.InputFacesLoaderWorker(
         main_window=main_window,
         folder_name=False,
@@ -327,14 +345,11 @@ def _load_job_input_faces(main_window: "MainWindow", data: dict):
     main_window.input_faces_loader_worker.thumbnail_ready.connect(
         partial(list_view_actions.add_media_thumbnail_to_source_faces_list, main_window)
     )
-    # main_window.input_faces_loader_worker.finished.connect(
-    #     partial(common_widget_actions.refresh_frame, main_window)
-    # )
-    # main_window.input_faces_loader_worker.files_list = list(
-    #     main_window.input_faces_loader_worker.files_list
-    # )
-    # # .run() is synchronous, ensuring faces are loaded before proceeding.
-    # main_window.input_faces_loader_worker.run()
+    main_window.input_faces_loader_worker.finished.connect(
+        partial(common_widget_actions.refresh_frame, main_window)
+    )
+    # .start() is asynchronous
+    main_window.input_faces_loader_worker.start()
 
 
 def _load_job_embeddings(main_window: "MainWindow", data: dict):
@@ -357,7 +372,7 @@ def _load_job_target_faces_and_params(main_window: "MainWindow", data: dict):
     """Loads detected target faces, their parameters, and assignments."""
     loaded_target_faces_data = data.get("target_faces_data", {})
     for face_id_str, target_face_data in loaded_target_faces_data.items():
-        face_id = int(face_id_str)
+        face_id = face_id_str  # Use string ID directly
         # Convert list back to numpy array
         cropped_face = np.array(target_face_data["cropped_face"]).astype("uint8")
         pixmap = common_widget_actions.get_pixmap_from_frame(main_window, cropped_face)
@@ -372,10 +387,15 @@ def _load_job_target_faces_and_params(main_window: "MainWindow", data: dict):
         )
 
         # Convert the loaded parameters dict into a ParametersDict object
-        main_window.parameters[face_id] = convert_parameters_to_job_type(
-            main_window,
-            target_face_data.get("parameters", {}),
-            misc_helpers.ParametersDict,
+        cast(dict[str, ParametersTypes], main_window.parameters)[cast(str, face_id)] = (
+            cast(
+                ParametersTypes,
+                convert_parameters_to_job_type(
+                    main_window,
+                    target_face_data.get("parameters", {}),
+                    misc_helpers.ParametersDict,
+                ),
+            )
         )
 
         # Load assigned faces/embeddings into the created target_face object
@@ -436,6 +456,13 @@ def _load_job_controls_and_state(
     main_window.last_input_media_folder_path = data.get(
         "last_input_media_folder_path", ""
     )
+    if main_window.last_input_media_folder_path:
+        main_window.labelInputFacesPath.setText(
+            misc_helpers.truncate_text(main_window.last_input_media_folder_path)
+        )
+        main_window.labelInputFacesPath.setToolTip(
+            main_window.last_input_media_folder_path
+        )
     main_window.loaded_embedding_filename = data.get("loaded_embedding_filename", "")
 
     # Update all control widgets in the "Settings" tab
@@ -534,7 +561,8 @@ def _validate_job_files_exist(data: dict) -> tuple[bool, str | None]:
                 skip_reason = f"Required input face ID {face_id} not found in job data."
                 break
 
-            face_path = all_input_faces_in_job[face_id].get("media_path")
+            face_data: Dict[str, str] = all_input_faces_in_job[face_id]
+            face_path = cast(Optional[str], face_data.get("media_path"))
             if not face_path:
                 is_job_valid = False
                 skip_reason = f"Input face ID {face_id} has no media path."
@@ -805,6 +833,13 @@ def _restore_workspace_from_snapshot(main_window: "MainWindow", data: dict):
         progress_dialog.update_progress(3, total_steps, steps[2])
         _load_job_input_faces(main_window, data)
 
+        # If a worker was started, wait for it to finish before proceeding.
+        worker = main_window.input_faces_loader_worker
+        if isinstance(worker, ui_workers.InputFacesLoaderWorker) and worker.isRunning():
+            loop = QEventLoop()
+            worker.finished.connect(loop.quit)
+            loop.exec()  # Block until the worker's finished signal is emitted
+
         progress_dialog.update_progress(4, total_steps, steps[3])
         _load_job_embeddings(main_window, data)
 
@@ -927,7 +962,7 @@ def _serialize_job_data(main_window: "MainWindow") -> dict:
     for face_id, target_face in main_window.target_faces.items():
         params_obj = main_window.parameters.get(face_id)
         parameters_to_save = convert_parameters_to_job_type(
-            main_window, params_obj, dict
+            main_window, params_obj if params_obj is not None else {}, dict
         )
 
         target_faces_data[face_id] = {
@@ -972,9 +1007,16 @@ def _serialize_job_data(main_window: "MainWindow") -> dict:
     )
 
     # Convert markers and controls to plain dicts for JSON
-    markers_to_save = convert_markers_to_job_type(
+    markers_to_save_typed = convert_markers_to_job_type(
         main_window, copy.deepcopy(main_window.markers), dict
     )
+    # Manually convert MarkerTypes to a plain dict for JSON serialization
+    markers_to_save = {}
+    for marker_pos, marker_data in markers_to_save_typed.items():
+        markers_to_save[marker_pos] = {
+            "parameters": marker_data["parameters"],
+            "control": marker_data["control"],
+        }
     control_to_save = convert_parameters_to_job_type(
         main_window, main_window.control, dict
     )
@@ -1001,7 +1043,7 @@ def save_job_workspace(
     main_window: "MainWindow",
     job_name_path: str,
     use_job_name_for_output: bool = True,
-    output_file_name: str = None,
+    output_file_name: Optional[str] = None,
 ):
     """
     Main function to save the current workspace to a job file.
@@ -1035,7 +1077,6 @@ def update_job_manager_buttons(main_window: "MainWindow"):
     selected_count = len(job_list.selectedItems()) if job_list else 0
     job_count = job_list.count() if job_list else 0
 
-    enable_on_selection = selected_count > 0
     enable_on_multi_selection = selected_count > 0
     enable_on_single_selection = selected_count == 1
 
@@ -1111,7 +1152,7 @@ def prompt_job_name(main_window: "MainWindow"):
         if reply == QMessageBox.No:
             return
 
-    output_folder = main_window.control.get("OutputMediaFolder", "").strip()
+    output_folder = str(main_window.control.get("OutputMediaFolder", "")).strip()
     if not output_folder:
         QMessageBox.warning(
             main_window,
@@ -1188,8 +1229,8 @@ def connect_job_manager_signals(main_window: "MainWindow"):
         main_window.deleteJobButton.clicked.connect(lambda: delete_job(main_window))
     if main_window.loadJobButton:
         main_window.loadJobButton.clicked.connect(
-            lambda: load_job(main_window)
-        )  # Uses heavy load
+            lambda: load_job(main_window)  # Uses heavy load
+        )
     if main_window.buttonProcessAll:
         main_window.buttonProcessAll.clicked.connect(
             lambda: start_processing_all_jobs(main_window)
@@ -1308,7 +1349,11 @@ def load_job_settings(main_window: "MainWindow", job_data: dict):
         # 1. Select the media FIRST. This triggers the (asynchronous) loading
         # of the first frame via process_current_frame.
         selected_media_id = job_data.get("selected_media_id", False)
-        if selected_media_id and main_window.target_videos.get(selected_media_id):
+        if (
+            selected_media_id
+            and isinstance(selected_media_id, str)
+            and main_window.target_videos.get(selected_media_id)
+        ):
             print(f"[DEBUG] (Main Thread) Clicking target media: {selected_media_id}")
             main_window.target_videos[selected_media_id].click()
         else:
@@ -1349,6 +1394,8 @@ def load_job_settings(main_window: "MainWindow", job_data: dict):
             f"An error occurred while loading settings for job:\n{e}",
         )
     finally:
+        # Allow pending UI events to process before signaling completion
+        QtWidgets.QApplication.processEvents()
         # Use the instance event from the job_processor
         if main_window.job_processor:
             main_window.job_processor.job_settings_loaded_event.set()
@@ -1406,7 +1453,7 @@ def handle_batch_completion(main_window: "MainWindow"):
             QMessageBox.critical(
                 main_window,
                 "Restore Error",
-                f"Failed to restore workspace after batch: {e}\n"
+                f"Failed to restore workspace: {e}\n"
                 "The UI may be in an unstable state. Please restart.",
             )
         finally:
@@ -1467,7 +1514,9 @@ def start_processing_all_jobs(main_window: "MainWindow"):
 
 
 def start_job_processor(main_window: "MainWindow", jobs_to_process: list[str] | None):
-    """Helper function to create, connect, and start the JobProcessor thread."""
+    """
+    Helper function to create, connect, and start the JobProcessor thread.
+    """
 
     # Ensure no other processor is running
     if main_window.job_processor and main_window.job_processor.isRunning():
@@ -1552,7 +1601,9 @@ class JobProcessor(QThread):
     JOB_SETTINGS_CLEAR_TIMEOUT = 30  # Max time to clear a single job's settings
 
     def __init__(
-        self, main_window: "MainWindow", jobs_to_process: list[str] | None = None
+        self,
+        main_window: "MainWindow",
+        jobs_to_process: Optional[list[str]] = None,
     ):
         """
         Initializes the processor.
@@ -1573,7 +1624,7 @@ class JobProcessor(QThread):
         self.batch_succeeded = (
             False  # Flag to track if the batch finished without errors
         )
-        self.skipped_jobs = []  # Store jobs that fail pre-flight checks
+        self.skipped_jobs: list[str] = []  # Store jobs that fail pre-flight checks
 
         if not os.path.exists(self.completed_dir):
             os.makedirs(self.completed_dir)
@@ -1644,7 +1695,7 @@ class JobProcessor(QThread):
             self.job_failed_signal.emit(job_name, f"Failed to load job file: {e}")
             return None
 
-    def _analyze_job_batch(self) -> dict | None:
+    def _analyze_job_batch(self) -> Optional[MasterData]:
         """
         (SMART ANALYSIS & VALIDATION) Reads all job JSONs in the batch.
         1. Validates each job's files using the central validation function.
@@ -1654,7 +1705,7 @@ class JobProcessor(QThread):
         print(
             "[DEBUG] (JobProcessor) Performing SMART analysis and VALIDATION of job batch..."
         )
-        master_data = {
+        master_data: MasterData = {
             "target_medias_data": [],
             "input_faces_data": {},
             "embeddings_data": {},
@@ -1710,7 +1761,9 @@ class JobProcessor(QThread):
                 )
 
             # Collect input faces
-            all_input_faces_in_job = data.get("input_faces_data", {})
+            all_input_faces_in_job: Dict[str, Dict[str, str]] = data.get(
+                "input_faces_data", {}
+            )
             for face_id in required_face_ids:
                 if face_id not in seen_face_ids:
                     # We know face_id exists in all_input_faces_in_job from validation

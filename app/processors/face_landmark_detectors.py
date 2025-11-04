@@ -34,10 +34,10 @@ class FaceLandmarkDetectors:
                                                 which handles model loading and device management.
         """
         self.models_processor = models_processor
-        self.active_landmark_models = set()
+        self.active_landmark_models: set[str] = set()
         # Caches for model-specific data to avoid re-computation.
-        self.landmark_5_anchors = []
-        self.landmark_5_scale1_cache = {}
+        self.landmark_5_anchors: list = []
+        self.landmark_5_scale1_cache: Dict[tuple, torch.Tensor] = {}
         self.landmark_5_priors = None
 
         # A dictionary to map a string identifier (e.g., '68') to the corresponding
@@ -269,7 +269,7 @@ class FaceLandmarkDetectors:
 
     def detect_face_landmark_5(self, img, bbox, det_kpss, from_points=False):
         # This model's pre-processing is unique, so it doesn't use the `_prepare_crop` helper.
-        if from_points == False:
+        if not from_points:
             w, h = (bbox[2] - bbox[0]), (bbox[3] - bbox[1])
             center = (bbox[2] + bbox[0]) / 2, (bbox[3] + bbox[1]) / 2
             _scale = 512.0 / (max(w, h) * 1.5)

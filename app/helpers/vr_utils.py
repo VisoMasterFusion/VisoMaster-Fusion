@@ -2,6 +2,7 @@ import numpy as np
 import torch
 import torch.nn.functional as F
 from torchvision import transforms
+from typing import Dict
 
 
 # Assuming Equirec2Perspec_vr and Perspec2Equirec_vr are in app.processors.external
@@ -91,7 +92,7 @@ class PerspectiveConverter:
             self.base_equirect_tensor_cxhxw_rgb_uint8.shape
         )
         self.sobel_x_kernel, self.sobel_y_kernel = _get_sobel_kernels(self.device)
-        self._blur_cache = {}
+        self._blur_cache: Dict[tuple, torch.nn.Module] = {}
 
     def _apply_feathering(
         self,

@@ -226,7 +226,8 @@ class FaceEditors:
 
                 # 3. Call the asynchronous, zero-copy inference method from TensorRTPredictor.
                 #    This function queues the inference on the CUDA stream and returns immediately.
-                motion_extractor_model.predict_async(bindings, current_stream)
+                if motion_extractor_model:
+                    motion_extractor_model.predict_async(bindings, current_stream)
 
                 # The results are now available in the pre-allocated output tensors (pitch, yaw, etc.).
                 kp_info = {
@@ -352,9 +353,10 @@ class FaceEditors:
                 bindings = {"img": I_s, "output": output}
                 current_stream = torch.cuda.current_stream()
                 # Run asynchronous inference.
-                appearance_feature_extractor_model.predict_async(
-                    bindings, current_stream
-                )
+                if appearance_feature_extractor_model:
+                    appearance_feature_extractor_model.predict_async(
+                        bindings, current_stream
+                    )
 
             # --- ONNX Runtime Execution Path ---
             else:
@@ -425,7 +427,8 @@ class FaceEditors:
                 ).contiguous()
                 bindings = {"input": feat_eye, "output": delta}
                 current_stream = torch.cuda.current_stream()
-                stitching_eye_model.predict_async(bindings, current_stream)
+                if stitching_eye_model:
+                    stitching_eye_model.predict_async(bindings, current_stream)
 
             # --- ONNX Runtime Execution Path ---
             else:
@@ -492,7 +495,8 @@ class FaceEditors:
                 ).contiguous()
                 bindings = {"input": feat_lip, "output": delta}
                 current_stream = torch.cuda.current_stream()
-                stitching_lip_model.predict_async(bindings, current_stream)
+                if stitching_lip_model:
+                    stitching_lip_model.predict_async(bindings, current_stream)
 
             # --- ONNX Runtime Execution Path ---
             else:
@@ -558,7 +562,8 @@ class FaceEditors:
                 ).contiguous()
                 bindings = {"input": feat_stiching, "output": delta}
                 current_stream = torch.cuda.current_stream()
-                stitching_model.predict_async(bindings, current_stream)
+                if stitching_model:
+                    stitching_model.predict_async(bindings, current_stream)
 
             # --- ONNX Runtime Execution Path ---
             else:
@@ -706,7 +711,8 @@ class FaceEditors:
                     "out": out,
                 }
                 current_stream = torch.cuda.current_stream()
-                warping_spade_model.predict_async(bindings, current_stream)
+                if warping_spade_model:
+                    warping_spade_model.predict_async(bindings, current_stream)
 
             # --- ONNX Runtime Execution Path ---
             else:

@@ -28,7 +28,7 @@ output_filename = (
 )
 
 recognizer_model = args.recognizer_model
-temp0 = []
+temp0: list = []
 new_embed_list = []
 with open(input_filename, "r") as embedfile:
     old_data = embedfile.read().splitlines()
@@ -36,10 +36,10 @@ with open(input_filename, "r") as embedfile:
     for i in range(0, len(old_data), 513):
         new_embed_data = {
             "name": old_data[i][6:],
-            "embedding_store": {recognizer_model: old_data[i + 1 : i + 513]},
+            "embedding_store": {
+                recognizer_model: [float(val) for val in old_data[i + 1 : i + 513]]
+            },
         }
-        for i, val in enumerate(new_embed_data["embedding_store"][recognizer_model]):
-            new_embed_data["embedding_store"][recognizer_model][i] = float(val)
         new_embed_list.append(new_embed_data)
 
 with open(output_filename, "w") as embed_file:

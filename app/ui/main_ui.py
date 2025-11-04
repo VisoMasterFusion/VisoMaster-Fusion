@@ -1,4 +1,4 @@
-from typing import Dict
+from typing import Dict, Optional
 from pathlib import Path
 import os
 from functools import partial
@@ -54,7 +54,7 @@ ParametersWidgetTypes = Dict[
     | widget_components.SelectionBox
     | widget_components.ParameterDecimalSlider
     | widget_components.ParameterSlider
-    | widget_components.ParameterText,
+    | widget_components.ParameterLineEdit,
 ]
 
 
@@ -84,19 +84,21 @@ class MainWindow(QtWidgets.QMainWindow, Ui_MainWindow):
         self.models_processor.hide_build_dialog.connect(self.hide_build_dialog)
 
         self.target_videos: Dict[
-            int, widget_components.TargetMediaCardButton
+            str, widget_components.TargetMediaCardButton
         ] = {}  # Contains button objects of target videos (Set as list instead of single video to support batch processing in future)
         self.target_faces: Dict[
-            int, widget_components.TargetFaceCardButton
+            str, widget_components.TargetFaceCardButton
         ] = {}  # Contains button objects of target faces
         self.input_faces: Dict[
-            int, widget_components.InputFaceCardButton
+            str, widget_components.InputFaceCardButton
         ] = {}  # Contains button objects of source faces (images)
-        self.merged_embeddings: Dict[int, widget_components.EmbeddingCardButton] = {}
-        self.cur_selected_target_face_button: widget_components.TargetFaceCardButton = (
-            False
+        self.merged_embeddings: Dict[str, widget_components.EmbeddingCardButton] = {}
+        self.cur_selected_target_face_button: Optional[
+            widget_components.TargetFaceCardButton
+        ] = None
+        self.selected_video_button: widget_components.TargetMediaCardButton | None = (
+            None
         )
-        self.selected_video_button: widget_components.TargetMediaCardButton = False
         self.selected_target_face_id = False
         self._rightFacesStrip = None  # Container-Widget
         self._rightFacesButtonsRow = None  # HLayout für Buttons
@@ -108,7 +110,7 @@ class MainWindow(QtWidgets.QMainWindow, Ui_MainWindow):
         self.dfm_model_manager = DFMModelManager()
 
         self.parameters: FacesParametersTypes = {}
-        self.default_parameters: ParametersTypes = {}
+        self.default_parameters: ParametersTypes = ParametersDict({}, {})
         self.copied_parameters: ParametersTypes = {}
         self.current_widget_parameters: ParametersTypes = {}
 

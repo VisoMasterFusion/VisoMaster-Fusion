@@ -601,8 +601,8 @@ class VectorQuantizer2(nn.Module):
 
     def forward(self, z, temp=None, rescale_logits=False, return_logits=False):
         assert temp is None or temp == 1.0, "Only for interface compatible with Gumbel"
-        assert rescale_logits == False, "Only for interface compatible with Gumbel"
-        assert return_logits == False, "Only for interface compatible with Gumbel"
+        assert not rescale_logits, "Only for interface compatible with Gumbel"
+        assert not return_logits, "Only for interface compatible with Gumbel"
         # reshape z -> (batch, height, width, channel) and flatten
         z = rearrange(z, "b c h w -> b h w c").contiguous()
         z_flattened = z.view(-1, self.e_dim)

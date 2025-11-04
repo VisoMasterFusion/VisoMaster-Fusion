@@ -25,7 +25,7 @@ class FaceDetectors:
 
     def __init__(self, models_processor: "ModelsProcessor"):
         self.models_processor = models_processor
-        self.center_cache = {}
+        self.center_cache: Dict[tuple, np.ndarray] = {}
         self.current_detector_model = None
 
         # This map links a detector name (from the UI) to its model file and processing function.
@@ -223,6 +223,11 @@ class FaceDetectors:
                 # (low offset_dist_squared).
                 values = area - offset_dist_squared * 2.0
                 bindex = torch.argsort(values, descending=True)[:max_num]
+                det_boxes, det_kpss, det_scores = (
+                    det_boxes[bindex],
+                    det_kpss[bindex],
+                    det_scores[bindex],
+                )
             else:
                 bindex = torch.arange(
                     det_boxes.shape[0], device=self.models_processor.device

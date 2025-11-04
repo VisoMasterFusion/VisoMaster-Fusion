@@ -20,7 +20,7 @@ class FaceRestorers:
             1024: v2.Resize((1024, 1024), antialias=False),
             2048: v2.Resize((2048, 2048), antialias=False),
         }
-        self._warned_models = set()  # To track warnings
+        self._warned_models: set[str] = set()  # To track warnings
         self.model_map = {
             "GFPGAN-v1.4": "GFPGANv1.4",
             "GFPGAN-1024": "GFPGAN1024",
@@ -111,7 +111,7 @@ class FaceRestorers:
             tform = trans.SimilarityTransform()
             try:
                 tform.estimate(dst, self.models_processor.FFHQ_kps)
-            except:
+            except Exception:
                 return swapped_face_upscaled
             # Transform, scale, and normalize
             temp = v2.functional.affine(
@@ -329,7 +329,7 @@ class FaceRestorers:
         timesteps_tensor: torch.Tensor,
         is_ref_flag_tensor: torch.Tensor,
         use_reference_exclusive_path_globally_tensor: torch.Tensor,
-        kv_tensor_map: Dict[str, Dict[str, torch.Tensor]],
+        kv_tensor_map: Optional[Dict[str, Dict[str, torch.Tensor]]],
         output_unet_tensor: torch.Tensor,
     ):
         """

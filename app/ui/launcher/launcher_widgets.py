@@ -42,15 +42,15 @@ class ToggleSwitch(QtWidgets.QPushButton):
         self._animation.setDuration(200)
         self._animation.setEasingCurve(QtCore.QEasingCurve.OutCubic)
 
-    # Property for animation
-    @QtCore.Property(float)
-    def circle_position(self):
+    def _get_circle_position(self) -> float:
         return self._circle_position
 
-    @circle_position.setter
-    def circle_position(self, pos):
+    def _set_circle_position(self, pos: float) -> None:
         self._circle_position = pos
         self.update()
+
+    # Property for animation
+    circle_position = QtCore.Property(float, _get_circle_position, _set_circle_position)
 
     def paintEvent(self, event):
         p = QtGui.QPainter(self)

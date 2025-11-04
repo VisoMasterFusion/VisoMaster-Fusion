@@ -63,7 +63,7 @@ class VideoProcessor(QObject):
         self.max_display_buffer_size = (
             self.preroll_target * 4
         )  # Max frames allowed "in flight" (queued + being displayed)
-        self.frame_queue = queue.Queue(
+        self.frame_queue: queue.Queue[int] = queue.Queue(
             maxsize=self.max_display_buffer_size
         )  # Holds frame numbers for workers
         self.threads: Dict[
@@ -139,7 +139,9 @@ class VideoProcessor(QObject):
         self.frames_to_display: Dict[
             int, Tuple[QPixmap, numpy.ndarray]
         ] = {}  # Processed video frames
-        self.webcam_frames_to_display = queue.Queue()  # Processed webcam frames
+        self.webcam_frames_to_display: "queue.Queue[Tuple[QPixmap, numpy.ndarray]]" = (
+            queue.Queue()
+        )  # Processed webcam frames
 
         # --- Signal Connections ---
         self.frame_processed_signal.connect(self.store_frame_to_display)
@@ -297,9 +299,8 @@ class VideoProcessor(QObject):
         # Determine the stop condition (control variable)
         # In segment mode, the loop is controlled by 'is_processing_segments'
         # In video mode, the loop is controlled by 'processing'
-        stop_flag_check = (
-            lambda: self.is_processing_segments if is_segment_mode else self.processing
-        )
+        def stop_flag_check():
+            return self.is_processing_segments if is_segment_mode else self.processing
 
         print(
             f"Feeder: Starting video loop (Mode: {'Segment' if is_segment_mode else 'Standard'})."

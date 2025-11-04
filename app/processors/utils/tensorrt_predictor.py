@@ -3,7 +3,7 @@ import torch
 import platform
 from queue import Queue
 from threading import Lock
-from typing import Dict
+from typing import Dict, Optional
 
 try:
     from torch.cuda import nvtx
@@ -101,7 +101,9 @@ class TensorRTPredictor:
 
         # Create a pool of execution contexts. This is a key optimization for multi-threaded
         # applications, as creating contexts is an expensive operation.
-        self.context_pool = Queue(maxsize=self.pool_size)
+        self.context_pool: "Optional[Queue[trt.IExecutionContext]]" = Queue(
+            maxsize=self.pool_size
+        )
         self.lock = Lock()
         for _ in range(self.pool_size):
             # WE NO LONGER PRE-ALLOCATE BUFFERS HERE.
@@ -126,6 +128,11 @@ class TensorRTPredictor:
                                                 The output tensors must be pre-allocated with the correct shape and dtype.
             stream (torch.cuda.Stream): The CUDA stream on which to execute the inference.
         """
+        if self.context_pool is None:
+            raise RuntimeError(
+                "The context pool has been cleaned up and is no longer available."
+            )
+
         # Get a free execution context from the pool. This call will block if the pool is empty
         # until a context is returned by another thread.
         context = self.context_pool.get()
@@ -155,7 +162,8 @@ class TensorRTPredictor:
         finally:
             # CRITICAL: Return the context to the pool so other threads can use it.
             # This is done in a `finally` block to ensure it happens even if errors occur.
-            self.context_pool.put(context)
+            if self.context_pool is not None:
+                self.context_pool.put(context)
 
     def cleanup(self) -> None:
         """

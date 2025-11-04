@@ -196,10 +196,9 @@ class LauncherWindow(QtWidgets.QWidget):
     def _load_checksum_status(self):
         """Compute and compare checksums for dependencies and models."""
         try:
-            from app.processors.models_data import models_list
+            pass
         except Exception as e:
             print(f"[Launcher] Warning: Could not import models_list: {e}")
-            models_list = None
 
         # --- Dependency Check ---
         state = read_checksum_state()

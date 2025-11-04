@@ -1,4 +1,4 @@
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Dict
 
 import torch
 import numpy as np
@@ -19,10 +19,10 @@ _VGG_STD = torch.tensor([0.229, 0.224, 0.225]).view(3, 1, 1)
 class FaceMasks:
     def __init__(self, models_processor: "ModelsProcessor"):
         self.models_processor = models_processor
-        self._morph_kernels = {}
-        self._kernel_cache = {}
-        self._meshgrid_cache = {}
-        self._blur_cache = {}
+        self._morph_kernels: Dict[tuple, torch.Tensor] = {}
+        self._kernel_cache: Dict[str, torch.Tensor] = {}
+        self._meshgrid_cache: Dict[tuple, tuple[torch.Tensor, torch.Tensor]] = {}
+        self._blur_cache: Dict[tuple, transforms.GaussianBlur] = {}
         self.clip_model_loaded = False
 
     def ensure_models_loaded(self):
@@ -393,7 +393,7 @@ class FaceMasks:
         if k is not None:
             return k
         rr = int(r)
-        K = 2 * rr + 1
+
         ys, xs = torch.meshgrid(
             torch.arange(-rr, rr + 1, device=device),
             torch.arange(-rr, rr + 1, device=device),
@@ -1028,16 +1028,15 @@ class FaceMasks:
             #'efficientnetb0_layer4': (1, 80, 128, 128),
         }
 
-        # ### 2) Modell laden (oder aus Cache ziehen) ###
+        # load model from cache
         model_key = feature_layer
         if model_key not in self.models_processor.models:
             # load_model erwartet nun exakt den gleichen string wie in models_data
             self.models_processor.models[model_key] = self.models_processor.load_model(
                 model_key
             )
-        model = self.models_processor.models[model_key]
 
-        # ### 3) Preprocessing (identisch für alle Backbones) ###
+        # 3) Preprocessing
         def preprocess(img):
             img = img.clone().float() / 255.0
             mean = _VGG_MEAN.to(img.device)
@@ -1047,16 +1046,16 @@ class FaceMasks:
         swapped = preprocess(swapped_face)
         original = preprocess(original_face)
 
-        # ### 4) Ausgabe-Puffer in der richtigen Form anlegen ###
+        # 4) Ausgabe-Puffer in der richtigen Form anlegen ###
         shape = feature_shapes[feature_layer]
         outpred = torch.empty(shape, dtype=torch.float32, device=swapped.device)
         outpred2 = torch.empty_like(outpred)
 
-        # ### 5) Onnx-Inferenz ###
+        # 5) Onnx-Inferenz ###
         swapped_feat = self.run_onnx(swapped, outpred, model_key)
         original_feat = self.run_onnx(original, outpred2, model_key)
 
-        # ### 6) Diff + Masking + Remapping wie gehabt ###
+        # 6) Diff + Masking + Remapping wie gehabt ###
         diff_map = torch.abs(swapped_feat - original_feat).mean(dim=1)[0]  # [128,128]
 
         diff_map = diff_map * swap_mask.squeeze(0)

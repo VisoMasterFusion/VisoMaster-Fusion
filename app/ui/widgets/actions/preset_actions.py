@@ -74,9 +74,7 @@ def delete_preset(main_window: "MainWindow", item: "QListWidgetItem"):
     """Rename the selected preset"""
     delete_preset = item.text()
     delete_path = Path("presets") / f"{delete_preset}.json"
-    delete_path = str(delete_path).replace("/", "\\")
     delete_path_ctl = Path("presets") / f"{delete_preset}_ctl.json"
-    delete_path_ctl = str(delete_path_ctl).replace("/", "\\")
 
     try:
         send2trash(delete_path)
@@ -250,8 +248,8 @@ def apply_selected_preset(main_window: "MainWindow"):
             new_params["OutputFolder"] = output_folder
 
         main_window.parameters[main_window.selected_target_face_id] = ParametersDict(
-            new_params, main_window.default_parameters
-        )
+            new_params, main_window.default_parameters.data
+        )  # type: ignore
         if main_window.selected_target_face_id == main_window.selected_target_face_id:
             common_widget_actions.set_widgets_values_using_face_id_parameters(
                 main_window, main_window.selected_target_face_id
@@ -270,8 +268,8 @@ def apply_selected_preset(main_window: "MainWindow"):
                 new_params["OutputFolder"] = current_output
 
         main_window.current_widget_parameters = ParametersDict(
-            new_params, main_window.default_parameters
-        )
+            new_params, main_window.default_parameters.data
+        )  # type: ignore
         common_widget_actions.set_widgets_values_using_face_id_parameters(
             main_window, False
         )

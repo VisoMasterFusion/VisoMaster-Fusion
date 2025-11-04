@@ -1,8 +1,8 @@
-from app.helpers.typing_helper import LayoutDictTypes
+from typing import Any
 import app.ui.widgets.actions.control_actions as control_actions
 
 # Widgets in Face Swap tab are created from this Layout
-SWAPPER_LAYOUT_DATA: LayoutDictTypes = {
+SWAPPER_LAYOUT_DATA: Any = {  # noqa: F811
     "Swapper": {
         "SwapModelSelection": {
             "level": 1,

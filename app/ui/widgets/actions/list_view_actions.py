@@ -1,6 +1,6 @@
 import time
 from functools import partial
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Dict, Type
 import subprocess
 import sys
 import os
@@ -101,34 +101,36 @@ def add_media_thumbnail_to_source_faces_list(
 
 def add_media_thumbnail_button(
     main_window: "MainWindow",
-    buttonClass: "widget_components.CardButton",
+    buttonClass: "Type[widget_components.CardButton]",
     listWidget: QtWidgets.QListWidget,
-    buttons_list: list,
+    buttons_list: Dict,
     pixmap,
     **kwargs,
 ):
     if buttonClass == widget_components.TargetMediaCardButton:
-        constructor_args = (
+        constructor_args = [
             kwargs.get("media_path"),
             kwargs.get("file_type"),
             kwargs.get("media_id"),
-        )
+        ]
         if kwargs.get("is_webcam"):
-            constructor_args += (
-                kwargs.get("is_webcam"),
-                kwargs.get("webcam_index"),
-                kwargs.get("webcam_backend"),
+            constructor_args.extend(
+                [
+                    kwargs.get("is_webcam"),
+                    kwargs.get("webcam_index"),
+                    kwargs.get("webcam_backend"),
+                ]
             )
     elif buttonClass in (
         widget_components.TargetFaceCardButton,
         widget_components.InputFaceCardButton,
     ):
-        constructor_args = (
+        constructor_args = [
             kwargs.get("media_path", ""),
             kwargs.get("cropped_face"),
             kwargs.get("embedding_store"),
             kwargs.get("face_id"),
-        )
+        ]
     if buttonClass == widget_components.TargetMediaCardButton:
         button_size = QtCore.QSize(90, 90)  # Set a fixed size for the buttons
     else:
@@ -212,7 +214,6 @@ def create_and_add_embed_button_to_list(
     inputEmbeddingsList.setFixedHeight(viewport_height)
 
     # Calculate grid dimensions
-    row_height = viewport_height // 3
     col_width = grid_size_with_padding.width()
 
     # Set minimum width for 3 columns and adjust spacing
@@ -239,7 +240,9 @@ def create_and_add_embed_button_to_list(
 
 
 def clear_stop_loading_target_media(main_window: "MainWindow"):
-    if main_window.video_loader_worker:
+    if main_window.video_loader_worker and not isinstance(
+        main_window.video_loader_worker, bool
+    ):
         main_window.video_loader_worker.stop()
         main_window.video_loader_worker.terminate()
         main_window.video_loader_worker = False
@@ -279,7 +282,7 @@ def select_target_medias(
     clear_stop_loading_target_media(main_window)
     card_actions.clear_target_faces(main_window)
 
-    main_window.selected_video_button = False
+    main_window.selected_video_button = None
     main_window.target_videos = {}
 
     main_window.video_loader_worker = ui_workers.TargetMediaLoaderWorker(
@@ -321,12 +324,14 @@ def load_target_webcams(
             if target_video.file_type == "webcam":
                 target_video.remove_target_media_from_list()
                 if target_video == main_window.selected_video_button:
-                    main_window.selected_video_button = False
+                    main_window.selected_video_button = None
         main_window.placeholder_update_signal.emit(main_window.targetVideosList, False)
 
 
 def clear_stop_loading_input_media(main_window: "MainWindow"):
-    if main_window.input_faces_loader_worker:
+    if main_window.input_faces_loader_worker and not isinstance(
+        main_window.input_faces_loader_worker, bool
+    ):
         main_window.input_faces_loader_worker.stop()
         main_window.input_faces_loader_worker.terminate()
         main_window.input_faces_loader_worker = False
@@ -418,8 +423,8 @@ def select_output_media_folder(main_window: "MainWindow"):
 
 
 def open_output_media_folder(main_window: "MainWindow"):
-    folder_name = main_window.control["OutputMediaFolder"]
-    if folder_name is not None:
+    folder_name = main_window.control.get("OutputMediaFolder")
+    if isinstance(folder_name, str) and folder_name:
         if os.path.exists(folder_name):
             # Normalize path
             normalized_path = os.path.normpath(os.path.abspath(folder_name))
