@@ -102,7 +102,9 @@ def _build_trt_engine_worker(onnx_path, trt_path, precision, plugin_path, verbos
         sys.exit(1)  # Signal failure
 
 
-def _probe_onnx_model_worker(model_path, providers_list, trt_options, session_options):
+def _probe_onnx_model_worker(
+    model_path, providers_list, trt_options, session_options_dict
+):
     """
     Worker function to be run in an isolated process to "warm up"
     an ONNX model, especially for the TensorRT provider.
@@ -114,6 +116,14 @@ def _probe_onnx_model_worker(model_path, providers_list, trt_options, session_op
         import sys
         import traceback
         import onnxruntime
+
+        # Create the SessionOptions object *inside* the worker process.
+        session_options = onnxruntime.SessionOptions()
+        if session_options_dict:
+            for key, value in session_options_dict.items():
+                # Use setattr to configure the SessionOptions object from the passed dictionary with 1 single thread for building the engines
+                setattr(session_options, key, value)
+
         import torch
 
         # Reconstruct the providers tuple
@@ -488,9 +498,6 @@ class ModelsProcessor(QtCore.QObject):
                 )
 
                 if os.path.exists(engine_file_path):
-                    print(
-                        f"Cache check: Valid TensorRT cache found for '{model_name}'. Build will be skipped."
-                    )
                     return True
                 else:
                     print(
@@ -526,11 +533,51 @@ class ModelsProcessor(QtCore.QObject):
             if onnx_path.lower().endswith(".onnx"):
                 # Only run the isolated probe if TensorRT is the target provider
                 if is_tensorrt_load:
-                    
-                    # 1. Check cache BEFORE probing
-                    cache_is_valid = self._check_tensorrt_cache(model_name, onnx_path)
-                    
-                    # If no cache exists, run the probe
+                    # Check if engine config file exists...
+                    cache_is_valid = False
+                    try:
+                        cache_dir = "tensorrt-engines"
+                        base_onnx_name = os.path.splitext(os.path.basename(onnx_path))[
+                            0
+                        ]
+                        ctx_file_name = f"{base_onnx_name}_ctx.onnx"
+                        ctx_file_path = os.path.join(cache_dir, ctx_file_name)
+
+                        if os.path.exists(ctx_file_path):
+                            with open(ctx_file_path, "rb") as f:
+                                content = f.read()
+
+                            match = re.search(
+                                b"TensorrtExecutionProvider_.*?\\.engine", content
+                            )
+
+                            if match:
+                                engine_name = match.group(0).decode("utf-8")
+                                engine_subdirectory_name = os.path.basename(cache_dir)
+                                engine_file_path = os.path.join(
+                                    cache_dir, engine_subdirectory_name, engine_name
+                                )
+
+                                if os.path.exists(engine_file_path):
+                                    cache_is_valid = True
+                                else:
+                                    print(
+                                        f"Context file '{ctx_file_name}' found, but the engine '{engine_name}' is missing from the subdirectory. New build will be prompted through ONNX Probe."
+                                    )
+                            else:
+                                print(
+                                    f"Context file '{ctx_file_name}' found, but could not extract the engine name from it. New build will be prompted through ONNX Probe."
+                                )
+                        else:
+                            print(
+                                f"No cache context file '{ctx_file_name}' found for {model_name}. New build will be prompted through ONNX Probe."
+                            )
+
+                    except Exception as e:
+                        print(f"Error during TensorRT cache check: {e}")
+                        cache_is_valid = False
+
+                    # If no engine config file or cache file exists run the prob
                     if not cache_is_valid:
                         build_was_triggered = True  # Mark that a build was attempted
                         print(
@@ -546,6 +593,9 @@ class ModelsProcessor(QtCore.QObject):
                                 f"This may take several minutes.\n"
                                 f"The application will continue once finished."
                             )
+
+                            # The trt engine build worker process use this SessionOptions to use only 1 thread for building engines
+                            sess_options_dict = {"intra_op_num_threads": 1}
 
                             # Ask the main thread to show the dialog
                             self.show_build_dialog.emit(dialog_title, dialog_text)
@@ -572,7 +622,7 @@ class ModelsProcessor(QtCore.QObject):
                                         self.models_path[model_name],
                                         current_providers_list,
                                         self.trt_ep_options,
-                                        session_options,
+                                        sess_options_dict,
                                     ),
                                 )
                                 probe_process.start()
@@ -684,9 +734,6 @@ class ModelsProcessor(QtCore.QObject):
                     if emap_initializer:
                         self.emap = onnx.numpy_helper.to_array(emap_initializer)
                     else:
-                        print(
-                            f"WARNING: 'emap' not found in the initializers of model {model_name}. Using fallback to last initializer."
-                        )
                         self.emap = onnx.numpy_helper.to_array(graph.initializer[-1])
                 return model_instance
 

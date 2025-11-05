@@ -10,7 +10,7 @@ try:
     import tensorrt as trt
 
     # Initialize the TensorRT logger for global use
-    TRT_LOGGER = trt.Logger(trt.Logger.INFO)
+    TRT_LOGGER = trt.Logger(trt.Logger.WARNING)
     # Initialize TensorRT plugins
     trt.init_libnvinfer_plugins(TRT_LOGGER, namespace="")
 except ModuleNotFoundError:
@@ -18,8 +18,8 @@ except ModuleNotFoundError:
     TRT_LOGGER = None
     print("Warning: The tensorrt module was not found. The code will not run.")
 
-logging.basicConfig(level=logging.INFO)
-logging.getLogger("EngineBuilder").setLevel(logging.INFO)
+logging.basicConfig(level=logging.WARNING)
+logging.getLogger("EngineBuilder").setLevel(logging.WARNING)
 log = logging.getLogger("EngineBuilder")
 
 
