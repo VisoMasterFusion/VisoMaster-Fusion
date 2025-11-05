@@ -126,12 +126,19 @@ class FrameEnhancers:
         return output
 
     def run_realesrganx2(self, image, output):
-        if not self.models_processor.models["RealEsrganx2Plus"]:
-            self.models_processor.models["RealEsrganx2Plus"] = (
-                self.models_processor.load_model("RealEsrganx2Plus")
+        model_name = "RealEsrganx2Plus" # Define model_name
+        if not self.models_processor.models[model_name]:
+            self.models_processor.models[model_name] = (
+                self.models_processor.load_model(model_name)
             )
+        
+        ort_session = self.models_processor.models[model_name]
+        if not ort_session:
+            print(f"WARNING: Model {model_name} not loaded, skipping enhancer.")
+            output = image # Return original image if model fails
+            return
 
-        io_binding = self.models_processor.models["RealEsrganx2Plus"].io_binding()
+        io_binding = ort_session.io_binding()
         io_binding.bind_input(
             name="input",
             device_type=self.models_processor.device,
@@ -149,19 +156,41 @@ class FrameEnhancers:
             buffer_ptr=output.data_ptr(),
         )
 
-        if self.models_processor.device == "cuda":
-            torch.cuda.synchronize()
-        elif self.models_processor.device != "cpu":
-            self.models_processor.syncvec.cpu()
-        self.models_processor.models["RealEsrganx2Plus"].run_with_iobinding(io_binding)
+        # --- START LAZY BUILD CHECK ---
+        is_lazy_build = self.models_processor.check_and_clear_pending_build(
+            model_name
+        )
+        if is_lazy_build:
+            self.models_processor.show_build_dialog.emit(
+                "Finalizing TensorRT Build",
+                f"Performing first-run inference for:\n{model_name}\n\nThis may take several minutes.",
+            )
+        
+        try:
+            if self.models_processor.device == "cuda":
+                torch.cuda.synchronize()
+            elif self.models_processor.device != "cpu":
+                self.models_processor.syncvec.cpu()
+            ort_session.run_with_iobinding(io_binding)
+        finally:
+            if is_lazy_build:
+                self.models_processor.hide_build_dialog.emit()
+        # --- END LAZY BUILD CHECK ---
 
     def run_realesrganx4(self, image, output):
-        if not self.models_processor.models["RealEsrganx4Plus"]:
-            self.models_processor.models["RealEsrganx4Plus"] = (
-                self.models_processor.load_model("RealEsrganx4Plus")
+        model_name = "RealEsrganx4Plus" # Define model_name
+        if not self.models_processor.models[model_name]:
+            self.models_processor.models[model_name] = (
+                self.models_processor.load_model(model_name)
             )
 
-        io_binding = self.models_processor.models["RealEsrganx4Plus"].io_binding()
+        ort_session = self.models_processor.models[model_name]
+        if not ort_session:
+            print(f"WARNING: Model {model_name} not loaded, skipping enhancer.")
+            output = image # Return original image if model fails
+            return
+
+        io_binding = ort_session.io_binding()
         io_binding.bind_input(
             name="input",
             device_type=self.models_processor.device,
@@ -179,19 +208,41 @@ class FrameEnhancers:
             buffer_ptr=output.data_ptr(),
         )
 
-        if self.models_processor.device == "cuda":
-            torch.cuda.synchronize()
-        elif self.models_processor.device != "cpu":
-            self.models_processor.syncvec.cpu()
-        self.models_processor.models["RealEsrganx4Plus"].run_with_iobinding(io_binding)
+        # --- START LAZY BUILD CHECK ---
+        is_lazy_build = self.models_processor.check_and_clear_pending_build(
+            model_name
+        )
+        if is_lazy_build:
+            self.models_processor.show_build_dialog.emit(
+                "Finalizing TensorRT Build",
+                f"Performing first-run inference for:\n{model_name}\n\nThis may take several minutes.",
+            )
+        
+        try:
+            if self.models_processor.device == "cuda":
+                torch.cuda.synchronize()
+            elif self.models_processor.device != "cpu":
+                self.models_processor.syncvec.cpu()
+            ort_session.run_with_iobinding(io_binding)
+        finally:
+            if is_lazy_build:
+                self.models_processor.hide_build_dialog.emit()
+        # --- END LAZY BUILD CHECK ---
 
     def run_realesrx4v3(self, image, output):
-        if not self.models_processor.models["RealEsrx4v3"]:
-            self.models_processor.models["RealEsrx4v3"] = (
-                self.models_processor.load_model("RealEsrx4v3")
+        model_name = "RealEsrx4v3" # Define model_name
+        if not self.models_processor.models[model_name]:
+            self.models_processor.models[model_name] = (
+                self.models_processor.load_model(model_name)
             )
 
-        io_binding = self.models_processor.models["RealEsrx4v3"].io_binding()
+        ort_session = self.models_processor.models[model_name]
+        if not ort_session:
+            print(f"WARNING: Model {model_name} not loaded, skipping enhancer.")
+            output = image # Return original image if model fails
+            return
+
+        io_binding = ort_session.io_binding()
         io_binding.bind_input(
             name="input",
             device_type=self.models_processor.device,
@@ -209,19 +260,41 @@ class FrameEnhancers:
             buffer_ptr=output.data_ptr(),
         )
 
-        if self.models_processor.device == "cuda":
-            torch.cuda.synchronize()
-        elif self.models_processor.device != "cpu":
-            self.models_processor.syncvec.cpu()
-        self.models_processor.models["RealEsrx4v3"].run_with_iobinding(io_binding)
+        # --- START LAZY BUILD CHECK ---
+        is_lazy_build = self.models_processor.check_and_clear_pending_build(
+            model_name
+        )
+        if is_lazy_build:
+            self.models_processor.show_build_dialog.emit(
+                "Finalizing TensorRT Build",
+                f"Performing first-run inference for:\n{model_name}\n\nThis may take several minutes.",
+            )
+        
+        try:
+            if self.models_processor.device == "cuda":
+                torch.cuda.synchronize()
+            elif self.models_processor.device != "cpu":
+                self.models_processor.syncvec.cpu()
+            ort_session.run_with_iobinding(io_binding)
+        finally:
+            if is_lazy_build:
+                self.models_processor.hide_build_dialog.emit()
+        # --- END LAZY BUILD CHECK ---
 
     def run_bsrganx2(self, image, output):
-        if not self.models_processor.models["BSRGANx2"]:
-            self.models_processor.models["BSRGANx2"] = self.models_processor.load_model(
-                "BSRGANx2"
+        model_name = "BSRGANx2" # Define model_name
+        if not self.models_processor.models[model_name]:
+            self.models_processor.models[model_name] = self.models_processor.load_model(
+                model_name
             )
 
-        io_binding = self.models_processor.models["BSRGANx2"].io_binding()
+        ort_session = self.models_processor.models[model_name]
+        if not ort_session:
+            print(f"WARNING: Model {model_name} not loaded, skipping enhancer.")
+            output = image # Return original image if model fails
+            return
+
+        io_binding = ort_session.io_binding()
         io_binding.bind_input(
             name="input",
             device_type=self.models_processor.device,
@@ -239,19 +312,41 @@ class FrameEnhancers:
             buffer_ptr=output.data_ptr(),
         )
 
-        if self.models_processor.device == "cuda":
-            torch.cuda.synchronize()
-        elif self.models_processor.device != "cpu":
-            self.models_processor.syncvec.cpu()
-        self.models_processor.models["BSRGANx2"].run_with_iobinding(io_binding)
+        # --- START LAZY BUILD CHECK ---
+        is_lazy_build = self.models_processor.check_and_clear_pending_build(
+            model_name
+        )
+        if is_lazy_build:
+            self.models_processor.show_build_dialog.emit(
+                "Finalizing TensorRT Build",
+                f"Performing first-run inference for:\n{model_name}\n\nThis may take several minutes.",
+            )
+        
+        try:
+            if self.models_processor.device == "cuda":
+                torch.cuda.synchronize()
+            elif self.models_processor.device != "cpu":
+                self.models_processor.syncvec.cpu()
+            ort_session.run_with_iobinding(io_binding)
+        finally:
+            if is_lazy_build:
+                self.models_processor.hide_build_dialog.emit()
+        # --- END LAZY BUILD CHECK ---
 
     def run_bsrganx4(self, image, output):
-        if not self.models_processor.models["BSRGANx4"]:
-            self.models_processor.models["BSRGANx4"] = self.models_processor.load_model(
-                "BSRGANx4"
+        model_name = "BSRGANx4" # Define model_name
+        if not self.models_processor.models[model_name]:
+            self.models_processor.models[model_name] = self.models_processor.load_model(
+                model_name
             )
 
-        io_binding = self.models_processor.models["BSRGANx4"].io_binding()
+        ort_session = self.models_processor.models[model_name]
+        if not ort_session:
+            print(f"WARNING: Model {model_name} not loaded, skipping enhancer.")
+            output = image # Return original image if model fails
+            return
+
+        io_binding = ort_session.io_binding()
         io_binding.bind_input(
             name="input",
             device_type=self.models_processor.device,
@@ -269,19 +364,41 @@ class FrameEnhancers:
             buffer_ptr=output.data_ptr(),
         )
 
-        if self.models_processor.device == "cuda":
-            torch.cuda.synchronize()
-        elif self.models_processor.device != "cpu":
-            self.models_processor.syncvec.cpu()
-        self.models_processor.models["BSRGANx4"].run_with_iobinding(io_binding)
+        # --- START LAZY BUILD CHECK ---
+        is_lazy_build = self.models_processor.check_and_clear_pending_build(
+            model_name
+        )
+        if is_lazy_build:
+            self.models_processor.show_build_dialog.emit(
+                "Finalizing TensorRT Build",
+                f"Performing first-run inference for:\n{model_name}\n\nThis may take several minutes.",
+            )
+        
+        try:
+            if self.models_processor.device == "cuda":
+                torch.cuda.synchronize()
+            elif self.models_processor.device != "cpu":
+                self.models_processor.syncvec.cpu()
+            ort_session.run_with_iobinding(io_binding)
+        finally:
+            if is_lazy_build:
+                self.models_processor.hide_build_dialog.emit()
+        # --- END LAZY BUILD CHECK ---
 
     def run_ultrasharpx4(self, image, output):
-        if not self.models_processor.models["UltraSharpx4"]:
-            self.models_processor.models["UltraSharpx4"] = (
-                self.models_processor.load_model("UltraSharpx4")
+        model_name = "UltraSharpx4" # Define model_name
+        if not self.models_processor.models[model_name]:
+            self.models_processor.models[model_name] = (
+                self.models_processor.load_model(model_name)
             )
 
-        io_binding = self.models_processor.models["UltraSharpx4"].io_binding()
+        ort_session = self.models_processor.models[model_name]
+        if not ort_session:
+            print(f"WARNING: Model {model_name} not loaded, skipping enhancer.")
+            output = image # Return original image if model fails
+            return
+
+        io_binding = ort_session.io_binding()
         io_binding.bind_input(
             name="input",
             device_type=self.models_processor.device,
@@ -299,19 +416,41 @@ class FrameEnhancers:
             buffer_ptr=output.data_ptr(),
         )
 
-        if self.models_processor.device == "cuda":
-            torch.cuda.synchronize()
-        elif self.models_processor.device != "cpu":
-            self.models_processor.syncvec.cpu()
-        self.models_processor.models["UltraSharpx4"].run_with_iobinding(io_binding)
+        # --- START LAZY BUILD CHECK ---
+        is_lazy_build = self.models_processor.check_and_clear_pending_build(
+            model_name
+        )
+        if is_lazy_build:
+            self.models_processor.show_build_dialog.emit(
+                "Finalizing TensorRT Build",
+                f"Performing first-run inference for:\n{model_name}\n\nThis may take several minutes.",
+            )
+        
+        try:
+            if self.models_processor.device == "cuda":
+                torch.cuda.synchronize()
+            elif self.models_processor.device != "cpu":
+                self.models_processor.syncvec.cpu()
+            ort_session.run_with_iobinding(io_binding)
+        finally:
+            if is_lazy_build:
+                self.models_processor.hide_build_dialog.emit()
+        # --- END LAZY BUILD CHECK ---
 
     def run_ultramixx4(self, image, output):
-        if not self.models_processor.models["UltraMixx4"]:
-            self.models_processor.models["UltraMixx4"] = (
-                self.models_processor.load_model("UltraMixx4")
+        model_name = "UltraMixx4" # Define model_name
+        if not self.models_processor.models[model_name]:
+            self.models_processor.models[model_name] = (
+                self.models_processor.load_model(model_name)
             )
 
-        io_binding = self.models_processor.models["UltraMixx4"].io_binding()
+        ort_session = self.models_processor.models[model_name]
+        if not ort_session:
+            print(f"WARNING: Model {model_name} not loaded, skipping enhancer.")
+            output = image # Return original image if model fails
+            return
+
+        io_binding = ort_session.io_binding()
         io_binding.bind_input(
             name="input",
             device_type=self.models_processor.device,
@@ -329,19 +468,41 @@ class FrameEnhancers:
             buffer_ptr=output.data_ptr(),
         )
 
-        if self.models_processor.device == "cuda":
-            torch.cuda.synchronize()
-        elif self.models_processor.device != "cpu":
-            self.models_processor.syncvec.cpu()
-        self.models_processor.models["UltraMixx4"].run_with_iobinding(io_binding)
+        # --- START LAZY BUILD CHECK ---
+        is_lazy_build = self.models_processor.check_and_clear_pending_build(
+            model_name
+        )
+        if is_lazy_build:
+            self.models_processor.show_build_dialog.emit(
+                "Finalizing TensorRT Build",
+                f"Performing first-run inference for:\n{model_name}\n\nThis may take several minutes.",
+            )
+        
+        try:
+            if self.models_processor.device == "cuda":
+                torch.cuda.synchronize()
+            elif self.models_processor.device != "cpu":
+                self.models_processor.syncvec.cpu()
+            ort_session.run_with_iobinding(io_binding)
+        finally:
+            if is_lazy_build:
+                self.models_processor.hide_build_dialog.emit()
+        # --- END LAZY BUILD CHECK ---
 
     def run_deoldify_artistic(self, image, output):
-        if not self.models_processor.models["DeoldifyArt"]:
-            self.models_processor.models["DeoldifyArt"] = (
-                self.models_processor.load_model("DeoldifyArt")
+        model_name = "DeoldifyArt" # Define model_name
+        if not self.models_processor.models[model_name]:
+            self.models_processor.models[model_name] = (
+                self.models_processor.load_model(model_name)
             )
 
-        io_binding = self.models_processor.models["DeoldifyArt"].io_binding()
+        ort_session = self.models_processor.models[model_name]
+        if not ort_session:
+            print(f"WARNING: Model {model_name} not loaded, skipping enhancer.")
+            output = image # Return original image if model fails
+            return
+
+        io_binding = ort_session.io_binding()
         io_binding.bind_input(
             name="input",
             device_type=self.models_processor.device,
@@ -359,19 +520,41 @@ class FrameEnhancers:
             buffer_ptr=output.data_ptr(),
         )
 
-        if self.models_processor.device == "cuda":
-            torch.cuda.synchronize()
-        elif self.models_processor.device != "cpu":
-            self.models_processor.syncvec.cpu()
-        self.models_processor.models["DeoldifyArt"].run_with_iobinding(io_binding)
+        # --- START LAZY BUILD CHECK ---
+        is_lazy_build = self.models_processor.check_and_clear_pending_build(
+            model_name
+        )
+        if is_lazy_build:
+            self.models_processor.show_build_dialog.emit(
+                "Finalizing TensorRT Build",
+                f"Performing first-run inference for:\n{model_name}\n\nThis may take several minutes.",
+            )
+        
+        try:
+            if self.models_processor.device == "cuda":
+                torch.cuda.synchronize()
+            elif self.models_processor.device != "cpu":
+                self.models_processor.syncvec.cpu()
+            ort_session.run_with_iobinding(io_binding)
+        finally:
+            if is_lazy_build:
+                self.models_processor.hide_build_dialog.emit()
+        # --- END LAZY BUILD CHECK ---
 
     def run_deoldify_stable(self, image, output):
-        if not self.models_processor.models["DeoldifyStable"]:
-            self.models_processor.models["DeoldifyStable"] = (
-                self.models_processor.load_model("DeoldifyStable")
+        model_name = "DeoldifyStable" # Define model_name
+        if not self.models_processor.models[model_name]:
+            self.models_processor.models[model_name] = (
+                self.models_processor.load_model(model_name)
             )
 
-        io_binding = self.models_processor.models["DeoldifyStable"].io_binding()
+        ort_session = self.models_processor.models[model_name]
+        if not ort_session:
+            print(f"WARNING: Model {model_name} not loaded, skipping enhancer.")
+            output = image # Return original image if model fails
+            return
+
+        io_binding = ort_session.io_binding()
         io_binding.bind_input(
             name="input",
             device_type=self.models_processor.device,
@@ -389,19 +572,41 @@ class FrameEnhancers:
             buffer_ptr=output.data_ptr(),
         )
 
-        if self.models_processor.device == "cuda":
-            torch.cuda.synchronize()
-        elif self.models_processor.device != "cpu":
-            self.models_processor.syncvec.cpu()
-        self.models_processor.models["DeoldifyStable"].run_with_iobinding(io_binding)
+        # --- START LAZY BUILD CHECK ---
+        is_lazy_build = self.models_processor.check_and_clear_pending_build(
+            model_name
+        )
+        if is_lazy_build:
+            self.models_processor.show_build_dialog.emit(
+                "Finalizing TensorRT Build",
+                f"Performing first-run inference for:\n{model_name}\n\nThis may take several minutes.",
+            )
+        
+        try:
+            if self.models_processor.device == "cuda":
+                torch.cuda.synchronize()
+            elif self.models_processor.device != "cpu":
+                self.models_processor.syncvec.cpu()
+            ort_session.run_with_iobinding(io_binding)
+        finally:
+            if is_lazy_build:
+                self.models_processor.hide_build_dialog.emit()
+        # --- END LAZY BUILD CHECK ---
 
     def run_deoldify_video(self, image, output):
-        if not self.models_processor.models["DeoldifyVideo"]:
-            self.models_processor.models["DeoldifyVideo"] = (
-                self.models_processor.load_model("DeoldifyVideo")
+        model_name = "DeoldifyVideo" # Define model_name
+        if not self.models_processor.models[model_name]:
+            self.models_processor.models[model_name] = (
+                self.models_processor.load_model(model_name)
             )
 
-        io_binding = self.models_processor.models["DeoldifyVideo"].io_binding()
+        ort_session = self.models_processor.models[model_name]
+        if not ort_session:
+            print(f"WARNING: Model {model_name} not loaded, skipping enhancer.")
+            output = image # Return original image if model fails
+            return
+
+        io_binding = ort_session.io_binding()
         io_binding.bind_input(
             name="input",
             device_type=self.models_processor.device,
@@ -419,19 +624,41 @@ class FrameEnhancers:
             buffer_ptr=output.data_ptr(),
         )
 
-        if self.models_processor.device == "cuda":
-            torch.cuda.synchronize()
-        elif self.models_processor.device != "cpu":
-            self.models_processor.syncvec.cpu()
-        self.models_processor.models["DeoldifyVideo"].run_with_iobinding(io_binding)
+        # --- START LAZY BUILD CHECK ---
+        is_lazy_build = self.models_processor.check_and_clear_pending_build(
+            model_name
+        )
+        if is_lazy_build:
+            self.models_processor.show_build_dialog.emit(
+                "Finalizing TensorRT Build",
+                f"Performing first-run inference for:\n{model_name}\n\nThis may take several minutes.",
+            )
+        
+        try:
+            if self.models_processor.device == "cuda":
+                torch.cuda.synchronize()
+            elif self.models_processor.device != "cpu":
+                self.models_processor.syncvec.cpu()
+            ort_session.run_with_iobinding(io_binding)
+        finally:
+            if is_lazy_build:
+                self.models_processor.hide_build_dialog.emit()
+        # --- END LAZY BUILD CHECK ---
 
     def run_ddcolor_artistic(self, image, output):
-        if not self.models_processor.models["DDColorArt"]:
-            self.models_processor.models["DDColorArt"] = (
-                self.models_processor.load_model("DDColorArt")
+        model_name = "DDColorArt" # Define model_name
+        if not self.models_processor.models[model_name]:
+            self.models_processor.models[model_name] = (
+                self.models_processor.load_model(model_name)
             )
 
-        io_binding = self.models_processor.models["DDColorArt"].io_binding()
+        ort_session = self.models_processor.models[model_name]
+        if not ort_session:
+            print(f"WARNING: Model {model_name} not loaded, skipping enhancer.")
+            output = image # Return original image if model fails
+            return
+
+        io_binding = ort_session.io_binding()
         io_binding.bind_input(
             name="input",
             device_type=self.models_processor.device,
@@ -449,19 +676,41 @@ class FrameEnhancers:
             buffer_ptr=output.data_ptr(),
         )
 
-        if self.models_processor.device == "cuda":
-            torch.cuda.synchronize()
-        elif self.models_processor.device != "cpu":
-            self.models_processor.syncvec.cpu()
-        self.models_processor.models["DDColorArt"].run_with_iobinding(io_binding)
+        # --- START LAZY BUILD CHECK ---
+        is_lazy_build = self.models_processor.check_and_clear_pending_build(
+            model_name
+        )
+        if is_lazy_build:
+            self.models_processor.show_build_dialog.emit(
+                "Finalizing TensorRT Build",
+                f"Performing first-run inference for:\n{model_name}\n\nThis may take several minutes.",
+            )
+        
+        try:
+            if self.models_processor.device == "cuda":
+                torch.cuda.synchronize()
+            elif self.models_processor.device != "cpu":
+                self.models_processor.syncvec.cpu()
+            ort_session.run_with_iobinding(io_binding)
+        finally:
+            if is_lazy_build:
+                self.models_processor.hide_build_dialog.emit()
+        # --- END LAZY BUILD CHECK ---
 
     def run_ddcolor(self, image, output):
-        if not self.models_processor.models["DDcolor"]:
-            self.models_processor.models["DDcolor"] = self.models_processor.load_model(
-                "DDcolor"
+        model_name = "DDcolor" # Define model_name
+        if not self.models_processor.models[model_name]:
+            self.models_processor.models[model_name] = self.models_processor.load_model(
+                model_name
             )
 
-        io_binding = self.models_processor.models["DDcolor"].io_binding()
+        ort_session = self.models_processor.models[model_name]
+        if not ort_session:
+            print(f"WARNING: Model {model_name} not loaded, skipping enhancer.")
+            output = image # Return original image if model fails
+            return
+
+        io_binding = ort_session.io_binding()
         io_binding.bind_input(
             name="input",
             device_type=self.models_processor.device,
@@ -479,8 +728,23 @@ class FrameEnhancers:
             buffer_ptr=output.data_ptr(),
         )
 
-        if self.models_processor.device == "cuda":
-            torch.cuda.synchronize()
-        elif self.models_processor.device != "cpu":
-            self.models_processor.syncvec.cpu()
-        self.models_processor.models["DDcolor"].run_with_iobinding(io_binding)
+        # --- START LAZY BUILD CHECK ---
+        is_lazy_build = self.models_processor.check_and_clear_pending_build(
+            model_name
+        )
+        if is_lazy_build:
+            self.models_processor.show_build_dialog.emit(
+                "Finalizing TensorRT Build",
+                f"Performing first-run inference for:\n{model_name}\n\nThis may take several minutes.",
+            )
+        
+        try:
+            if self.models_processor.device == "cuda":
+                torch.cuda.synchronize()
+            elif self.models_processor.device != "cpu":
+                self.models_processor.syncvec.cpu()
+            ort_session.run_with_iobinding(io_binding)
+        finally:
+            if is_lazy_build:
+                self.models_processor.hide_build_dialog.emit()
+        # --- END LAZY BUILD CHECK ---

@@ -211,8 +211,6 @@ class VideoProcessor(QObject):
             log_fps = f"{target_fps:.2f} FPS"
             self.target_delay_sec = 1.0 / target_fps
 
-        print(f"Starting unified metronome (Target: {log_fps}).")
-
         # 3. Start utility timers and emit signal
         self.gpu_memory_update_timer.start(5000)
 
@@ -781,10 +779,7 @@ class VideoProcessor(QObject):
             frame, self.main_window, frame_number, self.frame_queue, is_single_frame
         )
         self.threads[frame_number] = worker
-        if is_single_frame:
-            worker.run()  # Process synchronously (blocks until done)
-        else:
-            worker.start()  # Process asynchronously (in a new thread)
+        worker.start()  # Process asynchronously (in a new thread)
 
     def process_current_frame(self):
         """
