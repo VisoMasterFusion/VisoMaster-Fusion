@@ -354,7 +354,6 @@ class FaceSwappers:
             or not isinstance(self.models_processor.emap, np.ndarray)
             or self.models_processor.emap.size == 0
         ):
-            print("emap not found, loading Inswapper128 to get it.")
             self.models_processor.load_model("Inswapper128")
 
         if (

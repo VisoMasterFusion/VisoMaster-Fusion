@@ -102,7 +102,9 @@ def _build_trt_engine_worker(onnx_path, trt_path, precision, plugin_path, verbos
         sys.exit(1)  # Signal failure
 
 
-def _probe_onnx_model_worker(model_path, providers_list, trt_options, session_options):
+def _probe_onnx_model_worker(
+    model_path, providers_list, trt_options, session_options_dict
+):
     """
     Worker function to be run in an isolated process to "warm up"
     an ONNX model, especially for the TensorRT provider.
@@ -114,6 +116,14 @@ def _probe_onnx_model_worker(model_path, providers_list, trt_options, session_op
         import sys
         import traceback
         import onnxruntime
+
+        # Create the SessionOptions object *inside* the worker process.
+        session_options = onnxruntime.SessionOptions()
+        if session_options_dict:
+            for key, value in session_options_dict.items():
+                # Use setattr to configure the SessionOptions object from the passed dictionary with 1 single thread for building the engines
+                setattr(session_options, key, value)
+
         import torch
 
         # Reconstruct the providers tuple
@@ -501,9 +511,6 @@ class ModelsProcessor(QtCore.QObject):
                                 )
 
                                 if os.path.exists(engine_file_path):
-                                    print(
-                                        f"Valid TensorRT cache found for '{model_name}'. Build will be skipped."
-                                    )
                                     cache_is_valid = True
                                 else:
                                     print(
@@ -539,6 +546,9 @@ class ModelsProcessor(QtCore.QObject):
                                 f"The application will continue once finished."
                             )
 
+                            # The trt engine build worker process use this SessionOptions to use only 1 thread for building engines
+                            sess_options_dict = {"intra_op_num_threads": 1}
+
                             # Ask the main thread to show the dialog
                             self.show_build_dialog.emit(dialog_title, dialog_text)
 
@@ -564,7 +574,7 @@ class ModelsProcessor(QtCore.QObject):
                                         self.models_path[model_name],
                                         current_providers_list,
                                         self.trt_ep_options,
-                                        session_options,
+                                        sess_options_dict,
                                     ),
                                 )
                                 probe_process.start()
@@ -664,9 +674,6 @@ class ModelsProcessor(QtCore.QObject):
                     if emap_initializer:
                         self.emap = onnx.numpy_helper.to_array(emap_initializer)
                     else:
-                        print(
-                            f"WARNING: 'emap' not found in the initializers of model {model_name}. Using fallback to last initializer."
-                        )
                         self.emap = onnx.numpy_helper.to_array(graph.initializer[-1])
                 return model_instance
 
