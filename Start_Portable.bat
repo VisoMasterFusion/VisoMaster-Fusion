@@ -3,8 +3,9 @@ setlocal EnableDelayedExpansion
 
 :: ============================================================
 ::  VisoMaster Fusion Portable Launcher
-::  - First run: performs full setup as normal
+::  - First run: performs full setup and writes LAUNCHER_ENABLED=1
 ::  - Subsequent runs: launches PySide6 GUI launcher
+::  - If key missing: automatically repairs portable.cfg
 :: ============================================================
 
 :: --- LAUNCHER INTEGRATION (pre-check) ---
@@ -14,14 +15,18 @@ set "VENV_PYTHON=%BASE_DIR%portable-files\venv\Scripts\python.exe"
 set "GIT_DIR_PRESENT=%BASE_DIR%VisoMaster-Fusion\.git"
 set "PORTABLE_CFG=%BASE_DIR%portable.cfg"
 
-:: Read optional toggle from portable.cfg (default 1 = GUI enabled)
-set "LAUNCHER_ENABLED=1"
+:: Read optional toggle from portable.cfg (no defaults here)
+set "LAUNCHER_ENABLED="
 if exist "%PORTABLE_CFG%" (
   for /f "usebackq tokens=1,* delims== " %%A in ("%PORTABLE_CFG%") do (
     if /I "%%A"=="LAUNCHER_ENABLED" set "LAUNCHER_ENABLED=%%B"
   )
 )
-if "%LAUNCHER_ENABLED%"=="" set "LAUNCHER_ENABLED=1"
+
+:: Detect if this is the first run (no portable.cfg)
+set "FIRST_RUN=false"
+if not exist "%PORTABLE_CFG%" set "FIRST_RUN=true"
+
 
 :: If GUI enabled and an installation already exists, start the launcher.
 if "%LAUNCHER_ENABLED%"=="1" (
@@ -314,6 +319,34 @@ if not exist "%FFMPEG_PATH_VAR%\ffmpeg.exe" (
 
 :: Restore original PATH
 set "PATH=%OLD_PATH%"
+
+:: --- Ensure LAUNCHER_ENABLED key exists after setup ---
+:: Runs on first run or if the key is missing in existing config.
+
+:: Detect if setup ran or key is missing
+set "ADD_LAUNCHER_KEY=false"
+
+if /I "!FIRST_RUN!"=="true" (
+    set "ADD_LAUNCHER_KEY=true"
+) else (
+    if exist "%CONFIG_FILE%" (
+        set "FOUND_KEY=false"
+        for /f "usebackq tokens=1,* delims==" %%A in ("%CONFIG_FILE%") do (
+            if /I "%%~A"=="LAUNCHER_ENABLED" set "FOUND_KEY=true"
+        )
+        if /I "!FOUND_KEY!"=="false" set "ADD_LAUNCHER_KEY=true"
+    )
+)
+
+if /I "!ADD_LAUNCHER_KEY!"=="true" (
+    echo.
+    echo Ensuring LAUNCHER_ENABLED=1 is set in portable.cfg...
+    if exist "%CONFIG_FILE%" (
+        >>"%CONFIG_FILE%" echo LAUNCHER_ENABLED=1
+    ) else (
+        (echo LAUNCHER_ENABLED=1) > "%CONFIG_FILE%"
+    )
+)
 
 :: --- Step 8: Run main application ---
 if exist "%APP_DIR%\%MAIN_PY%" (

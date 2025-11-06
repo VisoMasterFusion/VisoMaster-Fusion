@@ -14,22 +14,24 @@
 #   • Read existing values with read_portable_cfg() or helper functions.
 # ---------------------------------------------------------------------------
 
-from datetime import datetime, timezone
-from .core import PATHS
 import hashlib
 import json
-from typing import Dict, Any
-from app.processors.models_data import models_list
 from pathlib import Path
+from datetime import datetime, timezone
+
+from .core import PATHS
+from app.processors.models_data import models_list
+from collections.abc import Sequence
+from typing import Dict, Any
 
 
 # ---------- Core File I/O ----------
 
 
-def read_portable_cfg() -> dict:
+def read_portable_cfg() -> dict[str, str | None]:
     """Read portable.cfg as a simple key=value dict."""
-    cfg: Dict[str, str] = {}
-    p = PATHS["PORTABLE_CFG"]
+    cfg: dict[str, str | None] = {}
+    p: Path = PATHS["PORTABLE_CFG"]
     if not p.exists():
         return cfg
     try:
@@ -42,10 +44,14 @@ def read_portable_cfg() -> dict:
     return cfg
 
 
-def write_portable_cfg(updated: dict) -> bool:
-    """Merge-write portable.cfg, preserving unknown keys and their order. Only updates the provided key-value pairs in 'updated'."""
-    p = PATHS["PORTABLE_CFG"]
-    lines, kv = [], {}
+def write_portable_cfg(updated: dict[str, Any]) -> bool:
+    """Merge-write portable.cfg, preserving unknown keys and their order.
+
+    Only updates the provided key-value pairs in 'updated'.
+    """
+    p: Path = PATHS["PORTABLE_CFG"]
+    lines: list[str] = []
+    kv: dict[str, tuple[int, str]] = {}
 
     # Load existing structure (preserving it) or create defaults
     if p.exists():
@@ -63,7 +69,7 @@ def write_portable_cfg(updated: dict) -> bool:
 
     # Update only the keys related to the launcher
     for k, v in updated.items():
-        v_str = str(v)
+        v_str: str = str(v)
         if k in kv:
             idx, old_v = kv[k]
             if old_v != v_str:
@@ -90,7 +96,7 @@ def write_portable_cfg(updated: dict) -> bool:
 
 
 def get_launcher_enabled_from_cfg() -> int:
-    """Return 1 if launcher should run on startup (based on 'LAUNCHER_ENABLED' in portable.cfg), else return 0."""
+    """Return 1 if launcher should run on startup (based on portable.cfg)."""
     cfg = read_portable_cfg()
     v = cfg.get("LAUNCHER_ENABLED")
     return (
@@ -100,7 +106,7 @@ def get_launcher_enabled_from_cfg() -> int:
     )
 
 
-def set_launcher_enabled_to_cfg(value: int):
+def set_launcher_enabled_to_cfg(value: int) -> None:
     """Enable or disable the launcher in portable.cfg."""
     value = 1 if value else 0
     if write_portable_cfg({"LAUNCHER_ENABLED": value}):
@@ -110,9 +116,9 @@ def set_launcher_enabled_to_cfg(value: int):
 # ---------- Version Tracking ----------
 
 
-def update_current_commit_in_cfg():
-    """Fetch the current Git commit hash and save it to portable.cfg under 'CURRENT_COMMIT'."""
-    from .gittools import run_git
+def update_current_commit_in_cfg() -> None:
+    """Fetch the current Git commit hash and save it to portable.cfg."""
+    from .gittools import run_git  # local import to avoid circular deps
 
     r = run_git(["rev-parse", "HEAD"], capture=True)
     if r and r.returncode == 0:
@@ -120,7 +126,7 @@ def update_current_commit_in_cfg():
         write_portable_cfg({"CURRENT_COMMIT": commit})
 
 
-def update_last_updated_in_cfg():
+def update_last_updated_in_cfg() -> None:
     """Save the current UTC timestamp (as 'LAST_UPDATED') to portable.cfg."""
     iso_utc = datetime.now(timezone.utc).replace(microsecond=0).isoformat()
     if write_portable_cfg({"LAST_UPDATED": iso_utc}):
@@ -139,7 +145,7 @@ def format_last_updated_local(iso_str: str) -> str:
         return "Invalid date format"
 
 
-def read_version_info():
+def read_version_info() -> tuple[str | None, str | None]:
     """Return (CURRENT_COMMIT, formatted LAST_UPDATED) from portable.cfg."""
     cfg = read_portable_cfg()
     curr = cfg.get("CURRENT_COMMIT")
@@ -151,7 +157,7 @@ def read_version_info():
 # ---------- Checksum Tracking ----------
 
 
-def compute_file_sha256(path) -> str | None:
+def compute_file_sha256(path: Path) -> str | None:
     """Return SHA256 checksum of the given file, or None if not found."""
     try:
         if not path.exists():
@@ -167,7 +173,7 @@ def compute_file_sha256(path) -> str | None:
         return None
 
 
-def compute_models_sha256(models_list: list) -> str | None:
+def compute_models_sha256(models_list: Sequence[dict[str, Any] | str]) -> str | None:
     """Return SHA256 of the serialized models list for consistency tracking."""
     try:
         # Normalize and sort models list for deterministic hashing
@@ -189,12 +195,15 @@ def compute_models_sha256(models_list: list) -> str | None:
 # ---------------------------------------------------------------------------
 
 
-def check_models_presence() -> tuple[bool, list]:
+def check_models_presence() -> tuple[bool, list[str]]:
     """Quickly check if any expected model files are missing (no hash check)."""
-    missing = []
+    missing: list[str] = []
     for model in models_list:
-        model_path = model.get("local_path")
-        if model_path and not Path(model_path).exists():
+        local_path = model.get("local_path")
+        if not local_path:
+            continue
+        model_path = Path(local_path)
+        if not model_path.exists():
             missing.append(str(model_path))
             print(f"[Launcher] Warning: Missing model file → {model_path}")
     return bool(missing), missing
@@ -213,9 +222,11 @@ def read_checksum_state() -> dict[str, str | None]:
     }
 
 
-def write_checksum_state(deps_sha: str | None = None, models_sha: str | None = None):
+def write_checksum_state(
+    deps_sha: str | None = None, models_sha: str | None = None
+) -> None:
     """Update checksum values in portable.cfg and record maintenance timestamp."""
-    updated = {}
+    updated: dict[str, str | int] = {}
     if deps_sha:
         updated["DEPS_SHA"] = deps_sha
     if models_sha:

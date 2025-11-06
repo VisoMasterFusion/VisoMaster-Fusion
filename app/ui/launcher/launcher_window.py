@@ -21,6 +21,7 @@ from datetime import datetime, timezone
 from PySide6 import QtWidgets, QtGui, QtCore
 
 from .core import PATHS, run_python, uv_pip_install
+from app.processors.models_data import models_list
 from .gittools import (
     run_git,
     fetch_commit_list,
@@ -77,8 +78,10 @@ def check_update_status():
     print("[Launcher] Checking for updates...")
     try:
         r = run_git(["fetch", "origin"], capture=True)
-        if r.returncode != 0:
-            print(f"[Launcher] Git fetch failed (offline?): {r.stderr.strip()}")
+        # ── handle None safely ────────────────────────────────
+        if r is None or r.returncode != 0:
+            err = r.stderr.strip() if r and getattr(r, "stderr", None) else "unknown"
+            print(f"[Launcher] Git fetch failed (offline?): {err}")
             return "offline"
     except Exception as e:
         print(f"[Launcher] Fetch exception (offline?): {e}")
@@ -91,12 +94,12 @@ def check_update_status():
         head_hash, origin_hash = head.stdout.strip(), origin.stdout.strip()
         if head_hash != origin_hash:
             print(
-                f"[Launcher] Local version behind origin (HEAD={head_hash[:7]} → {origin_hash[:7]})"
+                f"[Launcher] Local version behind origin "
+                f"(HEAD={head_hash[:7]} → {origin_hash[:7]})"
             )
             return "behind"
-        else:
-            print(f"[Launcher] Repository up to date (HEAD={head_hash[:7]})")
-            return "up_to_date"
+        print(f"[Launcher] Repository up to date (HEAD={head_hash[:7]})")
+        return "up_to_date"
 
     print("[Launcher] Unable to read HEAD or origin/main; treating as offline.")
     return "offline"
@@ -203,6 +206,20 @@ class LauncherWindow(QtWidgets.QWidget):
         # --- Dependency Check ---
         state = read_checksum_state()
         deps_now = compute_file_sha256(PATHS["REQ_FILE"])
+
+        # --- Auto-initialize missing checksum keys on first run ---
+        if not state.get("DEPS_SHA") and deps_now:
+            print("[Launcher] Initializing missing DEPS_SHA in portable.cfg...")
+            write_checksum_state(deps_sha=deps_now)
+
+        if not state.get("MODELS_SHA") and models_list:
+            print("[Launcher] Initializing missing MODELS_SHA in portable.cfg...")
+            write_checksum_state(models_sha=compute_models_sha256(models_list))
+
+        # Re-read state to update comparisons after writing new keys
+        state = read_checksum_state()
+
+        # --- Dependency Comparison ---
         self.deps_changed = deps_now != state.get("DEPS_SHA")
         if self.deps_changed:
             print("[Launcher] Warning: Dependencies checksum mismatch.")
@@ -265,13 +282,15 @@ class LauncherWindow(QtWidgets.QWidget):
             layout.addWidget(klabel("Last updated"), 0, 2)
             layout.addWidget(vlabel(last_nice, tooltip="UTC ISO in portable.cfg"), 0, 3)
 
-        panel.setStyleSheet("""
+        panel.setStyleSheet(
+            """
             QFrame#MetaPanel {
                 background-color: rgba(255,255,255,0.05);
                 border: 1px solid rgba(255,255,255,0.08);
                 border-radius: 8px;
             }
-        """)
+        """
+        )
         return panel
 
     # ---------- Build UI ----------
@@ -300,7 +319,7 @@ class LauncherWindow(QtWidgets.QWidget):
         self._reset_page(self.page_home)
         lay = QtWidgets.QVBoxLayout(self.page_home)
         lay.addWidget(
-            make_header_widget("VisoMaster Fusion Launcher", PATHS["LOGO_PNG"])
+            make_header_widget("VisoMaster Fusion Launcher", str(PATHS["LOGO_PNG"]))
         )
 
         for text, method, *tip in ACTIONS_HOME:
@@ -487,8 +506,6 @@ class LauncherWindow(QtWidgets.QWidget):
                     run_git(["checkout", "--", "."], capture=False)
                 update_current_commit_in_cfg()
                 update_last_updated_in_cfg()
-                from app.processors.models_data import models_list
-
                 write_checksum_state(
                     deps_sha=compute_file_sha256(PATHS["REQ_FILE"]),
                     models_sha=compute_models_sha256(models_list),
@@ -513,8 +530,6 @@ class LauncherWindow(QtWidgets.QWidget):
         with with_busy_state(self, busy=True, text="Updating models..."):
             run_python(PATHS["DOWNLOAD_PY"])
             try:
-                from app.processors.models_data import models_list
-
                 write_checksum_state(models_sha=compute_models_sha256(models_list))
             except Exception as e:
                 print(f"[Launcher] Warning: Could not update model checksum: {e}")
