@@ -21,6 +21,7 @@ from datetime import datetime, timezone
 from PySide6 import QtWidgets, QtGui, QtCore
 
 from .core import PATHS, run_python, uv_pip_install
+from app.processors.models_data import models_list
 from .gittools import (
     run_git,
     fetch_commit_list,
@@ -505,8 +506,6 @@ class LauncherWindow(QtWidgets.QWidget):
                     run_git(["checkout", "--", "."], capture=False)
                 update_current_commit_in_cfg()
                 update_last_updated_in_cfg()
-                from app.processors.models_data import models_list
-
                 write_checksum_state(
                     deps_sha=compute_file_sha256(PATHS["REQ_FILE"]),
                     models_sha=compute_models_sha256(models_list),
@@ -531,8 +530,6 @@ class LauncherWindow(QtWidgets.QWidget):
         with with_busy_state(self, busy=True, text="Updating models..."):
             run_python(PATHS["DOWNLOAD_PY"])
             try:
-                from app.processors.models_data import models_list
-
                 write_checksum_state(models_sha=compute_models_sha256(models_list))
             except Exception as e:
                 print(f"[Launcher] Warning: Could not update model checksum: {e}")

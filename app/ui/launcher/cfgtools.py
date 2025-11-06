@@ -22,7 +22,7 @@ from datetime import datetime, timezone
 from .core import PATHS
 from app.processors.models_data import models_list
 from collections.abc import Sequence
-from typing import Any
+from typing import Dict, Any
 
 
 # ---------- Core File I/O ----------
@@ -44,13 +44,14 @@ def read_portable_cfg() -> dict[str, str | None]:
     return cfg
 
 
-def write_portable_cfg(updated: dict[str, str | int | None]) -> bool:
+def write_portable_cfg(updated: dict[str, Any]) -> bool:
     """Merge-write portable.cfg, preserving unknown keys and their order.
 
     Only updates the provided key-value pairs in 'updated'.
     """
     p: Path = PATHS["PORTABLE_CFG"]
-    lines, kv = [], {}
+    lines: list[str] = []
+    kv: dict[str, tuple[int, str]] = {}
 
     # Load existing structure (preserving it) or create defaults
     if p.exists():
@@ -68,7 +69,7 @@ def write_portable_cfg(updated: dict[str, str | int | None]) -> bool:
 
     # Update only the keys related to the launcher
     for k, v in updated.items():
-        v_str = str(v)
+        v_str: str = str(v)
         if k in kv:
             idx, old_v = kv[k]
             if old_v != v_str:
@@ -175,7 +176,8 @@ def compute_file_sha256(path: Path) -> str | None:
 def compute_models_sha256(models_list: Sequence[dict[str, Any] | str]) -> str | None:
     """Return SHA256 of the serialized models list for consistency tracking."""
     try:
-        normalized = []
+        # Normalize and sort models list for deterministic hashing
+        normalized: list[Dict[str, Any] | str] = []
         for item in models_list:
             if isinstance(item, dict):
                 normalized.append({k: item[k] for k in sorted(item.keys())})
@@ -224,7 +226,7 @@ def write_checksum_state(
     deps_sha: str | None = None, models_sha: str | None = None
 ) -> None:
     """Update checksum values in portable.cfg and record maintenance timestamp."""
-    updated: dict[str, str | int | None] = {}
+    updated: dict[str, str | int] = {}
     if deps_sha:
         updated["DEPS_SHA"] = deps_sha
     if models_sha:
