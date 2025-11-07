@@ -139,12 +139,28 @@ class FaceEditors:
                 buffer_ptr=tensor.data_ptr(),
             )
 
-        # Ensure CUDA stream is synchronized before running the model.
-        if self.models_processor.device == "cuda":
-            torch.cuda.synchronize()
-        elif self.models_processor.device != "cpu":
-            self.models_processor.syncvec.cpu()
-        model.run_with_iobinding(io_binding)
+        # --- START LAZY BUILD CHECK ---
+        is_lazy_build = self.models_processor.check_and_clear_pending_build(
+            model_name
+        )
+        if is_lazy_build:
+            # Use the 'model_name' variable for a reliable dialog message
+            self.models_processor.show_build_dialog.emit(
+                "Finalizing TensorRT Build",
+                f"Performing first-run inference for:\n{model_name}\n\nThis may take several minutes.",
+            )
+        
+        try:
+            # Ensure CUDA stream is synchronized before running the model.
+            if self.models_processor.device == "cuda":
+                torch.cuda.synchronize()
+            elif self.models_processor.device != "cpu":
+                self.models_processor.syncvec.cpu()
+            model.run_with_iobinding(io_binding)
+        finally:
+            if is_lazy_build:
+                self.models_processor.hide_build_dialog.emit()
+        # --- END LAZY BUILD CHECK ---
 
         return output_spec
 

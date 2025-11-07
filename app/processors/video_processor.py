@@ -55,7 +55,7 @@ class VideoProcessor(QObject):
         super().__init__()
         self.main_window = main_window
 
-        # --- Worker Thread Management ---
+        # --- Worker Thread Management (Refactored for Thread Pool) ---
         self.num_threads = num_threads
         self.preroll_target = max(
             20, self.num_threads * 2
@@ -63,12 +63,13 @@ class VideoProcessor(QObject):
         self.max_display_buffer_size = (
             self.preroll_target * 4
         )  # Max frames allowed "in flight" (queued + being displayed)
-        self.frame_queue: queue.Queue[int] = queue.Queue(
-            maxsize=self.max_display_buffer_size
-        )  # Holds frame numbers for workers
-        self.threads: Dict[
-            int, threading.Thread
-        ] = {}  # Active worker threads, keyed by frame number
+        
+        # This queue will hold tasks: (frame_number, frame_rgb_data) or None (poison pill)
+        self.frame_queue: queue.Queue[Tuple[int, numpy.ndarray] | None] = queue.Queue(
+            maxsize=self.max_display_buffer_size 
+        )
+        # This list will hold our *persistent* worker threads
+        self.worker_threads: list[threading.Thread] = []
 
         # --- Media State ---
         self.media_capture: cv2.VideoCapture | None = None  # The OpenCV capture object
@@ -211,8 +212,6 @@ class VideoProcessor(QObject):
             log_fps = f"{target_fps:.2f} FPS"
             self.target_delay_sec = 1.0 / target_fps
 
-        print(f"Starting unified metronome (Target: {log_fps}).")
-
         # 3. Start utility timers and emit signal
         self.gpu_memory_update_timer.start(5000)
 
@@ -220,9 +219,6 @@ class VideoProcessor(QObject):
             self.processing_started_signal.emit()  # EMIT UNIFIED SIGNAL
             # Record the time when the display *actually* starts
             self.playback_display_start_time = time.perf_counter()
-            print(
-                f"Metronome: Display loop initiated at {self.playback_display_start_time:.3f}s"
-            )
 
         # 4. Start the metronome loop
         self.last_display_schedule_time_sec = time.perf_counter()
@@ -351,8 +347,13 @@ class VideoProcessor(QObject):
                 frame_rgb = frame_bgr[..., ::-1]
                 frame_num_to_process = self.current_frame_number
 
-                self.frame_queue.put(frame_num_to_process)
-                self.start_frame_worker(frame_num_to_process, frame_rgb)
+                # Create the task tuple (frame_number, frame_data)
+                task = (frame_num_to_process, frame_rgb)
+                
+                # Put the task in the queue for the worker pool
+                self.frame_queue.put(task) 
+                
+                # DO NOT START A WORKER HERE
                 self.current_frame_number += 1
 
             except Exception as e:
@@ -383,8 +384,12 @@ class VideoProcessor(QObject):
                     continue  # Try again
 
                 frame_rgb = frame_bgr[..., ::-1]
-                self.frame_queue.put(0)  # Frame number is not relevant
-                self.start_frame_worker(0, frame_rgb, is_single_frame=False)
+
+                # Create the task tuple (frame_number, frame_data)
+                task = (0, frame_rgb) # Frame number is 0
+                
+                # Put the task in the queue for the worker pool
+                self.frame_queue.put(task)
 
             except Exception as e:
                 print(f"[ERROR] Error in _feed_webcam loop: {e}")
@@ -548,9 +553,6 @@ class VideoProcessor(QObject):
 
         # --- 8. Clean up and Increment ---
         if self.file_type != "webcam":
-            # Clean up thread
-            if frame_number_to_display in self.threads:
-                self.threads.pop(frame_number_to_display)
 
             # Increment for next frame
             self.next_frame_to_display += 1
@@ -571,14 +573,18 @@ class VideoProcessor(QObject):
                     print(f"[WARN] Failed sending frame to virtualcam: {e}")
 
     def set_number_of_threads(self, value):
-        """Stops processing and updates the thread count for workers."""
+        """Updates the thread count for the *next* worker pool."""
         if not value:
             value = 1
-        self.stop_processing()  # Stop any active processing before changing threads
+        # Stop processing if it's running, to apply the new count on next start
+        if self.processing or self.is_processing_segments:
+            print(f"Setting thread count to {value}. Stopping active processing.")
+            self.stop_processing()
+        else:
+            print(f"Max Threads set as {value}. Will be applied on next run.")
+            
         self.main_window.models_processor.set_number_of_threads(value)
         self.num_threads = value
-        self.frame_queue = queue.Queue(maxsize=self.num_threads)
-        print(f"Max Threads set as {value} ")
 
     def process_video(self):
         """
@@ -652,10 +658,23 @@ class VideoProcessor(QObject):
         # Note: Audio is not started here. It's started by
         # _start_synchronized_playback after the preroll buffer is full.
 
-        # 6. Reset Timers and Containers
+        # 6a. Reset Timers and Containers
         self.start_time = time.perf_counter()
         self.frames_to_display.clear()
-        self.threads.clear()
+
+        # 6b. START WORKER POOL
+        print(f"Starting {self.num_threads} persistent worker thread(s)...")
+        # Ensure old workers are cleared (from a previous run)
+        self.join_and_clear_threads() 
+        self.worker_threads = []
+        for i in range(self.num_threads):
+            worker = FrameWorker(
+                frame_queue=self.frame_queue, # Pass the task queue
+                main_window=self.main_window,
+                worker_id=i
+            )
+            worker.start()
+            self.worker_threads.append(worker)
 
         # --- 7. AUDIO/VIDEO SYNC LOGIC (MODIFIED) ---
 
@@ -776,15 +795,21 @@ class VideoProcessor(QObject):
                 self._start_synchronized_playback()
 
     def start_frame_worker(self, frame_number, frame, is_single_frame=False):
-        """Starts a FrameWorker to process the given frame."""
+        """
+        Starts a one-shot FrameWorker for a *single frame*.
+        This is NOT used by the video pool.
+        """
+        # We must modify FrameWorker to accept this signature
         worker = FrameWorker(
-            frame, self.main_window, frame_number, self.frame_queue, is_single_frame
+            frame=frame, # Pass frame directly
+            main_window=self.main_window, 
+            frame_number=frame_number, 
+            frame_queue=None, # No queue for single frame
+            is_single_frame=is_single_frame,
+            worker_id=-1 # Indicates single-frame mode
         )
-        self.threads[frame_number] = worker
-        if is_single_frame:
-            worker.run()  # Process synchronously (blocks until done)
-        else:
-            worker.start()  # Process asynchronously (in a new thread)
+        # DO NOT add to any list/dict. It's a one-shot thread.
+        worker.start()
 
     def process_current_frame(self):
         """
@@ -850,13 +875,7 @@ class VideoProcessor(QObject):
 
         # --- Process if read was successful ---
         if read_successful and frame_to_process is not None:
-            # Clear any pending workers
-            with self.frame_queue.mutex:
-                self.frame_queue.queue.clear()
-            self.threads.clear()
-
-            # Process this frame synchronously
-            self.frame_queue.put(self.current_frame_number)
+            # We just start a new one-shot worker.
             self.start_frame_worker(
                 self.current_frame_number, frame_to_process, is_single_frame=True
             )
@@ -1014,17 +1033,52 @@ class VideoProcessor(QObject):
         return True  # Processing was stopped
 
     def join_and_clear_threads(self):
-        """Waits for all active worker threads to finish and clears the list."""
-        active_threads = list(self.threads.values())
+        """
+        Stops and waits for all pool worker threads to finish.
+        This function's *only* job is to set events, send pills, and join.
+        It does NOT clear the queue.
+        """
+        active_threads = self.worker_threads
+        if not active_threads:
+            return  # Nothing to do
+
+        print(f"Signaling {len(active_threads)} active worker(s) to stop...")
+
+        # 1. Set stop event for all workers in the pool
+        for thread in active_threads:
+            if hasattr(thread, "stop_event") and not thread.stop_event.is_set():
+                try:
+                    thread.stop_event.set()
+                except Exception as e:
+                    print(
+                        f"[WARN] Error setting stop_event on thread {thread.name}: {e}"
+                    )
+
+        # 2. Wake up any workers blocked on queue.get() by sending a "poison pill" (None)
+        # We must send one pill for each worker.
+        for _ in active_threads:
+            try:
+                # Use non-blocking put with a small timeout in case the queue is full
+                # (which shouldn't happen, but is safer)
+                self.frame_queue.put(None, timeout=0.1)
+            except queue.Full:
+                # print(f"[WARN] Could not put poison pill in full queue during stop.")
+                pass
+            except Exception as e:
+                print(f"[WARN] Error putting poison pill in queue: {e}")
+
+        # 3. Join all threads
         for thread in active_threads:
             try:
                 if thread.is_alive():
-                    thread.join(timeout=1.0)
+                    thread.join(timeout=2.0)
                     if thread.is_alive():
                         print(f"[WARN] Thread {thread.name} did not join gracefully.")
             except Exception as e:
                 print(f"[WARN] Error joining thread {thread.name}: {e}")
-        self.threads.clear()
+
+        # 4. Clear the worker list
+        self.worker_threads.clear()
 
     # --- Utility Methods ---
 

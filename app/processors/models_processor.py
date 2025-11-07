@@ -217,6 +217,9 @@ class ModelsProcessor(QtCore.QObject):
             "trt_layer_norm_fp32_fallback": True,
             "trt_builder_optimization_level": 5,
         }
+        # A set to keep track of models that have been loaded but
+        # have not had their engine built (lazy build).
+        self.models_pending_build = set()
         self.providers = [("CUDAExecutionProvider"), ("CPUExecutionProvider")]
         self.syncvec = torch.empty((1, 1), dtype=torch.float32, device=self.device)
         self.nThreads = 1
@@ -466,6 +469,51 @@ class ModelsProcessor(QtCore.QObject):
         self.rgb_to_linear_rgb_converter = None
         self.linear_rgb_to_rgb_converter = None
 
+    def _check_tensorrt_cache(self, model_name: str, onnx_path: str) -> bool:
+        """
+        Checks if a valid TensorRT cache (ctx and engine file) exists for the given model.
+        Returns True if a valid cache is found, False otherwise.
+        """
+        try:
+            cache_dir = "tensorrt-engines"
+            base_onnx_name = os.path.splitext(os.path.basename(onnx_path))[0]
+            ctx_file_name = f"{base_onnx_name}_ctx.onnx"
+            ctx_file_path = os.path.join(cache_dir, ctx_file_name)
+
+            if os.path.exists(ctx_file_path):
+                with open(ctx_file_path, "rb") as f:
+                    content = f.read()
+
+                match = re.search(b"TensorrtExecutionProvider_.*?\\.engine", content)
+                if not match:
+                    print(
+                        f"Cache check: Context file '{ctx_file_name}' found, but no engine name inside."
+                    )
+                    return False
+
+                engine_name = match.group(0).decode("utf-8")
+                engine_subdirectory_name = os.path.basename(cache_dir)
+                engine_file_path = os.path.join(
+                    cache_dir, engine_subdirectory_name, engine_name
+                )
+
+                if os.path.exists(engine_file_path):
+                    return True
+                else:
+                    print(
+                        f"Cache check: Context file '{ctx_file_name}' found, but engine '{engine_name}' is missing."
+                    )
+                    return False
+            else:
+                print(
+                    f"Cache check: No cache context file '{ctx_file_name}' found for {model_name}."
+                )
+                return False
+
+        except Exception as e:
+            print(f"Error during TensorRT cache check: {e}")
+            return False
+
     def load_model(self, model_name, session_options=None):
         with self.model_lock:
             if self.models.get(model_name):
@@ -486,48 +534,7 @@ class ModelsProcessor(QtCore.QObject):
                 # Only run the isolated probe if TensorRT is the target provider
                 if is_tensorrt_load:
                     # Check if engine config file exists...
-                    cache_is_valid = False
-                    try:
-                        cache_dir = "tensorrt-engines"
-                        base_onnx_name = os.path.splitext(os.path.basename(onnx_path))[
-                            0
-                        ]
-                        ctx_file_name = f"{base_onnx_name}_ctx.onnx"
-                        ctx_file_path = os.path.join(cache_dir, ctx_file_name)
-
-                        if os.path.exists(ctx_file_path):
-                            with open(ctx_file_path, "rb") as f:
-                                content = f.read()
-
-                            match = re.search(
-                                b"TensorrtExecutionProvider_.*?\\.engine", content
-                            )
-
-                            if match:
-                                engine_name = match.group(0).decode("utf-8")
-                                engine_subdirectory_name = os.path.basename(cache_dir)
-                                engine_file_path = os.path.join(
-                                    cache_dir, engine_subdirectory_name, engine_name
-                                )
-
-                                if os.path.exists(engine_file_path):
-                                    cache_is_valid = True
-                                else:
-                                    print(
-                                        f"Context file '{ctx_file_name}' found, but the engine '{engine_name}' is missing from the subdirectory. New build will be prompted through ONNX Probe."
-                                    )
-                            else:
-                                print(
-                                    f"Context file '{ctx_file_name}' found, but could not extract the engine name from it. New build will be prompted through ONNX Probe."
-                                )
-                        else:
-                            print(
-                                f"No cache context file '{ctx_file_name}' found for {model_name}. New build will be prompted through ONNX Probe."
-                            )
-
-                    except Exception as e:
-                        print(f"Error during TensorRT cache check: {e}")
-                        cache_is_valid = False
+                    cache_is_valid = self._check_tensorrt_cache(model_name, onnx_path)
 
                     # If no engine config file or cache file exists run the prob
                     if not cache_is_valid:
@@ -652,6 +659,18 @@ class ModelsProcessor(QtCore.QObject):
                         torch.cuda.synchronize()
                         print("Synchronization complete.")
 
+                    # Check cache AGAIN.
+                    # If the probe succeeded BUT the cache STILL doesn't exist,
+                    # it's a "Lazy Build" model.
+                    if not self._check_tensorrt_cache(model_name, onnx_path):
+                        print(
+                            f"[load_model]: Model {model_name} requires a lazy build (engine not found after probe)."
+                        )
+                        print(
+                            "[load_model]: Adding to 'models_pending_build' set."
+                        )
+                        self.models_pending_build.add(model_name)
+
                 # Race condition check
                 if self.models.get(model_name):
                     del model_instance
@@ -691,6 +710,25 @@ class ModelsProcessor(QtCore.QObject):
                 # Always hide the dialog at the very end,
                 # covering both the probe and the actual load.
                 self.hide_build_dialog.emit()
+
+    def check_and_clear_pending_build(self, model_name: str) -> bool:
+        """
+        Checks if a model is pending its first-run lazy build.
+        If it is, it clears the flag and returns True.
+
+        Args:
+            model_name: The name of the model to check.
+
+        Returns:
+            True if the model *was* pending a build, False otherwise.
+        """
+        if model_name in self.models_pending_build:
+            print(
+                f"[Processor]: Model '{model_name}' is triggering its first-run lazy build."
+            )
+            self.models_pending_build.remove(model_name)
+            return True
+        return False
 
     def load_dfm_model(self, dfm_model):
         with self.model_lock:

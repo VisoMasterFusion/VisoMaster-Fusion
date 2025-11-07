@@ -155,11 +155,27 @@ class FaceMasks:
             buffer_ptr=output.data_ptr(),
         )
 
-        if self.models_processor.device == "cuda":
-            torch.cuda.synchronize()
-        elif self.models_processor.device != "cpu":
-            self.models_processor.syncvec.cpu()
-        ort_session.run_with_iobinding(io_binding)
+        # --- START LAZY BUILD CHECK ---
+        is_lazy_build = self.models_processor.check_and_clear_pending_build(
+            model_name
+        )
+        if is_lazy_build:
+            # Use the 'model_name' variable for a reliable dialog message
+            self.models_processor.show_build_dialog.emit(
+                "Finalizing TensorRT Build",
+                f"Performing first-run inference for:\n{model_name}\n\nThis may take several minutes.",
+            )
+        
+        try:
+            if self.models_processor.device == "cuda":
+                torch.cuda.synchronize()
+            elif self.models_processor.device != "cpu":
+                self.models_processor.syncvec.cpu()
+            ort_session.run_with_iobinding(io_binding)
+        finally:
+            if is_lazy_build:
+                self.models_processor.hide_build_dialog.emit()
+        # --- END LAZY BUILD CHECK ---
 
     def apply_dfl_xseg(self, img, amount, mouth, parameters):
         amount2 = -parameters["DFLXSeg2SizeSlider"]
@@ -323,16 +339,32 @@ class FaceMasks:
             buffer_ptr=output.data_ptr(),
         )
 
-        if self.models_processor.device == "cuda":
-            torch.cuda.synchronize()
-        elif self.models_processor.device != "cpu":
-            self.models_processor.syncvec.cpu()
-        ort_session.run_with_iobinding(io_binding)
+        # --- START LAZY BUILD CHECK ---
+        is_lazy_build = self.models_processor.check_and_clear_pending_build(
+            model_name
+        )
+        if is_lazy_build:
+            # Use the 'model_name' variable for a reliable dialog message
+            self.models_processor.show_build_dialog.emit(
+                "Finalizing TensorRT Build",
+                f"Performing first-run inference for:\n{model_name}\n\nThis may take several minutes.",
+            )
+
+        try:
+            if self.models_processor.device == "cuda":
+                torch.cuda.synchronize()
+            elif self.models_processor.device != "cpu":
+                self.models_processor.syncvec.cpu()
+            ort_session.run_with_iobinding(io_binding)
+        finally:
+            if is_lazy_build:
+                self.models_processor.hide_build_dialog.emit()
+        # --- END LAZY BUILD CHECK ---
 
     def _faceparser_labels(self, img_uint8_3x512x512: torch.Tensor) -> torch.Tensor:
         """
-        Nimmt [3,512,512] uint8, ruft das 512er-Parser-Modell,
-        gibt aber **[256,256]** Labels (long, 0..18) zurück.
+        Takes [3,512,512] uint8, calls the 512 parser model,
+        but returns [256,256] labels (long, 0..18).
         """
         model_name = "FaceParser"
         ort_session = self.models_processor.models.get(model_name)
@@ -367,17 +399,33 @@ class FaceMasks:
             out.data_ptr(),
         )
 
-        if self.models_processor.device == "cuda":
-            torch.cuda.synchronize()
-        elif self.models_processor.device != "cpu":
-            self.models_processor.syncvec.cpu()
-        ort_session.run_with_iobinding(io)
+        # --- START LAZY BUILD CHECK ---
+        is_lazy_build = self.models_processor.check_and_clear_pending_build(
+            model_name
+        )
+        if is_lazy_build:
+            # Use the 'model_name' variable for a reliable dialog message
+            self.models_processor.show_build_dialog.emit(
+                "Finalizing TensorRT Build",
+                f"Performing first-run inference for:\n{model_name}\n\nThis may take several minutes.",
+            )
+
+        try:
+            if self.models_processor.device == "cuda":
+                torch.cuda.synchronize()
+            elif self.models_processor.device != "cpu":
+                self.models_processor.syncvec.cpu()
+            ort_session.run_with_iobinding(io)
+        finally:
+            if is_lazy_build:
+                self.models_processor.hide_build_dialog.emit()
+        # --- END LAZY BUILD CHECK ---
 
         labels_512 = out.argmax(dim=1).squeeze(0).to(torch.long)  # [512,512]
-        # auf 256x256 mit NEAREST (keine Mischklassen)
+        # downscale to 256x256 with NEAREST (no mixed classes)
         labels_256 = (
             F.interpolate(
-                labels_512.unsqueeze(0).unsqueeze(0).float(),  # [1,1,512,512] als float
+                labels_512.unsqueeze(0).unsqueeze(0).float(),  # [1,1,512,512] as float
                 size=(256, 256),
                 mode="nearest",
             )
@@ -629,11 +677,11 @@ class FaceMasks:
         return result
 
     def run_onnx(self, image_tensor, output_tensor, model_key):
-        # Modell ggf. laden
+        # Load model if needed
         sess = self.models_processor.models.get(model_key)
         if sess is None:
             sess = self.models_processor.load_model(model_key)
-            self.models_processor.models[model_key] = sess
+            # self.models_processor.models[model_key] = sess # load_model already does this
 
         image_tensor = image_tensor.contiguous()
         io_binding = sess.io_binding()
@@ -655,12 +703,29 @@ class FaceMasks:
             buffer_ptr=output_tensor.data_ptr(),
         )
 
-        if self.models_processor.device == "cuda":
-            torch.cuda.synchronize()
-        else:
-            self.models_processor.syncvec.cpu()
+        # --- START LAZY BUILD CHECK ---
+        is_lazy_build = self.models_processor.check_and_clear_pending_build(
+            model_key
+        )
+        if is_lazy_build:
+            # Use the 'model_key' variable for a reliable dialog message
+            self.models_processor.show_build_dialog.emit(
+                "Finalizing TensorRT Build",
+                f"Performing first-run inference for:\n{model_key}\n\nThis may take several minutes.",
+            )
+        
+        try:
+            if self.models_processor.device == "cuda":
+                torch.cuda.synchronize()
+            else:
+                self.models_processor.syncvec.cpu()
 
-        sess.run_with_iobinding(io_binding)
+            sess.run_with_iobinding(io_binding)
+        finally:
+            if is_lazy_build:
+                self.models_processor.hide_build_dialog.emit()
+        # --- END LAZY BUILD CHECK ---
+        
         return output_tensor
 
     def run_CLIPs(self, img, CLIPText, CLIPAmount):
