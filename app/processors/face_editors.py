@@ -170,7 +170,7 @@ class FaceEditors:
             I_s = torch.unsqueeze(I_s, 0).contiguous()
 
             # --- TensorRT Execution Path ---
-            if self.models_processor.provider_name == "TensorRT-Engine":
+            if self.models_processor.provider_name in ["TensorRT", "TensorRT-Engine"]:
                 if face_editor_type == "Human-Face":
                     if not self.models_processor.models_trt[
                         "LivePortraitMotionExtractor"
@@ -327,7 +327,7 @@ class FaceEditors:
             I_s = torch.unsqueeze(I_s, 0).contiguous()
 
             # --- TensorRT Execution Path ---
-            if self.models_processor.provider_name == "TensorRT-Engine":
+            if self.models_processor.provider_name in ["TensorRT", "TensorRT-Engine"]:
                 if face_editor_type == "Human-Face":
                     if not self.models_processor.models_trt[
                         "LivePortraitAppearanceFeatureExtractor"
@@ -407,7 +407,7 @@ class FaceEditors:
             feat_eye = faceutil.concat_feat(kp_source, eye_close_ratio).contiguous()
 
             # --- TensorRT Execution Path ---
-            if self.models_processor.provider_name == "TensorRT-Engine":
+            if self.models_processor.provider_name in ["TensorRT", "TensorRT-Engine"]:
                 if face_editor_type == "Human-Face":
                     if not self.models_processor.models_trt["LivePortraitStitchingEye"]:
                         self.models_processor.models_trt["LivePortraitStitchingEye"] = (
@@ -475,7 +475,7 @@ class FaceEditors:
             feat_lip = faceutil.concat_feat(kp_source, lip_close_ratio).contiguous()
 
             # --- TensorRT Execution Path ---
-            if self.models_processor.provider_name == "TensorRT-Engine":
+            if self.models_processor.provider_name in ["TensorRT", "TensorRT-Engine"]:
                 if face_editor_type == "Human-Face":
                     if not self.models_processor.models_trt["LivePortraitStitchingLip"]:
                         self.models_processor.models_trt["LivePortraitStitchingLip"] = (
@@ -542,7 +542,7 @@ class FaceEditors:
             feat_stiching = faceutil.concat_feat(kp_source, kp_driving).contiguous()
 
             # --- TensorRT Execution Path ---
-            if self.models_processor.provider_name == "TensorRT-Engine":
+            if self.models_processor.provider_name in ["TensorRT", "TensorRT-Engine"]:
                 if face_editor_type == "Human-Face":
                     if not self.models_processor.models_trt["LivePortraitStitching"]:
                         self.models_processor.models_trt["LivePortraitStitching"] = (
@@ -669,7 +669,7 @@ class FaceEditors:
             kp_driving = kp_driving.contiguous()
 
             # --- TensorRT Execution Path ---
-            if self.models_processor.provider_name == "TensorRT-Engine":
+            if self.models_processor.provider_name in ["TensorRT", "TensorRT-Engine"]:
                 model_name = "LivePortraitWarpingSpadeFix"
                 if face_editor_type == "Human-Face":
                     if not self.models_processor.models_trt.get(model_name):
