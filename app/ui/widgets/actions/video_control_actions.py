@@ -833,17 +833,27 @@ def on_change_video_seek_slider(main_window: "MainWindow", new_position=0):
     video_processor.next_frame_to_display = new_position
     if video_processor.media_capture:
         video_processor.media_capture.set(cv2.CAP_PROP_POS_FRAMES, new_position)
+
+        # Read the raw frame without triggering the full pipeline.
         ret, frame = misc_helpers.read_frame(video_processor.media_capture)
         if ret:
+            # For preview, show the raw frame immediately.
+            # The processed frame will be shown when the slider is released.
             pixmap = common_widget_actions.get_pixmap_from_frame(main_window, frame)
             graphics_view_actions.update_graphics_view(
                 main_window, pixmap, new_position
             )
-            if main_window.control.get("AutoSwapToggle", False):
-                card_actions.find_target_faces(main_window)
 
-            update_parameters_and_control_from_marker(main_window, new_position)
-            update_widget_values_from_markers(main_window, new_position)
+            # REMOVED HEAVY OPERATIONS
+            # These lines were causing the slowdown and have been removed.
+            # The full processing will now happen in on_slider_released.
+            #
+            # if main_window.control.get("AutoSwapToggle", False):
+            #     card_actions.find_target_faces(main_window)
+            #
+            # update_parameters_and_control_from_marker(main_window, new_position)
+            # update_widget_values_from_markers(main_window, new_position)
+
         else:
             main_window.last_seek_read_failed = True
 
@@ -900,6 +910,10 @@ def on_slider_pressed(main_window: "MainWindow"):
 
 # @misc_helpers.benchmark
 def on_slider_released(main_window: "MainWindow"):
+    """
+    This function is connected to the sliderReleased signal. It triggers
+    the full processing pipeline ONLY AFTER the user has finished dragging.
+    """
     # print("Called on_slider_released()")
 
     main_window.videoSeekSlider.value()
@@ -907,7 +921,8 @@ def on_slider_released(main_window: "MainWindow"):
     # Perform the update to the new frame
     video_processor = main_window.video_processor
     if video_processor.media_capture:
-        video_processor.process_current_frame()  # Process the current frame
+        # This is the heavy processing call that runs the AI models.
+        video_processor.process_current_frame()
 
 
 def process_swap_faces(main_window: "MainWindow"):

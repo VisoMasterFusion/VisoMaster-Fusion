@@ -468,15 +468,48 @@ class ModelsProcessor(QtCore.QObject):
 
     def load_model(self, model_name, session_options=None):
         with self.model_lock:
+            # Check both TRT and ONNX caches first.
+            if self.provider_name == "TensorRT-Engine" and self.models_trt.get(
+                model_name
+            ):
+                return self.models_trt[model_name]
             if self.models.get(model_name):
                 return self.models[model_name]
 
             model_instance = None
-            onnx_path = self.models_path[model_name]
+            onnx_path = self.models_path.get(model_name)
+            if not onnx_path:
+                print(
+                    f"[ERROR] Model path for '{model_name}' not found in models_data."
+                )
+                return None
 
-            # This variable is needed to synchronize CUDA after the load
+            # If TensorRT-Engine provider is selected, prioritize loading/building the TRT engine.
+            if self.provider_name == "TensorRT-Engine":
+                # Check if there is a corresponding TRT model definition
+                trt_model_info = next(
+                    (m for m in models_trt_list if m["model_name"] == model_name), None
+                )
+                if trt_model_info:
+                    print(
+                        f"Provider is TensorRT-Engine, attempting to load TRT model for '{model_name}'..."
+                    )
+                    # This will build the engine if it doesn't exist.
+                    model_instance = self.load_model_trt(model_name)
+                    if model_instance:
+                        self.models_trt[model_name] = model_instance
+                        # No need to load ONNX version if TRT succeeds
+                        return model_instance
+                    else:
+                        print(
+                            f"[WARN] Failed to load/build TRT engine for '{model_name}'. Falling back to ONNX Runtime."
+                        )
+                else:
+                    print(
+                        f"[INFO] No dedicated TRT engine for '{model_name}'. Using ONNX Runtime."
+                    )
+
             build_was_triggered = False
-
             is_tensorrt_load = any(
                 (p[0] if isinstance(p, tuple) else p) == "TensorrtExecutionProvider"
                 for p in self.providers
@@ -732,28 +765,33 @@ class ModelsProcessor(QtCore.QObject):
         precision="fp16",
         debug=False,
     ):
-        self.main_window.model_loading_signal.emit()
+        # self.main_window.model_loading_signal.emit()
         model_instance = None
         onnx_path = self.models_path[model_name]
         trt_path = self.models_trt_path[model_name]
 
         try:
-            # Get or create a lock specific to this TRT engine file to prevent race conditions.
             with self.trt_build_lock_creation_lock:
                 if trt_path not in self.trt_build_locks:
                     self.trt_build_locks[trt_path] = threading.Lock()
             model_build_lock = self.trt_build_locks[trt_path]
 
-            # Acquire the lock. Only one thread can be in this block for this specific model at a time.
             with model_build_lock:
-                # Re-check if the file exists *after* acquiring the lock.
-                # Another thread might have just finished building it while this one was waiting.
                 if not os.path.exists(trt_path):
                     print(
                         f"TRT engine file not found. Starting isolated build: {trt_path}"
                     )
 
-                    # Run the build in an isolated process
+                    # Emit signal to show build dialog
+                    dialog_title = "Building TensorRT Engine"
+                    dialog_text = (
+                        f"Building TensorRT engine for:\n"
+                        f"{os.path.basename(onnx_path)}\n\n"
+                        f"This may take several minutes.\n"
+                        f"The application will continue once finished."
+                    )
+                    self.show_build_dialog.emit(dialog_title, dialog_text)
+
                     ctx = multiprocessing.get_context("spawn")
                     build_process = ctx.Process(
                         target=_build_trt_engine_worker,
@@ -762,12 +800,12 @@ class ModelsProcessor(QtCore.QObject):
                             trt_path,
                             precision,
                             custom_plugin_path,
-                            False,  # verbose
+                            False,
                         ),
                     )
 
                     build_process.start()
-                    build_process.join()  # Wait for the build process to finish
+                    build_process.join()
 
                     if build_process.exitcode != 0:
                         raise RuntimeError(
@@ -778,10 +816,9 @@ class ModelsProcessor(QtCore.QObject):
                         raise FileNotFoundError(
                             f"TRT engine file still not found after isolated build: {trt_path}"
                         )
-
                     print("Isolated build successful.")
 
-                # Now, whether it was just built or already existed, we can load it.
+                print(f"Loading model: {model_name} with provider: TensorRT-Engine")
                 model_instance = TensorRTPredictor(
                     model_path=trt_path,
                     custom_plugin_path=custom_plugin_path,
@@ -791,17 +828,13 @@ class ModelsProcessor(QtCore.QObject):
                 )
                 print(f"Successfully loaded TRT model: {model_name}")
 
-            # The lock is automatically released here.
         except Exception:
             print(f"ERROR: Failed to build or load TensorRT model {model_name}.")
-            print(
-                "This can happen during the ONNX to TRT conversion or when loading the built engine."
-            )
-            print("Detailed error:")
             traceback.print_exc()
-            model_instance = None  # Ensure we return None on failure
+            model_instance = None
         finally:
-            self.main_window.model_loaded_signal.emit()
+            self.hide_build_dialog.emit()
+            # self.main_window.model_loaded_signal.emit()
 
         return model_instance
 
@@ -841,35 +874,42 @@ class ModelsProcessor(QtCore.QObject):
     def unload_model(self, model_name_to_unload):
         with self.model_lock:
             unloaded = False
-            # Handle ONNX models
+
+            # Handle ONNX models (for CUDA, CPU, and TensorRT providers)
             if (
                 model_name_to_unload
-                and model_name_to_unload in self.models
                 and self.models.get(model_name_to_unload) is not None
             ):
-                print(f"Successfully unloaded model: {model_name_to_unload}")
-                self.models[model_name_to_unload] = None
+                print(f"Unloading ONNX model: {model_name_to_unload}")
+                # Use pop to remove the key and get the object
+                model_instance = self.models.pop(model_name_to_unload, None)
+                if model_instance:
+                    # Explicitly delete the object to trigger its __del__ method
+                    del model_instance
                 unloaded = True
 
-            # Handle TRT models
+            # Handle TRT-Engine models (for the dedicated .trt file provider)
             if (
                 TENSORRT_AVAILABLE
                 and model_name_to_unload
-                and model_name_to_unload in self.models_trt
                 and self.models_trt.get(model_name_to_unload) is not None
             ):
-                print(f"Successfully unloaded model: {model_name_to_unload}")
-                trt_model = self.models_trt[model_name_to_unload]
+                print(f"Unloading TRT-Engine model: {model_name_to_unload}")
+                trt_model = self.models_trt.pop(model_name_to_unload, None)
                 if isinstance(trt_model, TensorRTPredictor):
                     trt_model.cleanup()
-                self.models_trt[model_name_to_unload] = None
+                if trt_model:
+                    del trt_model
                 unloaded = True
 
             if unloaded:
+                # This block is now guaranteed to run after an unload.
+                print(f"Successfully unloaded model: {model_name_to_unload}")
                 gc.collect()
                 if torch.cuda.is_available():
                     torch.cuda.empty_cache()
             else:
+                # This is normal if the model wasn't loaded in the first place.
                 pass
 
     def showModelLoadingProgressBar(self):

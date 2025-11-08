@@ -34,13 +34,12 @@ class FaceRestorers:
         }
 
     def _get_model_session(self, model_name: str):
-        if model_name in self.models_processor.models:
-            ort_session = self.models_processor.models[model_name]
-        else:
-            ort_session = None
-
-        if not ort_session:
-            ort_session = self.models_processor.load_model(model_name)
+        """
+        Gets the model session by calling the centralized, provider-aware loader
+        in ModelsProcessor. This ensures correct logging, caching, and provider handling.
+        """
+        # All complex logic is now delegated to the main loader.
+        ort_session = self.models_processor.load_model(model_name)
 
         if not ort_session:
             if model_name not in self._warned_models:
