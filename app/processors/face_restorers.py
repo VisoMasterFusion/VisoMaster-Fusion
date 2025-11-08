@@ -33,6 +33,15 @@ class FaceRestorers:
             "VQFR-v2": "VQFRv2",
         }
 
+    def unload_models(self):
+        """Unloads the restorer models held in both slots and resets state."""
+        if self.active_model_slot1:
+            self.models_processor.unload_model(self.active_model_slot1)
+            self.active_model_slot1 = None
+        if self.active_model_slot2:
+            self.models_processor.unload_model(self.active_model_slot2)
+            self.active_model_slot2 = None
+
     def _get_model_session(self, model_name: str):
         """
         Gets the model session by calling the centralized, provider-aware loader

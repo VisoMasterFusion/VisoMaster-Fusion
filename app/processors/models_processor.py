@@ -973,10 +973,37 @@ class ModelsProcessor(QtCore.QObject):
         return memory_used, memory_total[0]
 
     def clear_gpu_memory(self):
+        print("Clearing GPU Memory: Unloading all models...")
+        self.main_window.video_processor.stop_processing()  # Ensure no workers are active
+
+        # Explicitly call unloaders for each category
+        self.face_detectors.unload_models()
+        self.face_landmark_detectors.unload_models()
+        self.face_masks.unload_models()
+        self.face_restorers.unload_models()
+        self.face_swappers.unload_models()
+        self.frame_enhancers.unload_models()
+        self.face_editors.unload_models()
+
+        # Unload any remaining models in the main dictionaries (as a fallback)
         self.delete_models()
         self.delete_models_dfm()
         self.delete_models_trt()
-        torch.cuda.empty_cache()
+
+        # Unload the Clip and KV Extractor models specifically
+        self.unload_kv_extractor()
+        if self.clip_session:
+            print("Unloading CLIP model.")
+            del self.clip_session
+            self.clip_session = []
+
+        # Finally, clear caches
+        print("Running garbage collection and clearing CUDA cache.")
+        gc.collect()
+        if torch.cuda.is_available():
+            torch.cuda.empty_cache()
+
+        print("GPU Memory Cleared.")
 
     def ensure_kv_extractor_loaded(self):
         if self.kv_extractor is None:
