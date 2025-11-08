@@ -4,7 +4,7 @@
 [tool.uv.pip]
 index-strategy = "unsafe-best-match"
 extra-index-url = [
-    "https://pypi.org/simple",
     "https://pypi.nvidia.com",
-    "https://download.pytorch.org/whl/cu129"
+    "https://download.pytorch.org/whl/cu129",
+    "https://pypi.org/simple"
 ]
