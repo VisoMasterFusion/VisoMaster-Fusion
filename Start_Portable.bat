@@ -81,7 +81,9 @@ set "GIT_DIR=%PORTABLE_DIR%\git"
 set "GIT_BIN=%PORTABLE_DIR%\git\bin\git.exe"
 set "VENV_DIR=%PORTABLE_DIR%\venv"
 set "PYTHON_EMBED_URL=https://www.python.org/ftp/python/3.11.9/python-3.11.9-embed-amd64.zip"
+set "PYTHON_FULL_URL=https://www.python.org/ftp/python/3.11.9/python-3.11.9-amd64.exe"
 set "PYTHON_ZIP=%PORTABLE_DIR%\python-embed.zip"
+set "PYTHON_EXE_INSTALLER=%PORTABLE_DIR%\python-installer.exe"
 set "UV_URL=https://github.com/astral-sh/uv/releases/download/0.8.22/uv-x86_64-pc-windows-msvc.zip"
 set "UV_ZIP=%PORTABLE_DIR%\uv.zip"
 set "GIT_URL=https://github.com/git-for-windows/git/releases/download/v2.51.0.windows.1/PortableGit-2.51.0-64-bit.7z.exe"
@@ -202,29 +204,53 @@ if exist "%APP_DIR%" (
 
 :: --- Step 3: Set up portable Python ---
 if not exist "%PYTHON_DIR%\python.exe" (
-    echo Downloading Python Embeddable...
-    powershell -Command "try { (New-Object Net.WebClient).DownloadFile('%PYTHON_EMBED_URL%', '%PYTHON_ZIP%'); exit 0 } catch { exit 1 }"
-    if !ERRORLEVEL! neq 0 (
-        echo ERROR: Failed to download Python.
-        set "PATH=%OLD_PATH%"
-        exit /b 1
-    )
-    echo Extracting Python...
-    mkdir "%PYTHON_DIR%" >nul 2>&1
-    powershell -Command "Expand-Archive -Path '%PYTHON_ZIP%' -DestinationPath '%PYTHON_DIR%' -Force"
-    del "%PYTHON_ZIP%"
+    echo Checking Windows version...
+    for /f "tokens=3 delims=." %%i in ('ver') do set WIN_BUILD=%%i
 
-    set "PTH_FILE=%PYTHON_DIR%\python311._pth"
-    if exist "!PTH_FILE!" (
-        echo Enabling site packages in PTH file...
-        powershell -Command "(Get-Content '!PTH_FILE!') -replace '#import site', 'import site' | Set-Content '!PTH_FILE!'"
-    )
+    if !WIN_BUILD! LSS 22000 (
+        echo Windows 10 detected. Installing full Python package.
+        echo Downloading Python Installer...
+        powershell -Command "try { (New-Object Net.WebClient).DownloadFile('%PYTHON_FULL_URL%', '%PYTHON_EXE_INSTALLER%'); exit 0 } catch { exit 1 }"
+        if !ERRORLEVEL! neq 0 (
+            echo ERROR: Failed to download Python installer.
+            set "PATH=%OLD_PATH%"
+            exit /b 1
+        )
+        echo Installing Python silently...
+        start /wait "" "%PYTHON_EXE_INSTALLER%" /quiet InstallAllUsers=0 TargetDir="%PYTHON_DIR%" PrependPath=0 Include_test=0
+        if !ERRORLEVEL! neq 0 (
+            echo ERROR: Failed to install Python.
+            set "PATH=%OLD_PATH%"
+            exit /b 1
+        )
+        del "%PYTHON_EXE_INSTALLER%"
+    ) else (
+        echo Windows 11 or newer detected. Using embeddable Python.
+        echo Downloading Python Embeddable...
+        powershell -Command "try { (New-Object Net.WebClient).DownloadFile('%PYTHON_EMBED_URL%', '%PYTHON_ZIP%'); exit 0 } catch { exit 1 }"
+        if !ERRORLEVEL! neq 0 (
+            echo ERROR: Failed to download Python.
+            set "PATH=%OLD_PATH%"
+            exit /b 1
+        )
+        echo Extracting Python...
+        mkdir "%PYTHON_DIR%" >nul 2>&1
+        powershell -Command "Expand-Archive -Path '%PYTHON_ZIP%' -DestinationPath '%PYTHON_DIR%' -Force"
+        del "%PYTHON_ZIP%"
 
-    echo Installing pip...
-    powershell -Command "(New-Object Net.WebClient).DownloadFile('https://bootstrap.pypa.io/get-pip.py', '%PYTHON_DIR%\get-pip.py')"
-    "%PYTHON_DIR%\python.exe" "%PYTHON_DIR%\get-pip.py" --no-warn-script-location
-    del "%PYTHON_DIR%\get-pip.py"
+        set "PTH_FILE=%PYTHON_DIR%\python311._pth"
+        if exist "!PTH_FILE!" (
+            echo Enabling site packages in PTH file...
+            powershell -Command "(Get-Content '!PTH_FILE!') -replace '#import site', 'import site' | Set-Content '!PTH_FILE!'"
+        )
+
+        echo Installing pip...
+        powershell -Command "(New-Object Net.WebClient).DownloadFile('https://bootstrap.pypa.io/get-pip.py', '%PYTHON_DIR%\get-pip.py')"
+        "%PYTHON_DIR%\python.exe" "%PYTHON_DIR%\get-pip.py" --no-warn-script-location
+        del "%PYTHON_DIR%\get-pip.py"
+    )
 )
+
 
 :: --- Step 4: Set up uv ---
 if not exist "%UV_DIR%\uv.exe" (
