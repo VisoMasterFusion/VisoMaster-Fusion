@@ -108,7 +108,7 @@ class TargetMediaCardButton(CardButton):
         super().__init__(*args, **kwargs)
         self.media_id = media_id
         self.file_type = file_type
-        self.media_path = media_path.replace("/", "\\")
+        self.media_path = os.path.normpath(media_path)
         self.is_webcam = is_webcam
         self.webcam_index = webcam_index
         self.webcam_backend = webcam_backend

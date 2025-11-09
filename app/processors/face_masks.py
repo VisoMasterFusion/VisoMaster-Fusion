@@ -24,6 +24,7 @@ class FaceMasks:
         self._meshgrid_cache: Dict[tuple, tuple[torch.Tensor, torch.Tensor]] = {}
         self._blur_cache: Dict[tuple, transforms.GaussianBlur] = {}
         self.clip_model_loaded = False
+        self.active_models: set[str] = set()
 
     def ensure_models_loaded(self):
         print("FaceMasks.ensure_models_loaded called.")
@@ -74,13 +75,13 @@ class FaceMasks:
                 )  # Ensure it's in active_models even if pre-loaded
 
     def unload_models(self):
-        print("FaceMasks.unload_models called.")
+        """Unloads all models managed by this class."""
+        print("FaceMasks: Unloading models.")
         with self.models_processor.model_lock:
-            for model_name in list(
-                self.active_models
-            ):  # Iterate over a copy to allow modification
+            # Iterate over a copy of the set to allow modification
+            for model_name in list(self.active_models):
                 self.models_processor.unload_model(model_name)
-            self.active_models.clear()
+            self.active_models.clear()  # Clear the set after unloading
 
     def apply_occlusion(self, img, amount):
         img = torch.div(img, 255)
@@ -131,11 +132,11 @@ class FaceMasks:
     def run_occluder(self, image, output):
         model_name = "Occluder"
         ort_session = self.models_processor.models.get(model_name)
-        if not ort_session:
-            ort_session = self.models_processor.load_model(model_name)
 
         if not ort_session:
-            return
+            ort_session = self.models_processor.load_model(model_name)
+            if ort_session:  # If loading was successful
+                self.active_models.add(model_name)
 
         io_binding = ort_session.io_binding()
         io_binding.bind_input(

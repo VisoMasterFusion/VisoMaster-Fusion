@@ -106,13 +106,12 @@ def handle_denoiser_state_change(
     control_name_that_changed: str,
 ):
     """
-    Manages loading/unloading of denoiser models (UNet, VAEs) based on UI toggle states.
-    The actual frame refresh is handled by the `update_control` function after this.
+    Manages loading/unloading of denoiser models (UNet, VAEs, KV Extractor) based on the
+    overall state of all denoiser UI toggles. Models are loaded once if ANY denoiser pass
+    is active and unloaded only when ALL passes are disabled.
     """
-    # Determine the state of denoisers *as they were* before this change
-    # main_window.control still holds the old values for all controls at this point within exec_function
-    # 1. Get the current state of all toggles from the UI's control dictionary.
-    #    This represents the state *before* the change is applied.
+
+    # 1. Get the current state of all relevant toggles from the UI's control dictionary.
     old_before_enabled = main_window.control.get(
         "DenoiserUNetEnableBeforeRestorersToggle", False
     )
@@ -140,59 +139,58 @@ def handle_denoiser_state_change(
         if control_name_that_changed == "DenoiserAfterRestorersToggle"
         else old_after_enabled
     )
+
+    # state of the exclusive path toggle is now determined
     is_now_exclusive_path_enabled = (
         new_value_of_toggle_that_just_changed
         if control_name_that_changed == "UseReferenceExclusivePathToggle"
         else old_exclusive_path_enabled
     )
 
-    # 3. Determine if any denoiser pass will be active after this change.
+    # 3. Determine if ANY denoiser pass will be active after this change.
     any_denoiser_will_be_active = (
         is_now_before_enabled or is_now_after_first_enabled or is_now_after_enabled
     )
 
-    # 4.Load models based on the combined future state.
+    # 4. Load or Unload models based on the correct final state.
     if any_denoiser_will_be_active:
-        # The UNet and VAEs are needed if any pass is active.
+        print("At least one denoiser pass is active. Ensuring UNet/VAEs are loaded.")
         main_window.models_processor.ensure_denoiser_models_loaded()
 
         # The KV Extractor is ONLY needed if a pass is active AND the exclusive path is enabled.
         if is_now_exclusive_path_enabled:
+            print("Exclusive path is active. Ensuring KV Extractor is loaded.")
             main_window.models_processor.ensure_kv_extractor_loaded()
         else:
-            # If the exclusive path is being turned off, unload the KV Extractor.
+            # If the exclusive path is off, but a denoiser is still on, unload ONLY the KV Extractor.
+            print("Exclusive path is inactive. Unloading KV Extractor.")
             main_window.models_processor.unload_kv_extractor()
-
-        # This part for updating UI visibility remains the same.
-        pass_suffix_to_update = None
-        if (
-            control_name_that_changed == "DenoiserUNetEnableBeforeRestorersToggle"
-            and new_value_of_toggle_that_just_changed
-        ):
-            pass_suffix_to_update = "Before"
-        elif (
-            control_name_that_changed == "DenoiserAfterFirstRestorerToggle"
-            and new_value_of_toggle_that_just_changed
-        ):
-            pass_suffix_to_update = "AfterFirst"
-        elif (
-            control_name_that_changed == "DenoiserAfterRestorersToggle"
-            and new_value_of_toggle_that_just_changed
-        ):
-            pass_suffix_to_update = "After"
-
-        if pass_suffix_to_update:
-            mode_combo_name = f"DenoiserModeSelection{pass_suffix_to_update}"
-            mode_combo_widget = main_window.parameter_widgets.get(mode_combo_name)
-            if mode_combo_widget:
-                current_mode_text = mode_combo_widget.currentText()
-                main_window.update_denoiser_controls_visibility_for_pass(
-                    pass_suffix_to_update, current_mode_text
-                )
     else:
         # If NO denoiser pass will be active, unload everything.
+        print(
+            "All denoiser passes are inactive. Unloading all denoiser-related models."
+        )
         main_window.models_processor.unload_denoiser_models()
         main_window.models_processor.unload_kv_extractor()
+
+    # 5. Update UI visibility for the specific pass that was just toggled.
+    # This part remains correct as it handles UI updates based on the specific toggle changed.
+    pass_suffix_to_update = None
+    if control_name_that_changed == "DenoiserUNetEnableBeforeRestorersToggle":
+        pass_suffix_to_update = "Before"
+    elif control_name_that_changed == "DenoiserAfterFirstRestorerToggle":
+        pass_suffix_to_update = "AfterFirst"
+    elif control_name_that_changed == "DenoiserAfterRestorersToggle":
+        pass_suffix_to_update = "After"
+
+    if pass_suffix_to_update:
+        mode_combo_name = f"DenoiserModeSelection{pass_suffix_to_update}"
+        mode_combo_widget = main_window.parameter_widgets.get(mode_combo_name)
+        if mode_combo_widget:
+            current_mode_text = mode_combo_widget.currentText()
+            main_window.update_denoiser_controls_visibility_for_pass(
+                pass_suffix_to_update, current_mode_text
+            )
 
     # Frame refresh is handled by common_actions.update_control after this function returns.
 
@@ -222,16 +220,21 @@ def handle_restorer_state_change(
     """Loads or unloads a specific face restorer model based on its toggle state."""
     params = main_window.current_widget_parameters
     model_map = main_window.models_processor.face_restorers.model_map
+    face_restorers_manager = main_window.models_processor.face_restorers
 
     model_type_key = None
     active_model_attr = None
+    # Identify which slot is being changed and which is the "other" slot
+    other_active_model_attr = None
 
     if control_name == "FaceRestorerEnableToggle":
         model_type_key = "FaceRestorerTypeSelection"
         active_model_attr = "active_model_slot1"
+        other_active_model_attr = "active_model_slot2"
     elif control_name == "FaceRestorerEnable2Toggle":
         model_type_key = "FaceRestorerType2Selection"
         active_model_attr = "active_model_slot2"
+        other_active_model_attr = "active_model_slot1"
 
     if not model_type_key:
         return
@@ -241,19 +244,40 @@ def handle_restorer_state_change(
 
     if model_to_change:
         if new_value:
-            main_window.models_processor.load_model(model_to_change)
+            # Check if the other slot is already using this model
+            other_model = (
+                getattr(face_restorers_manager, other_active_model_attr, None)
+                if other_active_model_attr
+                else None
+            )
+            if model_to_change == other_model:
+                print(
+                    f"Model '{model_to_change}' is already loaded by the other restorer slot. Skipping redundant load."
+                )
+            else:
+                main_window.models_processor.load_model(model_to_change)
+
             if active_model_attr:
                 setattr(
-                    main_window.models_processor.face_restorers,
+                    face_restorers_manager,
                     active_model_attr,
                     model_to_change,
                 )
         else:
-            main_window.models_processor.unload_model(model_to_change)
-            if active_model_attr:
-                setattr(
-                    main_window.models_processor.face_restorers, active_model_attr, None
+            # Check if the other slot is using this model before unloading
+            other_model = (
+                getattr(face_restorers_manager, other_active_model_attr, None)
+                if other_active_model_attr
+                else None
+            )
+            if model_to_change != other_model:
+                main_window.models_processor.unload_model(model_to_change)
+            else:
+                print(
+                    f"Model '{model_to_change}' is still in use by the other restorer slot. Skipping unload."
                 )
+            if active_model_attr:
+                setattr(face_restorers_manager, active_model_attr, None)
 
 
 def handle_model_selection_change(
@@ -262,35 +286,58 @@ def handle_model_selection_change(
     """Unloads the old model and loads the new one when a selection dropdown changes."""
     params = main_window.current_widget_parameters
     model_map = main_window.models_processor.face_restorers.model_map
+    face_restorers_manager = main_window.models_processor.face_restorers
 
     is_enabled = False
     active_model_attr = None
     old_model_name = None
+    other_active_model_attr = None
 
     if control_name == "FaceRestorerTypeSelection":
         is_enabled = params.get("FaceRestorerEnableToggle", False)
         active_model_attr = "active_model_slot1"
-        old_model_name = main_window.models_processor.face_restorers.active_model_slot1
+        old_model_name = face_restorers_manager.active_model_slot1
+        other_active_model_attr = "active_model_slot2"
     elif control_name == "FaceRestorerType2Selection":
         is_enabled = params.get("FaceRestorerEnable2Toggle", False)
         active_model_attr = "active_model_slot2"
-        old_model_name = main_window.models_processor.face_restorers.active_model_slot2
+        old_model_name = face_restorers_manager.active_model_slot2
+        other_active_model_attr = "active_model_slot1"
 
     new_model_name = model_map.get(new_model_type)
 
-    if old_model_name and old_model_name != new_model_name:
+    # Get the model currently used by the other slot
+    other_model = (
+        getattr(face_restorers_manager, other_active_model_attr, None)
+        if other_active_model_attr
+        else None
+    )
+
+    # Unload the old model only if it's different from the new one AND not in use by the other slot.
+    if (
+        old_model_name
+        and old_model_name != new_model_name
+        and old_model_name != other_model
+    ):
         main_window.models_processor.unload_model(old_model_name)
 
+    # If the enhancer is enabled, load the new model, but only if it's not already loaded by the other slot.
     if is_enabled and new_model_name:
-        main_window.models_processor.load_model(new_model_name)
+        if new_model_name != other_model:
+            main_window.models_processor.load_model(new_model_name)
+        else:
+            print(
+                f"Model '{new_model_name}' is already loaded by the other restorer slot. Skipping redundant load."
+            )
+
         if active_model_attr:
             setattr(
-                main_window.models_processor.face_restorers,
+                face_restorers_manager,
                 active_model_attr,
                 new_model_name,
             )
     elif active_model_attr:
-        setattr(main_window.models_processor.face_restorers, active_model_attr, None)
+        setattr(face_restorers_manager, active_model_attr, None)
 
 
 def handle_landmark_state_change(

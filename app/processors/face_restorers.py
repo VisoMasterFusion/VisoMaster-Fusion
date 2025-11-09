@@ -33,14 +33,22 @@ class FaceRestorers:
             "VQFR-v2": "VQFRv2",
         }
 
-    def _get_model_session(self, model_name: str):
-        if model_name in self.models_processor.models:
-            ort_session = self.models_processor.models[model_name]
-        else:
-            ort_session = None
+    def unload_models(self):
+        """Unloads the restorer models held in both slots and resets state."""
+        if self.active_model_slot1:
+            self.models_processor.unload_model(self.active_model_slot1)
+            self.active_model_slot1 = None
+        if self.active_model_slot2:
+            self.models_processor.unload_model(self.active_model_slot2)
+            self.active_model_slot2 = None
 
-        if not ort_session:
-            ort_session = self.models_processor.load_model(model_name)
+    def _get_model_session(self, model_name: str):
+        """
+        Gets the model session by calling the centralized, provider-aware loader
+        in ModelsProcessor. This ensures correct logging, caching, and provider handling.
+        """
+        # All complex logic is now delegated to the main loader.
+        ort_session = self.models_processor.load_model(model_name)
 
         if not ort_session:
             if model_name not in self._warned_models:
