@@ -677,8 +677,11 @@
            <layout class="QHBoxLayout" name="batchLayout_1">
             <item>
              <widget class="QPushButton" name="batchImageButton">
+              <property name="toolTip">
+               <string>Processes the currently selected face across the entire target video or image.</string>
+              </property>
               <property name="text">
-               <string>Batch Process Selected Face</string>
+               <string>Batch Process Selected Face&#xA;(For Videos and Images)</string>
               </property>
               <property name="flat">
                <bool>true</bool>
@@ -687,8 +690,11 @@
             </item>
 			<item>
              <widget class="QPushButton" name="batchallImageButton">
+              <property name="toolTip">
+               <string>Processes all found faces. This feature is only available for target images, not videos.</string>
+              </property>
               <property name="text">
-               <string>Batch Process All Faces</string>
+               <string>Batch Process All Faces&#xA;(For Images only)</string>
               </property>
               <property name="flat">
                <bool>true</bool>
