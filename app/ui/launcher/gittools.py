@@ -13,6 +13,8 @@ import subprocess
 from datetime import datetime
 from pathlib import Path
 from .core import PATHS
+import filecmp
+from PySide6.QtWidgets import QApplication, QMessageBox
 
 
 # ---------- Git Command Wrapper ----------
@@ -152,3 +154,68 @@ def backup_changed_files(changed: list[str]) -> str | None:
     except Exception as e:
         print(f"[Launcher] Backup failed: {e}")
     return None
+
+
+# ---------- Self-Update Trigger ----------
+
+
+def trigger_self_update_if_needed(parent_widget=None):
+    """
+    Checks if Start_Portable.bat needs updating and, if so,
+    triggers a self-update process and quits the application.
+    """
+    root_bat = PATHS["BASE_DIR"] / "Start_Portable.bat"
+    repo_bat = PATHS["APP_DIR"] / "Start_Portable.bat"
+
+    if not root_bat.exists() or not repo_bat.exists():
+        print(
+            "[Launcher] Cannot check for self-update: one of the script files is missing."
+        )
+        return
+
+    # filecmp.cmp returns True if files are identical
+    if filecmp.cmp(str(root_bat), str(repo_bat), shallow=False):
+        print("[Launcher] Self-update check: Start_Portable.bat is already up to date.")
+        return
+
+    # --- Files are different, trigger update ---
+    print("[Launcher] Start_Portable.bat has been updated. Relaunching...")
+    QMessageBox.information(
+        parent_widget,
+        "Launcher Update Required",
+        "The launcher script (Start_Portable.bat) has been updated.\n\n"
+        "The application will now close and restart itself to apply the changes.",
+    )
+
+    updater_script_content = f"""
+    @echo off
+    echo.
+    echo Waiting for launcher to exit...
+    timeout /t 3 /nobreak >nul
+    echo Replacing Start_Portable.bat...
+    copy /y "{repo_bat.resolve()}" "{root_bat.resolve()}"
+    echo.
+    echo Update complete. Restarting launcher...
+    start "" /d "{root_bat.parent.resolve()}" "Start_Portable.bat"
+    exit
+    """
+    updater_path = PATHS["PORTABLE_DIR"] / "update_start_portable.bat"
+    try:
+        updater_path.write_text(updater_script_content, encoding="utf-8")
+    except Exception as e:
+        print(f"[Launcher] ERROR: Could not write updater script: {e}")
+        QMessageBox.critical(
+            parent_widget, "Update Error", f"Could not create the updater script:\n{e}"
+        )
+        return
+
+    # Use DETACHED_PROCESS to ensure the updater runs independently
+    subprocess.Popen(
+        f'cmd /c "{updater_path.resolve()}"',
+        creationflags=subprocess.DETACHED_PROCESS,
+        close_fds=True,
+        shell=False,
+    )
+
+    # Quit the current application
+    QApplication.quit()

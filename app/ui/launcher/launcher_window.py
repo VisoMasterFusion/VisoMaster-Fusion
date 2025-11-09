@@ -28,6 +28,7 @@ from .gittools import (
     git_changed_files,
     backup_changed_files,
     get_current_short_commit,
+    trigger_self_update_if_needed,
 )
 from .cfgtools import (
     read_portable_cfg,
@@ -461,17 +462,20 @@ class LauncherWindow(QtWidgets.QWidget):
         QtWidgets.QApplication.quit()
 
     def on_update_git(self):
-        print("[Launcher] Checking for updates (git fetch/pull)...")
+        print("[Launcher] Checking for updates (git fetch/reset)...")
         with with_busy_state(self, busy=True, text="Updating..."):
             try:
-                run_git(["fetch", "origin"])
-                run_git(["pull", "origin", "main"])
+                # Use a more robust update strategy
+                run_git(["fetch", "origin", "main"])
+                run_git(["reset", "--hard", "origin/main"])
                 update_current_commit_in_cfg()
                 update_last_updated_in_cfg()
                 self.commits = fetch_commit_list(10)
                 self._rebuild_page("page_rollback", self._build_rollback_page)
                 self._refresh_update_indicators()
                 print("[Launcher] Update complete.")
+                # Trigger self-update check after repo is updated
+                trigger_self_update_if_needed(self)
             except Exception as e:
                 print(f"[Launcher] Error during update: {e}")
 
@@ -499,11 +503,9 @@ class LauncherWindow(QtWidgets.QWidget):
                 backup_path = backup_changed_files(changed)
                 if backup_path:
                     notify_backup_created(self, backup_path)
-                r = run_git(
-                    ["restore", "--worktree", "--source=HEAD", "--", "."], capture=True
-                )
-                if not r or r.returncode != 0:
-                    run_git(["checkout", "--", "."], capture=False)
+                # A more forceful repair: reset to HEAD
+                print("[Launcher] Forcefully resetting all tracked files to HEAD...")
+                run_git(["reset", "--hard", "HEAD"])
                 update_current_commit_in_cfg()
                 update_last_updated_in_cfg()
                 write_checksum_state(
@@ -513,6 +515,8 @@ class LauncherWindow(QtWidgets.QWidget):
                 self._load_checksum_status()
                 self._refresh_update_indicators()
                 print("[Launcher] Repair complete.")
+                # Trigger self-update check after repo is repaired
+                trigger_self_update_if_needed(self)
             except Exception as e:
                 print(f"[Launcher] Error during repair: {e}")
 
@@ -566,6 +570,8 @@ class LauncherWindow(QtWidgets.QWidget):
                 self.commits = fetch_commit_list(10)
                 self._rebuild_page("page_rollback", self._build_rollback_page)
                 self._refresh_update_indicators()
+                # Trigger self-update check after rollback
+                trigger_self_update_if_needed(self)
             except Exception as e:
                 print(f"[Launcher] Error during revert: {e}")
 
