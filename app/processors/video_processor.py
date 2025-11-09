@@ -331,11 +331,27 @@ class VideoProcessor(QObject):
                     continue
 
                 # 3. Frame reading (identical)
-                # In segment mode, self.recording is False, so preview_mode=False
-                # In standard mode, self.recording determines the preview_mode
+                
+                # Check if we are in playback (not recording/segments)
+                is_playback = not self.recording and not self.is_processing_segments
+                
+                # Check if the user enabled the fast preview toggle
+                fast_preview_enabled = self.main_window.control.get("VideoPlaybackPreviewToggle", False)
+
+                preview_target_height: Optional[int] = None
+                if is_playback and fast_preview_enabled:
+                    try:
+                        # Get the selected resolution string (e.g., "360p")
+                        size_str = self.main_window.control.get("VideoPlaybackPreviewSizeSelection", "360p")
+                        # Extract the number (e.g., 360)
+                        preview_target_height = int(size_str.replace("p", ""))
+                    except Exception as e:
+                        print(f"[WARN] Could not parse preview resolution, defaulting to None. Error: {e}")
+                        preview_target_height = None
+
                 ret, frame_bgr = misc_helpers.read_frame(
                     self.media_capture,
-                    preview_mode=not self.recording and not is_segment_mode,
+                    preview_target_height=preview_target_height,
                 )
                 if not ret:
                     print(
@@ -377,7 +393,7 @@ class VideoProcessor(QObject):
                     continue
 
                 ret, frame_bgr = misc_helpers.read_frame(
-                    self.media_capture, preview_mode=False
+                    self.media_capture, preview_target_height=None
                 )
                 if not ret:
                     print("[WARN] Feeder: Failed to read webcam frame.")
@@ -691,7 +707,7 @@ class VideoProcessor(QObject):
         )
         ret, frame_bgr = misc_helpers.read_frame(
             self.media_capture,
-            preview_mode=False,  # Always read full frame for consistency
+            preview_target_height=None,
         )
         print(f"Sync: Initial read complete (Result: {ret}).")
 
@@ -712,7 +728,7 @@ class VideoProcessor(QObject):
                 f"Sync: Retrying read for frame {fallback_frame_to_try} using locked helper..."
             )
             ret, frame_bgr = misc_helpers.read_frame(
-                self.media_capture, preview_mode=False
+                self.media_capture, preview_target_height=None
             )
             print(f"Sync: Retry read complete (Result: {ret}).")
             if not ret:
@@ -846,7 +862,7 @@ class VideoProcessor(QObject):
         if self.file_type == "video" and self.media_capture:
             self.media_capture.set(cv2.CAP_PROP_POS_FRAMES, self.current_frame_number)
             ret, frame_bgr = misc_helpers.read_frame(
-                self.media_capture, preview_mode=False
+                self.media_capture, preview_target_height=None
             )
             if ret:
                 frame_to_process = frame_bgr[..., ::-1]  # BGR to RGB
@@ -875,7 +891,7 @@ class VideoProcessor(QObject):
 
         elif self.file_type == "webcam" and self.media_capture:
             ret, frame_bgr = misc_helpers.read_frame(
-                self.media_capture, preview_mode=False
+                self.media_capture, preview_target_height=None
             )
             if ret:
                 frame_to_process = frame_bgr[..., ::-1]  # BGR to RGB
@@ -1858,7 +1874,8 @@ class VideoProcessor(QObject):
         # 4. Seek to the start frame of the segment
         print(f"Seeking to start frame {start_frame}...")
         self.media_capture.set(cv2.CAP_PROP_POS_FRAMES, start_frame)
-        ret, frame_bgr = misc_helpers.read_frame(self.media_capture, preview_mode=False)
+        # We use preview_target_height=None to ensure segments are always read at full resolution
+        ret, frame_bgr = misc_helpers.read_frame(self.media_capture, preview_target_height=None)
         if ret:
             self.current_frame = numpy.ascontiguousarray(
                 frame_bgr[..., ::-1]
