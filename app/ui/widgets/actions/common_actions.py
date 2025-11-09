@@ -1,6 +1,4 @@
-import threading
 from typing import TYPE_CHECKING, Callable, Optional
-from functools import partial
 
 import cv2
 import numpy as np
@@ -360,7 +358,7 @@ def set_gpu_memory_progressbar_value(
     main_window.vramProgressBar.setFormat(
         f"{round(memory_used / 1024, 2)} GB / {round(memory_total / 1024, 2)} GB (%p%)"
     )
-    # Base style copied from true_dark_styles.qss 
+    # Base style copied from true_dark_styles.qss
     base_style = """
         QProgressBar {
             border: 1px solid #363636;
@@ -370,8 +368,8 @@ def set_gpu_memory_progressbar_value(
             color: #f0f0f0;
         }
     """
-    
-    # Base Chunk style copied from true_dark_styles.qss 
+
+    # Base Chunk style copied from true_dark_styles.qss
     chunk_style_normal = """
         QProgressBar::chunk {
             background-color: #16759e;  /* Blue */
@@ -380,7 +378,7 @@ def set_gpu_memory_progressbar_value(
             border-radius: 4px;
         }
     """
-    
+
     # High VRAM Chunck style
     chunk_style_high = """
         QProgressBar::chunk {
@@ -395,7 +393,7 @@ def set_gpu_memory_progressbar_value(
         main_window.vramProgressBar.setStyleSheet(base_style + chunk_style_high)
     else:
         main_window.vramProgressBar.setStyleSheet(base_style + chunk_style_normal)
-    
+
     main_window.vramProgressBar.update()
 
 

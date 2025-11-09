@@ -258,16 +258,14 @@ class FaceLandmarkDetectors:
             io_binding.bind_output(name, self.models_processor.device)
 
         # --- START LAZY BUILD CHECK ---
-        is_lazy_build = self.models_processor.check_and_clear_pending_build(
-            model_name
-        )
+        is_lazy_build = self.models_processor.check_and_clear_pending_build(model_name)
         if is_lazy_build:
             # Use the 'model_name' variable for a reliable dialog message
             self.models_processor.show_build_dialog.emit(
                 "Finalizing TensorRT Build",
                 f"Performing first-run inference for:\n{model_name}\n\nThis may take several minutes.",
             )
-        
+
         try:
             # Synchronize the CUDA stream before execution.
             if self.models_processor.device == "cuda":

@@ -460,6 +460,7 @@ def advance_video_slider_by_n_frames(main_window: "MainWindow", n=30):
 
         main_window.video_processor.process_current_frame()
 
+
 def rewind_video_slider_by_n_frames(main_window: "MainWindow", n=30):
     video_processor = main_window.video_processor
     if video_processor.media_capture:
@@ -473,6 +474,7 @@ def rewind_video_slider_by_n_frames(main_window: "MainWindow", n=30):
         run_post_seek_actions(main_window, new_position)
 
         main_window.video_processor.process_current_frame()
+
 
 def delete_all_markers(main_window: "MainWindow"):
     main_window.videoSeekSlider.markers = set()
@@ -633,7 +635,7 @@ def record_video(main_window: "MainWindow", checked: bool):
     video_processor = main_window.video_processor
     # Determine if this record action was initiated by the Job Manager
     job_mgr_flag = getattr(main_window, "job_manager_initiated_record", False)
-    
+
     # Check if Batch processing
     is_batch_processing = getattr(main_window, "is_batch_processing", False)
 
@@ -678,11 +680,13 @@ def record_video(main_window: "MainWindow", checked: bool):
             return
 
         marker_pairs = main_window.job_marker_pairs
-        
+
         # If no Markers OR Batch processing, use default style recording
-        if not marker_pairs or (is_batch_processing and video_processor.file_type == "video"):
+        if not marker_pairs or (
+            is_batch_processing and video_processor.file_type == "video"
+        ):
             # --- Default Recording Style ---
-            
+
             # If not Batch processing, use slider position
             # If Batch processing, use frame position 0
             current_frame = 0
@@ -696,7 +700,7 @@ def record_video(main_window: "MainWindow", checked: bool):
                 )
                 main_window.buttonMediaRecord.setChecked(False)
                 return
-            
+
             # Check start position (0 for batch, slider for manual)
             if current_frame >= max_frame:
                 common_widget_actions.create_and_show_messagebox(
@@ -792,6 +796,7 @@ def record_video(main_window: "MainWindow", checked: bool):
             set_record_button_icon_to_play(main_window)
             main_window.buttonMediaPlay.setEnabled(True)
             reset_media_buttons(main_window)
+
 
 def set_record_button_icon_to_play(main_window: "MainWindow"):
     main_window.buttonMediaRecord.setIcon(QtGui.QIcon(":/media/media/rec_off.png"))
@@ -924,6 +929,7 @@ def on_slider_pressed(main_window: "MainWindow"):
     main_window.videoSeekSlider.value()
     # print(f"\nSlider Pressed. position: {position}\n")
 
+
 def run_post_seek_actions(main_window: "MainWindow", new_position: int):
     """
     Executes heavy operations (markers, AutoSwap) after a seek.
@@ -937,10 +943,11 @@ def run_post_seek_actions(main_window: "MainWindow", new_position: int):
     if main_window.control.get("AutoSwapToggle", False):
         # Find new faces and add them to the target list.
         card_actions.find_target_faces(main_window)
-        
+
         # This block is necessary to auto-select the first face and assign inputs.
         if main_window.target_faces and not main_window.selected_target_face_id:
             list(main_window.target_faces.values())[0].click()
+
 
 # @misc_helpers.benchmark
 def on_slider_released(main_window: "MainWindow"):
@@ -953,10 +960,9 @@ def on_slider_released(main_window: "MainWindow"):
 
     new_position = main_window.videoSeekSlider.value()  # Get the final position
     # print(f"\nSlider released. New position: {new_position}\n")
-    
+
     video_processor = main_window.video_processor
     if video_processor.media_capture:
-        
         # Execute post seek (Markers, Autoswap)
         run_post_seek_actions(main_window, new_position)
 
@@ -1024,6 +1030,7 @@ def save_current_frame_to_file(main_window: "MainWindow"):
             parent_widget=main_window.saveImageButton,
         )
 
+
 def process_batch_images(main_window: "MainWindow", process_all_faces: bool):
     """
     Processes a batch of images and/or videos from the target list.
@@ -1058,7 +1065,7 @@ def process_batch_images(main_window: "MainWindow", process_all_faces: bool):
         widget = main_window.targetVideosList.itemWidget(item)
         if not widget:
             continue
-        
+
         file_type = widget.file_type
         media_path = widget.media_path
 
@@ -1145,7 +1152,7 @@ def process_batch_images(main_window: "MainWindow", process_all_faces: bool):
     original_frame_num = main_window.video_processor.current_frame_number
     # [CORRECTION 3] Ne pas stocker l'objet, il sera fermé.
     # original_media_capture = main_window.video_processor.media_capture
-    original_media_capture = None # Marqué comme nul pour la restauration
+    original_media_capture = None  # Marqué comme nul pour la restauration
 
     # Store target faces only if NOT in 'all faces' mode, otherwise they get cleared
     original_target_faces = {}
@@ -1187,7 +1194,7 @@ def process_batch_images(main_window: "MainWindow", process_all_faces: bool):
                 # Set the video_processor state to the new media
                 main_window.video_processor.media_path = media_path
                 main_window.video_processor.file_type = file_type
-                
+
                 # --- Minimal Media Load ---
                 # Release previous capture if it exists
                 if main_window.video_processor.media_capture:
@@ -1201,17 +1208,19 @@ def process_batch_images(main_window: "MainWindow", process_all_faces: bool):
                     main_window.video_processor.fps = 0
                     # [CORRECTION 1] Mettre à jour le slider pour les images
                     main_window.videoSeekSlider.setMaximum(0)
-                
+
                 elif file_type == "video":
                     media_capture = cv2.VideoCapture(media_path)
                     if not media_capture.isOpened():
                         raise Exception(f"Could not open video file: {media_path}")
-                    
+
                     main_window.video_processor.media_capture = media_capture
                     max_frames = int(media_capture.get(cv2.CAP_PROP_FRAME_COUNT)) - 1
                     main_window.video_processor.max_frame_number = max_frames
-                    main_window.video_processor.fps = media_capture.get(cv2.CAP_PROP_FPS)
-                    
+                    main_window.video_processor.fps = media_capture.get(
+                        cv2.CAP_PROP_FPS
+                    )
+
                     # [CORRECTION 1] Mettre à jour le slider pour cette vidéo
                     main_window.videoSeekSlider.blockSignals(True)
                     main_window.videoSeekSlider.setMaximum(max_frames)
@@ -1221,21 +1230,24 @@ def process_batch_images(main_window: "MainWindow", process_all_faces: bool):
                     if ret:
                         # Reset capture to frame 0 for processing
                         media_capture.set(cv2.CAP_PROP_POS_FRAMES, 0)
-                
+
                 if frame_bgr is None:
                     raise Exception(f"Could not read first frame from: {media_path}")
 
                 # Set current_frame for processor use (e.g., FFmpeg dimensions)
-                main_window.video_processor.current_frame = frame_bgr[..., ::-1] # BGR to RGB
+                main_window.video_processor.current_frame = frame_bgr[
+                    ..., ::-1
+                ]  # BGR to RGB
                 main_window.video_processor.current_frame_number = 0
                 # --- End Minimal Media Load ---
-
 
                 if file_type == "image":
                     # --- IMAGE PROCESSING ---
                     if process_all_faces:
                         # --- "ALL FACES" LOGIC ---
-                        card_actions.clear_target_faces(main_window, refresh_frame=False)
+                        card_actions.clear_target_faces(
+                            main_window, refresh_frame=False
+                        )
                         card_actions.find_target_faces(main_window)
                         for target_face in main_window.target_faces.values():
                             if saved_current_parameters:
@@ -1251,22 +1263,30 @@ def process_batch_images(main_window: "MainWindow", process_all_faces: bool):
                                     embed.embedding_id
                                 ] = embed.embedding_store
                             target_face.calculate_assigned_input_embedding()
-                        
-                        main_window.video_processor.process_current_frame(synchronous=True)
+
+                        main_window.video_processor.process_current_frame(
+                            synchronous=True
+                        )
 
                     else:
                         # --- "CURRENT CONFIG" LOGIC (Image) ---
-                        main_window.video_processor.process_current_frame(synchronous=True)
+                        main_window.video_processor.process_current_frame(
+                            synchronous=True
+                        )
 
                     # --- Get and save the processed image ---
                     frame = main_window.video_processor.current_frame
                     if not isinstance(frame, numpy.ndarray) or frame.size == 0:
                         frame_bgr_fallback = misc_helpers.read_image_file(media_path)
                         if frame_bgr_fallback is not None:
-                            print(f"[WARN] Processing returned an empty frame for {media_path}. Saving original image instead.")
-                            frame = frame_bgr_fallback # Use BGR
+                            print(
+                                f"[WARN] Processing returned an empty frame for {media_path}. Saving original image instead."
+                            )
+                            frame = frame_bgr_fallback  # Use BGR
                         else:
-                            raise Exception("Processing returned an invalid frame and original could not be read.")
+                            raise Exception(
+                                "Processing returned an invalid frame and original could not be read."
+                            )
 
                     image_format = "image"
                     if main_window.control["ImageFormatToggle"]:
@@ -1280,7 +1300,9 @@ def process_batch_images(main_window: "MainWindow", process_all_faces: bool):
                     if save_filename:
                         # 'frame' is BGR (from processor or fallback read)
                         # PIL needs RGB
-                        pil_image = Image.fromarray(frame[..., ::-1]) # Convert BGR -> RGB for PIL
+                        pil_image = Image.fromarray(
+                            frame[..., ::-1]
+                        )  # Convert BGR -> RGB for PIL
                         if main_window.control["ImageFormatToggle"]:
                             pil_image.save(save_filename, "JPEG", quality=95)
                         else:
@@ -1288,21 +1310,24 @@ def process_batch_images(main_window: "MainWindow", process_all_faces: bool):
                         processed_count += 1
                     else:
                         raise Exception("Could not generate output filename.")
-                
+
                 elif file_type == "video":
                     # --- VIDEO PROCESSING (Selected Face Mode Only) ---
                     # This will use the markers, inputs, etc., currently set in the UI
                     # and will block until the video is fully processed and saved.
-                    
+
                     # 1. Trigger the recording. This will start the async process.
                     record_video(main_window, True)
-                    
+
                     # 2. Wait for the processing to finish.
                     # This loop keeps the progress dialog responsive.
-                    while main_window.video_processor.processing or main_window.video_processor.is_processing_segments:
+                    while (
+                        main_window.video_processor.processing
+                        or main_window.video_processor.is_processing_segments
+                    ):
                         QtWidgets.QApplication.processEvents()
-                        QtCore.QThread.msleep(1) # 2ms sleep
-                    
+                        QtCore.QThread.msleep(1)  # 2ms sleep
+
                     # 3. At this point, record_video has completed (or failed)
                     # and has already saved its file.
                     print(f"Finished processing video: {media_path}")
@@ -1314,9 +1339,11 @@ def process_batch_images(main_window: "MainWindow", process_all_faces: bool):
                 traceback.print_exc()
                 failed_count += 1
                 # Ensure processing is stopped if an error occurred
-                if main_window.video_processor.processing or main_window.video_processor.is_processing_segments:
+                if (
+                    main_window.video_processor.processing
+                    or main_window.video_processor.is_processing_segments
+                ):
                     main_window.video_processor.stop_processing()
-
 
     finally:
         main_window.is_batch_processing = False
@@ -1353,14 +1380,14 @@ def process_batch_images(main_window: "MainWindow", process_all_faces: bool):
         # Release the last media capture from the batch
         if main_window.video_processor.media_capture:
             main_window.video_processor.media_capture.release()
-            
+
         main_window.video_processor.media_path = original_media_path
         main_window.video_processor.file_type = original_file_type
         main_window.video_processor.current_frame_number = original_frame_num
-        
+
         # [CORRECTION 3] Ne pas restaurer l'ancien objet de capture
-        main_window.video_processor.media_capture = None # original_media_capture
-        
+        main_window.video_processor.media_capture = None  # original_media_capture
+
         # Restore the view to its original state
         if main_window.video_processor.media_path:
             # Reload and re-process the frame that was active before the batch
@@ -1371,25 +1398,29 @@ def process_batch_images(main_window: "MainWindow", process_all_faces: bool):
                 if new_capture and new_capture.isOpened():
                     main_window.video_processor.media_capture = new_capture
                     # Set the slider max back to the original video's max
-                    original_max_frames = int(new_capture.get(cv2.CAP_PROP_FRAME_COUNT)) - 1
+                    original_max_frames = (
+                        int(new_capture.get(cv2.CAP_PROP_FRAME_COUNT)) - 1
+                    )
                     main_window.videoSeekSlider.blockSignals(True)
                     main_window.videoSeekSlider.setMaximum(original_max_frames)
                     main_window.videoSeekSlider.setValue(original_frame_num)
                     main_window.videoSeekSlider.blockSignals(False)
                     main_window.video_processor.max_frame_number = original_max_frames
                 else:
-                    print(f"[ERROR] Failed to re-open original media capture: {original_media_path}")
+                    print(
+                        f"[ERROR] Failed to re-open original media capture: {original_media_path}"
+                    )
                 # --- FIN MODIFICATION ---
                 main_window.video_processor.process_current_frame(synchronous=True)
-            
+
             elif main_window.video_processor.file_type == "image":
-                 # [MODIFICATION] Restaurer correctement le slider pour l'image
-                 main_window.videoSeekSlider.blockSignals(True)
-                 main_window.videoSeekSlider.setMaximum(0)
-                 main_window.videoSeekSlider.setValue(0)
-                 main_window.videoSeekSlider.blockSignals(False)
-                 main_window.video_processor.max_frame_number = 0
-                 main_window.video_processor.process_current_frame(synchronous=True)
+                # [MODIFICATION] Restaurer correctement le slider pour l'image
+                main_window.videoSeekSlider.blockSignals(True)
+                main_window.videoSeekSlider.setMaximum(0)
+                main_window.videoSeekSlider.setValue(0)
+                main_window.videoSeekSlider.blockSignals(False)
+                main_window.video_processor.max_frame_number = 0
+                main_window.video_processor.process_current_frame(synchronous=True)
         else:
             # If no media was loaded, clear the scene
             main_window.scene.clear()
@@ -1401,6 +1432,7 @@ def process_batch_images(main_window: "MainWindow", process_all_faces: bool):
             main_window.videoSeekSlider.setValue(0)
             main_window.videoSeekSlider.blockSignals(False)
             main_window.video_processor.max_frame_number = 0
+
 
 def toggle_live_sound(main_window: "MainWindow", toggle_value: bool):
     video_processor = main_window.video_processor

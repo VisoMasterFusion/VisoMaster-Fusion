@@ -284,7 +284,9 @@ class FaceDetectors:
             kpss = np.array(refined_kpss, dtype=object)
         return det, kpss_5, kpss
 
-    def _run_model_with_lazy_build_check(self, model_name: str, ort_session, io_binding) -> list:
+    def _run_model_with_lazy_build_check(
+        self, model_name: str, ort_session, io_binding
+    ) -> list:
         """
         Runs the ONNX session with IOBinding, handling TensorRT lazy build dialogs.
         This centralizes the try/finally logic for showing/hiding the build progress dialog
@@ -298,27 +300,25 @@ class FaceDetectors:
         Returns:
             list: The network outputs from copy_outputs_to_cpu().
         """
-        is_lazy_build = self.models_processor.check_and_clear_pending_build(
-            model_name
-        )
+        is_lazy_build = self.models_processor.check_and_clear_pending_build(model_name)
         if is_lazy_build:
             self.models_processor.show_build_dialog.emit(
                 "Finalizing TensorRT Build",
                 f"Performing first-run inference for:\n{model_name}\n\nThis may take several minutes.",
             )
-        
+
         try:
             # ⚠️ This is a critical synchronization point for CUDA execution.
             if self.models_processor.device == "cuda":
                 torch.cuda.synchronize()
-                
+
             ort_session.run_with_iobinding(io_binding)
             net_outs = io_binding.copy_outputs_to_cpu()
-            
+
         finally:
             if is_lazy_build:
                 self.models_processor.hide_build_dialog.emit()
-        
+
         return net_outs
 
     def run_detect(
@@ -417,7 +417,9 @@ class FaceDetectors:
                 io_binding.bind_output(i, self.models_processor.device)
 
             # Run the model with lazy build handling
-            net_outs = self._run_model_with_lazy_build_check(model_name, ort_session, io_binding)
+            net_outs = self._run_model_with_lazy_build_check(
+                model_name, ort_session, io_binding
+            )
 
             input_height, input_width = aimg.shape[2], aimg.shape[3]
             fmc = 3
@@ -574,7 +576,9 @@ class FaceDetectors:
                 io_binding.bind_output(name, self.models_processor.device)
 
             # Run the model with lazy build handling
-            net_outs = self._run_model_with_lazy_build_check(model_name, ort_session, io_binding)
+            net_outs = self._run_model_with_lazy_build_check(
+                model_name, ort_session, io_binding
+            )
             input_height, input_width = aimg.shape[2], aimg.shape[3]
             fmc = 3
             for idx, stride in enumerate([8, 16, 32]):
@@ -735,7 +739,9 @@ class FaceDetectors:
             io_binding.bind_output("output0", self.models_processor.device)
 
             # Run the model with lazy build handling
-            net_outs = self._run_model_with_lazy_build_check(model_name, ort_session, io_binding)
+            net_outs = self._run_model_with_lazy_build_check(
+                model_name, ort_session, io_binding
+            )
 
             outputs = np.squeeze(net_outs).T
             bbox_raw, score_raw, kps_raw, *_ = np.split(outputs, [4, 5], axis=1)
@@ -901,7 +907,9 @@ class FaceDetectors:
                 io_binding.bind_output(name, self.models_processor.device)
 
             # Run the model with lazy build handling
-            net_outs = self._run_model_with_lazy_build_check(model_name, ort_session, io_binding)
+            net_outs = self._run_model_with_lazy_build_check(
+                model_name, ort_session, io_binding
+            )
             strides = [8, 16, 32]
             for idx, stride in enumerate(strides):
                 cls_pred, obj_pred, reg_pred, kps_pred = (

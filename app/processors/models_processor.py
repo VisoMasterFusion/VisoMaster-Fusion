@@ -699,9 +699,7 @@ class ModelsProcessor(QtCore.QObject):
                         print(
                             f"[load_model]: Model {model_name} requires a lazy build (engine not found after probe)."
                         )
-                        print(
-                            "[load_model]: Adding to 'models_pending_build' set."
-                        )
+                        print("[load_model]: Adding to 'models_pending_build' set.")
                         self.models_pending_build.add(model_name)
 
                 # Race condition check

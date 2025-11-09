@@ -63,10 +63,10 @@ class VideoProcessor(QObject):
         self.max_display_buffer_size = (
             self.preroll_target * 4
         )  # Max frames allowed "in flight" (queued + being displayed)
-        
+
         # This queue will hold tasks: (frame_number, frame_rgb_data) or None (poison pill)
         self.frame_queue: queue.Queue[Tuple[int, numpy.ndarray] | None] = queue.Queue(
-            maxsize=self.max_display_buffer_size 
+            maxsize=self.max_display_buffer_size
         )
         # This list will hold our *persistent* worker threads
         self.worker_threads: list[threading.Thread] = []
@@ -349,10 +349,10 @@ class VideoProcessor(QObject):
 
                 # Create the task tuple (frame_number, frame_data)
                 task = (frame_num_to_process, frame_rgb)
-                
+
                 # Put the task in the queue for the worker pool
-                self.frame_queue.put(task) 
-                
+                self.frame_queue.put(task)
+
                 # DO NOT START A WORKER HERE
                 self.current_frame_number += 1
 
@@ -386,8 +386,8 @@ class VideoProcessor(QObject):
                 frame_rgb = frame_bgr[..., ::-1]
 
                 # Create the task tuple (frame_number, frame_data)
-                task = (0, frame_rgb) # Frame number is 0
-                
+                task = (0, frame_rgb)  # Frame number is 0
+
                 # Put the task in the queue for the worker pool
                 self.frame_queue.put(task)
 
@@ -553,7 +553,6 @@ class VideoProcessor(QObject):
 
         # --- 8. Clean up and Increment ---
         if self.file_type != "webcam":
-
             # Increment for next frame
             self.next_frame_to_display += 1
 
@@ -582,7 +581,7 @@ class VideoProcessor(QObject):
             self.stop_processing()
         else:
             print(f"Max Threads set as {value}. Will be applied on next run.")
-            
+
         self.main_window.models_processor.set_number_of_threads(value)
         self.num_threads = value
 
@@ -665,13 +664,13 @@ class VideoProcessor(QObject):
         # 6b. START WORKER POOL
         print(f"Starting {self.num_threads} persistent worker thread(s)...")
         # Ensure old workers are cleared (from a previous run)
-        self.join_and_clear_threads() 
+        self.join_and_clear_threads()
         self.worker_threads = []
         for i in range(self.num_threads):
             worker = FrameWorker(
-                frame_queue=self.frame_queue, # Pass the task queue
+                frame_queue=self.frame_queue,  # Pass the task queue
                 main_window=self.main_window,
-                worker_id=i
+                worker_id=i,
             )
             worker.start()
             self.worker_threads.append(worker)
@@ -794,27 +793,29 @@ class VideoProcessor(QObject):
                 print("Playback mode.")
                 self._start_synchronized_playback()
 
-    def start_frame_worker(self, frame_number, frame, is_single_frame=False, synchronous=False):
+    def start_frame_worker(
+        self, frame_number, frame, is_single_frame=False, synchronous=False
+    ):
         """
         Starts a one-shot FrameWorker for a *single frame*.
         This is NOT used by the video pool.
         MODIFIED: Returns the worker instance OR runs synchronously.
         """
         worker = FrameWorker(
-            frame=frame, # Pass frame directly
-            main_window=self.main_window, 
-            frame_number=frame_number, 
-            frame_queue=None, # No queue for single frame
+            frame=frame,  # Pass frame directly
+            main_window=self.main_window,
+            frame_number=frame_number,
+            frame_queue=None,  # No queue for single frame
             is_single_frame=is_single_frame,
-            worker_id=-1 # Indicates single-frame mode
+            worker_id=-1,  # Indicates single-frame mode
         )
 
         if synchronous:
             # Run in the *current* thread (blocking).
             # This ensures signals are processed immediately
             # because the connection becomes Qt::DirectConnection.
-            worker.run() 
-            return worker # Still return worker, though it has finished.
+            worker.run()
+            return worker  # Still return worker, though it has finished.
         else:
             # Run in a *new* thread (asynchronous).
             worker.start()
@@ -835,7 +836,7 @@ class VideoProcessor(QObject):
         if self.file_type == "video":
             self.current_frame_number = self.main_window.videoSeekSlider.value()
         elif self.file_type == "image" or self.file_type == "webcam":
-             self.current_frame_number = 0
+            self.current_frame_number = 0
 
         self.next_frame_to_display = self.current_frame_number
 
@@ -888,13 +889,13 @@ class VideoProcessor(QObject):
             # We just start a new one-shot worker and return it.
             # Pass the synchronous flag
             return self.start_frame_worker(
-                self.current_frame_number, 
-                frame_to_process, 
+                self.current_frame_number,
+                frame_to_process,
                 is_single_frame=True,
-                synchronous=synchronous
+                synchronous=synchronous,
             )
-        
-        return None # <-- for failure case
+
+        return None  # <-- for failure case
 
     def stop_processing(self):
         """
@@ -1882,17 +1883,17 @@ class VideoProcessor(QObject):
         self.frames_to_display.clear()
         with self.frame_queue.mutex:
             self.frame_queue.queue.clear()
-        
+
         # [MODIFICATION] Replace self.threads.clear() with worker pool startup logic
         print(f"Starting {self.num_threads} persistent worker thread(s) for segment...")
         # Ensure old workers are cleaned up (if present)
-        self.join_and_clear_threads() 
+        self.join_and_clear_threads()
         self.worker_threads = []
         for i in range(self.num_threads):
             worker = FrameWorker(
-                frame_queue=self.frame_queue, # Pass the task queue
+                frame_queue=self.frame_queue,  # Pass the task queue
                 main_window=self.main_window,
-                worker_id=i
+                worker_id=i,
             )
             worker.start()
             self.worker_threads.append(worker)
@@ -1917,11 +1918,11 @@ class VideoProcessor(QObject):
         )
         with self.frame_queue.mutex:
             self.frame_queue.queue.clear()
-        
+
         # [MODIFICATION] Removed erroneous line: self.frame_queue.put(current_start_frame)
         # This was putting an 'int' into the task queue, causing the pool workers to crash.
         # The line below handles the first frame processing (synchronously or via one-shot thread).
-        
+
         self.start_frame_worker(
             current_start_frame, self.current_frame, is_single_frame=True
         )

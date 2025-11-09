@@ -70,7 +70,9 @@ class FaceSwappers:
             model = self.models_processor.load_model(model_name)
         return model
 
-    def _run_model_with_lazy_build_check(self, model_name: str, ort_session, io_binding):
+    def _run_model_with_lazy_build_check(
+        self, model_name: str, ort_session, io_binding
+    ):
         """
         Runs the ONNX session with IOBinding, handling TensorRT lazy build dialogs.
         This centralizes the try/finally logic for showing/hiding the build progress dialog
@@ -82,15 +84,13 @@ class FaceSwappers:
             io_binding: The pre-configured IOBinding object.
         """
         # --- START LAZY BUILD CHECK ---
-        is_lazy_build = self.models_processor.check_and_clear_pending_build(
-            model_name
-        )
+        is_lazy_build = self.models_processor.check_and_clear_pending_build(model_name)
         if is_lazy_build:
             self.models_processor.show_build_dialog.emit(
                 "Finalizing TensorRT Build",
                 f"Performing first-run inference for:\n{model_name}\n\nThis may take several minutes.",
             )
-        
+
         try:
             # ⚠️ This is a critical synchronization point.
             if self.models_processor.device == "cuda":
@@ -98,9 +98,9 @@ class FaceSwappers:
             elif self.models_processor.device != "cpu":
                 # This handles synchronization for other execution providers (e.g., DirectML)
                 self.models_processor.syncvec.cpu()
-                
+
             ort_session.run_with_iobinding(io_binding)
-            
+
         finally:
             if is_lazy_build:
                 self.models_processor.hide_build_dialog.emit()
@@ -267,7 +267,7 @@ class FaceSwappers:
         # Usa la funzione di preprocessamento
         img, cropped_image = self.preprocess_image_cscs(img, face_kps)
 
-        model_name = "CSCSArcFace" # Define model_name
+        model_name = "CSCSArcFace"  # Define model_name
         model = self.models_processor.models.get(model_name)
         if not model:
             print("ERROR: CSCSArcFace model not loaded in recognize_cscs.")
@@ -336,7 +336,7 @@ class FaceSwappers:
         return latent
 
     def run_swapper_cscs(self, image, embedding, output):
-        model_name = "CSCS" # Use the name from the models_list
+        model_name = "CSCS"  # Use the name from the models_list
         model = self._load_swapper_model(model_name)
         if not model:
             print("ERROR: CSCS model not loaded.")
@@ -584,4 +584,6 @@ class FaceSwappers:
         )
 
         # Run the model with lazy build handling
-        self._run_model_with_lazy_build_check(model_name, ghostfaceswap_model, io_binding)
+        self._run_model_with_lazy_build_check(
+            model_name, ghostfaceswap_model, io_binding
+        )

@@ -162,11 +162,12 @@ if exist "%APP_DIR%" (
 
         if "!LOCAL!" neq "!REMOTE!" (
             echo Updates available on branch %BRANCH%.
-            choice /c YN /m "Do you want to update? (Y/N) "
+            choice /c YN /m "Do you want to update? (This will discard local changes) (Y/N) "
             if !ERRORLEVEL! equ 1 (
-                git --git-dir="%APP_DIR%\.git" --work-tree="%APP_DIR%" pull
+                echo Resetting local repository to match remote...
+                git --git-dir="%APP_DIR%\.git" --work-tree="%APP_DIR%" reset --hard origin/%BRANCH%
                 if !ERRORLEVEL! neq 0 (
-                    echo ERROR: Failed to pull updates.
+                    echo ERROR: Failed to reset repository.
                     popd
                     set "PATH=%OLD_PATH%"
                     exit /b 1
@@ -175,11 +176,17 @@ if exist "%APP_DIR%" (
                 set "NEEDS_INSTALL=true"
                 set "DOWNLOAD_RUN=false"
                 powershell -Command "(Get-Content '%CONFIG_FILE%') -replace 'DOWNLOAD_RUN=.*', 'DOWNLOAD_RUN=false' | Set-Content '%CONFIG_FILE%'"
+
+                :: SELF-UPDATE CHECK
+                popd
+                call :self_update_check
+            ) else (
+                popd
             )
         ) else (
             echo Repository is up to date.
+            popd
         )
-        popd
     ) else (
         echo WARNING: %APP_DIR% exists but is not a git repo. Cleaning folder...
         rmdir /s /q "%APP_DIR%"
@@ -191,6 +198,8 @@ if exist "%APP_DIR%" (
             exit /b 1
         )
         set "NEEDS_INSTALL=true"
+        :: SELF-UPDATE CHECK after initial clone
+        call :self_update_check
     )
 ) else (
     echo Cloning repository on branch '%BRANCH%'...
@@ -201,6 +210,8 @@ if exist "%APP_DIR%" (
         exit /b 1
     )
     set "NEEDS_INSTALL=true"
+    :: SELF-UPDATE CHECK after initial clone
+    call :self_update_check
 )
 
 :: --- Step 3: Set up portable Python ---
@@ -405,3 +416,43 @@ echo.
 echo Application closed. Press any key to exit...
 pause >nul
 endlocal
+goto :eof
+
+:self_update_check
+set "ROOT_BAT=%BASE_DIR%Start_Portable.bat"
+set "REPO_BAT=%APP_DIR%\Start_Portable.bat"
+set "UPDATER_BAT=%PORTABLE_DIR%\update_start_portable.bat"
+
+if not exist "%REPO_BAT%" (
+    echo WARNING: Cannot find updated Start_Portable.bat in repository. Skipping self-update.
+    goto :eof
+)
+
+echo Checking for launcher script updates...
+fc /b "%ROOT_BAT%" "%REPO_BAT%" > nul
+if errorlevel 1 (
+    echo.
+    echo ATTENTION: The launcher script (Start_Portable.bat) has been updated.
+    echo The script will now restart itself to apply the changes.
+    echo.
+
+    (
+        echo @echo off
+        echo echo Waiting for main script to exit...
+        echo timeout /t 3 /nobreak ^>nul
+        echo echo Replacing Start_Portable.bat...
+        echo copy /y "%REPO_BAT%" "%ROOT_BAT%"
+        echo echo.
+        echo echo Update complete. Relaunching...
+        echo start "" /d "%BASE_DIR%" "Start_Portable.bat"
+        echo exit
+    ) > "%UPDATER_BAT%"
+
+    start "" cmd /c "%UPDATER_BAT%"
+    :: Use goto :eof to terminate the current script immediately after spawning the updater.
+    :: This prevents the original script from continuing its execution.
+    goto :eof
+) else (
+    echo Launcher script is up to date.
+)
+goto :eof

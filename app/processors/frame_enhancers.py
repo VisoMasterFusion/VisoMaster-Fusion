@@ -34,7 +34,9 @@ class FrameEnhancers:
                 self.models_processor.unload_model(self.current_enhancer_model)
                 self.current_enhancer_model = None
 
-    def _run_model_with_lazy_build_check(self, model_name: str, ort_session, io_binding):
+    def _run_model_with_lazy_build_check(
+        self, model_name: str, ort_session, io_binding
+    ):
         """
         Runs the ONNX session with IOBinding, handling TensorRT lazy build dialogs.
         This centralizes the try/finally logic for showing/hiding the build progress dialog
@@ -46,15 +48,13 @@ class FrameEnhancers:
             io_binding: The pre-configured IOBinding object.
         """
         # --- START LAZY BUILD CHECK ---
-        is_lazy_build = self.models_processor.check_and_clear_pending_build(
-            model_name
-        )
+        is_lazy_build = self.models_processor.check_and_clear_pending_build(model_name)
         if is_lazy_build:
             self.models_processor.show_build_dialog.emit(
                 "Finalizing TensorRT Build",
                 f"Performing first-run inference for:\n{model_name}\n\nThis may take several minutes.",
             )
-        
+
         try:
             # ⚠️ This is a critical synchronization point.
             if self.models_processor.device == "cuda":
@@ -62,9 +62,9 @@ class FrameEnhancers:
             elif self.models_processor.device != "cpu":
                 # This handles synchronization for other execution providers (e.g., DirectML)
                 self.models_processor.syncvec.cpu()
-                
+
             ort_session.run_with_iobinding(io_binding)
-            
+
         finally:
             if is_lazy_build:
                 self.models_processor.hide_build_dialog.emit()
@@ -162,16 +162,16 @@ class FrameEnhancers:
         return output
 
     def run_realesrganx2(self, image, output):
-        model_name = "RealEsrganx2Plus" # Define model_name
+        model_name = "RealEsrganx2Plus"  # Define model_name
         if not self.models_processor.models[model_name]:
-            self.models_processor.models[model_name] = (
-                self.models_processor.load_model(model_name)
+            self.models_processor.models[model_name] = self.models_processor.load_model(
+                model_name
             )
-        
+
         ort_session = self.models_processor.models[model_name]
         if not ort_session:
             print(f"WARNING: Model {model_name} not loaded, skipping enhancer.")
-            output = image # Return original image if model fails
+            output = image  # Return original image if model fails
             return
 
         io_binding = ort_session.io_binding()
@@ -196,16 +196,16 @@ class FrameEnhancers:
         self._run_model_with_lazy_build_check(model_name, ort_session, io_binding)
 
     def run_realesrganx4(self, image, output):
-        model_name = "RealEsrganx4Plus" # Define model_name
+        model_name = "RealEsrganx4Plus"  # Define model_name
         if not self.models_processor.models[model_name]:
-            self.models_processor.models[model_name] = (
-                self.models_processor.load_model(model_name)
+            self.models_processor.models[model_name] = self.models_processor.load_model(
+                model_name
             )
 
         ort_session = self.models_processor.models[model_name]
         if not ort_session:
             print(f"WARNING: Model {model_name} not loaded, skipping enhancer.")
-            output = image # Return original image if model fails
+            output = image  # Return original image if model fails
             return
 
         io_binding = ort_session.io_binding()
@@ -230,16 +230,16 @@ class FrameEnhancers:
         self._run_model_with_lazy_build_check(model_name, ort_session, io_binding)
 
     def run_realesrx4v3(self, image, output):
-        model_name = "RealEsrx4v3" # Define model_name
+        model_name = "RealEsrx4v3"  # Define model_name
         if not self.models_processor.models[model_name]:
-            self.models_processor.models[model_name] = (
-                self.models_processor.load_model(model_name)
+            self.models_processor.models[model_name] = self.models_processor.load_model(
+                model_name
             )
 
         ort_session = self.models_processor.models[model_name]
         if not ort_session:
             print(f"WARNING: Model {model_name} not loaded, skipping enhancer.")
-            output = image # Return original image if model fails
+            output = image  # Return original image if model fails
             return
 
         io_binding = ort_session.io_binding()
@@ -264,7 +264,7 @@ class FrameEnhancers:
         self._run_model_with_lazy_build_check(model_name, ort_session, io_binding)
 
     def run_bsrganx2(self, image, output):
-        model_name = "BSRGANx2" # Define model_name
+        model_name = "BSRGANx2"  # Define model_name
         if not self.models_processor.models[model_name]:
             self.models_processor.models[model_name] = self.models_processor.load_model(
                 model_name
@@ -273,7 +273,7 @@ class FrameEnhancers:
         ort_session = self.models_processor.models[model_name]
         if not ort_session:
             print(f"WARNING: Model {model_name} not loaded, skipping enhancer.")
-            output = image # Return original image if model fails
+            output = image  # Return original image if model fails
             return
 
         io_binding = ort_session.io_binding()
@@ -298,7 +298,7 @@ class FrameEnhancers:
         self._run_model_with_lazy_build_check(model_name, ort_session, io_binding)
 
     def run_bsrganx4(self, image, output):
-        model_name = "BSRGANx4" # Define model_name
+        model_name = "BSRGANx4"  # Define model_name
         if not self.models_processor.models[model_name]:
             self.models_processor.models[model_name] = self.models_processor.load_model(
                 model_name
@@ -307,7 +307,7 @@ class FrameEnhancers:
         ort_session = self.models_processor.models[model_name]
         if not ort_session:
             print(f"WARNING: Model {model_name} not loaded, skipping enhancer.")
-            output = image # Return original image if model fails
+            output = image  # Return original image if model fails
             return
 
         io_binding = ort_session.io_binding()
@@ -332,16 +332,16 @@ class FrameEnhancers:
         self._run_model_with_lazy_build_check(model_name, ort_session, io_binding)
 
     def run_ultrasharpx4(self, image, output):
-        model_name = "UltraSharpx4" # Define model_name
+        model_name = "UltraSharpx4"  # Define model_name
         if not self.models_processor.models[model_name]:
-            self.models_processor.models[model_name] = (
-                self.models_processor.load_model(model_name)
+            self.models_processor.models[model_name] = self.models_processor.load_model(
+                model_name
             )
 
         ort_session = self.models_processor.models[model_name]
         if not ort_session:
             print(f"WARNING: Model {model_name} not loaded, skipping enhancer.")
-            output = image # Return original image if model fails
+            output = image  # Return original image if model fails
             return
 
         io_binding = ort_session.io_binding()
@@ -366,16 +366,16 @@ class FrameEnhancers:
         self._run_model_with_lazy_build_check(model_name, ort_session, io_binding)
 
     def run_ultramixx4(self, image, output):
-        model_name = "UltraMixx4" # Define model_name
+        model_name = "UltraMixx4"  # Define model_name
         if not self.models_processor.models[model_name]:
-            self.models_processor.models[model_name] = (
-                self.models_processor.load_model(model_name)
+            self.models_processor.models[model_name] = self.models_processor.load_model(
+                model_name
             )
 
         ort_session = self.models_processor.models[model_name]
         if not ort_session:
             print(f"WARNING: Model {model_name} not loaded, skipping enhancer.")
-            output = image # Return original image if model fails
+            output = image  # Return original image if model fails
             return
 
         io_binding = ort_session.io_binding()
@@ -400,16 +400,16 @@ class FrameEnhancers:
         self._run_model_with_lazy_build_check(model_name, ort_session, io_binding)
 
     def run_deoldify_artistic(self, image, output):
-        model_name = "DeoldifyArt" # Define model_name
+        model_name = "DeoldifyArt"  # Define model_name
         if not self.models_processor.models[model_name]:
-            self.models_processor.models[model_name] = (
-                self.models_processor.load_model(model_name)
+            self.models_processor.models[model_name] = self.models_processor.load_model(
+                model_name
             )
 
         ort_session = self.models_processor.models[model_name]
         if not ort_session:
             print(f"WARNING: Model {model_name} not loaded, skipping enhancer.")
-            output = image # Return original image if model fails
+            output = image  # Return original image if model fails
             return
 
         io_binding = ort_session.io_binding()
@@ -434,16 +434,16 @@ class FrameEnhancers:
         self._run_model_with_lazy_build_check(model_name, ort_session, io_binding)
 
     def run_deoldify_stable(self, image, output):
-        model_name = "DeoldifyStable" # Define model_name
+        model_name = "DeoldifyStable"  # Define model_name
         if not self.models_processor.models[model_name]:
-            self.models_processor.models[model_name] = (
-                self.models_processor.load_model(model_name)
+            self.models_processor.models[model_name] = self.models_processor.load_model(
+                model_name
             )
 
         ort_session = self.models_processor.models[model_name]
         if not ort_session:
             print(f"WARNING: Model {model_name} not loaded, skipping enhancer.")
-            output = image # Return original image if model fails
+            output = image  # Return original image if model fails
             return
 
         io_binding = ort_session.io_binding()
@@ -468,16 +468,16 @@ class FrameEnhancers:
         self._run_model_with_lazy_build_check(model_name, ort_session, io_binding)
 
     def run_deoldify_video(self, image, output):
-        model_name = "DeoldifyVideo" # Define model_name
+        model_name = "DeoldifyVideo"  # Define model_name
         if not self.models_processor.models[model_name]:
-            self.models_processor.models[model_name] = (
-                self.models_processor.load_model(model_name)
+            self.models_processor.models[model_name] = self.models_processor.load_model(
+                model_name
             )
 
         ort_session = self.models_processor.models[model_name]
         if not ort_session:
             print(f"WARNING: Model {model_name} not loaded, skipping enhancer.")
-            output = image # Return original image if model fails
+            output = image  # Return original image if model fails
             return
 
         io_binding = ort_session.io_binding()
@@ -502,16 +502,16 @@ class FrameEnhancers:
         self._run_model_with_lazy_build_check(model_name, ort_session, io_binding)
 
     def run_ddcolor_artistic(self, image, output):
-        model_name = "DDColorArt" # Define model_name
+        model_name = "DDColorArt"  # Define model_name
         if not self.models_processor.models[model_name]:
-            self.models_processor.models[model_name] = (
-                self.models_processor.load_model(model_name)
+            self.models_processor.models[model_name] = self.models_processor.load_model(
+                model_name
             )
 
         ort_session = self.models_processor.models[model_name]
         if not ort_session:
             print(f"WARNING: Model {model_name} not loaded, skipping enhancer.")
-            output = image # Return original image if model fails
+            output = image  # Return original image if model fails
             return
 
         io_binding = ort_session.io_binding()
@@ -536,7 +536,7 @@ class FrameEnhancers:
         self._run_model_with_lazy_build_check(model_name, ort_session, io_binding)
 
     def run_ddcolor(self, image, output):
-        model_name = "DDcolor" # Define model_name
+        model_name = "DDcolor"  # Define model_name
         if not self.models_processor.models[model_name]:
             self.models_processor.models[model_name] = self.models_processor.load_model(
                 model_name
@@ -545,7 +545,7 @@ class FrameEnhancers:
         ort_session = self.models_processor.models[model_name]
         if not ort_session:
             print(f"WARNING: Model {model_name} not loaded, skipping enhancer.")
-            output = image # Return original image if model fails
+            output = image  # Return original image if model fails
             return
 
         io_binding = ort_session.io_binding()
