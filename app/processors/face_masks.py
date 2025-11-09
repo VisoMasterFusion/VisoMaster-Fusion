@@ -157,16 +157,14 @@ class FaceMasks:
         )
 
         # --- START LAZY BUILD CHECK ---
-        is_lazy_build = self.models_processor.check_and_clear_pending_build(
-            model_name
-        )
+        is_lazy_build = self.models_processor.check_and_clear_pending_build(model_name)
         if is_lazy_build:
             # Use the 'model_name' variable for a reliable dialog message
             self.models_processor.show_build_dialog.emit(
                 "Finalizing TensorRT Build",
                 f"Performing first-run inference for:\n{model_name}\n\nThis may take several minutes.",
             )
-        
+
         try:
             if self.models_processor.device == "cuda":
                 torch.cuda.synchronize()
@@ -341,9 +339,7 @@ class FaceMasks:
         )
 
         # --- START LAZY BUILD CHECK ---
-        is_lazy_build = self.models_processor.check_and_clear_pending_build(
-            model_name
-        )
+        is_lazy_build = self.models_processor.check_and_clear_pending_build(model_name)
         if is_lazy_build:
             # Use the 'model_name' variable for a reliable dialog message
             self.models_processor.show_build_dialog.emit(
@@ -401,9 +397,7 @@ class FaceMasks:
         )
 
         # --- START LAZY BUILD CHECK ---
-        is_lazy_build = self.models_processor.check_and_clear_pending_build(
-            model_name
-        )
+        is_lazy_build = self.models_processor.check_and_clear_pending_build(model_name)
         if is_lazy_build:
             # Use the 'model_name' variable for a reliable dialog message
             self.models_processor.show_build_dialog.emit(
@@ -705,16 +699,14 @@ class FaceMasks:
         )
 
         # --- START LAZY BUILD CHECK ---
-        is_lazy_build = self.models_processor.check_and_clear_pending_build(
-            model_key
-        )
+        is_lazy_build = self.models_processor.check_and_clear_pending_build(model_key)
         if is_lazy_build:
             # Use the 'model_key' variable for a reliable dialog message
             self.models_processor.show_build_dialog.emit(
                 "Finalizing TensorRT Build",
                 f"Performing first-run inference for:\n{model_key}\n\nThis may take several minutes.",
             )
-        
+
         try:
             if self.models_processor.device == "cuda":
                 torch.cuda.synchronize()
@@ -726,7 +718,7 @@ class FaceMasks:
             if is_lazy_build:
                 self.models_processor.hide_build_dialog.emit()
         # --- END LAZY BUILD CHECK ---
-        
+
         return output_tensor
 
     def run_CLIPs(self, img, CLIPText, CLIPAmount):

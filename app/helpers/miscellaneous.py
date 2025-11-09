@@ -502,7 +502,9 @@ def benchmark(func):
     return wrapper
 
 
-def read_frame(capture_obj: cv2.VideoCapture, preview_target_height: Optional[int] = None) -> Tuple[bool, Optional[np.ndarray]]:
+def read_frame(
+    capture_obj: cv2.VideoCapture, preview_target_height: Optional[int] = None
+) -> Tuple[bool, Optional[np.ndarray]]:
     """
     Reads a single frame from the video capture object in a thread-safe manner.
 
@@ -544,9 +546,11 @@ def read_frame(capture_obj: cv2.VideoCapture, preview_target_height: Optional[in
             # Ensure width is even (good practice for some video operations)
             if target_width % 2 != 0:
                 target_width += 1
-            
+
             # cv2.INTER_AREA is generally the fastest and best for downscaling
-            frame = cv2.resize(frame, (target_width, target_height), interpolation=cv2.INTER_AREA)
+            frame = cv2.resize(
+                frame, (target_width, target_height), interpolation=cv2.INTER_AREA
+            )
         except Exception as e:
             print(f"[ERROR] Failed to resize frame in preview_mode: {e}")
             # Fallback: return the original frame if resize fails
@@ -554,6 +558,34 @@ def read_frame(capture_obj: cv2.VideoCapture, preview_target_height: Optional[in
 
     # Return the (potentially resized) frame
     return ret, frame
+
+
+def seek_frame(capture_obj: cv2.VideoCapture, frame_number: int) -> bool:
+    """
+    Seeks a video capture object to a specific frame number in a thread-safe manner.
+    Uses the same global lock as read_frame to prevent deadlocks.
+
+    Args:
+        capture_obj (cv2.VideoCapture): The shared OpenCV capture object.
+        frame_number (int): The frame number to seek to.
+
+    Returns:
+        bool: The result of capture_obj.set().
+    """
+    with lock:
+        # This is the only operation that needs to be locked
+        return capture_obj.set(cv2.CAP_PROP_POS_FRAMES, frame_number)
+
+
+def release_capture(capture_obj: cv2.VideoCapture):
+    """
+    Releases the OpenCV capture object in a thread-safe manner.
+    Uses the same global lock as read_frame to prevent deadlocks.
+    """
+    with lock:
+        if capture_obj and capture_obj.isOpened():
+            capture_obj.release()
+
 
 def read_image_file(image_path):
     try:

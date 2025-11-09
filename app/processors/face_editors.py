@@ -140,16 +140,14 @@ class FaceEditors:
             )
 
         # --- START LAZY BUILD CHECK ---
-        is_lazy_build = self.models_processor.check_and_clear_pending_build(
-            model_name
-        )
+        is_lazy_build = self.models_processor.check_and_clear_pending_build(model_name)
         if is_lazy_build:
             # Use the 'model_name' variable for a reliable dialog message
             self.models_processor.show_build_dialog.emit(
                 "Finalizing TensorRT Build",
                 f"Performing first-run inference for:\n{model_name}\n\nThis may take several minutes.",
             )
-        
+
         try:
             # Ensure CUDA stream is synchronized before running the model.
             if self.models_processor.device == "cuda":
@@ -188,7 +186,10 @@ class FaceEditors:
             model_name = "LivePortraitMotionExtractor"
 
             # Check if provider is TRT-Engine AND if this model is listed in the TRT models dict
-            is_trt_engine_provider = self.models_processor.provider_name == "TensorRT-Engine"
+            is_trt_engine_provider = self.models_processor.provider_name in [
+                "TensorRT",
+                "TensorRT-Engine",
+            ]
             is_dedicated_trt_model = model_name in self.models_processor.models_trt
 
             # --- TensorRT Execution Path ---
@@ -196,17 +197,15 @@ class FaceEditors:
                 if face_editor_type == "Human-Face":
                     # Use .get() to check if it's already loaded before loading
                     if not self.models_processor.models_trt.get(model_name):
-                        self.models_processor.models_trt[
-                            model_name
-                        ] = self.models_processor.load_model_trt(
-                            model_name,
-                            custom_plugin_path=None,
-                            precision="fp32",
+                        self.models_processor.models_trt[model_name] = (
+                            self.models_processor.load_model_trt(
+                                model_name,
+                                custom_plugin_path=None,
+                                precision="fp32",
+                            )
                         )
 
-                motion_extractor_model = self.models_processor.models_trt[
-                    model_name
-                ]
+                motion_extractor_model = self.models_processor.models_trt[model_name]
 
                 # 1. Pre-allocate output tensors on the GPU for zero-copy inference.
                 pitch = torch.empty(
@@ -265,9 +264,7 @@ class FaceEditors:
                     # Load into the standard .models dict
                     if not self.models_processor.models.get(model_name):
                         self.models_processor.models[model_name] = (
-                            self.models_processor.load_model(
-                                model_name
-                            )
+                            self.models_processor.load_model(model_name)
                         )
 
                 inputs = {"img": I_s}
@@ -306,9 +303,7 @@ class FaceEditors:
                     ).contiguous(),
                 }
                 # Run inference using the ONNX I/O binding helper.
-                kp_info = self._run_onnx_io_binding(
-                    model_name, inputs, output_spec
-                )
+                kp_info = self._run_onnx_io_binding(model_name, inputs, output_spec)
 
             # Post-process the raw model output to a more usable format.
             if kwargs.get("flag_refine_info", True):
@@ -350,19 +345,22 @@ class FaceEditors:
             model_name = "LivePortraitAppearanceFeatureExtractor"
 
             # Check if provider is TRT-Engine AND if this model is listed in the TRT models dict
-            is_trt_engine_provider = self.models_processor.provider_name == "TensorRT-Engine"
+            is_trt_engine_provider = self.models_processor.provider_name in [
+                "TensorRT",
+                "TensorRT-Engine",
+            ]
             is_dedicated_trt_model = model_name in self.models_processor.models_trt
-            
+
             # --- TensorRT Execution Path ---
             if is_trt_engine_provider and is_dedicated_trt_model:
                 if face_editor_type == "Human-Face":
                     if not self.models_processor.models_trt.get(model_name):
-                        self.models_processor.models_trt[
-                            model_name
-                        ] = self.models_processor.load_model_trt(
-                            model_name,
-                            custom_plugin_path=None,
-                            precision="fp16",
+                        self.models_processor.models_trt[model_name] = (
+                            self.models_processor.load_model_trt(
+                                model_name,
+                                custom_plugin_path=None,
+                                precision="fp16",
+                            )
                         )
 
                 appearance_feature_extractor_model = self.models_processor.models_trt[
@@ -387,10 +385,8 @@ class FaceEditors:
             else:
                 if face_editor_type == "Human-Face":
                     if not self.models_processor.models.get(model_name):
-                        self.models_processor.models[
-                            model_name
-                        ] = self.models_processor.load_model(
-                            model_name
+                        self.models_processor.models[model_name] = (
+                            self.models_processor.load_model(model_name)
                         )
 
                 inputs = {"img": I_s}
@@ -401,9 +397,7 @@ class FaceEditors:
                         device=self.models_processor.device,
                     ).contiguous()
                 }
-                results = self._run_onnx_io_binding(
-                    model_name, inputs, output_spec
-                )
+                results = self._run_onnx_io_binding(model_name, inputs, output_spec)
                 output = results["output"]
 
         return output
@@ -432,7 +426,10 @@ class FaceEditors:
             model_name = "LivePortraitStitchingEye"
 
             # Check if provider is TRT-Engine AND if this model is listed in the TRT models dict
-            is_trt_engine_provider = self.models_processor.provider_name == "TensorRT-Engine"
+            is_trt_engine_provider = self.models_processor.provider_name in [
+                "TensorRT",
+                "TensorRT-Engine",
+            ]
             is_dedicated_trt_model = model_name in self.models_processor.models_trt
 
             # --- TensorRT Execution Path ---
@@ -447,9 +444,7 @@ class FaceEditors:
                             )
                         )
 
-                stitching_eye_model = self.models_processor.models_trt[
-                    model_name
-                ]
+                stitching_eye_model = self.models_processor.models_trt[model_name]
 
                 delta = torch.empty(
                     (1, 63), dtype=torch.float32, device=self.models_processor.device
@@ -475,9 +470,7 @@ class FaceEditors:
                         device=self.models_processor.device,
                     ).contiguous()
                 }
-                results = self._run_onnx_io_binding(
-                    model_name, inputs, output_spec
-                )
+                results = self._run_onnx_io_binding(model_name, inputs, output_spec)
                 delta = results["output"]
 
         # Reshape the output delta to match the keypoint format.
@@ -502,11 +495,14 @@ class FaceEditors:
         """
         with torch.no_grad():
             feat_lip = faceutil.concat_feat(kp_source, lip_close_ratio).contiguous()
-            
+
             model_name = "LivePortraitStitchingLip"
 
             # Check if provider is TRT-Engine AND if this model is listed in the TRT models dict
-            is_trt_engine_provider = self.models_processor.provider_name == "TensorRT-Engine"
+            is_trt_engine_provider = self.models_processor.provider_name in [
+                "TensorRT",
+                "TensorRT-Engine",
+            ]
             is_dedicated_trt_model = model_name in self.models_processor.models_trt
 
             # --- TensorRT Execution Path ---
@@ -521,9 +517,7 @@ class FaceEditors:
                             )
                         )
 
-                stitching_lip_model = self.models_processor.models_trt[
-                    model_name
-                ]
+                stitching_lip_model = self.models_processor.models_trt[model_name]
 
                 delta = torch.empty(
                     (1, 63), dtype=torch.float32, device=self.models_processor.device
@@ -549,9 +543,7 @@ class FaceEditors:
                         device=self.models_processor.device,
                     ).contiguous()
                 }
-                results = self._run_onnx_io_binding(
-                    model_name, inputs, output_spec
-                )
+                results = self._run_onnx_io_binding(model_name, inputs, output_spec)
                 delta = results["output"]
 
         return delta.reshape(-1, kp_source.shape[1], 3)
@@ -579,7 +571,10 @@ class FaceEditors:
             model_name = "LivePortraitStitching"
 
             # Check if provider is TRT-Engine AND if this model is listed in the TRT models dict
-            is_trt_engine_provider = self.models_processor.provider_name == "TensorRT-Engine"
+            is_trt_engine_provider = self.models_processor.provider_name in [
+                "TensorRT",
+                "TensorRT-Engine",
+            ]
             is_dedicated_trt_model = model_name in self.models_processor.models_trt
 
             # --- TensorRT Execution Path ---
@@ -594,9 +589,7 @@ class FaceEditors:
                             )
                         )
 
-                stitching_model = self.models_processor.models_trt[
-                    model_name
-                ]
+                stitching_model = self.models_processor.models_trt[model_name]
 
                 delta = torch.empty(
                     (1, 65), dtype=torch.float32, device=self.models_processor.device
@@ -622,9 +615,7 @@ class FaceEditors:
                         device=self.models_processor.device,
                     ).contiguous()
                 }
-                results = self._run_onnx_io_binding(
-                    model_name, inputs, output_spec
-                )
+                results = self._run_onnx_io_binding(model_name, inputs, output_spec)
                 delta = results["output"]
 
         return delta
