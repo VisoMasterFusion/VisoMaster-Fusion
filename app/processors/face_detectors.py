@@ -284,6 +284,43 @@ class FaceDetectors:
             kpss = np.array(refined_kpss, dtype=object)
         return det, kpss_5, kpss
 
+    def _run_model_with_lazy_build_check(self, model_name: str, ort_session, io_binding) -> list:
+        """
+        Runs the ONNX session with IOBinding, handling TensorRT lazy build dialogs.
+        This centralizes the try/finally logic for showing/hiding the build progress dialog
+        and includes the critical CUDA synchronization step.
+
+        Args:
+            model_name (str): The name of the model being run.
+            ort_session: The ONNX Runtime session instance.
+            io_binding: The pre-configured IOBinding object.
+
+        Returns:
+            list: The network outputs from copy_outputs_to_cpu().
+        """
+        is_lazy_build = self.models_processor.check_and_clear_pending_build(
+            model_name
+        )
+        if is_lazy_build:
+            self.models_processor.show_build_dialog.emit(
+                "Finalizing TensorRT Build",
+                f"Performing first-run inference for:\n{model_name}\n\nThis may take several minutes.",
+            )
+        
+        try:
+            # ⚠️ This is a critical synchronization point for CUDA execution.
+            if self.models_processor.device == "cuda":
+                torch.cuda.synchronize()
+                
+            ort_session.run_with_iobinding(io_binding)
+            net_outs = io_binding.copy_outputs_to_cpu()
+            
+        finally:
+            if is_lazy_build:
+                self.models_processor.hide_build_dialog.emit()
+        
+        return net_outs
+
     def run_detect(
         self,
         img,
@@ -368,7 +405,6 @@ class FaceDetectors:
 
             io_binding = ort_session.io_binding()
 
-            io_binding = self.models_processor.models["RetinaFace"].io_binding()
             io_binding.bind_input(
                 name="input.1",
                 device_type=self.models_processor.device,
@@ -379,10 +415,9 @@ class FaceDetectors:
             )
             for i in ["448", "471", "494", "451", "474", "497", "454", "477", "500"]:
                 io_binding.bind_output(i, self.models_processor.device)
-            if self.models_processor.device == "cuda":
-                torch.cuda.synchronize()
-            self.models_processor.models["RetinaFace"].run_with_iobinding(io_binding)
-            net_outs = io_binding.copy_outputs_to_cpu()
+
+            # Run the model with lazy build handling
+            net_outs = self._run_model_with_lazy_build_check(model_name, ort_session, io_binding)
 
             input_height, input_width = aimg.shape[2], aimg.shape[3]
             fmc = 3
@@ -527,7 +562,6 @@ class FaceDetectors:
 
             io_binding = ort_session.io_binding()
 
-            io_binding = self.models_processor.models["SCRFD2.5g"].io_binding()
             io_binding.bind_input(
                 name=input_name,
                 device_type=self.models_processor.device,
@@ -538,10 +572,9 @@ class FaceDetectors:
             )
             for name in output_names:
                 io_binding.bind_output(name, self.models_processor.device)
-            if self.models_processor.device == "cuda":
-                torch.cuda.synchronize()
-            self.models_processor.models["SCRFD2.5g"].run_with_iobinding(io_binding)
-            net_outs = io_binding.copy_outputs_to_cpu()
+
+            # Run the model with lazy build handling
+            net_outs = self._run_model_with_lazy_build_check(model_name, ort_session, io_binding)
             input_height, input_width = aimg.shape[2], aimg.shape[3]
             fmc = 3
             for idx, stride in enumerate([8, 16, 32]):
@@ -691,7 +724,6 @@ class FaceDetectors:
 
             io_binding = ort_session.io_binding()
 
-            io_binding = self.models_processor.models["YoloFace8n"].io_binding()
             io_binding.bind_input(
                 name="images",
                 device_type=self.models_processor.device,
@@ -701,10 +733,9 @@ class FaceDetectors:
                 buffer_ptr=aimg_prepared.data_ptr(),  # Use data_ptr of prepared tensor
             )
             io_binding.bind_output("output0", self.models_processor.device)
-            if self.models_processor.device == "cuda":
-                torch.cuda.synchronize()
-            self.models_processor.models["YoloFace8n"].run_with_iobinding(io_binding)
-            net_outs = io_binding.copy_outputs_to_cpu()
+
+            # Run the model with lazy build handling
+            net_outs = self._run_model_with_lazy_build_check(model_name, ort_session, io_binding)
 
             outputs = np.squeeze(net_outs).T
             bbox_raw, score_raw, kps_raw, *_ = np.split(outputs, [4, 5], axis=1)
@@ -858,7 +889,6 @@ class FaceDetectors:
 
             io_binding = ort_session.io_binding()
 
-            io_binding = self.models_processor.models["YunetN"].io_binding()
             io_binding.bind_input(
                 name=input_name,
                 device_type=self.models_processor.device,
@@ -869,10 +899,9 @@ class FaceDetectors:
             )
             for name in output_names:
                 io_binding.bind_output(name, self.models_processor.device)
-            if self.models_processor.device == "cuda":
-                torch.cuda.synchronize()
-            self.models_processor.models["YunetN"].run_with_iobinding(io_binding)
-            net_outs = io_binding.copy_outputs_to_cpu()
+
+            # Run the model with lazy build handling
+            net_outs = self._run_model_with_lazy_build_check(model_name, ort_session, io_binding)
             strides = [8, 16, 32]
             for idx, stride in enumerate(strides):
                 cls_pred, obj_pred, reg_pred, kps_pred = (

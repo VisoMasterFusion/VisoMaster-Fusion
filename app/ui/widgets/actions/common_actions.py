@@ -343,9 +343,7 @@ def get_pixmap_from_frame(main_window: "MainWindow", frame: np.ndarray):
 
 
 def update_gpu_memory_progressbar(main_window: "MainWindow"):
-    threading.Thread(
-        target=partial(_update_gpu_memory_progressbar, main_window)
-    ).start()
+    _update_gpu_memory_progressbar(main_window)
 
 
 def _update_gpu_memory_progressbar(main_window: "MainWindow"):
@@ -362,18 +360,42 @@ def set_gpu_memory_progressbar_value(
     main_window.vramProgressBar.setFormat(
         f"{round(memory_used / 1024, 2)} GB / {round(memory_total / 1024, 2)} GB (%p%)"
     )
+    # Base style copied from true_dark_styles.qss 
+    base_style = """
+        QProgressBar {
+            border: 1px solid #363636;
+            border-radius: 5px;
+            text-align: center;
+            background-color: #202020;
+            color: #f0f0f0;
+        }
+    """
+    
+    # Base Chunk style copied from true_dark_styles.qss 
+    chunk_style_normal = """
+        QProgressBar::chunk {
+            background-color: #16759e;  /* Blue */
+            width: 10px;
+            margin: 0.5px;
+            border-radius: 4px;
+        }
+    """
+    
+    # High VRAM Chunck style
+    chunk_style_high = """
+        QProgressBar::chunk {
+            background-color: #911414; /* Red */
+            width: 10px;
+            margin: 0.5px;
+            border-radius: 4px;
+        }
+    """
+
     if (memory_used / memory_total) > 0.85:
-        main_window.vramProgressBar.setStyleSheet("""
-            QProgressBar::chunk {
-                background-color: #911414;  /* Set chunk color to green */
-            }
-        """)
+        main_window.vramProgressBar.setStyleSheet(base_style + chunk_style_high)
     else:
-        main_window.vramProgressBar.setStyleSheet("""
-            QProgressBar::chunk {
-                background-color: #16759e;  /* Set chunk color to green */
-            }
-        """)
+        main_window.vramProgressBar.setStyleSheet(base_style + chunk_style_normal)
+    
     main_window.vramProgressBar.update()
 
 

@@ -257,15 +257,33 @@ class FaceLandmarkDetectors:
         for name in output_names:
             io_binding.bind_output(name, self.models_processor.device)
 
-        # Synchronize the CUDA stream before execution.
-        if self.models_processor.device == "cuda":
-            torch.cuda.synchronize()
-        elif self.models_processor.device != "cpu":
-            self.models_processor.syncvec.cpu()
+        # --- START LAZY BUILD CHECK ---
+        is_lazy_build = self.models_processor.check_and_clear_pending_build(
+            model_name
+        )
+        if is_lazy_build:
+            # Use the 'model_name' variable for a reliable dialog message
+            self.models_processor.show_build_dialog.emit(
+                "Finalizing TensorRT Build",
+                f"Performing first-run inference for:\n{model_name}\n\nThis may take several minutes.",
+            )
+        
+        try:
+            # Synchronize the CUDA stream before execution.
+            if self.models_processor.device == "cuda":
+                torch.cuda.synchronize()
+            elif self.models_processor.device != "cpu":
+                self.models_processor.syncvec.cpu()
 
-        # Run inference and copy results back to CPU.
-        model.run_with_iobinding(io_binding)
-        return io_binding.copy_outputs_to_cpu()
+            # Run inference and copy results back to CPU.
+            model.run_with_iobinding(io_binding)
+            net_outs = io_binding.copy_outputs_to_cpu()
+        finally:
+            if is_lazy_build:
+                self.models_processor.hide_build_dialog.emit()
+        # --- END LAZY BUILD CHECK ---
+
+        return net_outs
 
     def detect_face_landmark_5(self, img, bbox, det_kpss, from_points=False):
         # This model's pre-processing is unique, so it doesn't use the `_prepare_crop` helper.

@@ -59,6 +59,43 @@ class FaceRestorers:
             return None
         return ort_session
 
+    def _run_model_with_lazy_build_check(self, model_name: str, ort_session, io_binding):
+        """
+        Runs the ONNX session with IOBinding, handling TensorRT lazy build dialogs.
+        This centralizes the try/finally logic for showing/hiding the build progress dialog
+        and includes the critical synchronization step for CUDA or other devices.
+
+        Args:
+            model_name (str): The name of the model being run.
+            ort_session: The ONNX Runtime session instance.
+            io_binding: The pre-configured IOBinding object.
+        """
+        # --- START LAZY BUILD CHECK ---
+        is_lazy_build = self.models_processor.check_and_clear_pending_build(
+            model_name
+        )
+        if is_lazy_build:
+            self.models_processor.show_build_dialog.emit(
+                "Finalizing TensorRT Build",
+                f"Performing first-run inference for:\n{model_name}\n\nThis may take several minutes.",
+            )
+        
+        try:
+            # ⚠️ This is a critical synchronization point.
+            if self.models_processor.device == "cuda":
+                torch.cuda.synchronize()
+            elif self.models_processor.device != "cpu":
+                # This handles synchronization for other execution providers (e.g., DirectML)
+                # by synchronizing with a placeholder vector.
+                self.models_processor.syncvec.cpu()
+                
+            ort_session.run_with_iobinding(io_binding)
+            
+        finally:
+            if is_lazy_build:
+                self.models_processor.hide_build_dialog.emit()
+        # --- END LAZY BUILD CHECK ---
+
     def apply_facerestorer(
         self,
         swapped_face_upscaled,
@@ -275,11 +312,8 @@ class FaceRestorers:
             buffer_ptr=output_latent_tensor.data_ptr(),
         )
 
-        if self.models_processor.device == "cuda":
-            torch.cuda.synchronize()
-        elif self.models_processor.device != "cpu":
-            self.models_processor.syncvec.cpu()
-        ort_session.run_with_iobinding(io_binding)
+        # Run the model with lazy build handling
+        self._run_model_with_lazy_build_check(model_name, ort_session, io_binding)
 
     def run_vae_decoder(
         self, latent_input_tensor: torch.Tensor, output_image_tensor: torch.Tensor
@@ -325,11 +359,8 @@ class FaceRestorers:
             buffer_ptr=output_image_tensor.data_ptr(),
         )
 
-        if self.models_processor.device == "cuda":
-            torch.cuda.synchronize()
-        elif self.models_processor.device != "cpu":
-            self.models_processor.syncvec.cpu()
-        ort_session.run_with_iobinding(io_binding)
+        # Run the model with lazy build handling
+        self._run_model_with_lazy_build_check(model_name, ort_session, io_binding)
 
     def run_ref_ldm_unet(
         self,
@@ -461,11 +492,8 @@ class FaceRestorers:
             buffer_ptr=output_unet_tensor.data_ptr(),
         )
 
-        if self.models_processor.device == "cuda":
-            torch.cuda.synchronize()
-        elif self.models_processor.device != "cpu":
-            self.models_processor.syncvec.cpu()
-        ort_session.run_with_iobinding(io_binding)
+        # Run the model with lazy build handling
+        self._run_model_with_lazy_build_check(model_name, ort_session, io_binding)
 
     def run_GFPGAN(self, image, output):
         model_name = "GFPGANv1.4"
@@ -491,11 +519,8 @@ class FaceRestorers:
             buffer_ptr=output.data_ptr(),
         )
 
-        if self.models_processor.device == "cuda":
-            torch.cuda.synchronize()
-        elif self.models_processor.device != "cpu":
-            self.models_processor.syncvec.cpu()
-        ort_session.run_with_iobinding(io_binding)
+        # Run the model with lazy build handling
+        self._run_model_with_lazy_build_check(model_name, ort_session, io_binding)
 
     def run_GFPGAN1024(self, image, output):
         model_name = "GFPGAN1024"
@@ -521,11 +546,8 @@ class FaceRestorers:
             buffer_ptr=output.data_ptr(),
         )
 
-        if self.models_processor.device == "cuda":
-            torch.cuda.synchronize()
-        elif self.models_processor.device != "cpu":
-            self.models_processor.syncvec.cpu()
-        ort_session.run_with_iobinding(io_binding)
+        # Run the model with lazy build handling
+        self._run_model_with_lazy_build_check(model_name, ort_session, io_binding)
 
     def run_GPEN_256(self, image, output):
         model_name = "GPENBFR256"
@@ -551,11 +573,8 @@ class FaceRestorers:
             buffer_ptr=output.data_ptr(),
         )
 
-        if self.models_processor.device == "cuda":
-            torch.cuda.synchronize()
-        elif self.models_processor.device != "cpu":
-            self.models_processor.syncvec.cpu()
-        ort_session.run_with_iobinding(io_binding)
+        # Run the model with lazy build handling
+        self._run_model_with_lazy_build_check(model_name, ort_session, io_binding)
 
     def run_GPEN_512(self, image, output):
         model_name = "GPENBFR512"
@@ -581,11 +600,8 @@ class FaceRestorers:
             buffer_ptr=output.data_ptr(),
         )
 
-        if self.models_processor.device == "cuda":
-            torch.cuda.synchronize()
-        elif self.models_processor.device != "cpu":
-            self.models_processor.syncvec.cpu()
-        ort_session.run_with_iobinding(io_binding)
+        # Run the model with lazy build handling
+        self._run_model_with_lazy_build_check(model_name, ort_session, io_binding)
 
     def run_GPEN_1024(self, image, output):
         model_name = "GPENBFR1024"
@@ -611,11 +627,8 @@ class FaceRestorers:
             buffer_ptr=output.data_ptr(),
         )
 
-        if self.models_processor.device == "cuda":
-            torch.cuda.synchronize()
-        elif self.models_processor.device != "cpu":
-            self.models_processor.syncvec.cpu()
-        ort_session.run_with_iobinding(io_binding)
+        # Run the model with lazy build handling
+        self._run_model_with_lazy_build_check(model_name, ort_session, io_binding)
 
     def run_GPEN_2048(self, image, output):
         model_name = "GPENBFR2048"
@@ -641,11 +654,8 @@ class FaceRestorers:
             buffer_ptr=output.data_ptr(),
         )
 
-        if self.models_processor.device == "cuda":
-            torch.cuda.synchronize()
-        elif self.models_processor.device != "cpu":
-            self.models_processor.syncvec.cpu()
-        ort_session.run_with_iobinding(io_binding)
+        # Run the model with lazy build handling
+        self._run_model_with_lazy_build_check(model_name, ort_session, io_binding)
 
     def run_codeformer(self, image, output, fidelity_weight_value=0.9):
         model_name = "CodeFormer"
@@ -673,11 +683,8 @@ class FaceRestorers:
             buffer_ptr=output.data_ptr(),
         )
 
-        if self.models_processor.device == "cuda":
-            torch.cuda.synchronize()
-        elif self.models_processor.device != "cpu":
-            self.models_processor.syncvec.cpu()
-        ort_session.run_with_iobinding(io_binding)
+        # Run the model with lazy build handling
+        self._run_model_with_lazy_build_check(model_name, ort_session, io_binding)
 
     def run_VQFR_v2(self, image, output, fidelity_ratio_value):
         model_name = "VQFRv2"
@@ -721,11 +728,8 @@ class FaceRestorers:
             buffer_ptr=output.data_ptr(),
         )
 
-        if self.models_processor.device == "cuda":
-            torch.cuda.synchronize()
-        elif self.models_processor.device != "cpu":
-            self.models_processor.syncvec.cpu()
-        ort_session.run_with_iobinding(io_binding)
+        # Run the model with lazy build handling
+        self._run_model_with_lazy_build_check(model_name, ort_session, io_binding)
 
     def run_RestoreFormerPlusPlus(self, image, output):
         model_name = "RestoreFormerPlusPlus"
@@ -765,8 +769,5 @@ class FaceRestorers:
         io_binding.bind_output("input.280", self.models_processor.device)
         io_binding.bind_output("input.288", self.models_processor.device)
 
-        if self.models_processor.device == "cuda":
-            torch.cuda.synchronize()
-        elif self.models_processor.device != "cpu":
-            self.models_processor.syncvec.cpu()
-        ort_session.run_with_iobinding(io_binding)
+        # Run the model with lazy build handling
+        self._run_model_with_lazy_build_check(model_name, ort_session, io_binding)
