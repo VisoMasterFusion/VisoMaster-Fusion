@@ -70,15 +70,17 @@ class FrameWorker(threading.Thread):
         # Mode-specific args
         self.frame_queue = frame_queue  # This is now the TASK queue
         self.worker_id = worker_id
-        
+
         # Single-frame data
         self.frame = frame  # Will be None in pool mode until a task is dequeued
-        self.frame_number = frame_number  # Will be -1 in pool mode until a task is dequeued
+        self.frame_number = (
+            frame_number  # Will be -1 in pool mode until a task is dequeued
+        )
         self.is_single_frame = is_single_frame
-        
+
         # Determine mode
         self.is_pool_worker = (frame_queue is not None) and (worker_id != -1)
-        
+
         if self.is_pool_worker:
             self.name = f"FrameWorker-Pool-{worker_id}"
         else:
@@ -121,7 +123,7 @@ class FrameWorker(threading.Thread):
         if self.is_pool_worker:
             # --- Pool Worker Mode ---
             while not self.stop_event.is_set():
-                task = None # Ensure task is defined for 'finally'
+                task = None  # Ensure task is defined for 'finally'
                 try:
                     # Block until a task is available or a poison pill is received
                     # Use a timeout to periodically check the stop_event
@@ -130,18 +132,18 @@ class FrameWorker(threading.Thread):
                     if task is None:
                         # Poison pill received: Exit the loop
                         print(f"{self.name} received poison pill. Exiting.")
-                        break # 'finally' will call task_done()
-                    
+                        break  # 'finally' will call task_done()
+
                     if self.stop_event.is_set():
                         # Stopped while waiting, discard task
-                        break # 'finally' will call task_done()
+                        break  # 'finally' will call task_done()
 
                     # We have a valid task: (frame_number, frame_data)
                     self.frame_number, self.frame = task
-                    
+
                     # Process the frame
                     self.process_and_emit_task()
-                    
+
                 except queue.Empty:
                     # Timeout occurred, just loop again to check stop_event
                     # 'task' is still None, so 'finally' will do nothing
@@ -151,7 +153,7 @@ class FrameWorker(threading.Thread):
                     print(f"Error in {self.name} (frame {self.frame_number}): {e}")
                     traceback.print_exc()
                     # We still need to mark the task as done in 'finally'
-                
+
                 finally:
                     # This block executes *no matter what* (success, exception, or break)
                     # as long as 'task' was assigned (i.e. not a queue.Empty)
@@ -161,12 +163,14 @@ class FrameWorker(threading.Thread):
                         except ValueError:
                             # This can happen if stop_processing cleared the queue
                             # while this worker was busy. It's safe to ignore.
-                            print(f"[WARN] {self.name} tried to task_done() on a cleared queue.")
+                            print(
+                                f"[WARN] {self.name} tried to task_done() on a cleared queue."
+                            )
                             pass
 
             # After 'while' loop breaks (by poison pill or stop_event)
             # We exit the run() method
-        
+
         else:
             # --- Single-Frame Mode ---
             if self.stop_event.is_set():
@@ -217,7 +221,9 @@ class FrameWorker(threading.Thread):
                 # process_frame returns BGR, uint8
 
                 # Pass the stop_event to the processing function
-                processed_frame_bgr_np_uint8 = self.process_frame(current_control_state, self.stop_event)
+                processed_frame_bgr_np_uint8 = self.process_frame(
+                    current_control_state, self.stop_event
+                )
 
                 # Ensure output is C-contiguous for Qt display
                 self.frame = np.ascontiguousarray(processed_frame_bgr_np_uint8)
@@ -549,7 +555,7 @@ class FrameWorker(threading.Thread):
     def process_frame(self, control: dict, stop_event: threading.Event):
         # Check 1: At the very beginning
         if stop_event.is_set():
-            return self.frame[..., ::-1] # Return original BGR frame
+            return self.frame[..., ::-1]  # Return original BGR frame
         self.set_scaling_transforms(control)
         img_numpy_rgb_uint8 = self.frame
         swap_button_is_checked_global = self.main_window.swapfacesButton.isChecked()
@@ -644,7 +650,8 @@ class FrameWorker(threading.Thread):
             # This loop now iterates over the correctly de-duplicated bounding boxes.
             for bbox_eq_single in bboxes_eq_np:
                 # Check 2: Inside VR face loop
-                if stop_event.is_set(): break
+                if stop_event.is_set():
+                    break
 
                 theta, phi = equirect_converter.calculate_theta_phi_from_bbox(
                     bbox_eq_single
@@ -888,7 +895,8 @@ class FrameWorker(threading.Thread):
                 if control["SwapOnlyBestMatchEnableToggle"]:
                     for _, target_face in self.main_window.target_faces.items():
                         # Check 3: Inside standard face loop
-                        if stop_event.is_set(): break
+                        if stop_event.is_set():
+                            break
 
                         params = ParametersDict(
                             self.parameters[target_face.face_id],
@@ -976,7 +984,8 @@ class FrameWorker(threading.Thread):
                 else:
                     for fface in det_faces_data_for_display:
                         # Check 4: Inside standard face loop (else branch)
-                        if stop_event.is_set(): break
+                        if stop_event.is_set():
+                            break
 
                         best_target, params, _ = self._find_best_target_match(
                             fface["embedding"], control
@@ -1091,7 +1100,7 @@ class FrameWorker(threading.Thread):
         if control["FrameEnhancerEnableToggle"] and not compare_mode_active:
             # Check 5: Before final heavy operation
             if stop_event.is_set():
-                return img_numpy_rgb_uint8[..., ::-1] # Return original BGR frame
+                return img_numpy_rgb_uint8[..., ::-1]  # Return original BGR frame
 
             processed_tensor_rgb_uint8 = self.enhance_core(
                 processed_tensor_rgb_uint8, control=control
@@ -3228,9 +3237,6 @@ class FrameWorker(threading.Thread):
 
             x_d_i_info = self.models_processor.lp_motion_extractor(
                 driving_face_256, "Human-Face"
-            )
-            faceutil.get_rotation_matrix(
-                x_d_i_info["pitch"], x_d_i_info["yaw"], x_d_i_info["roll"]
             )
 
             # --- VARIABLE DEFINITION (Original Placement) ---

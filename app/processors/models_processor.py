@@ -533,7 +533,7 @@ class ModelsProcessor(QtCore.QObject):
                 return None
 
             # If TensorRT-Engine provider is selected, prioritize loading/building the TRT engine.
-            if self.provider_name == "TensorRT-Engine":
+            if self.provider_name in ["TensorRT", "TensorRT-Engine"]:
                 # Check if there is a corresponding TRT model definition
                 trt_model_info = next(
                     (m for m in models_trt_list if m["model_name"] == model_name), None
@@ -699,9 +699,7 @@ class ModelsProcessor(QtCore.QObject):
                         print(
                             f"[load_model]: Model {model_name} requires a lazy build (engine not found after probe)."
                         )
-                        print(
-                            "[load_model]: Adding to 'models_pending_build' set."
-                        )
+                        print("[load_model]: Adding to 'models_pending_build' set.")
                         self.models_pending_build.add(model_name)
 
                 # Race condition check
@@ -930,15 +928,22 @@ class ModelsProcessor(QtCore.QObject):
             if (
                 TENSORRT_AVAILABLE
                 and model_name_to_unload
-                and self.models_trt.get(model_name_to_unload) is not None
+                # MODIFICATION: Check if key exists, not if value is not None
+                # This handles the case where it's already unloaded (value is None)
+                and model_name_to_unload in self.models_trt
             ):
-                print(f"Unloading TRT-Engine model: {model_name_to_unload}")
-                trt_model = self.models_trt.pop(model_name_to_unload, None)
-                if isinstance(trt_model, TensorRTPredictor):
-                    trt_model.cleanup()
-                if trt_model:
+                # MODIFICATION: Get the model instance *before* setting to None
+                trt_model = self.models_trt.get(model_name_to_unload)
+
+                if trt_model is not None:  # Only run cleanup if it's actually loaded
+                    print(f"Unloading TRT-Engine model: {model_name_to_unload}")
+                    if isinstance(trt_model, TensorRTPredictor):
+                        trt_model.cleanup()
                     del trt_model
-                unloaded = True
+                    unloaded = True
+
+                # MODIFICATION: Set key to None instead of popping to preserve it
+                self.models_trt[model_name_to_unload] = None
 
             if unloaded:
                 # This block is now guaranteed to run after an unload.

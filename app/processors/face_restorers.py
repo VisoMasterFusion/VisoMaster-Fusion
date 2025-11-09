@@ -59,7 +59,9 @@ class FaceRestorers:
             return None
         return ort_session
 
-    def _run_model_with_lazy_build_check(self, model_name: str, ort_session, io_binding):
+    def _run_model_with_lazy_build_check(
+        self, model_name: str, ort_session, io_binding
+    ):
         """
         Runs the ONNX session with IOBinding, handling TensorRT lazy build dialogs.
         This centralizes the try/finally logic for showing/hiding the build progress dialog
@@ -71,15 +73,13 @@ class FaceRestorers:
             io_binding: The pre-configured IOBinding object.
         """
         # --- START LAZY BUILD CHECK ---
-        is_lazy_build = self.models_processor.check_and_clear_pending_build(
-            model_name
-        )
+        is_lazy_build = self.models_processor.check_and_clear_pending_build(model_name)
         if is_lazy_build:
             self.models_processor.show_build_dialog.emit(
                 "Finalizing TensorRT Build",
                 f"Performing first-run inference for:\n{model_name}\n\nThis may take several minutes.",
             )
-        
+
         try:
             # ⚠️ This is a critical synchronization point.
             if self.models_processor.device == "cuda":
@@ -88,9 +88,9 @@ class FaceRestorers:
                 # This handles synchronization for other execution providers (e.g., DirectML)
                 # by synchronizing with a placeholder vector.
                 self.models_processor.syncvec.cpu()
-                
+
             ort_session.run_with_iobinding(io_binding)
-            
+
         finally:
             if is_lazy_build:
                 self.models_processor.hide_build_dialog.emit()

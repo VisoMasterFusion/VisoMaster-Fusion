@@ -84,6 +84,21 @@ SETTINGS_LAYOUT_DATA: Any = {  # noqa: F811
             "default": False,
             "help": "Auto start over when video playing to the end.(Not work for recording)",
         },
+        "VideoPlaybackPreviewToggle": {
+            "level": 1,
+            "label": "Playback Preview Mode",
+            "default": False,
+            "help": "Playback preview mode uses low frame size to do the swap and gain in performance. This will not be used for recording and results may vary !",
+        },
+        "VideoPlaybackPreviewSizeSelection": {
+            "level": 2,
+            "label": "Preview Resolution",
+            "options": ["240p", "360p", "480p", "540p", "720p"],
+            "default": "360p",
+            "parentToggle": "VideoPlaybackPreviewToggle",
+            "requiredToggleValue": True,
+            "help": "Select a lower preview resolution for faster processing in preview mode.",
+        },
         "LiveSoundVolumeDecimalSlider": {
             "level": 1,
             "label": "Audio Playback Volume",

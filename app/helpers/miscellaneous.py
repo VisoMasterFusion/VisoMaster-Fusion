@@ -502,14 +502,89 @@ def benchmark(func):
     return wrapper
 
 
-def read_frame(capture_obj: cv2.VideoCapture, preview_mode=False):
+def read_frame(
+    capture_obj: cv2.VideoCapture, preview_target_height: Optional[int] = None
+) -> Tuple[bool, Optional[np.ndarray]]:
+    """
+    Reads a single frame from the video capture object in a thread-safe manner.
+
+    The 'lock' (Point 5) is critical as 'capture_obj' is a shared resource.
+    It prevents race conditions between the feeder thread and seek operations.
+
+    If 'preview_target_height' is provided (e.g., 360), the frame is downscaled
+    to that specific height while maintaining aspect ratio. This is used for
+    the "fast preview" mode.
+
+    This downscaling is done *after* the lock to avoid holding the lock
+    during the resize operation (performance and thread safety).
+
+    Args:
+        capture_obj (cv2.VideoCapture): The shared OpenCV capture object.
+        preview_target_height (int, optional): If provided, the frame will be
+                                               downscaled to this height.
+
+    Returns:
+        tuple[bool, np.ndarray | None]: (ret, frame) from capture_obj.read().
+                                        The frame is full-res or downscaled.
+    """
     with lock:
+        # This is the only operation that needs to be locked
         ret, frame = capture_obj.read()
-    if ret and preview_mode:
-        pass
-        # width, height = get_scaled_resolution(capture_obj)
-        # frame = cv2.resize(fr2ame, dsize=(width, height), interpolation=cv2.INTER_LANCZOS4)
+
+    # Perform resizing only if read was successful AND a target height is specified
+    if ret and preview_target_height is not None:
+        try:
+            original_height, original_width = frame.shape[:2]
+            if original_height == 0:
+                return ret, frame  # Avoid division by zero
+
+            # Use the specified target height
+            target_height = preview_target_height
+            aspect_ratio = original_width / original_height
+            target_width = int(target_height * aspect_ratio)
+
+            # Ensure width is even (good practice for some video operations)
+            if target_width % 2 != 0:
+                target_width += 1
+
+            # cv2.INTER_AREA is generally the fastest and best for downscaling
+            frame = cv2.resize(
+                frame, (target_width, target_height), interpolation=cv2.INTER_AREA
+            )
+        except Exception as e:
+            print(f"[ERROR] Failed to resize frame in preview_mode: {e}")
+            # Fallback: return the original frame if resize fails
+            return ret, frame
+
+    # Return the (potentially resized) frame
     return ret, frame
+
+
+def seek_frame(capture_obj: cv2.VideoCapture, frame_number: int) -> bool:
+    """
+    Seeks a video capture object to a specific frame number in a thread-safe manner.
+    Uses the same global lock as read_frame to prevent deadlocks.
+
+    Args:
+        capture_obj (cv2.VideoCapture): The shared OpenCV capture object.
+        frame_number (int): The frame number to seek to.
+
+    Returns:
+        bool: The result of capture_obj.set().
+    """
+    with lock:
+        # This is the only operation that needs to be locked
+        return capture_obj.set(cv2.CAP_PROP_POS_FRAMES, frame_number)
+
+
+def release_capture(capture_obj: cv2.VideoCapture):
+    """
+    Releases the OpenCV capture object in a thread-safe manner.
+    Uses the same global lock as read_frame to prevent deadlocks.
+    """
+    with lock:
+        if capture_obj and capture_obj.isOpened():
+            capture_obj.release()
 
 
 def read_image_file(image_path):
