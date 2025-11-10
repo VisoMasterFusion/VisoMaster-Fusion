@@ -158,7 +158,7 @@ call :install_dependency "UV" "%UV_EXE%" "%UV_URL%" "%UV_ZIP%" "%UV_DIR%"
 
 if not exist "%VENV_DIR%" (
     echo Creating virtual environment...
-    "%UV_EXE%" venv "%VENV_DIR%" --python "%PYTHON_EXE%"
+    "%UV_EXE%" venv "%VENV_DIR%" --relocatable --python "%PYTHON_EXE%"
     if !ERRORLEVEL! neq 0 ( echo ERROR: Failed to create venv. && pause && exit /b 1 )
     set "NEEDS_INSTALL=true"
 )
