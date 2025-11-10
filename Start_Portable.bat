@@ -432,7 +432,7 @@ echo Checking for launcher script updates...
 fc /b "%ROOT_BAT%" "%REPO_BAT%" > nul
 if errorlevel 1 (
     echo.
-    echo ATTENTION: The launcher script (Start_Portable.bat) has been updated.
+    echo ATTENTION: The launcher script Start_Portable.bat has been updated.
     echo The script will now restart itself to apply the changes.
     echo.
 
