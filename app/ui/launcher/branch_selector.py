@@ -1,10 +1,11 @@
+# app/ui/launcher/branch_selector.py
 import tkinter as tk
 from tkinter import ttk, font
 import sys
 import os
 
 # This script is called before the venv is created. The Start_Portable.bat script
-# sets PYTHONPATH
+# sets PYTHONPATH so this import works correctly.
 try:
     from app.ui.launcher.cfgtools import write_portable_cfg
 except ImportError:
@@ -22,6 +23,7 @@ except ImportError:
             file=sys.stderr,
         )
         sys.exit(1)
+
 
 # --- UI Styling Constants ---
 BG_COLOR = "#2e3440"
