@@ -179,7 +179,7 @@ def trigger_self_update_if_needed(parent_widget=None):
     root_bat = PATHS["BASE_DIR"] / "Start_Portable.bat"
     repo_bat = PATHS["APP_DIR"] / "Start_Portable.bat"
 
-    print("Launcher: Start_Portable.bat has been updated. Relaunching...")
+    print("Launcher: Start_Portable.bat update requested. Relaunching...")
     QMessageBox.information(
         parent_widget,
         "Launcher Update Required",

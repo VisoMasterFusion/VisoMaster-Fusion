@@ -103,8 +103,7 @@ def check_update_status():
         head_hash, origin_hash = head.stdout.strip(), origin.stdout.strip()
         if head_hash != origin_hash:
             print(
-                f"Launcher: Local version behind origin "
-                f"(HEAD={head_hash[:7]} -> {origin_hash[:7]})"
+                f"Launcher: Local version behind origin (HEAD={head_hash[:7]} -> {origin_hash[:7]})"
             )
             return "behind"
         print(f"Launcher: Repository up to date (HEAD={head_hash[:7]})")
@@ -133,7 +132,6 @@ class LauncherWindow(QtWidgets.QWidget):
 
         # Check for launcher script update
         self.launcher_update_available = is_launcher_update_available()
-
         self.update_status = self._check_and_log_update_status()
 
         update_current_commit_in_cfg()
@@ -406,7 +404,6 @@ class LauncherWindow(QtWidgets.QWidget):
 
         for text, method, *tip in ACTIONS_MAINT:
             fn = getattr(self, method)
-            # Hide the launcher update button if no update is available
             if method == "on_self_update" and not self.launcher_update_available:
                 continue
             lay.addWidget(self._register_action(text, fn, tip[0] if tip else None))
@@ -501,15 +498,13 @@ class LauncherWindow(QtWidgets.QWidget):
                 self._rebuild_page("page_rollback", self._build_rollback_page)
                 self._refresh_update_indicators()
                 print("Launcher: Update complete.")
-                # Check for launcher script update after repo update
                 if is_launcher_update_available():
-                    self._refresh_update_indicators()  # Show the button
+                    self._refresh_update_indicators()
                     QMessageBox.information(
                         self,
                         "Launcher Update",
-                        "An update for the launcher script (Start_Portable.bat) is now available in the Maintenance menu.",
+                        "An update for the launcher script (Start_Portable.bat) is now available.",
                     )
-
             except Exception as e:
                 print(f"Launcher: Error during update: {e}")
 
@@ -548,9 +543,14 @@ class LauncherWindow(QtWidgets.QWidget):
                 )
                 self._load_checksum_status()
                 self._refresh_update_indicators()
-                print("Launcher: Repair complete.")
                 if is_launcher_update_available():
                     self._refresh_update_indicators()
+                    QMessageBox.information(
+                        self,
+                        "Launcher Update",
+                        "An update for the launcher script may be available after repair.",
+                    )
+                print("Launcher: Repair complete.")
             except Exception as e:
                 print(f"[Launcher] Error during repair: {e}")
 
@@ -606,6 +606,11 @@ class LauncherWindow(QtWidgets.QWidget):
                 self._refresh_update_indicators()
                 if is_launcher_update_available():
                     self._refresh_update_indicators()
+                    QMessageBox.information(
+                        self,
+                        "Launcher Update",
+                        "An update for the launcher script may be available after reverting.",
+                    )
             except Exception as e:
                 print(f"[Launcher] Error during revert: {e}")
 
