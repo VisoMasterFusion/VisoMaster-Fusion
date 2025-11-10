@@ -28,8 +28,6 @@ if "%LAUNCHER_ENABLED%"=="1" (
       set "PYTHONPATH=%BASE_DIR%VisoMaster-Fusion"
       set "PATH=%FFMPEG_BIN_PATH%;%PATH%"
       "%VENV_PYTHON%" -m app.ui.launcher
-      echo Launcher closed.
-      pause >nul
       exit /b !ERRORLEVEL!
     )
   )
@@ -103,31 +101,43 @@ echo Using branch: !BRANCH!
 
 
 :: --- Step 3: Clone or update repository ---
-if exist "%APP_DIR%\.git" (
-    echo Repository exists. Checking for updates...
-    pushd "%APP_DIR%"
-    "%GIT_EXE%" checkout %BRANCH%
-    "%GIT_EXE%" fetch
+if exist "%APP_DIR%" (
+    if exist "%APP_DIR%\.git" (
+        echo Repository exists. Checking for updates...
+        pushd "%APP_DIR%"
+        git --git-dir="%APP_DIR%\.git" --work-tree="%APP_DIR%" checkout %BRANCH%
+        git --git-dir="%APP_DIR%\.git" --work-tree="%APP_DIR%" fetch
 
-    for /f "tokens=*" %%i in ('"%GIT_EXE%" rev-parse HEAD') do set "LOCAL=%%i"
-    for /f "tokens=*" %%i in ('"%GIT_EXE%" rev-parse origin/%BRANCH%') do set "REMOTE=%%i"
+        for /f "tokens=*" %%i in ('git --git-dir="%APP_DIR%\.git" --work-tree="%APP_DIR%" rev-parse HEAD') do set "LOCAL=%%i"
+        for /f "tokens=*" %%i in ('git --git-dir="%APP_DIR%\.git" --work-tree="%APP_DIR%" rev-parse origin/%BRANCH%') do set "REMOTE=%%i"
 
-    if "!LOCAL!" neq "!REMOTE!" (
-        echo Updates available on branch %BRANCH%.
-        if "%LAUNCHER_ENABLED%" NEQ "1" (
-            choice /c YN /m "Do you want to update? Discards local changes "
+        if "!LOCAL!" neq "!REMOTE!" (
+            echo Updates available on branch %BRANCH%.
+            choice /c YN /m "Do you want to update? (This will discard local changes) (Y/N) "
             if !ERRORLEVEL! equ 1 (
                 echo Resetting local repository to match remote...
-                "%GIT_EXE%" reset --hard origin/%BRANCH%
+                git --git-dir="%APP_DIR%\.git" --work-tree="%APP_DIR%" reset --hard origin/%BRANCH%
+                if !ERRORLEVEL! neq 0 (
+                    echo ERROR: Failed to reset repository.
+                    popd
+                    set "PATH=%OLD_PATH%"
+                    exit /b 1
+                )
+                echo Repository updated.
                 set "NEEDS_INSTALL=true"
+                set "DOWNLOAD_RUN=false"
+                powershell -Command "(Get-Content '%CONFIG_FILE%') -replace 'DOWNLOAD_RUN=.*', 'DOWNLOAD_RUN=false' | Set-Content '%CONFIG_FILE%'"
+                
+                :: SELF-UPDATE CHECK
+                popd
+                call :self_update_check
+            ) else (
+                popd
             )
         ) else (
-            echo Updates will be handled by the launcher.
+            echo Repository is up to date.
+            popd
         )
-    ) else (
-        echo Repository is up to date.
-    )
-    popd
 ) else (
     if exist "%APP_DIR%" (
         echo WARNING: %APP_DIR% exists but is not a git repo. Cleaning folder...
@@ -191,22 +201,32 @@ if /I "!FOUND_KEY!"=="false" (
     echo.
     echo Setting LAUNCHER_ENABLED=1 in portable.cfg...
     (echo LAUNCHER_ENABLED=1)>> "%CONFIG_FILE%"
+    set LAUNCHER_ENABLED=1
 )
 
 :: --- Step 9: Run main application ---
-echo.
-echo Starting main.py...
-echo ========================================
-pushd "%APP_DIR%"
-set "PATH=%FFMPEG_BIN_PATH%;%GIT_DIR%\bin;%PATH%"
-"%VENV_PYTHON%" "main.py"
-popd
+if "%LAUNCHER_ENABLED%"=="1" (
+    set "PYTHONPATH=%BASE_DIR%VisoMaster-Fusion"
+    set "PATH=%FFMPEG_BIN_PATH%;%PATH%"
+    "%VENV_PYTHON%" -m app.ui.launcher
+    exit /b !ERRORLEVEL!
+    )
+  )
+) else (
+    echo.
+    echo Starting main.py...
+    echo ========================================
+    pushd "%APP_DIR%"
+    set "PATH=%FFMPEG_BIN_PATH%;%GIT_DIR%\bin;%PATH%"
+    "%VENV_PYTHON%" "main.py"
+    popd
 
-echo.
-echo Application closed. Press any key to exit...
-pause >nul
-endlocal
-exit /b 0
+    echo.
+    echo Application closed. Press any key to exit...
+    pause >nul
+    endlocal
+    exit /b 0
+)
 
 :: ===================================================================
 :: SUBROUTINES
