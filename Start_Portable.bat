@@ -101,44 +101,7 @@ echo Using branch: !BRANCH!
 
 
 :: --- Step 3: Clone or update repository ---
-if exist "%APP_DIR%" (
-    if exist "%APP_DIR%\.git" (
-        echo Repository exists. Checking for updates...
-        pushd "%APP_DIR%"
-        git --git-dir="%APP_DIR%\.git" --work-tree="%APP_DIR%" checkout %BRANCH%
-        git --git-dir="%APP_DIR%\.git" --work-tree="%APP_DIR%" fetch
-
-        for /f "tokens=*" %%i in ('git --git-dir="%APP_DIR%\.git" --work-tree="%APP_DIR%" rev-parse HEAD') do set "LOCAL=%%i"
-        for /f "tokens=*" %%i in ('git --git-dir="%APP_DIR%\.git" --work-tree="%APP_DIR%" rev-parse origin/%BRANCH%') do set "REMOTE=%%i"
-
-        if "!LOCAL!" neq "!REMOTE!" (
-            echo Updates available on branch %BRANCH%.
-            choice /c YN /m "Do you want to update? (This will discard local changes) (Y/N) "
-            if !ERRORLEVEL! equ 1 (
-                echo Resetting local repository to match remote...
-                git --git-dir="%APP_DIR%\.git" --work-tree="%APP_DIR%" reset --hard origin/%BRANCH%
-                if !ERRORLEVEL! neq 0 (
-                    echo ERROR: Failed to reset repository.
-                    popd
-                    set "PATH=%OLD_PATH%"
-                    exit /b 1
-                )
-                echo Repository updated.
-                set "NEEDS_INSTALL=true"
-                set "DOWNLOAD_RUN=false"
-                powershell -Command "(Get-Content '%CONFIG_FILE%') -replace 'DOWNLOAD_RUN=.*', 'DOWNLOAD_RUN=false' | Set-Content '%CONFIG_FILE%'"
-                
-                :: SELF-UPDATE CHECK
-                popd
-                call :self_update_check
-            ) else (
-                popd
-            )
-        ) else (
-            echo Repository is up to date.
-            popd
-        )
-) else (
+if not exist "%APP_DIR%\.git" (
     if exist "%APP_DIR%" (
         echo WARNING: %APP_DIR% exists but is not a git repo. Cleaning folder...
         rmdir /s /q "%APP_DIR%"
@@ -147,6 +110,41 @@ if exist "%APP_DIR%" (
     "%GIT_EXE%" clone --branch "%BRANCH%" "%REPO_URL%" "%APP_DIR%"
     if !ERRORLEVEL! neq 0 ( echo ERROR: Failed to clone repository. && pause && exit /b 1 )
     set "NEEDS_INSTALL=true"
+) else (
+    echo Repository exists. Checking for updates...
+    pushd "%APP_DIR%"
+    "%GIT_EXE%" checkout %BRANCH%
+    "%GIT_EXE%" fetch
+
+    for /f "tokens=*" %%i in ('"%GIT_EXE%" rev-parse HEAD') do set "LOCAL=%%i"
+    for /f "tokens=*" %%i in ('"%GIT_EXE%" rev-parse origin/%BRANCH%') do set "REMOTE=%%i"
+
+    if "!LOCAL!" neq "!REMOTE!" (
+        echo Updates available on branch %BRANCH%.
+        choice /c YN /m "Do you want to update? (This will discard local changes) (Y/N) "
+        if !ERRORLEVEL! equ 1 (
+            echo Resetting local repository to match remote...
+            "%GIT_EXE%" reset --hard origin/%BRANCH%
+            if !ERRORLEVEL! neq 0 (
+                echo ERROR: Failed to reset repository.
+                popd
+                exit /b 1
+            )
+            echo Repository updated.
+            set "NEEDS_INSTALL=true"
+            set "DOWNLOAD_RUN=false"
+            powershell -Command "(Get-Content '%CONFIG_FILE%') -replace 'DOWNLOAD_RUN=.*', 'DOWNLOAD_RUN=false' | Set-Content '%CONFIG_FILE%'"
+            
+            :: SELF-UPDATE CHECK
+            popd
+            call :self_update_check
+        ) else (
+            popd
+        )
+    ) else (
+        echo Repository is up to date.
+        popd
+    )
 )
 
 :: --- Step 4: Self-update check ---
@@ -210,8 +208,6 @@ if "%LAUNCHER_ENABLED%"=="1" (
     set "PATH=%FFMPEG_BIN_PATH%;%PATH%"
     "%VENV_PYTHON%" -m app.ui.launcher
     exit /b !ERRORLEVEL!
-    )
-  )
 ) else (
     echo.
     echo Starting main.py...
