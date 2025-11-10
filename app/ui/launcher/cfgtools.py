@@ -110,7 +110,7 @@ def set_launcher_enabled_to_cfg(value: int) -> None:
     """Enable or disable the launcher in portable.cfg."""
     value = 1 if value else 0
     if write_portable_cfg({"LAUNCHER_ENABLED": value}):
-        print(f"Launcher: Config updated: LAUNCHER_ENABLED={value}")
+        print(f"[Launcher] Config updated: LAUNCHER_ENABLED={value}")
 
 
 # ---------- Branch Management ----------
@@ -118,7 +118,7 @@ def get_branch_from_cfg() -> str:
     """Read the configured branch from portable.cfg, defaulting to 'main'."""
     cfg = read_portable_cfg()
     # Ensure there's always a fallback
-    return cfg.get("BRANCH", "main").strip() or "main"
+    return (cfg.get("BRANCH") or "main").strip() or "main"
 
 
 # ---------- Version Tracking ----------
