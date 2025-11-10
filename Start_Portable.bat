@@ -99,9 +99,14 @@ if exist "%PORTABLE_CFG%" (
 )
 if not defined BRANCH (
     echo No branch configured. Launching branch selector...
-    set "PYTHONPATH=%APP_DIR%"
+
+    :: Change directory to the app root so Python can find the 'app' module
+    pushd "%APP_DIR%"
     "%PYTHON_EXE%" -m app.ui.launcher.branch_selector
-    if !ERRORLEVEL! neq 0 (
+    set "BRANCH_SELECT_ERROR=!ERRORLEVEL!"
+    popd
+
+    if !BRANCH_SELECT_ERROR! neq 0 (
         echo Branch selection was cancelled. Aborting setup.
         pause
         exit /b 1
@@ -214,7 +219,7 @@ exit /b 0
 
     fc /b "%ROOT_BAT%" "%REPO_BAT%" > nul
     if errorlevel 1 (
-        echo A new version of the launcher script ^(Start_Portable.bat^) is available.
+        echo A new version of the launcher script Start_Portable.bat is available.
         if "%LAUNCHER_ENABLED%"=="1" (
             echo Please use the 'Update Launcher Script' button in the Maintenance menu.
             goto :eof
