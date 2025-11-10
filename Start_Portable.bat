@@ -7,7 +7,7 @@ setlocal EnableDelayedExpansion
 
 :: --- LAUNCHER INTEGRATION (pre-check) ---
 set "BASE_DIR=%~dp0"
-set "VENV_PYTHON=%BASE_DIR%portable-files\venv\Scripts\python.exe"
+set "APP_PYTHON=%BASE_DIR%portable-files\python\python.exe"
 set "GIT_DIR_PRESENT=%BASE_DIR%VisoMaster-Fusion\.git"
 set "PORTABLE_CFG=%BASE_DIR%portable.cfg"
 set "FFMPEG_EXTRACT_DIR=%BASE_DIR%dependencies"
@@ -22,12 +22,12 @@ if exist "%PORTABLE_CFG%" (
 )
 
 if "%LAUNCHER_ENABLED%"=="1" (
-  if exist "%VENV_PYTHON%" (
+  if exist "%APP_PYTHON%" (
     if exist "%GIT_DIR_PRESENT%" (
       echo Existing installation detected. Launching VisoMaster Fusion Launcher...
       set "PYTHONPATH=%BASE_DIR%VisoMaster-Fusion"
       set "PATH=%FFMPEG_BIN_PATH%;%PATH%"
-      "%VENV_PYTHON%" -m app.ui.launcher
+      "%APP_PYTHON%" -m app.ui.launcher
       exit /b !ERRORLEVEL!
     )
   )
@@ -50,7 +50,6 @@ set "UV_DIR=%PORTABLE_DIR%\uv"
 set "UV_EXE=%UV_DIR%\uv.exe"
 set "GIT_DIR=%PORTABLE_DIR%\git"
 set "GIT_EXE=%GIT_DIR%\bin\git.exe"
-set "VENV_DIR=%PORTABLE_DIR%\venv"
 
 :: Download URLs and temp file paths
 set "PYTHON_EMBED_URL=https://www.python.org/ftp/python/3.11.9/python-3.11.9-embed-amd64.zip"
@@ -150,23 +149,16 @@ if not exist "%APP_DIR%\.git" (
 :: --- Step 4: Self-update check ---
 call :self_update_check
 
-:: --- Step 5: Install Python, UV, venv ---
+:: --- Step 5: Install Python, UV ---
 if not exist "%PYTHON_EXE%" ( call :install_python )
 call :install_dependency "UV" "%UV_EXE%" "%UV_URL%" "%UV_ZIP%" "%UV_DIR%"
-
-if not exist "%VENV_DIR%" (
-    echo Creating virtual environment...
-    "%UV_EXE%" venv "%VENV_DIR%" --relocatable --python "%PYTHON_EXE%"
-    if !ERRORLEVEL! neq 0 ( echo ERROR: Failed to create venv. && pause && exit /b 1 )
-    set "NEEDS_INSTALL=true"
-)
 
 :: --- Step 6: Install dependencies ---
 set "REQUIREMENTS=%APP_DIR%\requirements_cu129.txt"
 if /I "!NEEDS_INSTALL!"=="true" (
     echo Installing dependencies...
     pushd "%APP_DIR%"
-    "%UV_EXE%" pip install -r "!REQUIREMENTS!" --python "%VENV_PYTHON%"
+    "%UV_EXE%" pip install -r "!REQUIREMENTS!" --python "%APP_PYTHON%"
     if !ERRORLEVEL! neq 0 ( echo ERROR: Dependency installation failed. && pause && exit /b 1 )
     popd
 )
@@ -181,9 +173,12 @@ if exist "%CONFIG_FILE%" (
 )
 if /I "!NEEDS_INSTALL!"=="true" set "DOWNLOAD_RUN=false"
 if /I "!DOWNLOAD_RUN!"=="false" (
+
+    echo Running model downloader next. If you already downloaded the models, copy them now to the VisoMaster-Fusion\model_assets directory and then press enter to avoid re-download.
+    pause
     echo Running model downloader...
     pushd "%APP_DIR%"
-    "%VENV_PYTHON%" "download_models.py"
+    "%APP_PYTHON%" "download_models.py"
     if !ERRORLEVEL! equ 0 (
         powershell -Command "(Get-Content -ErrorAction SilentlyContinue '%CONFIG_FILE%') -replace 'DOWNLOAD_RUN=.*', 'DOWNLOAD_RUN=true' | Set-Content -ErrorAction SilentlyContinue '%CONFIG_FILE%'"
     )
@@ -206,7 +201,7 @@ if /I "!FOUND_KEY!"=="false" (
 if "%LAUNCHER_ENABLED%"=="1" (
     set "PYTHONPATH=%BASE_DIR%VisoMaster-Fusion"
     set "PATH=%FFMPEG_BIN_PATH%;%PATH%"
-    "%VENV_PYTHON%" -m app.ui.launcher
+    "%APP_PYTHON%" -m app.ui.launcher
     exit /b !ERRORLEVEL!
 ) else (
     echo.
@@ -214,7 +209,7 @@ if "%LAUNCHER_ENABLED%"=="1" (
     echo ========================================
     pushd "%APP_DIR%"
     set "PATH=%FFMPEG_BIN_PATH%;%GIT_DIR%\bin;%PATH%"
-    "%VENV_PYTHON%" "main.py"
+    "%APP_PYTHON%" "main.py"
     popd
 
     echo.
