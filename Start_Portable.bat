@@ -78,6 +78,9 @@ if not exist "%PYTHON_EXE%" (
 )
 call :install_dependency "UV" "%UV_EXE%" "%UV_URL%" "%UV_ZIP%" "%UV_DIR%"
 
+:: Add Git to PATH immediately after installation
+set "PATH=%GIT_DIR%\bin;%PATH%"
+
 :: --- Step 3: Clone Repository (if it doesn't exist) ---
 if not exist "%APP_DIR%\.git" (
     if exist "%APP_DIR%" (
@@ -85,35 +88,45 @@ if not exist "%APP_DIR%\.git" (
         rmdir /s /q "%APP_DIR%"
     )
     echo Cloning repository...
-    "%GIT_EXE%" clone "%REPO_URL%" "%APP_DIR%"
+    git clone "%REPO_URL%" "%APP_DIR%"
     if !ERRORLEVEL! neq 0 ( echo ERROR: Failed to clone repository. && pause && exit /b 1)
 )
 
-:: --- Step 4: Determine and Set Branch ---
+:: --- Step 4: Select Branch ---
 set "BRANCH="
 if exist "%PORTABLE_CFG%" (
     for /f "usebackq tokens=1,* delims==" %%a in ("%PORTABLE_CFG%") do if /I "%%a"=="BRANCH" set "BRANCH=%%b"
 )
 if not defined BRANCH (
-    echo First run: Determining branch...
-    if /I "%~1"=="dev" (
-        set "BRANCH=dev"
-        echo 'dev' argument found. Setting branch to dev.
-    ) else (
-        set "BRANCH=main"
-        echo No argument found. Defaulting to main branch.
+    echo No branch configured. Launching branch selector...
+    
+    pushd "%APP_DIR%"
+    "%PYTHON_EXE%" -m app.ui.launcher.branch_selector
+    set "BRANCH_SELECT_ERROR=!ERRORLEVEL!"
+    popd
+
+    if !BRANCH_SELECT_ERROR! neq 0 (
+        echo Branch selection was cancelled. Aborting setup.
+        pause
+        exit /b 1
     )
-    (echo BRANCH=!BRANCH!)>> "%PORTABLE_CFG%"
+    if exist "%PORTABLE_CFG%" (
+        for /f "usebackq tokens=1,* delims==" %%a in ("%PORTABLE_CFG%") do if /I "%%a"=="BRANCH" set "BRANCH=%%b"
+    )
+    if not defined BRANCH (
+        echo Branch selection failed. Defaulting to 'main'.
+        set "BRANCH=main"
+    )
 )
 echo Using branch: !BRANCH!
 
 :: --- Step 5: Git Checkout and Update ---
 pushd "%APP_DIR%"
-"%GIT_EXE%" checkout !BRANCH! >nul 2>&1
+git checkout !BRANCH! >nul 2>&1
 echo Checking for updates on branch '!BRANCH!'...
-"%GIT_EXE%" fetch
-for /f "tokens=*" %%i in ('"%GIT_EXE%" rev-parse HEAD') do set "LOCAL=%%i"
-for /f "tokens=*" %%i in ('"%GIT_EXE%" rev-parse origin/!BRANCH!') do set "REMOTE=%%i"
+git fetch
+for /f "tokens=*" %%i in ('git rev-parse HEAD') do set "LOCAL=%%i"
+for /f "tokens=*" %%i in ('git rev-parse origin/!BRANCH!') do set "REMOTE=%%i"
 set "NEEDS_INSTALL=false"
 if not exist "%VENV_DIR%" set "NEEDS_INSTALL=true"
 
@@ -125,7 +138,7 @@ if "!LOCAL!" neq "!REMOTE!" (
         choice /c YN /m "Do you want to update? (Discards local changes) [Y/N] "
         if !ERRORLEVEL! equ 1 (
             echo Resetting to match remote...
-            "%GIT_EXE%" reset --hard origin/!BRANCH!
+            git reset --hard origin/!BRANCH!
             set "NEEDS_INSTALL=true"
         )
     )
@@ -199,9 +212,9 @@ exit /b 0
 :self_update_check
     set "ROOT_BAT=%BASE_DIR%Start_Portable.bat"
     set "REPO_BAT=%APP_DIR%\Start_Portable.bat"
-
+    
     if not exist "%REPO_BAT%" goto :eof
-
+    
     fc /b "%ROOT_BAT%" "%REPO_BAT%" > nul
     if errorlevel 1 (
         echo A new version of the launcher script (Start_Portable.bat) is available.
@@ -209,7 +222,7 @@ exit /b 0
             echo Please use the launcher's Maintenance menu to update the script.
             goto :eof
         )
-
+        
         choice /c YN /m "Do you want to update it now? [Y/N] "
         if !ERRORLEVEL! equ 1 (
             set "UPDATER_BAT=%PORTABLE_DIR%\update_start_portable.bat"
@@ -223,7 +236,7 @@ exit /b 0
                 echo start "" /d "%BASE_DIR%" "Start_Portable.bat"
                 echo exit
             ) > "%UPDATER_BAT%"
-
+            
             start "" cmd /c "%UPDATER_BAT%"
             exit /b 0
         )
@@ -241,9 +254,9 @@ goto :eof
         echo %NAME% already installed.
         goto :eof
     )
-
+    
     echo Installing %NAME%...
-
+    
     echo Downloading %NAME%...
     powershell -Command "try { (New-Object Net.WebClient).DownloadFile('%URL%', '%ZIP_FILE%'); exit 0 } catch { exit 1 }"
     if !ERRORLEVEL! neq 0 (
@@ -251,7 +264,7 @@ goto :eof
         pause
         exit /b 1
     )
-
+    
     echo Extracting %NAME%...
     mkdir "%EXTRACT_DIR%" >nul 2>&1
     if "%NAME%"=="Git" (
@@ -274,13 +287,13 @@ goto :eof
 :install_python
     echo Checking Windows version for Python installation...
     for /f "tokens=3 delims=." %%i in ('ver') do set WIN_BUILD=%%i
-
+    
     if !WIN_BUILD! LSS 22000 (
         echo Windows 10 detected. Using full Python package.
         echo Downloading Python...
         powershell -Command "try { (New-Object Net.WebClient).DownloadFile('%PYTHON_NUGET_URL%', '%PYTHON_NUGET_ZIP%'); exit 0 } catch { exit 1 }"
         if !ERRORLEVEL! neq 0 ( echo ERROR: Failed to download Python. && pause && exit /b 1 )
-
+        
         echo Extracting Python...
         set "TEMP_EXTRACT_DIR=%PORTABLE_DIR%\python_temp_extract"
         mkdir "!TEMP_EXTRACT_DIR!" >nul 2>&1
@@ -293,12 +306,12 @@ goto :eof
         echo Downloading Python...
         powershell -Command "try { (New-Object Net.WebClient).DownloadFile('%PYTHON_EMBED_URL%', '%PYTHON_ZIP%'); exit 0 } catch { exit 1 }"
         if !ERRORLEVEL! neq 0 ( echo ERROR: Failed to download Python. && pause && exit /b 1 )
-
+        
         echo Extracting Python...
         mkdir "%PYTHON_DIR%" >nul 2>&1
         powershell -Command "Expand-Archive -Path '%PYTHON_ZIP%' -DestinationPath '%PYTHON_DIR%' -Force"
-        del "%ZIP_FILE%"
-
+        del "%PYTHON_ZIP%"
+        
         set "PTH_FILE=%PYTHON_DIR%\python311._pth"
         if exist "!PTH_FILE!" (
             echo Enabling site packages in PTH file...
