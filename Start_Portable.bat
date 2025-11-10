@@ -56,7 +56,7 @@ if "%LAUNCHER_ENABLED%"=="1" (
       echo Existing installation detected. Starting Launcher...
       echo.
       set "PYTHONPATH=%APP_DIR%"
-      set "PATH=%FFMPEG_BIN_PATH%;%PATH%"
+      set "PATH=%FFMPEG_BIN_PATH%;%GIT_DIR%\bin;%PATH%"
       "%VENV_PYTHON%" -m app.ui.launcher
       echo Launcher closed. Press any key to exit...
       pause >nul
@@ -78,7 +78,7 @@ if not exist "%PYTHON_EXE%" (
 )
 call :install_dependency "UV" "%UV_EXE%" "%UV_URL%" "%UV_ZIP%" "%UV_DIR%"
 
-:: Add Git to PATH immediately after installation
+:: **FIX**: Add Git to PATH immediately after installation
 set "PATH=%GIT_DIR%\bin;%PATH%"
 
 :: --- Step 3: Clone Repository (if it doesn't exist) ---
@@ -92,31 +92,21 @@ if not exist "%APP_DIR%\.git" (
     if !ERRORLEVEL! neq 0 ( echo ERROR: Failed to clone repository. && pause && exit /b 1)
 )
 
-:: --- Step 4: Select Branch ---
+:: --- Step 4: Determine and Set Branch (from argument on first run) ---
 set "BRANCH="
 if exist "%PORTABLE_CFG%" (
     for /f "usebackq tokens=1,* delims==" %%a in ("%PORTABLE_CFG%") do if /I "%%a"=="BRANCH" set "BRANCH=%%b"
 )
 if not defined BRANCH (
-    echo No branch configured. Launching branch selector...
-    
-    pushd "%APP_DIR%"
-    "%PYTHON_EXE%" -m app.ui.launcher.branch_selector
-    set "BRANCH_SELECT_ERROR=!ERRORLEVEL!"
-    popd
-
-    if !BRANCH_SELECT_ERROR! neq 0 (
-        echo Branch selection was cancelled. Aborting setup.
-        pause
-        exit /b 1
-    )
-    if exist "%PORTABLE_CFG%" (
-        for /f "usebackq tokens=1,* delims==" %%a in ("%PORTABLE_CFG%") do if /I "%%a"=="BRANCH" set "BRANCH=%%b"
-    )
-    if not defined BRANCH (
-        echo Branch selection failed. Defaulting to 'main'.
+    echo First run: Determining branch...
+    if /I "%~1"=="dev" (
+        set "BRANCH=dev"
+        echo 'dev' argument found. Setting branch to dev.
+    ) else (
         set "BRANCH=main"
+        echo No argument provided. Defaulting to main branch.
     )
+    (echo BRANCH=!BRANCH!)>> "%PORTABLE_CFG%"
 )
 echo Using branch: !BRANCH!
 
@@ -217,10 +207,12 @@ exit /b 0
     
     fc /b "%ROOT_BAT%" "%REPO_BAT%" > nul
     if errorlevel 1 (
-        echo A new version of the launcher script (Start_Portable.bat) is available.
+        echo A new version of the launcher script ^(Start_Portable.bat^) is available.
         if "%LAUNCHER_ENABLED%"=="1" (
-            echo Please use the launcher's Maintenance menu to update the script.
-            goto :eof
+            echo Please restart the application by running Start_Portable.bat again to apply the update.
+            echo Press any key to exit...
+            pause >nul
+            exit /b 0
         )
         
         choice /c YN /m "Do you want to update it now? [Y/N] "
