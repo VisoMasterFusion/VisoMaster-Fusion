@@ -159,27 +159,27 @@ def backup_changed_files(changed: list[str]) -> str | None:
 # ---------- Self-Update Trigger ----------
 
 
-def trigger_self_update_if_needed(parent_widget=None):
-    """
-    Checks if Start_Portable.bat needs updating and, if so,
-    triggers a self-update process and quits the application.
-    """
+def is_launcher_update_available() -> bool:
+    """Check if the root Start_Portable.bat differs from the one in the repo."""
     root_bat = PATHS["BASE_DIR"] / "Start_Portable.bat"
     repo_bat = PATHS["APP_DIR"] / "Start_Portable.bat"
 
     if not root_bat.exists() or not repo_bat.exists():
-        print(
-            "[Launcher] Cannot check for self-update: one of the script files is missing."
-        )
-        return
+        return False
 
-    # filecmp.cmp returns True if files are identical
-    if filecmp.cmp(str(root_bat), str(repo_bat), shallow=False):
-        print("[Launcher] Self-update check: Start_Portable.bat is already up to date.")
-        return
+    # filecmp.cmp returns True if files are identical, so we return the opposite.
+    return not filecmp.cmp(str(root_bat), str(repo_bat), shallow=False)
 
-    # --- Files are different, trigger update ---
-    print("[Launcher] Start_Portable.bat has been updated. Relaunching...")
+
+def trigger_self_update_if_needed(parent_widget=None):
+    """
+    Creates an updater script and quits the application to allow the update.
+    This is now only called when the user explicitly clicks the update button.
+    """
+    root_bat = PATHS["BASE_DIR"] / "Start_Portable.bat"
+    repo_bat = PATHS["APP_DIR"] / "Start_Portable.bat"
+
+    print("Launcher: Start_Portable.bat has been updated. Relaunching...")
     QMessageBox.information(
         parent_widget,
         "Launcher Update Required",
@@ -203,7 +203,7 @@ def trigger_self_update_if_needed(parent_widget=None):
     try:
         updater_path.write_text(updater_script_content, encoding="utf-8")
     except Exception as e:
-        print(f"[Launcher] ERROR: Could not write updater script: {e}")
+        print(f"Launcher: ERROR: Could not write updater script: {e}")
         QMessageBox.critical(
             parent_widget, "Update Error", f"Could not create the updater script:\n{e}"
         )

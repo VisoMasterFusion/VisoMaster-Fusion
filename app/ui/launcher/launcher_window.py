@@ -19,6 +19,7 @@
 import sys
 from datetime import datetime, timezone
 from PySide6 import QtWidgets, QtGui, QtCore
+from PySide6.QtWidgets import QMessageBox
 
 from .core import PATHS, run_python, uv_pip_install
 from app.processors.models_data import models_list
@@ -28,6 +29,7 @@ from .gittools import (
     git_changed_files,
     backup_changed_files,
     get_current_short_commit,
+    is_launcher_update_available,
     trigger_self_update_if_needed,
 )
 from .cfgtools import (
@@ -43,6 +45,7 @@ from .cfgtools import (
     compute_file_sha256,
     compute_models_sha256,
     check_models_presence,
+    get_branch_from_cfg,
 )
 from .uiutils import (
     notify_backup_created,
@@ -54,7 +57,6 @@ from .launcher_widgets import ToggleSwitch, StatusPill
 
 
 # ---------- Page Actions ----------
-
 ACTIONS_HOME = [
     ("Launch VisoMaster Fusion", "on_launch", "Start normally"),
     ("Update / Maintenance", "_go_maint", "Open maintenance tools"),
@@ -62,6 +64,11 @@ ACTIONS_HOME = [
 ]
 
 ACTIONS_MAINT = [
+    (
+        "Update Launcher Script",
+        "on_self_update",
+        "Update the Start_Portable.bat script",
+    ),
     ("Update from Git", "on_update_git", "Fetch and apply updates from origin"),
     ("Repair Installation", "on_repair_installation", "Restore tracked files to HEAD"),
     ("Check / Update Dependencies", "on_update_deps", "Reinstall requirements via UV"),
@@ -74,35 +81,36 @@ ACTIONS_MAINT = [
 # ---------- Update Check ----------
 
 
+# ---------- Update Check ----------
 def check_update_status():
     """Return 'behind', 'up_to_date', or 'offline' after a quick origin fetch."""
-    print("[Launcher] Checking for updates...")
+    branch = get_branch_from_cfg()
+    print(f"Launcher: Checking for updates on branch '{branch}'...")
     try:
-        r = run_git(["fetch", "origin"], capture=True)
-        # ── handle None safely ────────────────────────────────
+        r = run_git(["fetch", "origin", branch], capture=True)
         if r is None or r.returncode != 0:
             err = r.stderr.strip() if r and getattr(r, "stderr", None) else "unknown"
-            print(f"[Launcher] Git fetch failed (offline?): {err}")
+            print(f"Launcher: Git fetch failed (offline?): {err}")
             return "offline"
     except Exception as e:
-        print(f"[Launcher] Fetch exception (offline?): {e}")
+        print(f"Launcher: Fetch exception (offline?): {e}")
         return "offline"
 
     head = run_git(["rev-parse", "HEAD"], capture=True)
-    origin = run_git(["rev-parse", "origin/main"], capture=True)
+    origin = run_git(["rev-parse", f"origin/{branch}"], capture=True)
 
     if head and origin and head.returncode == 0 and origin.returncode == 0:
         head_hash, origin_hash = head.stdout.strip(), origin.stdout.strip()
         if head_hash != origin_hash:
             print(
-                f"[Launcher] Local version behind origin "
-                f"(HEAD={head_hash[:7]} → {origin_hash[:7]})"
+                f"Launcher: Local version behind origin "
+                f"(HEAD={head_hash[:7]} -> {origin_hash[:7]})"
             )
             return "behind"
-        print(f"[Launcher] Repository up to date (HEAD={head_hash[:7]})")
+        print(f"Launcher: Repository up to date (HEAD={head_hash[:7]})")
         return "up_to_date"
 
-    print("[Launcher] Unable to read HEAD or origin/main; treating as offline.")
+    print(f"Launcher: Unable to read HEAD or origin/{branch}; treating as offline.")
     return "offline"
 
 
@@ -118,10 +126,14 @@ class LauncherWindow(QtWidgets.QWidget):
         if PATHS["SMALL_ICON"].exists():
             self.setWindowIcon(QtGui.QIcon(str(PATHS["SMALL_ICON"])))
 
-        # Safety defaults for checksum flags (prevents AttributeError if checksum load fails)
+        # Safety defaults
         self.deps_changed = self.models_changed = self.files_changed = False
         self._user_moved = False
         self.last_checked_utc: datetime | None = None
+
+        # Check for launcher script update
+        self.launcher_update_available = is_launcher_update_available()
+
         self.update_status = self._check_and_log_update_status()
 
         update_current_commit_in_cfg()
@@ -144,15 +156,19 @@ class LauncherWindow(QtWidgets.QWidget):
         if tooltip:
             btn.setToolTip(tooltip)
 
+        # Highlight maintenance button if any issue is detected
         if "Update / Maintenance" in label:
             if (
                 self.update_status == "behind"
+                or self.launcher_update_available
                 or getattr(self, "deps_changed", False)
                 or getattr(self, "models_changed", False)
                 or getattr(self, "files_changed", False)
             ):
                 icon = self.style().standardIcon(QtWidgets.QStyle.SP_MessageBoxWarning)
 
+        if "Update Launcher Script" in label and self.launcher_update_available:
+            icon = self.style().standardIcon(QtWidgets.QStyle.SP_MessageBoxWarning)
         if "Update from Git" in label and self.update_status == "behind":
             icon = self.style().standardIcon(QtWidgets.QStyle.SP_MessageBoxWarning)
         if "Dependencies" in label and getattr(self, "deps_changed", False):
@@ -332,8 +348,12 @@ class LauncherWindow(QtWidgets.QWidget):
         lay.addWidget(make_divider())
         lay.addSpacing(10)
 
+        if self.launcher_update_available:
+            lay.addWidget(StatusPill("⚠️ Launcher script update available"))
+
         if self.update_status == "behind":
             lay.addWidget(StatusPill("⚠️ Git updates available"))
+
         elif self.update_status == "offline":
             lay.addWidget(
                 StatusPill(
@@ -386,6 +406,9 @@ class LauncherWindow(QtWidgets.QWidget):
 
         for text, method, *tip in ACTIONS_MAINT:
             fn = getattr(self, method)
+            # Hide the launcher update button if no update is available
+            if method == "on_self_update" and not self.launcher_update_available:
+                continue
             lay.addWidget(self._register_action(text, fn, tip[0] if tip else None))
 
         cfg = read_portable_cfg()
@@ -448,6 +471,10 @@ class LauncherWindow(QtWidgets.QWidget):
 
     # ---------- Actions ----------
 
+    def on_self_update(self):
+        """Action to trigger the self-update mechanism."""
+        trigger_self_update_if_needed(self)
+
     def on_launch(self):
         self.hide()
         QtWidgets.QApplication.processEvents()
@@ -462,22 +489,29 @@ class LauncherWindow(QtWidgets.QWidget):
         QtWidgets.QApplication.quit()
 
     def on_update_git(self):
-        print("[Launcher] Checking for updates (git fetch/reset)...")
+        print("Launcher: Checking for updates (git fetch/reset)...")
         with with_busy_state(self, busy=True, text="Updating..."):
             try:
-                # Use a more robust update strategy
-                run_git(["fetch", "origin", "main"])
-                run_git(["reset", "--hard", "origin/main"])
+                branch = get_branch_from_cfg()
+                run_git(["fetch", "origin", branch])
+                run_git(["reset", "--hard", f"origin/{branch}"])
                 update_current_commit_in_cfg()
                 update_last_updated_in_cfg()
                 self.commits = fetch_commit_list(10)
                 self._rebuild_page("page_rollback", self._build_rollback_page)
                 self._refresh_update_indicators()
-                print("[Launcher] Update complete.")
-                # Trigger self-update check after repo is updated
-                trigger_self_update_if_needed(self)
+                print("Launcher: Update complete.")
+                # Check for launcher script update after repo update
+                if is_launcher_update_available():
+                    self._refresh_update_indicators()  # Show the button
+                    QMessageBox.information(
+                        self,
+                        "Launcher Update",
+                        "An update for the launcher script (Start_Portable.bat) is now available in the Maintenance menu.",
+                    )
+
             except Exception as e:
-                print(f"[Launcher] Error during update: {e}")
+                print(f"Launcher: Error during update: {e}")
 
     def on_repair_installation(self):
         confirm = QtWidgets.QMessageBox.question(
@@ -514,9 +548,9 @@ class LauncherWindow(QtWidgets.QWidget):
                 )
                 self._load_checksum_status()
                 self._refresh_update_indicators()
-                print("[Launcher] Repair complete.")
-                # Trigger self-update check after repo is repaired
-                trigger_self_update_if_needed(self)
+                print("Launcher: Repair complete.")
+                if is_launcher_update_available():
+                    self._refresh_update_indicators()
             except Exception as e:
                 print(f"[Launcher] Error during repair: {e}")
 
@@ -570,8 +604,8 @@ class LauncherWindow(QtWidgets.QWidget):
                 self.commits = fetch_commit_list(10)
                 self._rebuild_page("page_rollback", self._build_rollback_page)
                 self._refresh_update_indicators()
-                # Trigger self-update check after rollback
-                trigger_self_update_if_needed(self)
+                if is_launcher_update_available():
+                    self._refresh_update_indicators()
             except Exception as e:
                 print(f"[Launcher] Error during revert: {e}")
 
@@ -677,6 +711,7 @@ class LauncherWindow(QtWidgets.QWidget):
     def _refresh_update_indicators(self):
         """Recheck update status and rebuild visible pages accordingly."""
         self.update_status = self._check_and_log_update_status()
+        self.launcher_update_available = is_launcher_update_available()
         self._load_checksum_status()
 
         current = self.stack.currentWidget()
