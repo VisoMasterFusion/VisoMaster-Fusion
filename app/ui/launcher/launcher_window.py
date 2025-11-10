@@ -33,13 +33,11 @@ from .gittools import (
     trigger_self_update_if_needed,
 )
 from .cfgtools import (
-    read_portable_cfg,
     get_launcher_enabled_from_cfg,
     set_launcher_enabled_to_cfg,
     update_current_commit_in_cfg,
     update_last_updated_in_cfg,
     read_version_info,
-    format_last_updated_local,
     read_checksum_state,
     write_checksum_state,
     compute_file_sha256,
@@ -69,27 +67,25 @@ ACTIONS_MAINT = [
     ("Repair Installation", "on_repair_installation", "Restore tracked files to HEAD"),
     ("Check / Update Dependencies", "on_update_deps", "Reinstall requirements via UV"),
     ("Check / Update Models", "on_update_models", "Run model downloader"),
+    ("Update Launcher Script", "on_self_update", "Apply launcher batch update"),
     ("Revert to Previous Version", "_go_rollback", "Select and revert to older commit"),
     ("Back", "_go_home", "Return to home screen"),
 ]
 
 
 # ---------- Update Check ----------
-
-
-# ---------- Update Check ----------
 def check_update_status():
     """Return 'behind', 'up_to_date', or 'offline' after a quick origin fetch."""
     branch = get_branch_from_cfg()
-    print(f"Launcher: Checking for updates on branch '{branch}'...")
+    print(f"[Launcher] Checking for updates on branch '{branch}'...")
     try:
         r = run_git(["fetch", "origin", branch], capture=True)
         if r is None or r.returncode != 0:
             err = r.stderr.strip() if r and getattr(r, "stderr", None) else "unknown"
-            print(f"Launcher: Git fetch failed (offline?): {err}")
+            print(f"[Launcher] Git fetch failed (offline?): {err}")
             return "offline"
     except Exception as e:
-        print(f"Launcher: Fetch exception (offline?): {e}")
+        print(f"[Launcher] Fetch exception (offline?): {e}")
         return "offline"
 
     head = run_git(["rev-parse", "HEAD"], capture=True)
@@ -99,13 +95,13 @@ def check_update_status():
         head_hash, origin_hash = head.stdout.strip(), origin.stdout.strip()
         if head_hash != origin_hash:
             print(
-                f"Launcher: Local version behind origin (HEAD={head_hash[:7]} -> {origin_hash[:7]})"
+                f"[Launcher] Local version behind origin (HEAD={head_hash[:7]} -> {origin_hash[:7]})"
             )
             return "behind"
-        print(f"Launcher: Repository up to date (HEAD={head_hash[:7]})")
+        print(f"[Launcher] Repository up to date (HEAD={head_hash[:7]})")
         return "up_to_date"
 
-    print(f"Launcher: Unable to read HEAD or origin/{branch}; treating as offline.")
+    print(f"[Launcher] Unable to read HEAD or origin/{branch}; treating as offline.")
     return "offline"
 
 
@@ -430,15 +426,15 @@ class LauncherWindow(QtWidgets.QWidget):
             fn = getattr(self, method)
             lay.addWidget(self._register_action(text, fn, tip[0] if tip else None))
 
-        cfg = read_portable_cfg()
-        last = cfg.get("LAST_UPDATED")
-        nice_last = format_last_updated_local(last) if last else "—"
-        self.lbl_last_updated = QtWidgets.QLabel(f"Last updated: {nice_last}")
-        self.lbl_last_updated.setAlignment(QtCore.Qt.AlignRight)
-        self.lbl_last_updated.setStyleSheet(
-            "color: rgba(255,255,255,0.58); font-size: 12px; padding: 2px;"
-        )
-        lay.addWidget(self.lbl_last_updated)
+        lay.addWidget(make_divider())
+
+        curr, last = read_version_info()
+        curr_short = curr[:7] if curr else None
+        if curr_short or last:
+            meta = self._build_meta_panel(curr_short, last)
+            meta.setContentsMargins(0, 0, 0, 0)
+            lay.addWidget(meta)
+
         lay.addStretch(1)
 
     def _build_rollback_page(self):
@@ -529,7 +525,7 @@ class LauncherWindow(QtWidgets.QWidget):
             self.branch_combo.blockSignals(False)
             return
 
-        print(f"Launcher: Switching branch to '{new_branch}'...")
+        print(f"[Launcher] Switching branch to '{new_branch}'...")
         with with_busy_state(self, busy=True, text=f"Switching to {new_branch}..."):
             try:
                 write_portable_cfg({"BRANCH": new_branch})
@@ -553,7 +549,7 @@ class LauncherWindow(QtWidgets.QWidget):
                 )
 
             except Exception as e:
-                print(f"Launcher: Error during branch switch: {e}")
+                print(f"[Launcher] Error during branch switch: {e}")
                 QtWidgets.QMessageBox.critical(
                     self, "Error", f"Failed to switch branch:\n{e}"
                 )
@@ -562,7 +558,7 @@ class LauncherWindow(QtWidgets.QWidget):
                 self._refresh_update_indicators()
 
     def on_update_git(self):
-        print("Launcher: Checking for updates (git fetch/reset)...")
+        print("[Launcher] Checking for updates (git fetch/reset)...")
         with with_busy_state(self, busy=True, text="Updating..."):
             try:
                 branch = get_branch_from_cfg()
@@ -573,7 +569,7 @@ class LauncherWindow(QtWidgets.QWidget):
                 self.commits = fetch_commit_list(10)
                 self._rebuild_page("page_rollback", self._build_rollback_page)
                 self._refresh_update_indicators()
-                print("Launcher: Update complete.")
+                print("[Launcher] Update complete.")
                 # After updating, check if the launcher script itself needs an update
                 if is_launcher_update_available():
                     self._refresh_update_indicators()
@@ -583,7 +579,7 @@ class LauncherWindow(QtWidgets.QWidget):
                         "The launcher script (Start_Portable.bat) has an update.\nPlease close the launcher and run Start_Portable.bat again to apply it.",
                     )
             except Exception as e:
-                print(f"Launcher: Error during update: {e}")
+                print(f"[Launcher] Error during update: {e}")
 
     def on_repair_installation(self):
         confirm = QtWidgets.QMessageBox.question(
@@ -627,7 +623,7 @@ class LauncherWindow(QtWidgets.QWidget):
                         "Launcher Update",
                         "An update for the launcher script may be available after repair.",
                     )
-                print("Launcher: Repair complete.")
+                print("[Launcher] Repair complete.")
             except Exception as e:
                 print(f"[Launcher] Error during repair: {e}")
 

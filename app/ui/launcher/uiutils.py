@@ -88,7 +88,7 @@ def with_busy_state(widget: QtWidgets.QWidget, busy: bool, text: str | None = No
 
     # Set the window title to indicate the busy state
     if busy and text:
-        widget.setWindowTitle(f"VisoMaster Fusion Launcher — {text}")
+        widget.setWindowTitle(text)
     else:
         widget.setWindowTitle("VisoMaster Fusion Launcher")
 
