@@ -57,6 +57,7 @@ if "%LAUNCHER_ENABLED%"=="1" (
   if exist "%VENV_PYTHON%" (
     if exist "%APP_DIR%\.git" (
       echo Existing installation detected. Starting Launcher...
+      echo.
       set "PYTHONPATH=%APP_DIR%"
       set "PATH=%FFMPEG_BIN_PATH%;%PATH%"
       "%VENV_PYTHON%" -m app.ui.launcher
@@ -71,10 +72,8 @@ if "%LAUNCHER_ENABLED%"=="1" (
 echo Entering Full Setup / Command-Line Mode...
 echo.
 
-:: --- Step 1: Ensure Portable Directory Exists ---
+:: --- Step 1 & 2: Install Core Dependencies (Git, Python, UV) ---
 if not exist "%PORTABLE_DIR%" mkdir "%PORTABLE_DIR%"
-
-:: --- Step 2: Download and Extract Core Dependencies (Git, Python, UV) ---
 call :install_dependency "Git" "%GIT_EXE%" "%GIT_URL%" "%GIT_ZIP%" "%GIT_DIR%"
 call :install_dependency "Python" "%PYTHON_EXE%" "" "" ""
 call :install_dependency "UV" "%UV_EXE%" "%UV_URL%" "%UV_ZIP%" "%UV_DIR%"
@@ -99,6 +98,12 @@ if not defined BRANCH (
     echo No branch configured. Launching branch selector...
     set "PYTHONPATH=%APP_DIR%"
     "%PYTHON_EXE%" -m app.ui.launcher.branch_selector
+    if !ERRORLEVEL! neq 0 (
+        echo Branch selection was cancelled. Aborting setup.
+        pause
+        exit /b 1
+    )
+    :: Re-read config after selection
     if exist "%PORTABLE_CFG%" (
         for /f "usebackq tokens=1,* delims==" %%a in ("%PORTABLE_CFG%") do if /I "%%a"=="BRANCH" set "BRANCH=%%b"
     )
@@ -111,12 +116,13 @@ echo Using branch: !BRANCH!
 
 :: --- Step 5: Git Checkout and Update ---
 pushd "%APP_DIR%"
-"%GIT_EXE%" checkout !BRANCH!
+"%GIT_EXE%" checkout !BRANCH! >nul 2>&1
 echo Checking for updates on branch '!BRANCH!'...
 "%GIT_EXE%" fetch
 for /f "tokens=*" %%i in ('"%GIT_EXE%" rev-parse HEAD') do set "LOCAL=%%i"
 for /f "tokens=*" %%i in ('"%GIT_EXE%" rev-parse origin/!BRANCH!') do set "REMOTE=%%i"
 set "NEEDS_INSTALL=false"
+if not exist "%VENV_DIR%" set "NEEDS_INSTALL=true"
 
 if "!LOCAL!" neq "!REMOTE!" (
     if "%LAUNCHER_ENABLED%"=="1" (
@@ -172,6 +178,8 @@ if /I "!DOWNLOAD_RUN!"=="false" (
     "%VENV_PYTHON%" "download_models.py"
     if !ERRORLEVEL! equ 0 (
         powershell -Command "(Get-Content -ErrorAction SilentlyContinue '%PORTABLE_CFG%') -replace 'DOWNLOAD_RUN=.*', 'DOWNLOAD_RUN=true' | Set-Content -ErrorAction SilentlyContinue '%PORTABLE_CFG%'"
+    ) else (
+        echo WARNING: Model download script failed.
     )
     popd
 )
@@ -229,7 +237,7 @@ exit /b 0
     )
 goto :eof
 
-:: (The :install_dependency and :install_python subroutines remain the same as in the original script)
+:: (The :install_dependency and :install_python subroutines remain unchanged)
 :install_dependency
     set "NAME=%~1"
     set "CHECK_FILE=%~2"
@@ -297,8 +305,8 @@ goto :eof
 
         echo Extracting Python...
         mkdir "%PYTHON_DIR%" >nul 2>&1
-        powershell -Command "Expand-Archive -Path '%PYTHON_ZIP%' -DestinationPath '%PYTHON_DIR%' -Force"
-        del "%PYTHON_ZIP%"
+        powershell -Command "Expand-Archive -Path '%ZIP_FILE%' -DestinationPath '%PYTHON_DIR%' -Force"
+        del "%ZIP_FILE%"
 
         set "PTH_FILE=%PYTHON_DIR%\python311._pth"
         if exist "!PTH_FILE!" (
