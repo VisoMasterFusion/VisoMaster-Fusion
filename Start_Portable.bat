@@ -3,9 +3,6 @@ setlocal EnableDelayedExpansion
 
 :: ===================================================================
 ::  VisoMaster Fusion Portable Launcher
-::  - Manages portable dependencies, Git repository, and application launch.
-::  - On first run, guides through branch selection and full setup.
-::  - On subsequent runs, checks for updates and starts the launcher or app.
 :: ===================================================================
 
 :: --- Step 0: Initial Path and Variable Setup ---
@@ -92,32 +89,21 @@ if not exist "%APP_DIR%\.git" (
     if !ERRORLEVEL! neq 0 ( echo ERROR: Failed to clone repository. && pause && exit /b 1)
 )
 
-:: --- Step 4: Select Branch ---
+:: --- Step 4: Determine and Set Branch ---
 set "BRANCH="
 if exist "%PORTABLE_CFG%" (
     for /f "usebackq tokens=1,* delims==" %%a in ("%PORTABLE_CFG%") do if /I "%%a"=="BRANCH" set "BRANCH=%%b"
 )
 if not defined BRANCH (
-    echo No branch configured. Launching branch selector...
-
-    :: Set PYTHONPATH before calling the script
-    set "PYTHONPATH=%APP_DIR%"
-    "%PYTHON_EXE%" -m app.ui.launcher.branch_selector
-    set "BRANCH_SELECT_ERROR=!ERRORLEVEL!"
-
-    if !BRANCH_SELECT_ERROR! neq 0 (
-        echo Branch selection was cancelled. Aborting setup.
-        pause
-        exit /b 1
-    )
-    :: Re-read config after selection
-    if exist "%PORTABLE_CFG%" (
-        for /f "usebackq tokens=1,* delims==" %%a in ("%PORTABLE_CFG%") do if /I "%%a"=="BRANCH" set "BRANCH=%%b"
-    )
-    if not defined BRANCH (
-        echo Branch selection failed. Defaulting to 'main'.
+    echo First run: Determining branch...
+    if /I "%~1"=="dev" (
+        set "BRANCH=dev"
+        echo 'dev' argument found. Setting branch to dev.
+    ) else (
         set "BRANCH=main"
+        echo No argument found. Defaulting to main branch.
     )
+    (echo BRANCH=!BRANCH!)>> "%PORTABLE_CFG%"
 )
 echo Using branch: !BRANCH!
 
@@ -220,7 +206,7 @@ exit /b 0
     if errorlevel 1 (
         echo A new version of the launcher script (Start_Portable.bat) is available.
         if "%LAUNCHER_ENABLED%"=="1" (
-            echo Please use the 'Update Launcher Script' button in the Maintenance menu.
+            echo Please use the launcher's Maintenance menu to update the script.
             goto :eof
         )
 
@@ -311,7 +297,7 @@ goto :eof
         echo Extracting Python...
         mkdir "%PYTHON_DIR%" >nul 2>&1
         powershell -Command "Expand-Archive -Path '%PYTHON_ZIP%' -DestinationPath '%PYTHON_DIR%' -Force"
-        del "%PYTHON_ZIP%"
+        del "%ZIP_FILE%"
 
         set "PTH_FILE=%PYTHON_DIR%\python311._pth"
         if exist "!PTH_FILE!" (
