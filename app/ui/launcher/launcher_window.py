@@ -45,6 +45,7 @@ from .cfgtools import (
     compute_file_sha256,
     compute_models_sha256,
     check_models_presence,
+    write_portable_cfg,
     get_branch_from_cfg,
 )
 from .uiutils import (
@@ -64,11 +65,6 @@ ACTIONS_HOME = [
 ]
 
 ACTIONS_MAINT = [
-    (
-        "Update Launcher Script",
-        "on_self_update",
-        "Update the Start_Portable.bat script",
-    ),
     ("Update from Git", "on_update_git", "Fetch and apply updates from origin"),
     ("Repair Installation", "on_repair_installation", "Restore tracked files to HEAD"),
     ("Check / Update Dependencies", "on_update_deps", "Reinstall requirements via UV"),
@@ -402,10 +398,36 @@ class LauncherWindow(QtWidgets.QWidget):
         lay = QtWidgets.QVBoxLayout(self.page_maint)
         lay.addWidget(make_header_widget("VisoMaster Fusion — Maintenance"))
 
+        # --- Branch Switcher ---
+        branch_box = QtWidgets.QFrame()
+        branch_box.setObjectName("BranchBox")
+        branch_box.setStyleSheet(
+            "QFrame#BranchBox { border: 1px solid #363636; border-radius: 6px; }"
+        )
+        branch_layout = QtWidgets.QHBoxLayout(branch_box)
+        branch_layout.setContentsMargins(10, 5, 10, 5)
+
+        branch_label = QtWidgets.QLabel("Active Branch:")
+        branch_label.setStyleSheet("border: none; background: transparent;")
+
+        self.branch_combo = QtWidgets.QComboBox()
+        self.branch_combo.addItems(["main", "dev"])
+
+        # Set the current branch from config without triggering the signal
+        self.branch_combo.blockSignals(True)
+        self.branch_combo.setCurrentText(get_branch_from_cfg())
+        self.branch_combo.blockSignals(False)
+
+        self.branch_combo.currentTextChanged.connect(self.on_switch_branch)
+
+        branch_layout.addWidget(branch_label)
+        branch_layout.addStretch()
+        branch_layout.addWidget(self.branch_combo)
+        lay.addWidget(branch_box)
+        lay.addWidget(make_divider())
+
         for text, method, *tip in ACTIONS_MAINT:
             fn = getattr(self, method)
-            if method == "on_self_update" and not self.launcher_update_available:
-                continue
             lay.addWidget(self._register_action(text, fn, tip[0] if tip else None))
 
         cfg = read_portable_cfg()
@@ -485,6 +507,60 @@ class LauncherWindow(QtWidgets.QWidget):
         )
         QtWidgets.QApplication.quit()
 
+    def on_switch_branch(self, new_branch: str):
+        """Action to switch the git branch."""
+        current_branch = get_branch_from_cfg()
+        if new_branch == current_branch:
+            return
+
+        confirm = QtWidgets.QMessageBox.question(
+            self,
+            "Confirm Branch Switch",
+            f"You are about to switch from '{current_branch}' to '{new_branch}'.\n\n"
+            "This will discard any local changes and synchronize with the new branch.\n"
+            "Are you sure you want to continue?",
+            QtWidgets.QMessageBox.Yes | QtWidgets.QMessageBox.No,
+        )
+
+        if confirm != QtWidgets.QMessageBox.Yes:
+            # Revert the combobox selection if the user cancels
+            self.branch_combo.blockSignals(True)
+            self.branch_combo.setCurrentText(current_branch)
+            self.branch_combo.blockSignals(False)
+            return
+
+        print(f"Launcher: Switching branch to '{new_branch}'...")
+        with with_busy_state(self, busy=True, text=f"Switching to {new_branch}..."):
+            try:
+                write_portable_cfg({"BRANCH": new_branch})
+                run_git(["checkout", new_branch])
+                run_git(["reset", "--hard", f"origin/{new_branch}"])
+
+                # After switching, update config and force dependency check
+                update_current_commit_in_cfg()
+                update_last_updated_in_cfg()
+
+                # Invalidate checksums to prompt for an update
+                write_checksum_state(deps_sha="changed", models_sha="changed")
+
+                self._refresh_update_indicators()
+
+                QtWidgets.QMessageBox.information(
+                    self,
+                    "Branch Switched",
+                    f"Successfully switched to the '{new_branch}' branch.\n\n"
+                    "It is highly recommended to run 'Check / Update Dependencies' now.",
+                )
+
+            except Exception as e:
+                print(f"Launcher: Error during branch switch: {e}")
+                QtWidgets.QMessageBox.critical(
+                    self, "Error", f"Failed to switch branch:\n{e}"
+                )
+                # Revert config if it failed
+                write_portable_cfg({"BRANCH": current_branch})
+                self._refresh_update_indicators()
+
     def on_update_git(self):
         print("Launcher: Checking for updates (git fetch/reset)...")
         with with_busy_state(self, busy=True, text="Updating..."):
@@ -498,12 +574,13 @@ class LauncherWindow(QtWidgets.QWidget):
                 self._rebuild_page("page_rollback", self._build_rollback_page)
                 self._refresh_update_indicators()
                 print("Launcher: Update complete.")
+                # After updating, check if the launcher script itself needs an update
                 if is_launcher_update_available():
                     self._refresh_update_indicators()
                     QMessageBox.information(
                         self,
-                        "Launcher Update",
-                        "An update for the launcher script (Start_Portable.bat) is now available.",
+                        "Launcher Update Available",
+                        "The launcher script (Start_Portable.bat) has an update.\nPlease close the launcher and run Start_Portable.bat again to apply it.",
                     )
             except Exception as e:
                 print(f"Launcher: Error during update: {e}")
