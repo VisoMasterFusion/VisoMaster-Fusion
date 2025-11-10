@@ -1,15 +1,14 @@
-# app/ui/launcher/branch_selector.py
 import tkinter as tk
 from tkinter import ttk, font
 import sys
 import os
 
 # This script is called before the venv is created. The Start_Portable.bat script
-# sets PYTHONPATH so this import works correctly.
+# sets PYTHONPATH
 try:
     from app.ui.launcher.cfgtools import write_portable_cfg
 except ImportError:
-    # Add a fallback for running the script directly for testing
+    # Add a fallback for running the script directly for testing or if PYTHONPATH fails
     current_dir = os.path.dirname(os.path.abspath(__file__))
     app_dir = os.path.abspath(os.path.join(current_dir, "..", ".."))
     repo_root = os.path.abspath(os.path.join(app_dir, ".."))
@@ -18,13 +17,11 @@ except ImportError:
     try:
         from app.ui.launcher.cfgtools import write_portable_cfg
     except ImportError:
-        print("Error: Cannot find the launcher configuration tools.", file=sys.stderr)
         print(
-            "Please ensure you are running this from the VisoMaster Fusion root.",
+            "Error: Could not import cfgtools. Please ensure the script is run from the correct location.",
             file=sys.stderr,
         )
         sys.exit(1)
-
 
 # --- UI Styling Constants ---
 BG_COLOR = "#2e3440"
@@ -39,12 +36,11 @@ class BranchSelectorDialog:
 
     def __init__(self, root):
         self.root = root
-        self.selected_branch = None  # No branch selected initially
+        self.selected_branch = None
         self.root.title("VisoMaster Fusion - Branch Selection")
         self.root.configure(bg=BG_COLOR)
         self.root.resizable(False, False)
 
-        # Style configuration
         style = ttk.Style()
         style.theme_use("clam")
         style.configure(
@@ -80,7 +76,7 @@ class BranchSelectorDialog:
 
         info_label = ttk.Label(
             main_frame,
-            text="Choose which version of VisoMaster Fusion to install.",
+            text="Choose which version to install.\n'Main' is stable, 'Dev' has the latest features.",
             anchor="center",
             justify="center",
         )
@@ -94,9 +90,7 @@ class BranchSelectorDialog:
         main_button.pack(fill="x", ipady=5)
 
         dev_button = ttk.Button(
-            main_frame,
-            text="🛠️ Development (Latest)",
-            command=lambda: self.select_branch("dev"),
+            main_frame, text="🛠️ Dev (Latest)", command=lambda: self.select_branch("dev")
         )
         dev_button.pack(fill="x", ipady=5, pady=(10, 0))
 
@@ -110,7 +104,7 @@ class BranchSelectorDialog:
 
     def on_closing(self):
         print("Branch selection cancelled by user.")
-        self.selected_branch = None  # Ensure it's None
+        self.selected_branch = None
         self.root.destroy()
 
     def center_window(self):
