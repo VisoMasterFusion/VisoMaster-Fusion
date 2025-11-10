@@ -5,19 +5,47 @@ setlocal EnableDelayedExpansion
 ::  VisoMaster Fusion Portable Launcher
 :: ===================================================================
 
-:: --- Step 0: Initial Path and Variable Setup ---
-echo VisoMaster Fusion Portable Launcher
-echo ===========================================
+:: --- LAUNCHER INTEGRATION (pre-check) ---
+set "BASE_DIR=%~dp0"
+set "VENV_PYTHON=%BASE_DIR%portable-files\venv\Scripts\python.exe"
+set "GIT_DIR_PRESENT=%BASE_DIR%VisoMaster-Fusion\.git"
+set "PORTABLE_CFG=%BASE_DIR%portable.cfg"
+set "FFMPEG_EXTRACT_DIR=%BASE_DIR%dependencies"
+set "FFMPEG_DIR_NAME=ffmpeg-7.1.1-essentials_build"
+set "FFMPEG_BIN_PATH=%FFMPEG_EXTRACT_DIR%\%FFMPEG_DIR_NAME%\bin"
+
+set "LAUNCHER_ENABLED="
+if exist "%PORTABLE_CFG%" (
+  for /f "usebackq tokens=1,* delims== " %%A in ("%PORTABLE_CFG%") do (
+    if /I "%%A"=="LAUNCHER_ENABLED" set "LAUNCHER_ENABLED=%%B"
+  )
+)
+
+if "%LAUNCHER_ENABLED%"=="1" (
+  if exist "%VENV_PYTHON%" (
+    if exist "%GIT_DIR_PRESENT%" (
+      echo Existing installation detected. Launching VisoMaster Fusion Launcher...
+      set "PYTHONPATH=%BASE_DIR%VisoMaster-Fusion"
+      set "PATH=%FFMPEG_BIN_PATH%;%PATH%"
+      "%VENV_PYTHON%" -m app.ui.launcher
+      echo Launcher closed.
+      pause >nul
+      exit /b !ERRORLEVEL!
+    )
+  )
+)
+
+:: --- DEVELOPER SETUP LOGIC (Adapted from working old script) ---
+echo Entering Full Setup / Command-Line Mode...
 echo.
 
-set "BASE_DIR=%~dp0"
-set "PORTABLE_DIR=%BASE_DIR%portable-files"
-set "PORTABLE_CFG=%BASE_DIR%portable.cfg"
+:: --- Basic Setup ---
 set "REPO_URL=https://github.com/VisoMasterFusion/VisoMaster-Fusion.git"
 for %%a in ("%REPO_URL%") do set "REPO_NAME=%%~na"
 set "APP_DIR=%BASE_DIR%%REPO_NAME%"
 
-:: Portable Dependency Paths
+:: Define portable tool paths
+set "PORTABLE_DIR=%BASE_DIR%portable-files"
 set "PYTHON_DIR=%PORTABLE_DIR%\python"
 set "PYTHON_EXE=%PYTHON_DIR%\python.exe"
 set "UV_DIR=%PORTABLE_DIR%\uv"
@@ -25,10 +53,6 @@ set "UV_EXE=%UV_DIR%\uv.exe"
 set "GIT_DIR=%PORTABLE_DIR%\git"
 set "GIT_EXE=%GIT_DIR%\bin\git.exe"
 set "VENV_DIR=%PORTABLE_DIR%\venv"
-set "VENV_PYTHON=%VENV_DIR%\Scripts\python.exe"
-set "FFMPEG_EXTRACT_DIR=%BASE_DIR%dependencies"
-set "FFMPEG_DIR_NAME=ffmpeg-7.1.1-essentials_build"
-set "FFMPEG_BIN_PATH=%FFMPEG_EXTRACT_DIR%\%FFMPEG_DIR_NAME%\bin"
 
 :: Download URLs and temp file paths
 set "PYTHON_EMBED_URL=https://www.python.org/ftp/python/3.11.9/python-3.11.9-embed-amd64.zip"
@@ -36,66 +60,33 @@ set "PYTHON_NUGET_URL=https://www.nuget.org/api/v2/package/python/3.11.9"
 set "UV_URL=https://github.com/astral-sh/uv/releases/download/0.8.22/uv-x86_64-pc-windows-msvc.zip"
 set "GIT_URL=https://github.com/git-for-windows/git/releases/download/v2.51.0.windows.1/PortableGit-2.51.0-64-bit.7z.exe"
 set "FFMPEG_URL=https://www.gyan.dev/ffmpeg/builds/packages/ffmpeg-7.1.1-essentials_build.zip"
-
 set "PYTHON_ZIP=%PORTABLE_DIR%\python-embed.zip"
 set "PYTHON_NUGET_ZIP=%PORTABLE_DIR%\python-nuget.zip"
 set "UV_ZIP=%PORTABLE_DIR%\uv.zip"
 set "GIT_ZIP=%PORTABLE_DIR%\PortableGit.exe"
 set "FFMPEG_ZIP=%PORTABLE_DIR%\ffmpeg.zip"
 
-:: --- LAUNCHER MODE PRE-CHECK (Fast path for existing installs) ---
-set "LAUNCHER_ENABLED="
-if exist "%PORTABLE_CFG%" (
-  for /f "usebackq tokens=1,* delims== " %%A in ("%PORTABLE_CFG%") do (
-    if /I "%%A"=="LAUNCHER_ENABLED" set "LAUNCHER_ENABLED=%%B"
-  )
-)
-if "%LAUNCHER_ENABLED%"=="1" (
-  if exist "%VENV_PYTHON%" (
-    if exist "%APP_DIR%\.git" (
-      echo Existing installation detected. Starting Launcher...
-      echo.
-      set "PYTHONPATH=%APP_DIR%"
-      set "PATH=%FFMPEG_BIN_PATH%;%GIT_DIR%\bin;%PATH%"
-      "%VENV_PYTHON%" -m app.ui.launcher
-      echo Launcher closed. Press any key to exit...
-      pause >nul
-      exit /b !ERRORLEVEL!
-    )
-  )
-)
+set "CONFIG_FILE=%BASE_DIR%portable.cfg"
+set "NEEDS_INSTALL=false"
 
-:: --- FULL SETUP / COMMAND-LINE MODE ---
-echo Entering Full Setup / Command-Line Mode...
-echo.
-
-:: --- Step 1 & 2: Install Core Dependencies (Git, Python, UV) ---
 if not exist "%PORTABLE_DIR%" mkdir "%PORTABLE_DIR%"
-call :install_dependency "Git" "%GIT_EXE%" "%GIT_URL%" "%GIT_ZIP%" "%GIT_DIR%"
-if not exist "%PYTHON_EXE%" (
-    echo Installing Python...
-    call :install_python
-)
-call :install_dependency "UV" "%UV_EXE%" "%UV_URL%" "%UV_ZIP%" "%UV_DIR%"
 
-:: **FIX**: Add Git to PATH immediately after installation
-set "PATH=%GIT_DIR%\bin;%PATH%"
-
-:: --- Step 3: Clone Repository (if it doesn't exist) ---
-if not exist "%APP_DIR%\.git" (
-    if exist "%APP_DIR%" (
-        echo WARNING: %APP_DIR% exists but is not a Git repository. Cleaning folder...
-        rmdir /s /q "%APP_DIR%"
-    )
-    echo Cloning repository...
-    git clone "%REPO_URL%" "%APP_DIR%"
-    if !ERRORLEVEL! neq 0 ( echo ERROR: Failed to clone repository. && pause && exit /b 1)
+:: --- Step 1: Set up portable Git ---
+if not exist "%GIT_EXE%" (
+    echo Downloading PortableGit...
+    powershell -Command "try { (New-Object Net.WebClient).DownloadFile('%GIT_URL%', '%GIT_ZIP%'); exit 0 } catch { exit 1 }"
+    if !ERRORLEVEL! neq 0 ( echo ERROR: Failed to download PortableGit. && pause && exit /b 1 )
+    echo Extracting PortableGit...
+    mkdir "%GIT_DIR%" >nul 2>&1
+    "%GIT_ZIP%" -y -o"%GIT_DIR%"
+    if !ERRORLEVEL! neq 0 ( echo ERROR: Failed to extract PortableGit. && pause && exit /b 1 )
+    del "%GIT_ZIP%"
 )
 
-:: --- Step 4: Determine and Set Branch (from argument on first run) ---
+:: --- Step 2: Determine Branch ---
 set "BRANCH="
-if exist "%PORTABLE_CFG%" (
-    for /f "usebackq tokens=1,* delims==" %%a in ("%PORTABLE_CFG%") do if /I "%%a"=="BRANCH" set "BRANCH=%%b"
+if exist "%CONFIG_FILE%" (
+    for /f "usebackq tokens=1,* delims==" %%a in ("%CONFIG_FILE%") do if /I "%%a"=="BRANCH" set "BRANCH=%%b"
 )
 if not defined BRANCH (
     echo First run: Determining branch...
@@ -106,66 +97,79 @@ if not defined BRANCH (
         set "BRANCH=main"
         echo No argument provided. Defaulting to main branch.
     )
-    (echo BRANCH=!BRANCH!)>> "%PORTABLE_CFG%"
+    (echo BRANCH=!BRANCH!)>> "%CONFIG_FILE%"
 )
 echo Using branch: !BRANCH!
 
-:: --- Step 5: Git Checkout and Update ---
-pushd "%APP_DIR%"
-git checkout !BRANCH! >nul 2>&1
-echo Checking for updates on branch '!BRANCH!'...
-git fetch
-for /f "tokens=*" %%i in ('git rev-parse HEAD') do set "LOCAL=%%i"
-for /f "tokens=*" %%i in ('git rev-parse origin/!BRANCH!') do set "REMOTE=%%i"
-set "NEEDS_INSTALL=false"
-if not exist "%VENV_DIR%" set "NEEDS_INSTALL=true"
 
-if "!LOCAL!" neq "!REMOTE!" (
-    if "%LAUNCHER_ENABLED%"=="1" (
-        echo Updates found. The launcher will handle the update process.
-    ) else (
-        echo Updates available.
-        choice /c YN /m "Do you want to update? (Discards local changes) [Y/N] "
-        if !ERRORLEVEL! equ 1 (
-            echo Resetting to match remote...
-            git reset --hard origin/!BRANCH!
-            set "NEEDS_INSTALL=true"
+:: --- Step 3: Clone or update repository ---
+if exist "%APP_DIR%\.git" (
+    echo Repository exists. Checking for updates...
+    pushd "%APP_DIR%"
+    "%GIT_EXE%" checkout %BRANCH%
+    "%GIT_EXE%" fetch
+
+    for /f "tokens=*" %%i in ('"%GIT_EXE%" rev-parse HEAD') do set "LOCAL=%%i"
+    for /f "tokens=*" %%i in ('"%GIT_EXE%" rev-parse origin/%BRANCH%') do set "REMOTE=%%i"
+
+    if "!LOCAL!" neq "!REMOTE!" (
+        echo Updates available on branch %BRANCH%.
+        if "%LAUNCHER_ENABLED%" NEQ "1" (
+            choice /c YN /m "Do you want to update? Discards local changes "
+            if !ERRORLEVEL! equ 1 (
+                echo Resetting local repository to match remote...
+                "%GIT_EXE%" reset --hard origin/%BRANCH%
+                set "NEEDS_INSTALL=true"
+            )
+        ) else (
+            echo Updates will be handled by the launcher.
         )
+    ) else (
+        echo Repository is up to date.
     )
+    popd
 ) else (
-    echo Repository is up to date.
-)
-popd
-
-:: --- Step 6: Check for Launcher Self-Update ---
-call :self_update_check
-
-:: --- Step 7: Create Virtual Environment ---
-if not exist "%VENV_PYTHON%" (
-    echo Creating virtual environment...
-    "%UV_EXE%" venv "%VENV_DIR%" --python "%PYTHON_EXE%"
-    if !ERRORLEVEL! neq 0 ( echo ERROR: Failed to create venv. && pause && exit /b 1)
+    if exist "%APP_DIR%" (
+        echo WARNING: %APP_DIR% exists but is not a git repo. Cleaning folder...
+        rmdir /s /q "%APP_DIR%"
+    )
+    echo Cloning repository on branch '%BRANCH%'...
+    "%GIT_EXE%" clone --branch "%BRANCH%" "%REPO_URL%" "%APP_DIR%"
+    if !ERRORLEVEL! neq 0 ( echo ERROR: Failed to clone repository. && pause && exit /b 1 )
     set "NEEDS_INSTALL=true"
 )
 
-:: --- Step 8: Install Python Dependencies ---
-set "REQ_FILE_NAME=requirements_cu129.txt"
-set "REQUIREMENTS=%APP_DIR%\%REQ_FILE_NAME%"
+:: --- Step 4: Self-update check ---
+call :self_update_check
+
+:: --- Step 5: Install Python, UV, venv ---
+if not exist "%PYTHON_EXE%" ( call :install_python )
+call :install_dependency "UV" "%UV_EXE%" "%UV_URL%" "%UV_ZIP%" "%UV_DIR%"
+
+if not exist "%VENV_DIR%" (
+    echo Creating virtual environment...
+    "%UV_EXE%" venv "%VENV_DIR%" --python "%PYTHON_EXE%"
+    if !ERRORLEVEL! neq 0 ( echo ERROR: Failed to create venv. && pause && exit /b 1 )
+    set "NEEDS_INSTALL=true"
+)
+
+:: --- Step 6: Install dependencies ---
+set "REQUIREMENTS=%APP_DIR%\requirements_cu129.txt"
 if /I "!NEEDS_INSTALL!"=="true" (
-    echo Installing dependencies from !REQ_FILE_NAME!...
+    echo Installing dependencies...
     pushd "%APP_DIR%"
     "%UV_EXE%" pip install -r "!REQUIREMENTS!" --python "%VENV_PYTHON%"
     if !ERRORLEVEL! neq 0 ( echo ERROR: Dependency installation failed. && pause && exit /b 1 )
     popd
 )
 
-:: --- Step 9: Install FFmpeg ---
+:: --- Step 7: Install FFmpeg ---
 call :install_dependency "FFmpeg" "%FFMPEG_BIN_PATH%\ffmpeg.exe" "%FFMPEG_URL%" "%FFMPEG_ZIP%" "%FFMPEG_EXTRACT_DIR%"
 
-:: --- Step 10: Download Models ---
+:: --- Step 8: Download models ---
 set "DOWNLOAD_RUN=false"
-if exist "%PORTABLE_CFG%" (
-    for /f "usebackq tokens=1,* delims==" %%a in ("%PORTABLE_CFG%") do if /I "%%a"=="DOWNLOAD_RUN" set "DOWNLOAD_RUN=%%b"
+if exist "%CONFIG_FILE%" (
+    for /f "usebackq tokens=1,* delims==" %%a in ("%CONFIG_FILE%") do if /I "%%a"=="DOWNLOAD_RUN" set "DOWNLOAD_RUN=%%b"
 )
 if /I "!NEEDS_INSTALL!"=="true" set "DOWNLOAD_RUN=false"
 if /I "!DOWNLOAD_RUN!"=="false" (
@@ -173,19 +177,28 @@ if /I "!DOWNLOAD_RUN!"=="false" (
     pushd "%APP_DIR%"
     "%VENV_PYTHON%" "download_models.py"
     if !ERRORLEVEL! equ 0 (
-        powershell -Command "(Get-Content -ErrorAction SilentlyContinue '%PORTABLE_CFG%') -replace 'DOWNLOAD_RUN=.*', 'DOWNLOAD_RUN=true' | Set-Content -ErrorAction SilentlyContinue '%PORTABLE_CFG%'"
-    ) else (
-        echo WARNING: Model download script failed.
+        powershell -Command "(Get-Content -ErrorAction SilentlyContinue '%CONFIG_FILE%') -replace 'DOWNLOAD_RUN=.*', 'DOWNLOAD_RUN=true' | Set-Content -ErrorAction SilentlyContinue '%CONFIG_FILE%'"
     )
     popd
 )
 
-:: --- Final Launch ---
+:: --- Ensure LAUNCHER_ENABLED key exists ---
+set "FOUND_KEY=false"
+if exist "%CONFIG_FILE%" (
+    for /f "usebackq tokens=1,* delims==" %%A in ("%CONFIG_FILE%") do if /I "%%~A"=="LAUNCHER_ENABLED" set "FOUND_KEY=true"
+)
+if /I "!FOUND_KEY!"=="false" (
+    echo.
+    echo Setting LAUNCHER_ENABLED=1 in portable.cfg...
+    (echo LAUNCHER_ENABLED=1)>> "%CONFIG_FILE%"
+)
+
+:: --- Step 9: Run main application ---
 echo.
 echo Starting main.py...
 echo ========================================
 pushd "%APP_DIR%"
-set "PATH=%FFMPEG_BIN_PATH%;%PATH%"
+set "PATH=%FFMPEG_BIN_PATH%;%GIT_DIR%\bin;%PATH%"
 "%VENV_PYTHON%" "main.py"
 popd
 
@@ -207,15 +220,14 @@ exit /b 0
     
     fc /b "%ROOT_BAT%" "%REPO_BAT%" > nul
     if errorlevel 1 (
-        echo A new version of the launcher script ^(Start_Portable.bat^) is available.
+        echo A new version of the launcher script Start_Portable.bat is available.
         if "%LAUNCHER_ENABLED%"=="1" (
-            echo Please restart the application by running Start_Portable.bat again to apply the update.
-            echo Press any key to exit...
-            pause >nul
+            echo Please restart by running Start_Portable.bat to apply the update.
+            pause
             exit /b 0
         )
         
-        choice /c YN /m "Do you want to update it now? [Y/N] "
+        choice /c YN /m "Do you want to update it now? "
         if !ERRORLEVEL! equ 1 (
             set "UPDATER_BAT=%PORTABLE_DIR%\update_start_portable.bat"
             (
@@ -251,11 +263,7 @@ goto :eof
     
     echo Downloading %NAME%...
     powershell -Command "try { (New-Object Net.WebClient).DownloadFile('%URL%', '%ZIP_FILE%'); exit 0 } catch { exit 1 }"
-    if !ERRORLEVEL! neq 0 (
-        echo ERROR: Failed to download %NAME%.
-        pause
-        exit /b 1
-    )
+    if !ERRORLEVEL! neq 0 ( echo ERROR: Failed to download %NAME%. && pause && exit /b 1 )
     
     echo Extracting %NAME%...
     mkdir "%EXTRACT_DIR%" >nul 2>&1
@@ -266,13 +274,7 @@ goto :eof
     ) else (
         powershell -Command "Expand-Archive -Path '%ZIP_FILE%' -DestinationPath '%EXTRACT_DIR%' -Force"
     )
-
-    if !ERRORLEVEL! neq 0 (
-        echo ERROR: Failed to extract %NAME%.
-        del "%ZIP_FILE%"
-        pause
-        exit /b 1
-    )
+    if !ERRORLEVEL! neq 0 ( echo ERROR: Failed to extract %NAME%. && del "%ZIP_FILE%" && pause && exit /b 1 )
     del "%ZIP_FILE%"
 goto :eof
 
@@ -285,7 +287,6 @@ goto :eof
         echo Downloading Python...
         powershell -Command "try { (New-Object Net.WebClient).DownloadFile('%PYTHON_NUGET_URL%', '%PYTHON_NUGET_ZIP%'); exit 0 } catch { exit 1 }"
         if !ERRORLEVEL! neq 0 ( echo ERROR: Failed to download Python. && pause && exit /b 1 )
-        
         echo Extracting Python...
         set "TEMP_EXTRACT_DIR=%PORTABLE_DIR%\python_temp_extract"
         mkdir "!TEMP_EXTRACT_DIR!" >nul 2>&1
@@ -298,12 +299,10 @@ goto :eof
         echo Downloading Python...
         powershell -Command "try { (New-Object Net.WebClient).DownloadFile('%PYTHON_EMBED_URL%', '%PYTHON_ZIP%'); exit 0 } catch { exit 1 }"
         if !ERRORLEVEL! neq 0 ( echo ERROR: Failed to download Python. && pause && exit /b 1 )
-        
         echo Extracting Python...
         mkdir "%PYTHON_DIR%" >nul 2>&1
         powershell -Command "Expand-Archive -Path '%PYTHON_ZIP%' -DestinationPath '%PYTHON_DIR%' -Force"
         del "%PYTHON_ZIP%"
-        
         set "PTH_FILE=%PYTHON_DIR%\python311._pth"
         if exist "!PTH_FILE!" (
             echo Enabling site packages in PTH file...
