@@ -75,15 +75,10 @@ echo.
 :: --- Step 1 & 2: Install Core Dependencies (Git, Python, UV) ---
 if not exist "%PORTABLE_DIR%" mkdir "%PORTABLE_DIR%"
 call :install_dependency "Git" "%GIT_EXE%" "%GIT_URL%" "%GIT_ZIP%" "%GIT_DIR%"
-
-:: Handle Python installation directly, not through the generic helper
 if not exist "%PYTHON_EXE%" (
     echo Installing Python...
     call :install_python
-) else (
-    echo Python already installed.
 )
-
 call :install_dependency "UV" "%UV_EXE%" "%UV_URL%" "%UV_ZIP%" "%UV_DIR%"
 
 :: --- Step 3: Clone Repository (if it doesn't exist) ---
@@ -214,17 +209,17 @@ exit /b 0
 :self_update_check
     set "ROOT_BAT=%BASE_DIR%Start_Portable.bat"
     set "REPO_BAT=%APP_DIR%\Start_Portable.bat"
-    
+
     if not exist "%REPO_BAT%" goto :eof
-    
+
     fc /b "%ROOT_BAT%" "%REPO_BAT%" > nul
     if errorlevel 1 (
-        echo A new version of the launcher script (Start_Portable.bat) is available.
+        echo A new version of the launcher script ^(Start_Portable.bat^) is available.
         if "%LAUNCHER_ENABLED%"=="1" (
             echo Please use the 'Update Launcher Script' button in the Maintenance menu.
             goto :eof
         )
-        
+
         choice /c YN /m "Do you want to update it now? [Y/N] "
         if !ERRORLEVEL! equ 1 (
             set "UPDATER_BAT=%PORTABLE_DIR%\update_start_portable.bat"
@@ -238,7 +233,7 @@ exit /b 0
                 echo start "" /d "%BASE_DIR%" "Start_Portable.bat"
                 echo exit
             ) > "%UPDATER_BAT%"
-            
+
             start "" cmd /c "%UPDATER_BAT%"
             exit /b 0
         )
@@ -256,9 +251,9 @@ goto :eof
         echo %NAME% already installed.
         goto :eof
     )
-    
+
     echo Installing %NAME%...
-    
+
     echo Downloading %NAME%...
     powershell -Command "try { (New-Object Net.WebClient).DownloadFile('%URL%', '%ZIP_FILE%'); exit 0 } catch { exit 1 }"
     if !ERRORLEVEL! neq 0 (
@@ -266,7 +261,7 @@ goto :eof
         pause
         exit /b 1
     )
-    
+
     echo Extracting %NAME%...
     mkdir "%EXTRACT_DIR%" >nul 2>&1
     if "%NAME%"=="Git" (
@@ -289,13 +284,13 @@ goto :eof
 :install_python
     echo Checking Windows version for Python installation...
     for /f "tokens=3 delims=." %%i in ('ver') do set WIN_BUILD=%%i
-    
+
     if !WIN_BUILD! LSS 22000 (
         echo Windows 10 detected. Using full Python package.
         echo Downloading Python...
         powershell -Command "try { (New-Object Net.WebClient).DownloadFile('%PYTHON_NUGET_URL%', '%PYTHON_NUGET_ZIP%'); exit 0 } catch { exit 1 }"
         if !ERRORLEVEL! neq 0 ( echo ERROR: Failed to download Python. && pause && exit /b 1 )
-        
+
         echo Extracting Python...
         set "TEMP_EXTRACT_DIR=%PORTABLE_DIR%\python_temp_extract"
         mkdir "!TEMP_EXTRACT_DIR!" >nul 2>&1
@@ -308,12 +303,12 @@ goto :eof
         echo Downloading Python...
         powershell -Command "try { (New-Object Net.WebClient).DownloadFile('%PYTHON_EMBED_URL%', '%PYTHON_ZIP%'); exit 0 } catch { exit 1 }"
         if !ERRORLEVEL! neq 0 ( echo ERROR: Failed to download Python. && pause && exit /b 1 )
-        
+
         echo Extracting Python...
         mkdir "%PYTHON_DIR%" >nul 2>&1
         powershell -Command "Expand-Archive -Path '%PYTHON_ZIP%' -DestinationPath '%PYTHON_DIR%' -Force"
         del "%PYTHON_ZIP%"
-        
+
         set "PTH_FILE=%PYTHON_DIR%\python311._pth"
         if exist "!PTH_FILE!" (
             echo Enabling site packages in PTH file...
