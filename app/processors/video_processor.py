@@ -1,6 +1,6 @@
 import threading
 import queue
-from typing import TYPE_CHECKING, Dict, Tuple, Optional
+from typing import TYPE_CHECKING, Dict, Tuple, Optional, cast
 import time
 import subprocess
 from pathlib import Path
@@ -16,6 +16,7 @@ import numpy
 import torch
 import pyvirtualcam
 import math
+import copy
 from PySide6.QtCore import QObject, QTimer, Signal, Slot
 from PySide6.QtGui import QPixmap
 from app.processors.workers.frame_worker import FrameWorker
@@ -26,6 +27,7 @@ from app.ui.widgets.actions import layout_actions
 from app.ui.widgets.actions import save_load_actions
 from app.ui.widgets.actions import list_view_actions
 import app.helpers.miscellaneous as misc_helpers
+from app.helpers.typing_helper import ControlTypes, FacesParametersTypes
 
 if TYPE_CHECKING:
     from app.ui.main_ui import MainWindow
@@ -54,6 +56,10 @@ class VideoProcessor(QObject):
     def __init__(self, main_window: "MainWindow", num_threads=2):
         super().__init__()
         self.main_window = main_window
+
+        self.state_lock = threading.Lock()  # Lock for feeder state
+        self.feeder_parameters: FacesParametersTypes | None = None
+        self.feeder_control: ControlTypes | None = None
 
         # --- Worker Thread Management (Refactored for Thread Pool) ---
         self.num_threads = num_threads
@@ -290,6 +296,10 @@ class VideoProcessor(QObject):
         # Determine the mode at startup
         is_segment_mode = self.is_processing_segments
 
+        # The feeder's state is initialized in process_video()
+        # We just need to track the last marker
+        last_marker_data = None
+
         # Determine the stop condition (control variable)
         # In segment mode, the loop is controlled by 'is_processing_segments'
         # In video mode, the loop is controlled by 'processing'
@@ -363,12 +373,58 @@ class VideoProcessor(QObject):
                     )
                     break  # Stop reading
 
-                # 4. Send to worker (identical)
-                frame_rgb = frame_bgr[..., ::-1]
                 frame_num_to_process = self.current_frame_number
 
-                # Create the task tuple (frame_number, frame_data)
-                task = (frame_num_to_process, frame_rgb)
+                # Get marker data *only* for the exact frame
+                marker_data = self.main_window.markers.get(frame_num_to_process)
+
+                local_params_for_worker: FacesParametersTypes
+                local_control_for_worker: ControlTypes
+
+                # Lock the state while reading/writing
+                with self.state_lock:
+                    if marker_data and marker_data != last_marker_data:
+                        # This frame IS a marker, update the feeder's state
+                        print(
+                            f"[Feeder] Frame {frame_num_to_process} is a marker. Updating feeder state."
+                        )
+
+                        self.feeder_parameters = copy.deepcopy(
+                            marker_data["parameters"]
+                        )
+
+                        # Reset controls to default first
+                        self.feeder_control = {}
+                        for (
+                            widget_name,
+                            widget,
+                        ) in self.main_window.parameter_widgets.items():
+                            if widget_name in self.main_window.control:
+                                self.feeder_control[widget_name] = widget.default_value
+
+                        if "control" in marker_data and isinstance(
+                            marker_data["control"], dict
+                        ):
+                            self.feeder_control.update(
+                                cast(ControlTypes, marker_data["control"]).copy()
+                            )
+
+                        last_marker_data = marker_data
+
+                    # Use the (potentially updated) feeder state
+                    # We MUST send copies, as the worker will use them in parallel
+                    local_params_for_worker = self.feeder_parameters.copy()
+                    local_control_for_worker = self.feeder_control.copy()
+
+                frame_rgb = frame_bgr[..., ::-1]
+
+                # The worker will use the feeder's state *from this exact moment*
+                task = (
+                    frame_num_to_process,
+                    frame_rgb,
+                    local_params_for_worker,
+                    local_control_for_worker,
+                )
 
                 # Put the task in the queue for the worker pool
                 self.frame_queue.put(task)
@@ -562,10 +618,23 @@ class VideoProcessor(QObject):
                 )
 
         # Update UI
-        if not self.is_processing_segments and self.file_type != "webcam":
-            video_control_actions.update_widget_values_from_markers(
-                self.main_window, frame_number_to_display
-            )
+        if self.file_type != "webcam":
+            # This is the metronome tick.
+            # We *only* update the global state and UI widgets if we have
+            # landed *exactly* on a marker frame.
+            # Otherwise, we let the current (potentially manually changed) state persist.
+            if frame_number_to_display in self.main_window.markers:
+                # Acquire lock to safely modify parameters and controls
+                with self.main_window.models_processor.model_lock:
+                    # 1. Load data from marker into main_window.parameters/control
+                    video_control_actions.update_parameters_and_control_from_marker(
+                        self.main_window, frame_number_to_display
+                    )
+
+                    # 2. Update all UI widgets to reflect the new state
+                    video_control_actions.update_widget_values_from_markers(
+                        self.main_window, frame_number_to_display
+                    )
 
         graphics_view_actions.update_graphics_view(
             self.main_window, pixmap, frame_number_to_display
@@ -647,6 +716,11 @@ class VideoProcessor(QObject):
         self.processing = True  # General flag ON
         self.is_processing_segments = False
         self.playback_started = False
+
+        # Initialize feeder state with the current UI global state
+        with self.state_lock:
+            self.feeder_parameters = self.main_window.parameters.copy()
+            self.feeder_control = self.main_window.control.copy()
 
         # Check if this recording was initiated by the Job Manager
         job_mgr_flag = getattr(self.main_window, "job_manager_initiated_record", False)

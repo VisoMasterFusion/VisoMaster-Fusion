@@ -160,6 +160,10 @@ def add_widgets_to_tab_layout(
                             selection_widget_name,
                             selected_value,
                             enable_refresh_frame=selection_widget.enable_refresh_frame,
+                            exec_function=widget_data.get("exec_function"),
+                            exec_function_args=cast(
+                                list, widget_data.get("exec_function_args", [])
+                            ),
                         )
                     elif data_type == "control":
                         common_widget_actions.update_control(

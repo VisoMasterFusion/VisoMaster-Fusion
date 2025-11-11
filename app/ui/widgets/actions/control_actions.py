@@ -343,9 +343,37 @@ def handle_model_selection_change(
 def handle_landmark_state_change(
     main_window: "MainWindow", new_value: bool, control_name: str
 ):
-    """Unloads landmark models if the main landmark toggle is disabled."""
+    """Loads/Unloads landmark models when the main toggle is changed."""
+    models_processor = main_window.models_processor
+    landmark_detectors = models_processor.face_landmark_detectors
+
     if not new_value:
-        main_window.models_processor.face_landmark_detectors.unload_models()
+        # Toggle is OFF: Unload all landmark models EXCEPT essential ones (like 203)
+        print(
+            "[Control Action] Landmark detection disabled. Unloading non-essential landmark models."
+        )
+        landmark_detectors.unload_models(keep_essential=True)
+
+        # Clear the state variable, *unless* the current model is the essential one
+        MODEL_203_NAME = "FaceLandmark203"
+        if landmark_detectors.current_landmark_model_name != MODEL_203_NAME:
+            landmark_detectors.current_landmark_model_name = None
+    else:
+        # Toggle is ON: Load the currently selected model from the dropdown
+        from app.processors.models_data import landmark_model_mapping
+
+        current_selection = main_window.control.get(
+            "LandmarkDetectModelSelection", "203"
+        )
+        model_to_load = landmark_model_mapping.get(current_selection)
+
+        if model_to_load:
+            print(
+                f"[Control Action] Landmark detection enabled. Loading selected model: {model_to_load}"
+            )
+            models_processor.load_model(model_to_load)
+            landmark_detectors.active_landmark_models.add(model_to_load)
+            landmark_detectors.current_landmark_model_name = model_to_load
 
 
 def handle_landmark_model_selection_change(
@@ -357,10 +385,39 @@ def handle_landmark_model_selection_change(
     is_enabled = main_window.control.get("LandmarkDetectToggle", False)
     new_model_name = landmark_model_mapping.get(new_detect_mode)
 
-    # If landmark detection is active, ensure the newly selected model is loaded.
-    # It will not unload any other models, preventing the reloading issue.
-    if is_enabled and new_model_name:
-        main_window.models_processor.load_model(new_model_name)
+    if not new_model_name:
+        return  # Invalid selection
+
+    models_processor = main_window.models_processor
+    landmark_detectors = models_processor.face_landmark_detectors
+
+    old_model_name = landmark_detectors.current_landmark_model_name
+
+    # Special case: Model 203 is used by Face Editor/Expression Restorer
+    MODEL_203_NAME = "FaceLandmark203"
+
+    # Unload the old model, IF it's different, AND it's not model 203
+    if (
+        old_model_name
+        and old_model_name != new_model_name
+        and old_model_name != MODEL_203_NAME
+    ):
+        print(
+            f"[Control Action] Unloading previously selected landmark model: {old_model_name}"
+        )
+        models_processor.unload_model(old_model_name)
+        # We also need to remove it from the active_landmark_models set
+        if old_model_name in landmark_detectors.active_landmark_models:
+            landmark_detectors.active_landmark_models.remove(old_model_name)
+
+    # If the main toggle is enabled, load the new model
+    if is_enabled:
+        print(f"[Control Action] Loading selected landmark model: {new_model_name}")
+        models_processor.load_model(new_model_name)
+        landmark_detectors.active_landmark_models.add(new_model_name)
+
+    # Update the state variable to remember the new model
+    landmark_detectors.current_landmark_model_name = new_model_name
 
 
 def handle_frame_enhancer_state_change(
@@ -405,3 +462,67 @@ def handle_enhancer_model_selection_change(
     else:
         # If disabled, just ensure the current model is cleared
         frame_enhancers.current_enhancer_model = new_model_name
+
+
+def _check_and_manage_face_editor_models(main_window: "MainWindow"):
+    """
+    Central function to load/unload FaceEditor (LivePortrait) models
+    based on the state of BOTH UI controls.
+    """
+    models_processor = main_window.models_processor
+
+    # 1. Check if the main 'Edit Face' button (outside the tab) is checked
+    is_edit_face_active = main_window.editFacesButton.isChecked()
+
+    # 2. Check if the 'Enable Face Pose/Expression Editor' parameter toggle (inside the tab) is active
+    # We read from 'current_widget_parameters' to get the most up-to-date UI state
+    is_face_editor_param_active = main_window.current_widget_parameters.get(
+        "FaceEditorEnableToggle", False
+    )
+
+    # 3. Check if the 'Enable Face Expression Restorer' parameter toggle is active
+    is_expr_restore_active = main_window.current_widget_parameters.get(
+        "FaceExpressionEnableToggleBoth", False
+    )
+
+    # The 'Edit Face' feature is only *truly* active if BOTH its buttons are on.
+    true_edit_active = is_edit_face_active and is_face_editor_param_active
+
+    # Any LivePortrait feature is active if (Edit Face is fully on) OR (Expression Restore is on)
+    any_editor_feature_active = true_edit_active or is_expr_restore_active
+
+    # Check the *actual* loaded state from the face_editors module
+    models_are_currently_loaded = (
+        models_processor.face_editors.current_face_editor_type is not None
+    )
+
+    if any_editor_feature_active and not models_are_currently_loaded:
+        # A feature is ON, but models are OFF.
+        # We don't need to do anything here. The lazy-loader in
+        # FrameWorker/FaceEditors will load them on first use.
+        print(
+            "[Control Action] Face Editor/Expression Restorer is active. Models will be lazy-loaded on use."
+        )
+        pass
+    elif not any_editor_feature_active and models_are_currently_loaded:
+        # NO feature is ON, but models *are* loaded. Unload them.
+        print(
+            "[Control Action] Face Editor and Expression Restorer are inactive. Unloading LivePortrait models."
+        )
+        models_processor.unload_face_editor_models()
+
+
+def handle_face_editor_button_click(main_window: "MainWindow"):
+    """Called when the 'Edit Faces' button is clicked."""
+    # This function is called by the button click signal.
+    # We just need to check the overall state.
+    _check_and_manage_face_editor_models(main_window)
+
+
+def handle_face_expression_toggle_change(
+    main_window: "MainWindow", new_value: bool, control_name: str
+):
+    """Called when the 'FaceExpressionEnableToggleBoth' parameter changes."""
+    # This function is called by the parameter change.
+    # We just need to check the overall state.
+    _check_and_manage_face_editor_models(main_window)

@@ -1,4 +1,4 @@
-from typing import TYPE_CHECKING, Callable, Optional
+from typing import TYPE_CHECKING, Callable, Optional, cast
 
 import cv2
 import numpy as np
@@ -9,6 +9,7 @@ from app.ui.widgets import widget_components
 from app.ui.widgets.settings_layout_data import SETTINGS_LAYOUT_DATA
 from app.ui.widgets.common_layout_data import COMMON_LAYOUT_DATA
 import app.helpers.miscellaneous as misc_helpers
+from app.helpers.typing_helper import ControlTypes
 
 if TYPE_CHECKING:
     from app.ui.main_ui import MainWindow
@@ -77,6 +78,19 @@ def update_control(
             exec_function_args = [main_window, control_value] + exec_function_args
             exec_function(*exec_function_args)
     main_window.control[control_name] = control_value
+    # Also update the feeder's state if it's running
+    if (
+        main_window.video_processor.processing
+        and main_window.video_processor.feeder_control
+    ):
+        with main_window.video_processor.state_lock:
+            # Cast to ControlTypes to satisfy the type checker, as feeder_control is typed
+            if control_name in cast(
+                ControlTypes, main_window.video_processor.feeder_control
+            ):
+                cast(ControlTypes, main_window.video_processor.feeder_control)[
+                    control_name
+                ] = control_value
     refresh_frame(main_window)
 
 
@@ -138,6 +152,16 @@ def update_parameter(
     # Update parameters for the selected face
     if main_window.target_faces and face_id:
         main_window.parameters[face_id][parameter_name] = parameter_value
+        # Also update the feeder's state if it's running
+        if (
+            main_window.video_processor.processing
+            and main_window.video_processor.feeder_parameters
+        ):
+            with main_window.video_processor.state_lock:
+                if face_id in main_window.video_processor.feeder_parameters:
+                    main_window.video_processor.feeder_parameters[face_id][
+                        parameter_name
+                    ] = parameter_value
 
     # Always update the current widget state
     if main_window.current_widget_parameters:

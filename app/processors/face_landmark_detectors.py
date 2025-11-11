@@ -1,5 +1,5 @@
 from itertools import product as product
-from typing import TYPE_CHECKING, List, Dict
+from typing import TYPE_CHECKING, List, Dict, Optional
 import pickle
 
 import torch
@@ -20,10 +20,29 @@ class FaceLandmarkDetectors:
     helper methods for image preparation and filtering of detection results.
     """
 
-    def unload_models(self):
-        for model_name in list(self.active_landmark_models):
+    def unload_models(self, keep_essential: bool = False):
+        """
+        Unloads landmark models.
+        If keep_essential is True, it will NOT unload 'FaceLandmark203'
+        as it is required by other processors (FaceEditor, ExpressionRestorer).
+        """
+        MODEL_203_NAME = "FaceLandmark203"  # Essential model
+
+        models_to_unload = list(self.active_landmark_models)
+
+        for model_name in models_to_unload:
+            if keep_essential and model_name == MODEL_203_NAME:
+                # Do not unload the essential model
+                continue
+
             self.models_processor.unload_model(model_name)
-        self.active_landmark_models.clear()
+            # Also remove it from the active_landmark_models set
+            if model_name in self.active_landmark_models:
+                self.active_landmark_models.remove(model_name)
+
+        if not keep_essential:
+            # If we are not keeping essentials, we clear everything
+            self.active_landmark_models.clear()
 
     def __init__(self, models_processor: "ModelsProcessor"):
         """
@@ -35,6 +54,7 @@ class FaceLandmarkDetectors:
         """
         self.models_processor = models_processor
         self.active_landmark_models: set[str] = set()
+        self.current_landmark_model_name: Optional[str] = None
         # Caches for model-specific data to avoid re-computation.
         self.landmark_5_anchors: list = []
         self.landmark_5_scale1_cache: Dict[tuple, torch.Tensor] = {}
@@ -109,16 +129,7 @@ class FaceLandmarkDetectors:
             return kpss_5, kpss, scores
 
         # Handle special setup cases for certain models.
-        if detect_mode == "3d68":
-            with open(f"{models_dir}/meanshape_68.pkl", "rb") as f:
-                self.models_processor.mean_lmk = pickle.load(f)
-        elif detect_mode == "478":
-            if not self.models_processor.models["FaceBlendShapes"]:
-                self.models_processor.models["FaceBlendShapes"] = (
-                    self.models_processor.load_model("FaceBlendShapes")
-                )
-        elif detect_mode == "5":
-            # This model requires pre-calculated anchor points.
+        if detect_mode == "5":
             self._ensure_landmark_5_anchors()
 
         # Call the specific detection function (e.g., detect_face_landmark_68).
@@ -404,6 +415,20 @@ class FaceLandmarkDetectors:
         return face_landmark_68_5, face_landmark_68, face_landmark_68_score
 
     def detect_face_landmark_3d68(self, img, bbox, det_kpss, from_points=False):
+        # --- START: Added Dependency Check ---
+        # Ensure the 'meanshape_68.pkl' dependency is loaded once
+        if not self.models_processor.mean_lmk:
+            try:
+                with open(f"{models_dir}/meanshape_68.pkl", "rb") as f:
+                    self.models_processor.mean_lmk = pickle.load(f)
+                print("INFO: 'FaceLandmark3d68' loading dependency 'meanshape_68.pkl'.")
+            except Exception as e:
+                print(
+                    f"[ERROR] Failed to load 'meanshape_68.pkl' for FaceLandmark3d68: {e}"
+                )
+                return [], [], []  # Cannot proceed without this
+        # --- END: Added Dependency Check ---
+
         aimg, _, IM = self._prepare_crop(
             img, bbox, det_kpss, from_points, target_size=192, warp_mode="arcface128"
         )
@@ -553,6 +578,18 @@ class FaceLandmarkDetectors:
         return out_pts_5, out_pts, []
 
     def detect_face_landmark_478(self, img, bbox, det_kpss, from_points=False):
+        # --- START: Added Dependency Check (Moved to top) ---
+        # Ensure the 'FaceBlendShapes' dependency is loaded before we proceed
+        if not self.models_processor.models.get("FaceBlendShapes"):
+            print("INFO: 'FaceLandmark478' loading dependency 'FaceBlendShapes'.")
+            # We use load_model, which handles caching. If it fails, it will return None.
+            if not self.models_processor.load_model("FaceBlendShapes"):
+                print(
+                    "[ERROR] Failed to load dependency 'FaceBlendShapes'. Aborting landmark detection."
+                )
+                return [], [], []  # Fail fast
+        # --- END: Added Dependency Check ---
+
         aimg, _, IM = self._prepare_crop(
             img,
             bbox,
