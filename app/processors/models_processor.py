@@ -801,58 +801,67 @@ class ModelsProcessor(QtCore.QObject):
         precision="fp16",
         debug=False,
     ):
-        # self.main_window.model_loading_signal.emit()
-        model_instance = None
-        onnx_path = self.models_path[model_name]
-        trt_path = self.models_trt_path[model_name]
+        # Use the main model_lock to make the entire load process atomic
+        with self.model_lock:
+            # Check *again* inside the lock, in case another thread loaded it
+            # while this thread was waiting for the lock.
+            if self.models_trt.get(model_name):
+                return self.models_trt[model_name]
 
-        try:
-            with self.trt_build_lock_creation_lock:
-                if trt_path not in self.trt_build_locks:
-                    self.trt_build_locks[trt_path] = threading.Lock()
-            model_build_lock = self.trt_build_locks[trt_path]
+            # If we're here, the model is not loaded and we have the lock.
+            # Proceed with loading.
 
-            with model_build_lock:
-                if not os.path.exists(trt_path):
-                    print(
-                        f"TRT engine file not found. Starting isolated build: {trt_path}"
-                    )
+            model_instance = None
+            onnx_path = self.models_path[model_name]
+            trt_path = self.models_trt_path[model_name]
 
-                    # Emit signal to show build dialog
-                    dialog_title = "Building TensorRT Engine"
-                    dialog_text = (
-                        f"Building TensorRT engine for:\n"
-                        f"{os.path.basename(onnx_path)}\n\n"
-                        f"This may take several minutes.\n"
-                        f"The application will continue once finished."
-                    )
-                    self.show_build_dialog.emit(dialog_title, dialog_text)
+            try:
+                # This lock is for file-system build races
+                with self.trt_build_lock_creation_lock:
+                    if trt_path not in self.trt_build_locks:
+                        self.trt_build_locks[trt_path] = threading.Lock()
+                model_build_lock = self.trt_build_locks[trt_path]
 
-                    ctx = multiprocessing.get_context("spawn")
-                    build_process = ctx.Process(
-                        target=_build_trt_engine_worker,
-                        args=(
-                            onnx_path,
-                            trt_path,
-                            precision,
-                            custom_plugin_path,
-                            False,
-                        ),
-                    )
-
-                    build_process.start()
-                    build_process.join()
-
-                    if build_process.exitcode != 0:
-                        raise RuntimeError(
-                            f"TRT engine build process failed or crashed with exit code {build_process.exitcode}."
-                        )
-
+                with model_build_lock:
                     if not os.path.exists(trt_path):
-                        raise FileNotFoundError(
-                            f"TRT engine file still not found after isolated build: {trt_path}"
+                        print(
+                            f"TRT engine file not found. Starting isolated build: {trt_path}"
                         )
-                    print("Isolated build successful.")
+
+                        dialog_title = "Building TensorRT Engine"
+                        dialog_text = (
+                            f"Building TensorRT engine for:\n"
+                            f"{os.path.basename(onnx_path)}\n\n"
+                            f"This may take several minutes.\n"
+                            f"The application will continue once finished."
+                        )
+                        self.show_build_dialog.emit(dialog_title, dialog_text)
+
+                        ctx = multiprocessing.get_context("spawn")
+                        build_process = ctx.Process(
+                            target=_build_trt_engine_worker,
+                            args=(
+                                onnx_path,
+                                trt_path,
+                                precision,
+                                custom_plugin_path,
+                                False,
+                            ),
+                        )
+
+                        build_process.start()
+                        build_process.join()
+
+                        if build_process.exitcode != 0:
+                            raise RuntimeError(
+                                f"TRT engine build process failed or crashed with exit code {build_process.exitcode}."
+                            )
+
+                        if not os.path.exists(trt_path):
+                            raise FileNotFoundError(
+                                f"TRT engine file still not found after isolated build: {trt_path}"
+                            )
+                        print("Isolated build successful.")
 
                 print(f"Loading model: {model_name} with provider: TensorRT-Engine")
                 model_instance = TensorRTPredictor(
@@ -864,15 +873,20 @@ class ModelsProcessor(QtCore.QObject):
                 )
                 print(f"Successfully loaded TRT model: {model_name}")
 
-        except Exception:
-            print(f"ERROR: Failed to build or load TensorRT model {model_name}.")
-            traceback.print_exc()
-            model_instance = None
-        finally:
-            self.hide_build_dialog.emit()
-            # self.main_window.model_loaded_signal.emit()
+                # Assign to the main dictionary *inside* the lock
+                self.models_trt[model_name] = model_instance
 
-        return model_instance
+            except Exception:
+                print(f"ERROR: Failed to build or load TensorRT model {model_name}.")
+                traceback.print_exc()
+                model_instance = None
+
+                # Ensure we store 'None' on failure so we don't retry
+                self.models_trt[model_name] = None
+            finally:
+                self.hide_build_dialog.emit()
+
+            return model_instance
 
     def delete_models(self):
         model_names_to_unload = list(self.models.keys())

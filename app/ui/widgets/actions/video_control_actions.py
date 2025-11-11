@@ -878,45 +878,103 @@ def on_change_video_seek_slider(main_window: "MainWindow", new_position=0):
 
         else:
             main_window.last_seek_read_failed = True
-
+    # Only update parameters and widgets if the slider is NOT being actively dragged.
+    # This ensures playback, clicks, and button presses update the UI,
+    # but fast scrubbing does not cause lag or skip marker updates.
+    if not main_window.videoSeekSlider.isSliderDown():
+        run_post_seek_actions(main_window, new_position)
     # Do not automatically restart the video, let the user press Play to resume
     # print("on_change_video_seek_slider: Video stopped after slider movement.")
+
+
+def _get_marker_data_for_position(
+    main_window: "MainWindow", new_position: int
+) -> dict | None:
+    """
+    Finds the marker data that should be active at a given frame position.
+    It looks for the marker at the exact position, or the nearest one *before* it.
+    """
+    if not main_window.markers:
+        return None
+
+    # 1. Check for an exact match first (most common case for playback/buttons)
+    if new_position in main_window.markers:
+        return main_window.markers.get(new_position)
+
+    # 2. If no exact match, find the last marker *before* this position
+    # Get all marker keys that are less than or equal to the current position
+    relevant_marker_keys = [k for k in main_window.markers.keys() if k <= new_position]
+
+    if not relevant_marker_keys:
+        # No markers at or before this position
+        return None
+
+    # 3. Get the most recent (largest) key from that list
+    last_marker_key = max(relevant_marker_keys)
+    return main_window.markers.get(last_marker_key)
 
 
 def update_parameters_and_control_from_marker(
     main_window: "MainWindow", new_position: int
 ):
-    marker_data = main_window.markers.get(new_position)
+    # Find marker only at the *exact* new position
+    marker_data = _get_marker_data_for_position(main_window, new_position)  # New logic
+    # Save the Global Marker Track toggle
+    current_track_markers_value = main_window.control.get("TrackMarkersToggle", False)
+
     if marker_data:
-        # Load parameters from the marker as a base
+        # --- A marker was found, load its parameters AND controls ---
+
+        # Load Parameters (Full Replacement)
         loaded_marker_params: FacesParametersTypes = copy.deepcopy(
             marker_data["parameters"]
         )
         main_window.parameters = loaded_marker_params
-        active_target_face_ids = list(
-            main_window.target_faces.keys()
-        )  # Get current face IDs
+
+        # Ensure parameter dicts exist for all *current* faces
+        active_target_face_ids = list(main_window.target_faces.keys())
         for face_id_key in active_target_face_ids:
-            # common_actions.create_parameter_dict_for_face_id handles if face_id already.
-            common_widget_actions.create_parameter_dict_for_face_id(
-                main_window, str(face_id_key)
-            )
-        # Update control settings
+            if str(face_id_key) not in main_window.parameters:
+                common_widget_actions.create_parameter_dict_for_face_id(
+                    main_window, str(face_id_key)
+                )
+
+        # Load Controls (Full Replacement)
         if "control" in marker_data:
             control_data = marker_data["control"]
             if isinstance(control_data, dict):
+                # We must do a full replacement, not just an update.
+                # First, reset all controls to their default values.
+                for widget_name, widget in main_window.parameter_widgets.items():
+                    if widget_name in main_window.control:  # It's a control widget
+                        main_window.control[widget_name] = widget.default_value
+
+                # Now, apply the marker's specific controls
                 main_window.control.update(cast(ControlTypes, control_data).copy())
+
+    # If no marker_data is found, DO NOTHING.
+    # This preserves the user's current settings (manual or from a previous marker).
+    # Re-apply the saved Global Marker Track toggle
+    main_window.control["TrackMarkersToggle"] = current_track_markers_value
 
 
 def update_widget_values_from_markers(main_window: "MainWindow", new_position: int):
-    if main_window.markers.get(new_position):
-        if main_window.selected_target_face_id is not None:
-            common_widget_actions.set_widgets_values_using_face_id_parameters(
-                main_window, main_window.selected_target_face_id
-            )
-        common_widget_actions.set_control_widgets_values(
-            main_window, enable_exec_func=False
+    # 1. Update Parameter-based widgets (Face Swap, Editor, Restorers)
+    if main_window.selected_target_face_id is not None:
+        common_widget_actions.set_widgets_values_using_face_id_parameters(
+            main_window, main_window.selected_target_face_id
         )
+    else:
+        # If no face is selected, update widgets to the "current" state
+        # (which might be default or from the last marker).
+        common_widget_actions.set_widgets_values_using_face_id_parameters(
+            main_window, False
+        )
+
+    # 2. Update Control-based widgets (Settings, Denoiser)
+    common_widget_actions.set_control_widgets_values(
+        main_window, enable_exec_func=False
+    )
 
 
 def on_slider_moved(main_window: "MainWindow"):
@@ -935,11 +993,20 @@ def run_post_seek_actions(main_window: "MainWindow", new_position: int):
     Executes heavy operations (markers, AutoSwap) after a seek.
     This function is called after a slider release or a jump via button/shortcut.
     """
-    # 1. Update parameters if the slider lands on a marker
-    update_parameters_and_control_from_marker(main_window, new_position)
-    update_widget_values_from_markers(main_window, new_position)
+
+    # Check if the user wants to update the UI based on markers when seeking
+    track_markers_enabled = main_window.control.get("TrackMarkersToggle", False)
+
+    if track_markers_enabled:
+        # 1. Update parameters if the slider lands on a marker
+        # Acquire lock to safely modify parameters read by worker threads
+        with main_window.models_processor.model_lock:
+            update_parameters_and_control_from_marker(main_window, new_position)
+            update_widget_values_from_markers(main_window, new_position)
+    # If tracking is disabled, we do nothing, preserving the user's manual changes.
 
     # 2. If AutoSwap is enabled, run face detection/matching NOW.
+    # This is independent of marker tracking.
     if main_window.control.get("AutoSwapToggle", False):
         # Find new faces and add them to the target list.
         card_actions.find_target_faces(main_window)
@@ -964,6 +1031,8 @@ def on_slider_released(main_window: "MainWindow"):
     video_processor = main_window.video_processor
     if video_processor.media_capture:
         # Execute post seek (Markers, Autoswap)
+        # Run post-seek actions ONCE on slider release to apply
+        # the parameters for the final frame position.
         run_post_seek_actions(main_window, new_position)
 
         # This is the heavy processing call that runs the AI models (swap, etc.)

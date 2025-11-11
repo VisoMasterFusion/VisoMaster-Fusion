@@ -4,7 +4,6 @@ import threading
 import queue
 import math
 from math import floor, ceil
-
 from PIL import Image
 from app.ui.widgets import widget_components
 import torch
@@ -22,7 +21,6 @@ import torch.nn.functional as F
 
 from app.processors.utils import faceutil
 import app.ui.widgets.actions.common_actions as common_widget_actions
-from app.ui.widgets.actions import video_control_actions
 from app.helpers.miscellaneous import ParametersDict, get_scaling_transforms
 from app.helpers.vr_utils import EquirectangularConverter, PerspectiveConverter
 from app.helpers.typing_helper import ParametersTypes
@@ -138,8 +136,17 @@ class FrameWorker(threading.Thread):
                         # Stopped while waiting, discard task
                         break  # 'finally' will call task_done()
 
-                    # We have a valid task: (frame_number, frame_data)
-                    self.frame_number, self.frame = task
+                    # Unpack the task which now includes parameters
+                    (
+                        self.frame_number,
+                        self.frame,
+                        local_params_from_feeder,
+                        local_control_from_feeder,
+                    ) = task
+
+                    # Store them locally in the worker
+                    self.parameters = local_params_from_feeder
+                    self.local_control_state_from_feeder = local_control_from_feeder
 
                     # Process the frame
                     self.process_and_emit_task()
@@ -177,6 +184,26 @@ class FrameWorker(threading.Thread):
                 print(f"{self.name} cancelled before start.")
                 return
             try:
+                # A Single-Frame worker (from manual edit or scrub)
+                # must *NEVER* use "look-behind" logic. It must
+                # use the *current* global state, which contains
+                # the user's manual changes.
+
+                with self.main_window.models_processor.model_lock:
+                    local_parameters_copy = self.main_window.parameters.copy()
+                    local_control_copy = self.main_window.control.copy()
+
+                # Ensure parameter dicts exist (failsafe)
+                active_target_face_ids = list(self.main_window.target_faces.keys())
+                for face_id_key in active_target_face_ids:
+                    if str(face_id_key) not in local_parameters_copy:
+                        local_parameters_copy[str(face_id_key)] = (
+                            self.main_window.default_parameters.copy()
+                        )
+
+                # Store locally
+                self.parameters = local_parameters_copy
+                self.local_control_state_from_feeder = local_control_copy
                 # Just run the processing logic once
                 self.process_and_emit_task()
             except Exception as e:
@@ -190,25 +217,22 @@ class FrameWorker(threading.Thread):
         It NO LONGER touches the frame_queue.
         """
         try:
-            # Update parameters from markers (if exists)
-            with (
-                self.main_window.models_processor.model_lock
-            ):  # Ensure thread safety for UI data access
-                video_control_actions.update_parameters_and_control_from_marker(
-                    self.main_window, self.frame_number
-                )
-                self.parameters = self.main_window.parameters.copy()
-                current_control_state = self.main_window.control.copy()
+            # This worker (pool or single) already has its state
+            # loaded into self.parameters and self.local_control_state_from_feeder.
+            # Just use them.
 
+            local_control_state = self.local_control_state_from_feeder
+
+            # Get UI state (which is safe, it's just reading)
             self.is_view_face_compare = self.main_window.faceCompareCheckBox.isChecked()
             self.is_view_face_mask = self.main_window.faceMaskCheckBox.isChecked()
 
-            # Determine if any processing is needed
+            # Determine if processing is needed
             needs_processing = (
                 self.main_window.swapfacesButton.isChecked()
                 or self.main_window.editFacesButton.isChecked()
-                or current_control_state.get("FrameEnhancerEnableToggle", False)
-                or current_control_state.get(
+                or local_control_state.get("FrameEnhancerEnableToggle", False)
+                or local_control_state.get(
                     "ModeEnableToggle", False
                 )  #  always processes
             )
@@ -220,9 +244,9 @@ class FrameWorker(threading.Thread):
                     self.frame = np.ascontiguousarray(self.frame)
                 # process_frame returns BGR, uint8
 
-                # Pass the stop_event to the processing function
+                # Pass the *local* control state to process_frame
                 processed_frame_bgr_np_uint8 = self.process_frame(
-                    current_control_state, self.stop_event
+                    local_control_state, self.stop_event
                 )
 
                 # Ensure output is C-contiguous for Qt display

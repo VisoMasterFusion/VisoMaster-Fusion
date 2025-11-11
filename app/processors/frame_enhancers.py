@@ -73,8 +73,6 @@ class FrameEnhancers:
     def run_enhance_frame_tile_process(
         self, img, enhancer_type, tile_size=256, scale=1
     ):
-        new_model_to_load = self.model_map.get(enhancer_type)
-
         # Model loading/unloading is now handled by control_actions.py (UI events).
         # We remove the redundant per-frame logic to prevent conflicts.
         # The 'current_enhancer_model' state is still set by control_actions.
