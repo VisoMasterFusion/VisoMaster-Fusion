@@ -111,21 +111,9 @@ class FaceRestorers:
         if not model_name_to_load:
             return swapped_face_upscaled
 
-        # Granular model tracking and unloading
-        if slot_id == 1:
-            if (
-                self.active_model_slot1
-                and self.active_model_slot1 != model_name_to_load
-            ):
-                self.models_processor.unload_model(self.active_model_slot1)
-            self.active_model_slot1 = model_name_to_load
-        elif slot_id == 2:
-            if (
-                self.active_model_slot2
-                and self.active_model_slot2 != model_name_to_load
-            ):
-                self.models_processor.unload_model(self.active_model_slot2)
-            self.active_model_slot2 = model_name_to_load
+        # The model state (active_model_slot1/2) is now managed by
+        # control_actions.handle_restorer_state_change and handle_model_selection_change.
+        # We remove the redundant logic from this function.
 
         temp = swapped_face_upscaled
         t512 = self.resize_transforms[512]

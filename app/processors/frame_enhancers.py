@@ -75,10 +75,9 @@ class FrameEnhancers:
     ):
         new_model_to_load = self.model_map.get(enhancer_type)
 
-        if new_model_to_load and self.current_enhancer_model != new_model_to_load:
-            if self.current_enhancer_model:
-                self.models_processor.unload_model(self.current_enhancer_model)
-            self.current_enhancer_model = new_model_to_load
+        # Model loading/unloading is now handled by control_actions.py (UI events).
+        # We remove the redundant per-frame logic to prevent conflicts.
+        # The 'current_enhancer_model' state is still set by control_actions.
 
         _, _, height, width = img.shape
 
