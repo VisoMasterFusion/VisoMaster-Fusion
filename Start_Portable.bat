@@ -25,9 +25,11 @@ if "%LAUNCHER_ENABLED%"=="1" (
   if exist "%APP_PYTHON%" (
     if exist "%GIT_DIR_PRESENT%" (
       echo Existing installation detected. Launching VisoMaster Fusion Launcher...
-      set "PYTHONPATH=%BASE_DIR%VisoMaster-Fusion"
+      pushd "%BASE_DIR%VisoMaster-Fusion"
+      ::set "PYTHONPATH=%BASE_DIR%VisoMaster-Fusion"
       set "PATH=%FFMPEG_BIN_PATH%;%PATH%"
       "%APP_PYTHON%" -m app.ui.launcher
+      popd
       exit /b !ERRORLEVEL!
     )
   )
@@ -133,7 +135,7 @@ if not exist "%APP_DIR%\.git" (
             set "NEEDS_INSTALL=true"
             set "DOWNLOAD_RUN=false"
             powershell -Command "(Get-Content '%CONFIG_FILE%') -replace 'DOWNLOAD_RUN=.*', 'DOWNLOAD_RUN=false' | Set-Content '%CONFIG_FILE%'"
-            
+
             :: SELF-UPDATE CHECK
             popd
             call :self_update_check
@@ -150,8 +152,19 @@ if not exist "%APP_DIR%\.git" (
 call :self_update_check
 
 :: --- Step 5: Install Python, UV ---
-if not exist "%PYTHON_EXE%" ( call :install_python )
+if not exist "%PYTHON_EXE%" (
+    call :install_python
+    set "NEEDS_INSTALL=true"
+)
 call :install_dependency "UV" "%UV_EXE%" "%UV_URL%" "%UV_ZIP%" "%UV_DIR%"
+
+:: --- Ensure dependencies reinstall on fresh setup ---
+if /I "!NEEDS_INSTALL!"=="false" (
+    if not exist "%PYTHON_DIR%\Lib\site-packages\PySide6" (
+        echo Fresh Python environment detected - forcing dependency install...
+        set "NEEDS_INSTALL=true"
+    )
+)
 
 :: --- Step 6: Install dependencies ---
 set "REQUIREMENTS=%APP_DIR%\requirements_cu129.txt"
@@ -178,6 +191,7 @@ if /I "!DOWNLOAD_RUN!"=="false" (
     pause
     echo Running model downloader...
     pushd "%APP_DIR%"
+    ::set "PYTHONPATH=%APP_DIR%"
     "%APP_PYTHON%" "download_models.py"
     if !ERRORLEVEL! equ 0 (
         powershell -Command "(Get-Content -ErrorAction SilentlyContinue '%CONFIG_FILE%') -replace 'DOWNLOAD_RUN=.*', 'DOWNLOAD_RUN=true' | Set-Content -ErrorAction SilentlyContinue '%CONFIG_FILE%'"
@@ -199,7 +213,6 @@ if /I "!FOUND_KEY!"=="false" (
 
 :: --- Step 9: Run main application ---
 if "%LAUNCHER_ENABLED%"=="1" (
-    set "PYTHONPATH=%BASE_DIR%VisoMaster-Fusion"
     set "PATH=%FFMPEG_BIN_PATH%;%PATH%"
     "%APP_PYTHON%" -m app.ui.launcher
     exit /b !ERRORLEVEL!
@@ -208,6 +221,7 @@ if "%LAUNCHER_ENABLED%"=="1" (
     echo Starting main.py...
     echo ========================================
     pushd "%APP_DIR%"
+    set "PYTHONPATH=%APP_DIR%"
     set "PATH=%FFMPEG_BIN_PATH%;%GIT_DIR%\bin;%PATH%"
     "%APP_PYTHON%" "main.py"
     popd
@@ -226,9 +240,9 @@ if "%LAUNCHER_ENABLED%"=="1" (
 :self_update_check
     set "ROOT_BAT=%BASE_DIR%Start_Portable.bat"
     set "REPO_BAT=%APP_DIR%\Start_Portable.bat"
-    
+
     if not exist "%REPO_BAT%" goto :eof
-    
+
     fc /b "%ROOT_BAT%" "%REPO_BAT%" > nul
     if errorlevel 1 (
         echo A new version of the launcher script Start_Portable.bat is available.
@@ -237,7 +251,7 @@ if "%LAUNCHER_ENABLED%"=="1" (
             pause
             exit /b 0
         )
-        
+
         choice /c YN /m "Do you want to update it now? "
         if !ERRORLEVEL! equ 1 (
             set "UPDATER_BAT=%PORTABLE_DIR%\update_start_portable.bat"
@@ -251,7 +265,7 @@ if "%LAUNCHER_ENABLED%"=="1" (
                 echo start "" /d "%BASE_DIR%" "Start_Portable.bat"
                 echo exit
             ) > "%UPDATER_BAT%"
-            
+
             start "" cmd /c "%UPDATER_BAT%"
             exit /b 0
         )
@@ -269,13 +283,13 @@ goto :eof
         echo %NAME% already installed.
         goto :eof
     )
-    
+
     echo Installing %NAME%...
-    
+
     echo Downloading %NAME%...
     powershell -Command "try { (New-Object Net.WebClient).DownloadFile('%URL%', '%ZIP_FILE%'); exit 0 } catch { exit 1 }"
     if !ERRORLEVEL! neq 0 ( echo ERROR: Failed to download %NAME%. && pause && exit /b 1 )
-    
+
     echo Extracting %NAME%...
     mkdir "%EXTRACT_DIR%" >nul 2>&1
     if "%NAME%"=="Git" (
@@ -292,7 +306,7 @@ goto :eof
 :install_python
     echo Checking Windows version for Python installation...
     for /f "tokens=3 delims=." %%i in ('ver') do set WIN_BUILD=%%i
-    
+
     if !WIN_BUILD! LSS 22000 (
         echo Windows 10 detected. Using full Python package.
         echo Downloading Python...
@@ -318,6 +332,15 @@ goto :eof
         if exist "!PTH_FILE!" (
             echo Enabling site packages in PTH file...
             powershell -Command "(Get-Content '!PTH_FILE!') -replace '#import site', 'import site' | Set-Content '!PTH_FILE!'"
+        )
+        :: --- Add repo path to python311._pth for app imports ---
+        if exist "!PTH_FILE!" (
+            echo Adding portable repo path to python311._pth...
+            powershell -Command ^
+                "$pth = Get-Content '!PTH_FILE!';" ^
+                "if (-not ($pth -match '\.\./\.\./VisoMaster-Fusion')) {" ^
+                "    Add-Content '!PTH_FILE!' ' ../../VisoMaster-Fusion';" ^
+                "}"
         )
     )
 
