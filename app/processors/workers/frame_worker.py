@@ -462,13 +462,20 @@ class FrameWorker(threading.Thread):
                 parameters_for_face["SwapModelSelection"], kps_5_on_crop_param
             )
 
+            # Define the 512x512 resizer for masks
+            t512_mask = v2.Resize(
+                (512, 512), interpolation=v2.InterpolationMode.BILINEAR, antialias=False
+            )
+
             if (
                 comprehensive_mask_1x512x512_from_swap_core is None
                 or comprehensive_mask_1x512x512_from_swap_core.numel() == 0
             ):
+                # This path is a fallback if swap_core returns no mask.
+                # default to just the border mask if swapping is on.
                 persp_final_combined_mask_1x512x512_float_for_paste = (
-                    cast(v2.Resize, self.t512)(
-                        self.get_border_mask(parameters_for_face)[0]
+                    t512_mask(
+                        self.get_border_mask(parameters_for_face.data)[0]
                     ).float()
                     if swap_button_is_checked_global
                     else torch.zeros(
@@ -478,9 +485,21 @@ class FrameWorker(threading.Thread):
                     )
                 )
             else:
+                # This is the primary path. Start with the mask from swap_core.
                 persp_final_combined_mask_1x512x512_float_for_paste = (
                     comprehensive_mask_1x512x512_from_swap_core.float()
                 )
+
+                # apply the border mask if it's enabled for this face.
+                if parameters_for_face.get("BordermaskEnableToggle", False):
+                    # get_border_mask returns a 128x128 mask tensor.
+                    border_mask_128, _ = self.get_border_mask(parameters_for_face.data)
+                    # Resize it to 512x512 to match the comprehensive mask.
+                    border_mask_512 = t512_mask(border_mask_128)
+                    # Multiply the masks together to combine them.
+                    persp_final_combined_mask_1x512x512_float_for_paste *= (
+                        border_mask_512
+                    )
 
             persp_final_combined_mask_3x512x512_float_for_paste = (
                 persp_final_combined_mask_1x512x512_float_for_paste.repeat(3, 1, 1)
