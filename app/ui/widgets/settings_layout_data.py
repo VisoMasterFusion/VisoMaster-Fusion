@@ -29,7 +29,7 @@ SETTINGS_LAYOUT_DATA: Any = {  # noqa: F811
             "level": 1,
             "label": "Providers Priority",
             "options": ["CUDA", "TensorRT", "TensorRT-Engine", "CPU"],
-            "default": "CUDA",
+            "default": "TensorRT",
             "help": "Select the providers priority to be used with the system.",
             "exec_function": control_actions.change_execution_provider,
             "exec_function_args": [],
@@ -39,7 +39,7 @@ SETTINGS_LAYOUT_DATA: Any = {  # noqa: F811
             "label": "Number of Threads",
             "min_value": "1",
             "max_value": "30",
-            "default": "1",
+            "default": "4",
             "step": 1,
             "help": "Set number of execution threads while playing and recording. Depends strongly on GPU VRAM.",
             "exec_function": control_actions.change_threads_number,
@@ -264,7 +264,7 @@ SETTINGS_LAYOUT_DATA: Any = {  # noqa: F811
             "level": 1,
             "label": "Swapping Similarity Type",
             "options": ["Opal", "Pearl", "Optimal"],
-            "default": "Opal",
+            "default": "Optimal",
             "help": "Choose the type of similarity calculation for face detection and matching during the face swapping process.",
         },
         "DetectorModelSelection": {
@@ -638,3 +638,4 @@ CAMERA_BACKENDS = {
     "V4L2": cv2.CAP_V4L2,
     "GSTREAMER": cv2.CAP_GSTREAMER,
 }
+
