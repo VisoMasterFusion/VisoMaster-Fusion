@@ -70,6 +70,42 @@ class FaceSwappers:
             model = self.models_processor.load_model(model_name)
         return model
 
+    def _run_model_with_lazy_build_check(
+        self, model_name: str, ort_session, io_binding
+    ):
+        """
+        Runs the ONNX session with IOBinding, handling TensorRT lazy build dialogs.
+        This centralizes the try/finally logic for showing/hiding the build progress dialog
+        and includes the critical synchronization step for CUDA or other devices.
+
+        Args:
+            model_name (str): The name of the model being run.
+            ort_session: The ONNX Runtime session instance.
+            io_binding: The pre-configured IOBinding object.
+        """
+        # --- START LAZY BUILD CHECK ---
+        is_lazy_build = self.models_processor.check_and_clear_pending_build(model_name)
+        if is_lazy_build:
+            self.models_processor.show_build_dialog.emit(
+                "Finalizing TensorRT Build",
+                f"Performing first-run inference for:\n{model_name}\n\nThis may take several minutes.",
+            )
+
+        try:
+            # ⚠️ This is a critical synchronization point.
+            if self.models_processor.device == "cuda":
+                torch.cuda.synchronize()
+            elif self.models_processor.device != "cpu":
+                # This handles synchronization for other execution providers (e.g., DirectML)
+                self.models_processor.syncvec.cpu()
+
+            ort_session.run_with_iobinding(io_binding)
+
+        finally:
+            if is_lazy_build:
+                self.models_processor.hide_build_dialog.emit()
+        # --- END LAZY BUILD CHECK ---
+
     def run_recognize_direct(
         self, img, kps, similarity_type="Opal", arcface_model="Inswapper128ArcFace"
     ):
@@ -192,12 +228,8 @@ class FaceSwappers:
         for name in output_names:
             io_binding.bind_output(name, self.models_processor.device)
 
-        # Sync and run model
-        if self.models_processor.device == "cuda":
-            torch.cuda.synchronize()
-        elif self.models_processor.device != "cpu":
-            self.models_processor.syncvec.cpu()
-        ort_session.run_with_iobinding(io_binding)
+        # Run the model with lazy build handling
+        self._run_model_with_lazy_build_check(arcface_model, ort_session, io_binding)
 
         # Return embedding
         return np.array(io_binding.copy_outputs_to_cpu()).flatten(), cropped_image
@@ -235,7 +267,8 @@ class FaceSwappers:
         # Usa la funzione di preprocessamento
         img, cropped_image = self.preprocess_image_cscs(img, face_kps)
 
-        model = self.models_processor.models.get("CSCSArcFace")
+        model_name = "CSCSArcFace"  # Define model_name
+        model = self.models_processor.models.get(model_name)
         if not model:
             print("ERROR: CSCSArcFace model not loaded in recognize_cscs.")
             return None, None
@@ -251,12 +284,8 @@ class FaceSwappers:
         )
         io_binding.bind_output(name="output", device_type=self.models_processor.device)
 
-        if self.models_processor.device == "cuda":
-            torch.cuda.synchronize()
-        elif self.models_processor.device != "cpu":
-            self.models_processor.syncvec.cpu()
-
-        model.run_with_iobinding(io_binding)
+        # Run the model with lazy build handling
+        self._run_model_with_lazy_build_check(model_name, model, io_binding)
 
         output = io_binding.copy_outputs_to_cpu()[0]
         embedding = torch.from_numpy(output).to("cpu")
@@ -293,12 +322,8 @@ class FaceSwappers:
         )
         io_binding.bind_output(name="output", device_type=self.models_processor.device)
 
-        if self.models_processor.device == "cuda":
-            torch.cuda.synchronize()
-        elif self.models_processor.device != "cpu":
-            self.models_processor.syncvec.cpu()
-
-        model.run_with_iobinding(io_binding)
+        # Run the model with lazy build handling
+        self._run_model_with_lazy_build_check(model_name, model, io_binding)
 
         output = io_binding.copy_outputs_to_cpu()[0]
         embedding_id = torch.from_numpy(output).to("cpu")
@@ -311,7 +336,8 @@ class FaceSwappers:
         return latent
 
     def run_swapper_cscs(self, image, embedding, output):
-        model = self._load_swapper_model("CSCS")
+        model_name = "CSCS"  # Use the name from the models_list
+        model = self._load_swapper_model(model_name)
         if not model:
             print("ERROR: CSCS model not loaded.")
             return
@@ -342,11 +368,8 @@ class FaceSwappers:
             buffer_ptr=output.data_ptr(),
         )
 
-        if self.models_processor.device == "cuda":
-            torch.cuda.synchronize()
-        elif self.models_processor.device != "cpu":
-            self.models_processor.syncvec.cpu()
-        model.run_with_iobinding(io_binding)
+        # Run the model with lazy build handling
+        self._run_model_with_lazy_build_check(model_name, model, io_binding)
 
     def calc_inswapper_latent(self, source_embedding):
         if (
@@ -372,7 +395,8 @@ class FaceSwappers:
         return latent
 
     def run_inswapper(self, image, embedding, output):
-        model = self._load_swapper_model("Inswapper128")
+        model_name = "Inswapper128"
+        model = self._load_swapper_model(model_name)
         if not model:
             print("ERROR: Inswapper128 model not loaded.")
             return
@@ -403,11 +427,8 @@ class FaceSwappers:
             buffer_ptr=output.data_ptr(),
         )
 
-        if self.models_processor.device == "cuda":
-            torch.cuda.synchronize()
-        elif self.models_processor.device != "cpu":
-            self.models_processor.syncvec.cpu()
-        model.run_with_iobinding(io_binding)
+        # Run the model with lazy build handling
+        self._run_model_with_lazy_build_check(model_name, model, io_binding)
 
     def calc_swapper_latent_ghost(self, source_embedding):
         latent = source_embedding.reshape((1, -1))
@@ -471,11 +492,8 @@ class FaceSwappers:
             buffer_ptr=output.data_ptr(),
         )
 
-        if self.models_processor.device == "cuda":
-            torch.cuda.synchronize()
-        elif self.models_processor.device != "cpu":
-            self.models_processor.syncvec.cpu()
-        model.run_with_iobinding(io_binding)
+        # Run the model with lazy build handling
+        self._run_model_with_lazy_build_check(model_name, model, io_binding)
 
     def calc_swapper_latent_simswap512(self, source_embedding):
         latent = source_embedding.reshape(1, -1)
@@ -484,7 +502,8 @@ class FaceSwappers:
         return latent
 
     def run_swapper_simswap512(self, image, embedding, output):
-        model = self._load_swapper_model("SimSwap512")
+        model_name = "SimSwap512"
+        model = self._load_swapper_model(model_name)
         if not model:
             print("ERROR: SimSwap512 model not loaded.")
             return
@@ -515,11 +534,8 @@ class FaceSwappers:
             buffer_ptr=output.data_ptr(),
         )
 
-        if self.models_processor.device == "cuda":
-            torch.cuda.synchronize()
-        elif self.models_processor.device != "cpu":
-            self.models_processor.syncvec.cpu()
-        model.run_with_iobinding(io_binding)
+        # Run the model with lazy build handling
+        self._run_model_with_lazy_build_check(model_name, model, io_binding)
 
     def run_swapper_ghostface(
         self, image, embedding, output, swapper_model="GhostFace-v2"
@@ -567,8 +583,7 @@ class FaceSwappers:
             buffer_ptr=output.data_ptr(),
         )
 
-        if self.models_processor.device == "cuda":
-            torch.cuda.synchronize()
-        elif self.models_processor.device != "cpu":
-            self.models_processor.syncvec.cpu()
-        ghostfaceswap_model.run_with_iobinding(io_binding)
+        # Run the model with lazy build handling
+        self._run_model_with_lazy_build_check(
+            model_name, ghostfaceswap_model, io_binding
+        )

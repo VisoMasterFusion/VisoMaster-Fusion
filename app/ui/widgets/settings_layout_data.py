@@ -29,7 +29,7 @@ SETTINGS_LAYOUT_DATA: Any = {  # noqa: F811
             "level": 1,
             "label": "Providers Priority",
             "options": ["CUDA", "TensorRT", "TensorRT-Engine", "CPU"],
-            "default": "CUDA",
+            "default": "TensorRT",
             "help": "Select the providers priority to be used with the system.",
             "exec_function": control_actions.change_execution_provider,
             "exec_function_args": [],
@@ -39,7 +39,7 @@ SETTINGS_LAYOUT_DATA: Any = {  # noqa: F811
             "label": "Number of Threads",
             "min_value": "1",
             "max_value": "30",
-            "default": "1",
+            "default": "4",
             "step": 1,
             "help": "Set number of execution threads while playing and recording. Depends strongly on GPU VRAM.",
             "exec_function": control_actions.change_threads_number,
@@ -50,6 +50,12 @@ SETTINGS_LAYOUT_DATA: Any = {  # noqa: F811
             "label": "Keep Controls Active",
             "default": False,
             "help": "Keep the controls active during recording.",
+        },
+        "TrackMarkersToggle": {
+            "level": 1,
+            "label": "Track Markers on Video Seek",
+            "default": False,
+            "help": "Update parameters and controls when seeking the video to reflect the options status for it's position.",
         },
     },
     "Video Playback Settings": {
@@ -83,6 +89,21 @@ SETTINGS_LAYOUT_DATA: Any = {  # noqa: F811
             "label": "Playback Loop",
             "default": False,
             "help": "Auto start over when video playing to the end.(Not work for recording)",
+        },
+        "VideoPlaybackPreviewToggle": {
+            "level": 1,
+            "label": "Playback Preview Mode",
+            "default": False,
+            "help": "Playback preview mode uses low frame size to do the swap and gain in performance. This will not be used for recording and results may vary !",
+        },
+        "VideoPlaybackPreviewSizeSelection": {
+            "level": 2,
+            "label": "Preview Resolution",
+            "options": ["240p", "360p", "480p", "540p", "720p"],
+            "default": "360p",
+            "parentToggle": "VideoPlaybackPreviewToggle",
+            "requiredToggleValue": True,
+            "help": "Select a lower preview resolution for faster processing in preview mode.",
         },
         "LiveSoundVolumeDecimalSlider": {
             "level": 1,
@@ -243,7 +264,7 @@ SETTINGS_LAYOUT_DATA: Any = {  # noqa: F811
             "level": 1,
             "label": "Swapping Similarity Type",
             "options": ["Opal", "Pearl", "Optimal"],
-            "default": "Opal",
+            "default": "Optimal",
             "help": "Choose the type of similarity calculation for face detection and matching during the face swapping process.",
         },
         "DetectorModelSelection": {
@@ -617,3 +638,4 @@ CAMERA_BACKENDS = {
     "V4L2": cv2.CAP_V4L2,
     "GSTREAMER": cv2.CAP_GSTREAMER,
 }
+

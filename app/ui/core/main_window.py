@@ -750,8 +750,16 @@ class Ui_MainWindow(object):
         self.inputEmbeddingsList.setToolTip(QCoreApplication.translate("MainWindow", u"Saved Embedding", None))
 #endif // QT_CONFIG(tooltip)
         self.saveImageButton.setText(QCoreApplication.translate("MainWindow", u"Save Image", None))
-        self.batchImageButton.setText(QCoreApplication.translate("MainWindow", u"Batch Process Selected Face", None))
-        self.batchallImageButton.setText(QCoreApplication.translate("MainWindow", u"Batch Process All Faces", None))
+#if QT_CONFIG(tooltip)
+        self.batchImageButton.setToolTip(QCoreApplication.translate("MainWindow", u"Processes the currently selected face across the entire target video or image.", None))
+#endif // QT_CONFIG(tooltip)
+        self.batchImageButton.setText(QCoreApplication.translate("MainWindow", u"Batch Process Selected Face\n"
+"(For Videos and Images)", None))
+#if QT_CONFIG(tooltip)
+        self.batchallImageButton.setToolTip(QCoreApplication.translate("MainWindow", u"Processes all found faces. This feature is only available for target images, not videos.", None))
+#endif // QT_CONFIG(tooltip)
+        self.batchallImageButton.setText(QCoreApplication.translate("MainWindow", u"Batch Process All Faces\n"
+"(For Images only)", None))
         self.inputEmbeddingsSearchBox.setPlaceholderText(QCoreApplication.translate("MainWindow", u"Search Embeddings", None))
 #if QT_CONFIG(tooltip)
         self.openEditorButton.setToolTip(QCoreApplication.translate("MainWindow", u"Open Embedding Editor", None))

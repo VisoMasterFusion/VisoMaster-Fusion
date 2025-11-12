@@ -20,7 +20,7 @@ from app.ui.widgets.actions import graphics_view_actions
 from app.ui.widgets.actions import job_manager_actions
 from app.ui.widgets.actions import preset_actions
 from app.ui.widgets.advanced_embedding_editor import EmbeddingGUI
-
+import app.ui.widgets.actions.control_actions as control_actions
 from app.processors.video_processor import VideoProcessor
 from app.processors.models_processor import ModelsProcessor
 from app.ui.widgets import widget_components
@@ -311,7 +311,10 @@ class MainWindow(QtWidgets.QMainWindow, Ui_MainWindow):
         self.editFacesButton.clicked.connect(
             partial(video_control_actions.process_edit_faces, self)
         )
-
+        # Connect the button click to our new model management function
+        self.editFacesButton.clicked.connect(
+            partial(control_actions.handle_face_editor_button_click, self)
+        )
         self.saveImageButton.clicked.connect(
             partial(video_control_actions.save_current_frame_to_file, self)
         )
@@ -480,6 +483,10 @@ class MainWindow(QtWidgets.QMainWindow, Ui_MainWindow):
         # Initialize the dedicated progress dialog for TensorRT builds.
         # This object is created here, in the main GUI thread.
         self.build_progress_dialog = QtWidgets.QProgressDialog(self)
+        flags = self.build_progress_dialog.windowFlags()
+        flags &= ~QtCore.Qt.WindowCloseButtonHint
+        self.build_progress_dialog.setWindowFlags(flags)
+        self.build_progress_dialog.setCancelButton(None)
         self.build_progress_dialog.setCancelButton(None)
         self.build_progress_dialog.setWindowModality(
             QtCore.Qt.WindowModality.WindowModal
@@ -758,6 +765,7 @@ class MainWindow(QtWidgets.QMainWindow, Ui_MainWindow):
         list_view_actions.clear_stop_loading_target_media(self)
 
         save_load_actions.save_current_workspace(self, "last_workspace.json")
+        self.video_processor.join_and_clear_threads()
         # Optionally handle the event if needed
         event.accept()
 

@@ -227,6 +227,8 @@ COMMON_LAYOUT_DATA: Any = {  # noqa: F811
             "label": "Enable Face Expression Restorer",
             "default": False,
             "help": "Enabled the use of the LivePortrait face expression model to restore facial expressions after swapping.",
+            "exec_function": control_actions.handle_face_expression_toggle_change,
+            "exec_function_args": ["FaceExpressionEnableToggleBoth"],
         },
         "FaceExpressionCropScaleDecimalSliderBoth": {
             "level": 2,

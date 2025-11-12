@@ -1,6 +1,4 @@
-import threading
-from typing import TYPE_CHECKING, Callable, Optional
-from functools import partial
+from typing import TYPE_CHECKING, Callable, Optional, cast
 
 import cv2
 import numpy as np
@@ -11,6 +9,7 @@ from app.ui.widgets import widget_components
 from app.ui.widgets.settings_layout_data import SETTINGS_LAYOUT_DATA
 from app.ui.widgets.common_layout_data import COMMON_LAYOUT_DATA
 import app.helpers.miscellaneous as misc_helpers
+from app.helpers.typing_helper import ControlTypes
 
 if TYPE_CHECKING:
     from app.ui.main_ui import MainWindow
@@ -79,6 +78,19 @@ def update_control(
             exec_function_args = [main_window, control_value] + exec_function_args
             exec_function(*exec_function_args)
     main_window.control[control_name] = control_value
+    # Also update the feeder's state if it's running
+    if (
+        main_window.video_processor.processing
+        and main_window.video_processor.feeder_control
+    ):
+        with main_window.video_processor.state_lock:
+            # Cast to ControlTypes to satisfy the type checker, as feeder_control is typed
+            if control_name in cast(
+                ControlTypes, main_window.video_processor.feeder_control
+            ):
+                cast(ControlTypes, main_window.video_processor.feeder_control)[
+                    control_name
+                ] = control_value
     refresh_frame(main_window)
 
 
@@ -140,6 +152,16 @@ def update_parameter(
     # Update parameters for the selected face
     if main_window.target_faces and face_id:
         main_window.parameters[face_id][parameter_name] = parameter_value
+        # Also update the feeder's state if it's running
+        if (
+            main_window.video_processor.processing
+            and main_window.video_processor.feeder_parameters
+        ):
+            with main_window.video_processor.state_lock:
+                if face_id in main_window.video_processor.feeder_parameters:
+                    main_window.video_processor.feeder_parameters[face_id][
+                        parameter_name
+                    ] = parameter_value
 
     # Always update the current widget state
     if main_window.current_widget_parameters:
@@ -343,9 +365,7 @@ def get_pixmap_from_frame(main_window: "MainWindow", frame: np.ndarray):
 
 
 def update_gpu_memory_progressbar(main_window: "MainWindow"):
-    threading.Thread(
-        target=partial(_update_gpu_memory_progressbar, main_window)
-    ).start()
+    _update_gpu_memory_progressbar(main_window)
 
 
 def _update_gpu_memory_progressbar(main_window: "MainWindow"):
@@ -362,18 +382,42 @@ def set_gpu_memory_progressbar_value(
     main_window.vramProgressBar.setFormat(
         f"{round(memory_used / 1024, 2)} GB / {round(memory_total / 1024, 2)} GB (%p%)"
     )
+    # Base style copied from true_dark_styles.qss
+    base_style = """
+        QProgressBar {
+            border: 1px solid #363636;
+            border-radius: 5px;
+            text-align: center;
+            background-color: #202020;
+            color: #f0f0f0;
+        }
+    """
+
+    # Base Chunk style copied from true_dark_styles.qss
+    chunk_style_normal = """
+        QProgressBar::chunk {
+            background-color: #16759e;  /* Blue */
+            width: 10px;
+            margin: 0.5px;
+            border-radius: 4px;
+        }
+    """
+
+    # High VRAM Chunck style
+    chunk_style_high = """
+        QProgressBar::chunk {
+            background-color: #911414; /* Red */
+            width: 10px;
+            margin: 0.5px;
+            border-radius: 4px;
+        }
+    """
+
     if (memory_used / memory_total) > 0.85:
-        main_window.vramProgressBar.setStyleSheet("""
-            QProgressBar::chunk {
-                background-color: #911414;  /* Set chunk color to green */
-            }
-        """)
+        main_window.vramProgressBar.setStyleSheet(base_style + chunk_style_high)
     else:
-        main_window.vramProgressBar.setStyleSheet("""
-            QProgressBar::chunk {
-                background-color: #16759e;  /* Set chunk color to green */
-            }
-        """)
+        main_window.vramProgressBar.setStyleSheet(base_style + chunk_style_normal)
+
     main_window.vramProgressBar.update()
 
 

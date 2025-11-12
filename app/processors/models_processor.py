@@ -199,6 +199,7 @@ class ModelsProcessor(QtCore.QObject):
         )
         self.internal_kv_map_source_filename: str | None = None
         self.kv_extractor: Optional[KVExtractor] = None
+        self.kv_extraction_lock = threading.Lock()
         self.device = device
         self.model_lock = threading.RLock()  # Reentrant lock for model access
         # A dictionary to hold locks for each TRT model build process.
@@ -217,6 +218,9 @@ class ModelsProcessor(QtCore.QObject):
             "trt_layer_norm_fp32_fallback": True,
             "trt_builder_optimization_level": 5,
         }
+        # A set to keep track of models that have been loaded but
+        # have not had their engine built (lazy build).
+        self.models_pending_build = set()
         self.providers = [("CUDAExecutionProvider"), ("CPUExecutionProvider")]
         self.syncvec = torch.empty((1, 1), dtype=torch.float32, device=self.device)
         self.nThreads = 1
@@ -466,6 +470,51 @@ class ModelsProcessor(QtCore.QObject):
         self.rgb_to_linear_rgb_converter = None
         self.linear_rgb_to_rgb_converter = None
 
+    def _check_tensorrt_cache(self, model_name: str, onnx_path: str) -> bool:
+        """
+        Checks if a valid TensorRT cache (ctx and engine file) exists for the given model.
+        Returns True if a valid cache is found, False otherwise.
+        """
+        try:
+            cache_dir = "tensorrt-engines"
+            base_onnx_name = os.path.splitext(os.path.basename(onnx_path))[0]
+            ctx_file_name = f"{base_onnx_name}_ctx.onnx"
+            ctx_file_path = os.path.join(cache_dir, ctx_file_name)
+
+            if os.path.exists(ctx_file_path):
+                with open(ctx_file_path, "rb") as f:
+                    content = f.read()
+
+                match = re.search(b"TensorrtExecutionProvider_.*?\\.engine", content)
+                if not match:
+                    print(
+                        f"Cache check: Context file '{ctx_file_name}' found, but no engine name inside."
+                    )
+                    return False
+
+                engine_name = match.group(0).decode("utf-8")
+                engine_subdirectory_name = os.path.basename(cache_dir)
+                engine_file_path = os.path.join(
+                    cache_dir, engine_subdirectory_name, engine_name
+                )
+
+                if os.path.exists(engine_file_path):
+                    return True
+                else:
+                    print(
+                        f"Cache check: Context file '{ctx_file_name}' found, but engine '{engine_name}' is missing."
+                    )
+                    return False
+            else:
+                print(
+                    f"Cache check: No cache context file '{ctx_file_name}' found for {model_name}."
+                )
+                return False
+
+        except Exception as e:
+            print(f"Error during TensorRT cache check: {e}")
+            return False
+
     def load_model(self, model_name, session_options=None):
         with self.model_lock:
             # Check both TRT and ONNX caches first.
@@ -485,7 +534,7 @@ class ModelsProcessor(QtCore.QObject):
                 return None
 
             # If TensorRT-Engine provider is selected, prioritize loading/building the TRT engine.
-            if self.provider_name == "TensorRT-Engine":
+            if self.provider_name in ["TensorRT", "TensorRT-Engine"]:
                 # Check if there is a corresponding TRT model definition
                 trt_model_info = next(
                     (m for m in models_trt_list if m["model_name"] == model_name), None
@@ -519,48 +568,7 @@ class ModelsProcessor(QtCore.QObject):
                 # Only run the isolated probe if TensorRT is the target provider
                 if is_tensorrt_load:
                     # Check if engine config file exists...
-                    cache_is_valid = False
-                    try:
-                        cache_dir = "tensorrt-engines"
-                        base_onnx_name = os.path.splitext(os.path.basename(onnx_path))[
-                            0
-                        ]
-                        ctx_file_name = f"{base_onnx_name}_ctx.onnx"
-                        ctx_file_path = os.path.join(cache_dir, ctx_file_name)
-
-                        if os.path.exists(ctx_file_path):
-                            with open(ctx_file_path, "rb") as f:
-                                content = f.read()
-
-                            match = re.search(
-                                b"TensorrtExecutionProvider_.*?\\.engine", content
-                            )
-
-                            if match:
-                                engine_name = match.group(0).decode("utf-8")
-                                engine_subdirectory_name = os.path.basename(cache_dir)
-                                engine_file_path = os.path.join(
-                                    cache_dir, engine_subdirectory_name, engine_name
-                                )
-
-                                if os.path.exists(engine_file_path):
-                                    cache_is_valid = True
-                                else:
-                                    print(
-                                        f"Context file '{ctx_file_name}' found, but the engine '{engine_name}' is missing from the subdirectory. New build will be prompted through ONNX Probe."
-                                    )
-                            else:
-                                print(
-                                    f"Context file '{ctx_file_name}' found, but could not extract the engine name from it. New build will be prompted through ONNX Probe."
-                                )
-                        else:
-                            print(
-                                f"No cache context file '{ctx_file_name}' found for {model_name}. New build will be prompted through ONNX Probe."
-                            )
-
-                    except Exception as e:
-                        print(f"Error during TensorRT cache check: {e}")
-                        cache_is_valid = False
+                    cache_is_valid = self._check_tensorrt_cache(model_name, onnx_path)
 
                     # If no engine config file or cache file exists run the prob
                     if not cache_is_valid:
@@ -685,6 +693,16 @@ class ModelsProcessor(QtCore.QObject):
                         torch.cuda.synchronize()
                         print("Synchronization complete.")
 
+                    # Check cache AGAIN.
+                    # If the probe succeeded BUT the cache STILL doesn't exist,
+                    # it's a "Lazy Build" model.
+                    if not self._check_tensorrt_cache(model_name, onnx_path):
+                        print(
+                            f"[load_model]: Model {model_name} requires a lazy build (engine not found after probe)."
+                        )
+                        print("[load_model]: Adding to 'models_pending_build' set.")
+                        self.models_pending_build.add(model_name)
+
                 # Race condition check
                 if self.models.get(model_name):
                     del model_instance
@@ -724,6 +742,25 @@ class ModelsProcessor(QtCore.QObject):
                 # Always hide the dialog at the very end,
                 # covering both the probe and the actual load.
                 self.hide_build_dialog.emit()
+
+    def check_and_clear_pending_build(self, model_name: str) -> bool:
+        """
+        Checks if a model is pending its first-run lazy build.
+        If it is, it clears the flag and returns True.
+
+        Args:
+            model_name: The name of the model to check.
+
+        Returns:
+            True if the model *was* pending a build, False otherwise.
+        """
+        if model_name in self.models_pending_build:
+            print(
+                f"[Processor]: Model '{model_name}' is triggering its first-run lazy build."
+            )
+            self.models_pending_build.remove(model_name)
+            return True
+        return False
 
     def load_dfm_model(self, dfm_model):
         with self.model_lock:
@@ -765,58 +802,67 @@ class ModelsProcessor(QtCore.QObject):
         precision="fp16",
         debug=False,
     ):
-        # self.main_window.model_loading_signal.emit()
-        model_instance = None
-        onnx_path = self.models_path[model_name]
-        trt_path = self.models_trt_path[model_name]
+        # Use the main model_lock to make the entire load process atomic
+        with self.model_lock:
+            # Check *again* inside the lock, in case another thread loaded it
+            # while this thread was waiting for the lock.
+            if self.models_trt.get(model_name):
+                return self.models_trt[model_name]
 
-        try:
-            with self.trt_build_lock_creation_lock:
-                if trt_path not in self.trt_build_locks:
-                    self.trt_build_locks[trt_path] = threading.Lock()
-            model_build_lock = self.trt_build_locks[trt_path]
+            # If we're here, the model is not loaded and we have the lock.
+            # Proceed with loading.
 
-            with model_build_lock:
-                if not os.path.exists(trt_path):
-                    print(
-                        f"TRT engine file not found. Starting isolated build: {trt_path}"
-                    )
+            model_instance = None
+            onnx_path = self.models_path[model_name]
+            trt_path = self.models_trt_path[model_name]
 
-                    # Emit signal to show build dialog
-                    dialog_title = "Building TensorRT Engine"
-                    dialog_text = (
-                        f"Building TensorRT engine for:\n"
-                        f"{os.path.basename(onnx_path)}\n\n"
-                        f"This may take several minutes.\n"
-                        f"The application will continue once finished."
-                    )
-                    self.show_build_dialog.emit(dialog_title, dialog_text)
+            try:
+                # This lock is for file-system build races
+                with self.trt_build_lock_creation_lock:
+                    if trt_path not in self.trt_build_locks:
+                        self.trt_build_locks[trt_path] = threading.Lock()
+                model_build_lock = self.trt_build_locks[trt_path]
 
-                    ctx = multiprocessing.get_context("spawn")
-                    build_process = ctx.Process(
-                        target=_build_trt_engine_worker,
-                        args=(
-                            onnx_path,
-                            trt_path,
-                            precision,
-                            custom_plugin_path,
-                            False,
-                        ),
-                    )
-
-                    build_process.start()
-                    build_process.join()
-
-                    if build_process.exitcode != 0:
-                        raise RuntimeError(
-                            f"TRT engine build process failed or crashed with exit code {build_process.exitcode}."
-                        )
-
+                with model_build_lock:
                     if not os.path.exists(trt_path):
-                        raise FileNotFoundError(
-                            f"TRT engine file still not found after isolated build: {trt_path}"
+                        print(
+                            f"TRT engine file not found. Starting isolated build: {trt_path}"
                         )
-                    print("Isolated build successful.")
+
+                        dialog_title = "Building TensorRT Engine"
+                        dialog_text = (
+                            f"Building TensorRT engine for:\n"
+                            f"{os.path.basename(onnx_path)}\n\n"
+                            f"This may take several minutes.\n"
+                            f"The application will continue once finished."
+                        )
+                        self.show_build_dialog.emit(dialog_title, dialog_text)
+
+                        ctx = multiprocessing.get_context("spawn")
+                        build_process = ctx.Process(
+                            target=_build_trt_engine_worker,
+                            args=(
+                                onnx_path,
+                                trt_path,
+                                precision,
+                                custom_plugin_path,
+                                False,
+                            ),
+                        )
+
+                        build_process.start()
+                        build_process.join()
+
+                        if build_process.exitcode != 0:
+                            raise RuntimeError(
+                                f"TRT engine build process failed or crashed with exit code {build_process.exitcode}."
+                            )
+
+                        if not os.path.exists(trt_path):
+                            raise FileNotFoundError(
+                                f"TRT engine file still not found after isolated build: {trt_path}"
+                            )
+                        print("Isolated build successful.")
 
                 print(f"Loading model: {model_name} with provider: TensorRT-Engine")
                 model_instance = TensorRTPredictor(
@@ -828,15 +874,20 @@ class ModelsProcessor(QtCore.QObject):
                 )
                 print(f"Successfully loaded TRT model: {model_name}")
 
-        except Exception:
-            print(f"ERROR: Failed to build or load TensorRT model {model_name}.")
-            traceback.print_exc()
-            model_instance = None
-        finally:
-            self.hide_build_dialog.emit()
-            # self.main_window.model_loaded_signal.emit()
+                # Assign to the main dictionary *inside* the lock
+                self.models_trt[model_name] = model_instance
 
-        return model_instance
+            except Exception:
+                print(f"ERROR: Failed to build or load TensorRT model {model_name}.")
+                traceback.print_exc()
+                model_instance = None
+
+                # Ensure we store 'None' on failure so we don't retry
+                self.models_trt[model_name] = None
+            finally:
+                self.hide_build_dialog.emit()
+
+            return model_instance
 
     def delete_models(self):
         model_names_to_unload = list(self.models.keys())
@@ -892,15 +943,22 @@ class ModelsProcessor(QtCore.QObject):
             if (
                 TENSORRT_AVAILABLE
                 and model_name_to_unload
-                and self.models_trt.get(model_name_to_unload) is not None
+                # MODIFICATION: Check if key exists, not if value is not None
+                # This handles the case where it's already unloaded (value is None)
+                and model_name_to_unload in self.models_trt
             ):
-                print(f"Unloading TRT-Engine model: {model_name_to_unload}")
-                trt_model = self.models_trt.pop(model_name_to_unload, None)
-                if isinstance(trt_model, TensorRTPredictor):
-                    trt_model.cleanup()
-                if trt_model:
+                # MODIFICATION: Get the model instance *before* setting to None
+                trt_model = self.models_trt.get(model_name_to_unload)
+
+                if trt_model is not None:  # Only run cleanup if it's actually loaded
+                    print(f"Unloading TRT-Engine model: {model_name_to_unload}")
+                    if isinstance(trt_model, TensorRTPredictor):
+                        trt_model.cleanup()
                     del trt_model
-                unloaded = True
+                    unloaded = True
+
+                # MODIFICATION: Set key to None instead of popping to preserve it
+                self.models_trt[model_name_to_unload] = None
 
             if unloaded:
                 # This block is now guaranteed to run after an unload.
@@ -1005,8 +1063,48 @@ class ModelsProcessor(QtCore.QObject):
 
         print("GPU Memory Cleared.")
 
+    def get_kv_map_for_face(self, input_face_image_pil: "Image.Image") -> Dict[str, Dict[str, torch.Tensor]]:
+        """
+        (Thread-unsafe) Loads the KV Extractor, extracts K/V maps, and unloads.
+        The caller MUST wrap this function in the 'kv_extraction_lock'.
+
+        Args:
+            input_face_image_pil: A 512x512 PIL Image.
+        """
+        
+        kv_map = {}
+        try:
+            # 1. Load the extractor
+            self.ensure_kv_extractor_loaded()
+
+            if self.kv_extractor is None:
+                raise RuntimeError("KV Extractor model failed to load.")
+
+            # 2. Perform the extraction
+            print("Extracting K/V from reference image...")
+            kv_map = self.kv_extractor.extract_kv(input_face_image_pil)
+            print(f"Successfully extracted K/V for {len(kv_map)} attention layers.")
+
+        except Exception as e:
+            print(f"[ERROR] Failed during K/V extraction: {e}")
+            traceback.print_exc()
+            kv_map = {}  # Retourne une map vide en cas d'échec
+        
+        finally:
+            # 3. Unload the extractor
+            self.unload_kv_extractor()
+        
+        return kv_map
+
     def ensure_kv_extractor_loaded(self):
-        if self.kv_extractor is None:
+        # This lock is critical to prevent a race condition where multiple
+        # FrameWorkers might try to load the KV Extractor simultaneously
+        # at the beginning of a video processing segment.
+        with self.model_lock:
+            # Check *again* inside the lock (double-checked locking pattern)
+            if self.kv_extractor is not None:
+                return  # Already loaded by another thread while this one was waiting
+
             try:
                 print("Loading KV Extractor...")
 
@@ -1042,7 +1140,7 @@ class ModelsProcessor(QtCore.QObject):
                     print(
                         "ReF-LDM model files not found even after download attempt. Cannot load KV Extractor."
                     )
-                    return
+                    return # Return early if files are missing
 
                 self.kv_extractor = KVExtractor(
                     model_config_path=config_path,

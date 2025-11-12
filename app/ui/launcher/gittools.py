@@ -13,6 +13,9 @@ import subprocess
 from datetime import datetime
 from pathlib import Path
 from .core import PATHS
+import filecmp
+import sys
+from PySide6.QtWidgets import QApplication, QMessageBox
 
 
 # ---------- Git Command Wrapper ----------
@@ -152,3 +155,83 @@ def backup_changed_files(changed: list[str]) -> str | None:
     except Exception as e:
         print(f"[Launcher] Backup failed: {e}")
     return None
+
+
+# ---------- Self-Update Trigger ----------
+
+
+def is_launcher_update_available() -> bool:
+    """Check if the root Start_Portable.bat differs from the one in the repo."""
+    root_bat = PATHS["BASE_DIR"] / "Start_Portable.bat"
+    repo_bat = PATHS["APP_DIR"] / "Start_Portable.bat"
+
+    if not root_bat.exists() or not repo_bat.exists():
+        return False
+
+    # filecmp.cmp returns True if files are identical, so we return the opposite.
+    return not filecmp.cmp(str(root_bat), str(repo_bat), shallow=False)
+
+
+def trigger_self_update_if_needed(parent_widget=None):
+    """
+    Creates an updater script and quits the application to allow the update.
+    This is now only called when the user explicitly clicks the update button.
+    """
+
+    root_bat = PATHS["BASE_DIR"] / "Start_Portable.bat"
+    repo_bat = PATHS["APP_DIR"] / "Start_Portable.bat"
+
+    print("[Launcher] Start_Portable.bat update requested. Relaunching...")
+    QMessageBox.information(
+        parent_widget,
+        "Launcher Update Required",
+        "The launcher script (Start_Portable.bat) has been updated.\n\n"
+        "The application will now close and restart itself to apply the changes.",
+    )
+
+    updater_script_content = f"""
+    @echo off
+    echo Waiting for launcher to exit...
+    timeout /t 3 /nobreak >nul
+    echo Replacing Start_Portable.bat...
+    copy /y "{repo_bat.resolve()}" "{root_bat.resolve()}"
+    if %errorlevel% neq 0 (
+        echo ERROR: Failed to copy launcher script.
+        pause
+        exit /b 1
+    )
+    echo Update complete. Restarting launcher...
+    start "" /d "{root_bat.parent.resolve()}" "Start_Portable.bat"
+    pause >nul
+    exit
+    """
+
+    updater_path = PATHS["PORTABLE_DIR"] / "update_start_portable.bat"
+
+    # Write temporary updater batch file
+    try:
+        updater_path.write_text(updater_script_content, encoding="utf-8")
+        print(f"[Launcher] Updater written -> {updater_path}")
+    except Exception as e:
+        print(f"[Launcher] ERROR: Could not write updater script: {e}")
+        QMessageBox.critical(
+            parent_widget, "Update Error", f"Could not create the updater script:\n{e}"
+        )
+        return
+
+    # Launch updater detached from current process
+    try:
+        subprocess.Popen(
+            ["cmd", "/c", "start", "", "/b", "/min", str(updater_path.resolve())],
+            shell=True,
+            creationflags=subprocess.CREATE_NO_WINDOW,
+        )
+        print(f"[Launcher] Updater launched -> {updater_path}")
+    except Exception as e:
+        print(f"[Launcher] ERROR launching updater -> {e}")
+
+    print("[Launcher] Update initiated. It is safe to close this window.")
+    sys.stdout.flush()
+
+    # Quit current application to allow replacement
+    QApplication.quit()

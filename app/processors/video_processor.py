@@ -1,6 +1,6 @@
 import threading
 import queue
-from typing import TYPE_CHECKING, Dict, Tuple
+from typing import TYPE_CHECKING, Dict, Tuple, Optional, cast
 import time
 import subprocess
 from pathlib import Path
@@ -16,6 +16,7 @@ import numpy
 import torch
 import pyvirtualcam
 import math
+import copy
 from PySide6.QtCore import QObject, QTimer, Signal, Slot
 from PySide6.QtGui import QPixmap
 from app.processors.workers.frame_worker import FrameWorker
@@ -26,6 +27,7 @@ from app.ui.widgets.actions import layout_actions
 from app.ui.widgets.actions import save_load_actions
 from app.ui.widgets.actions import list_view_actions
 import app.helpers.miscellaneous as misc_helpers
+from app.helpers.typing_helper import ControlTypes, FacesParametersTypes
 
 if TYPE_CHECKING:
     from app.ui.main_ui import MainWindow
@@ -55,7 +57,11 @@ class VideoProcessor(QObject):
         super().__init__()
         self.main_window = main_window
 
-        # --- Worker Thread Management ---
+        self.state_lock = threading.Lock()  # Lock for feeder state
+        self.feeder_parameters: FacesParametersTypes | None = None
+        self.feeder_control: ControlTypes | None = None
+
+        # --- Worker Thread Management (Refactored for Thread Pool) ---
         self.num_threads = num_threads
         self.preroll_target = max(
             20, self.num_threads * 2
@@ -63,12 +69,13 @@ class VideoProcessor(QObject):
         self.max_display_buffer_size = (
             self.preroll_target * 4
         )  # Max frames allowed "in flight" (queued + being displayed)
-        self.frame_queue: queue.Queue[int] = queue.Queue(
+
+        # This queue will hold tasks: (frame_number, frame_rgb_data) or None (poison pill)
+        self.frame_queue: queue.Queue[Tuple[int, numpy.ndarray] | None] = queue.Queue(
             maxsize=self.max_display_buffer_size
-        )  # Holds frame numbers for workers
-        self.threads: Dict[
-            int, threading.Thread
-        ] = {}  # Active worker threads, keyed by frame number
+        )
+        # This list will hold our *persistent* worker threads
+        self.worker_threads: list[threading.Thread] = []
 
         # --- Media State ---
         self.media_capture: cv2.VideoCapture | None = None  # The OpenCV capture object
@@ -205,13 +212,9 @@ class VideoProcessor(QObject):
             target_fps = 30.0  # Fallback
 
         if target_fps > 9000:  # Convention for "max speed"
-            log_fps = f"MAX SPEED (for {self.fps:.2f} FPS recording)"
             self.target_delay_sec = 0.005
         else:
-            log_fps = f"{target_fps:.2f} FPS"
             self.target_delay_sec = 1.0 / target_fps
-
-        print(f"Starting unified metronome (Target: {log_fps}).")
 
         # 3. Start utility timers and emit signal
         self.gpu_memory_update_timer.start(5000)
@@ -220,9 +223,6 @@ class VideoProcessor(QObject):
             self.processing_started_signal.emit()  # EMIT UNIFIED SIGNAL
             # Record the time when the display *actually* starts
             self.playback_display_start_time = time.perf_counter()
-            print(
-                f"Metronome: Display loop initiated at {self.playback_display_start_time:.3f}s"
-            )
 
         # 4. Start the metronome loop
         self.last_display_schedule_time_sec = time.perf_counter()
@@ -296,6 +296,10 @@ class VideoProcessor(QObject):
         # Determine the mode at startup
         is_segment_mode = self.is_processing_segments
 
+        # The feeder's state is initialized in process_video()
+        # We just need to track the last marker
+        last_marker_data = None
+
         # Determine the stop condition (control variable)
         # In segment mode, the loop is controlled by 'is_processing_segments'
         # In video mode, the loop is controlled by 'processing'
@@ -335,11 +339,33 @@ class VideoProcessor(QObject):
                     continue
 
                 # 3. Frame reading (identical)
-                # In segment mode, self.recording is False, so preview_mode=False
-                # In standard mode, self.recording determines the preview_mode
+
+                # Check if we are in playback (not recording/segments)
+                is_playback = not self.recording and not self.is_processing_segments
+
+                # Check if the user enabled the fast preview toggle
+                fast_preview_enabled = self.main_window.control.get(
+                    "VideoPlaybackPreviewToggle", False
+                )
+
+                preview_target_height: Optional[int] = None
+                if is_playback and fast_preview_enabled:
+                    try:
+                        # Get the selected resolution string (e.g., "360p")
+                        size_str = self.main_window.control.get(
+                            "VideoPlaybackPreviewSizeSelection", "360p"
+                        )
+                        # Extract the number (e.g., 360)
+                        preview_target_height = int(size_str.replace("p", ""))
+                    except Exception as e:
+                        print(
+                            f"[WARN] Could not parse preview resolution, defaulting to None. Error: {e}"
+                        )
+                        preview_target_height = None
+
                 ret, frame_bgr = misc_helpers.read_frame(
                     self.media_capture,
-                    preview_mode=not self.recording and not is_segment_mode,
+                    preview_target_height=preview_target_height,
                 )
                 if not ret:
                     print(
@@ -347,12 +373,63 @@ class VideoProcessor(QObject):
                     )
                     break  # Stop reading
 
-                # 4. Send to worker (identical)
-                frame_rgb = frame_bgr[..., ::-1]
                 frame_num_to_process = self.current_frame_number
 
-                self.frame_queue.put(frame_num_to_process)
-                self.start_frame_worker(frame_num_to_process, frame_rgb)
+                # Get marker data *only* for the exact frame
+                marker_data = self.main_window.markers.get(frame_num_to_process)
+
+                local_params_for_worker: FacesParametersTypes
+                local_control_for_worker: ControlTypes
+
+                # Lock the state while reading/writing
+                with self.state_lock:
+                    if marker_data and marker_data != last_marker_data:
+                        # This frame IS a marker, update the feeder's state
+                        print(
+                            f"[Feeder] Frame {frame_num_to_process} is a marker. Updating feeder state."
+                        )
+
+                        self.feeder_parameters = copy.deepcopy(
+                            marker_data["parameters"]
+                        )
+
+                        # Reset controls to default first
+                        self.feeder_control = {}
+                        for (
+                            widget_name,
+                            widget,
+                        ) in self.main_window.parameter_widgets.items():
+                            if widget_name in self.main_window.control:
+                                self.feeder_control[widget_name] = widget.default_value
+
+                        if "control" in marker_data and isinstance(
+                            marker_data["control"], dict
+                        ):
+                            self.feeder_control.update(
+                                cast(ControlTypes, marker_data["control"]).copy()
+                            )
+
+                        last_marker_data = marker_data
+
+                    # Use the (potentially updated) feeder state
+                    # We MUST send copies, as the worker will use them in parallel
+                    local_params_for_worker = self.feeder_parameters.copy()
+                    local_control_for_worker = self.feeder_control.copy()
+
+                frame_rgb = frame_bgr[..., ::-1]
+
+                # The worker will use the feeder's state *from this exact moment*
+                task = (
+                    frame_num_to_process,
+                    frame_rgb,
+                    local_params_for_worker,
+                    local_control_for_worker,
+                )
+
+                # Put the task in the queue for the worker pool
+                self.frame_queue.put(task)
+
+                # DO NOT START A WORKER HERE
                 self.current_frame_number += 1
 
             except Exception as e:
@@ -376,15 +453,19 @@ class VideoProcessor(QObject):
                     continue
 
                 ret, frame_bgr = misc_helpers.read_frame(
-                    self.media_capture, preview_mode=False
+                    self.media_capture, preview_target_height=None
                 )
                 if not ret:
                     print("[WARN] Feeder: Failed to read webcam frame.")
                     continue  # Try again
 
                 frame_rgb = frame_bgr[..., ::-1]
-                self.frame_queue.put(0)  # Frame number is not relevant
-                self.start_frame_worker(0, frame_rgb, is_single_frame=False)
+
+                # Create the task tuple (frame_number, frame_data)
+                task = (0, frame_rgb)  # Frame number is 0
+
+                # Put the task in the queue for the worker pool
+                self.frame_queue.put(task)
 
             except Exception as e:
                 print(f"[ERROR] Error in _feed_webcam loop: {e}")
@@ -537,10 +618,23 @@ class VideoProcessor(QObject):
                 )
 
         # Update UI
-        if not self.is_processing_segments and self.file_type != "webcam":
-            video_control_actions.update_widget_values_from_markers(
-                self.main_window, frame_number_to_display
-            )
+        if self.file_type != "webcam":
+            # This is the metronome tick.
+            # We *only* update the global state and UI widgets if we have
+            # landed *exactly* on a marker frame.
+            # Otherwise, we let the current (potentially manually changed) state persist.
+            if frame_number_to_display in self.main_window.markers:
+                # Acquire lock to safely modify parameters and controls
+                with self.main_window.models_processor.model_lock:
+                    # 1. Load data from marker into main_window.parameters/control
+                    video_control_actions.update_parameters_and_control_from_marker(
+                        self.main_window, frame_number_to_display
+                    )
+
+                    # 2. Update all UI widgets to reflect the new state
+                    video_control_actions.update_widget_values_from_markers(
+                        self.main_window, frame_number_to_display
+                    )
 
         graphics_view_actions.update_graphics_view(
             self.main_window, pixmap, frame_number_to_display
@@ -548,10 +642,6 @@ class VideoProcessor(QObject):
 
         # --- 8. Clean up and Increment ---
         if self.file_type != "webcam":
-            # Clean up thread
-            if frame_number_to_display in self.threads:
-                self.threads.pop(frame_number_to_display)
-
             # Increment for next frame
             self.next_frame_to_display += 1
 
@@ -571,14 +661,18 @@ class VideoProcessor(QObject):
                     print(f"[WARN] Failed sending frame to virtualcam: {e}")
 
     def set_number_of_threads(self, value):
-        """Stops processing and updates the thread count for workers."""
+        """Updates the thread count for the *next* worker pool."""
         if not value:
             value = 1
-        self.stop_processing()  # Stop any active processing before changing threads
+        # Stop processing if it's running, to apply the new count on next start
+        if self.processing or self.is_processing_segments:
+            print(f"Setting thread count to {value}. Stopping active processing.")
+            self.stop_processing()
+        else:
+            print(f"Max Threads set as {value}. Will be applied on next run.")
+
         self.main_window.models_processor.set_number_of_threads(value)
         self.num_threads = value
-        self.frame_queue = queue.Queue(maxsize=self.num_threads)
-        print(f"Max Threads set as {value} ")
 
     def process_video(self):
         """
@@ -623,6 +717,11 @@ class VideoProcessor(QObject):
         self.is_processing_segments = False
         self.playback_started = False
 
+        # Initialize feeder state with the current UI global state
+        with self.state_lock:
+            self.feeder_parameters = self.main_window.parameters.copy()
+            self.feeder_control = self.main_window.control.copy()
+
         # Check if this recording was initiated by the Job Manager
         job_mgr_flag = getattr(self.main_window, "job_manager_initiated_record", False)
         if self.recording and job_mgr_flag:
@@ -652,10 +751,23 @@ class VideoProcessor(QObject):
         # Note: Audio is not started here. It's started by
         # _start_synchronized_playback after the preroll buffer is full.
 
-        # 6. Reset Timers and Containers
+        # 6a. Reset Timers and Containers
         self.start_time = time.perf_counter()
         self.frames_to_display.clear()
-        self.threads.clear()
+
+        # 6b. START WORKER POOL
+        print(f"Starting {self.num_threads} persistent worker thread(s)...")
+        # Ensure old workers are cleared (from a previous run)
+        self.join_and_clear_threads()
+        self.worker_threads = []
+        for i in range(self.num_threads):
+            worker = FrameWorker(
+                frame_queue=self.frame_queue,  # Pass the task queue
+                main_window=self.main_window,
+                worker_id=i,
+            )
+            worker.start()
+            self.worker_threads.append(worker)
 
         # --- 7. AUDIO/VIDEO SYNC LOGIC (MODIFIED) ---
 
@@ -664,7 +776,7 @@ class VideoProcessor(QObject):
         print(f"Sync: Seeking directly to frame {actual_start_frame}...")
 
         # 7b. Set the capture position
-        self.media_capture.set(cv2.CAP_PROP_POS_FRAMES, actual_start_frame)
+        misc_helpers.seek_frame(self.media_capture, actual_start_frame)
 
         # 7c. Read the frame using the LOCKED helper function ONCE for dimensions.
         print(
@@ -672,7 +784,7 @@ class VideoProcessor(QObject):
         )
         ret, frame_bgr = misc_helpers.read_frame(
             self.media_capture,
-            preview_mode=False,  # Always read full frame for consistency
+            preview_target_height=None,
         )
         print(f"Sync: Initial read complete (Result: {ret}).")
 
@@ -693,7 +805,7 @@ class VideoProcessor(QObject):
                 f"Sync: Retrying read for frame {fallback_frame_to_try} using locked helper..."
             )
             ret, frame_bgr = misc_helpers.read_frame(
-                self.media_capture, preview_mode=False
+                self.media_capture, preview_target_height=None
             )
             print(f"Sync: Retry read complete (Result: {ret}).")
             if not ret:
@@ -714,7 +826,7 @@ class VideoProcessor(QObject):
         print(
             f"Sync: Resetting position to frame {actual_start_frame} for feeder thread..."
         )
-        self.media_capture.set(cv2.CAP_PROP_POS_FRAMES, actual_start_frame)
+        misc_helpers.seek_frame(self.media_capture, actual_start_frame)
         print("Sync: Position reset complete.")
 
         # 7e. REMOVE SYNCHRONOUS PROCESSING STEP
@@ -733,9 +845,10 @@ class VideoProcessor(QObject):
         self.play_start_time = (
             float(actual_start_frame / float(self.fps)) if self.fps > 0 else 0.0
         )
-        print(
-            f"Recording audio start time set to: {self.play_start_time:.3f}s (Frame: {actual_start_frame})"
-        )
+        if self.recording:
+            print(
+                f"Recording audio start time set to: {self.play_start_time:.3f}s (Frame: {actual_start_frame})"
+            )
 
         # 7g. Update the slider (if needed, ensure signals blocked/unblocked correctly)
         self.main_window.videoSeekSlider.blockSignals(True)
@@ -775,21 +888,39 @@ class VideoProcessor(QObject):
                 print("Playback mode.")
                 self._start_synchronized_playback()
 
-    def start_frame_worker(self, frame_number, frame, is_single_frame=False):
-        """Starts a FrameWorker to process the given frame."""
+    def start_frame_worker(
+        self, frame_number, frame, is_single_frame=False, synchronous=False
+    ):
+        """
+        Starts a one-shot FrameWorker for a *single frame*.
+        This is NOT used by the video pool.
+        MODIFIED: Returns the worker instance OR runs synchronously.
+        """
         worker = FrameWorker(
-            frame, self.main_window, frame_number, self.frame_queue, is_single_frame
+            frame=frame,  # Pass frame directly
+            main_window=self.main_window,
+            frame_number=frame_number,
+            frame_queue=None,  # No queue for single frame
+            is_single_frame=is_single_frame,
+            worker_id=-1,  # Indicates single-frame mode
         )
-        self.threads[frame_number] = worker
-        if is_single_frame:
-            worker.run()  # Process synchronously (blocks until done)
-        else:
-            worker.start()  # Process asynchronously (in a new thread)
 
-    def process_current_frame(self):
+        if synchronous:
+            # Run in the *current* thread (blocking).
+            # This ensures signals are processed immediately
+            # because the connection becomes Qt::DirectConnection.
+            worker.run()
+            return worker  # Still return worker, though it has finished.
+        else:
+            # Run in a *new* thread (asynchronous).
+            worker.start()
+            return worker
+
+    def process_current_frame(self, synchronous: bool = False):
         """
         Process the single, currently selected frame (e.g., after seek or for image).
         This is a one-shot operation, not part of the metronome.
+        MODIFIED: Returns the worker instance and accepts synchronous flag.
         """
         if self.processing or self.is_processing_segments:
             print("[INFO] Stopping active processing to process single frame.")
@@ -809,16 +940,14 @@ class VideoProcessor(QObject):
 
         # --- Read the frame based on file type ---
         if self.file_type == "video" and self.media_capture:
-            self.media_capture.set(cv2.CAP_PROP_POS_FRAMES, self.current_frame_number)
+            misc_helpers.seek_frame(self.media_capture, self.current_frame_number)
             ret, frame_bgr = misc_helpers.read_frame(
-                self.media_capture, preview_mode=False
+                self.media_capture, preview_target_height=None
             )
             if ret:
                 frame_to_process = frame_bgr[..., ::-1]  # BGR to RGB
                 read_successful = True
-                self.media_capture.set(
-                    cv2.CAP_PROP_POS_FRAMES, self.current_frame_number
-                )
+                misc_helpers.seek_frame(self.media_capture, self.current_frame_number)
             else:
                 print(
                     f"[ERROR] Cannot read frame {self.current_frame_number} for single processing!"
@@ -840,7 +969,7 @@ class VideoProcessor(QObject):
 
         elif self.file_type == "webcam" and self.media_capture:
             ret, frame_bgr = misc_helpers.read_frame(
-                self.media_capture, preview_mode=False
+                self.media_capture, preview_target_height=None
             )
             if ret:
                 frame_to_process = frame_bgr[..., ::-1]  # BGR to RGB
@@ -850,16 +979,16 @@ class VideoProcessor(QObject):
 
         # --- Process if read was successful ---
         if read_successful and frame_to_process is not None:
-            # Clear any pending workers
-            with self.frame_queue.mutex:
-                self.frame_queue.queue.clear()
-            self.threads.clear()
-
-            # Process this frame synchronously
-            self.frame_queue.put(self.current_frame_number)
-            self.start_frame_worker(
-                self.current_frame_number, frame_to_process, is_single_frame=True
+            # We just start a new one-shot worker and return it.
+            # Pass the synchronous flag
+            return self.start_frame_worker(
+                self.current_frame_number,
+                frame_to_process,
+                is_single_frame=True,
+                synchronous=synchronous,
             )
+
+        return None  # <-- for failure case
 
     def stop_processing(self):
         """
@@ -887,16 +1016,29 @@ class VideoProcessor(QObject):
         self.preroll_timer.stop()
         self.stop_live_sound()
 
-        # 3a. Wait for the feeder thread (ADDED)
+        # --- MODIFICATION: Force feeder thread to stop BEFORE joining ---
+
+        # 3a. Release the capture object.
+        # This will cause the blocking read() in the feeder thread to fail (raising an exception),
+        # which forces it to exit its loop, release any locks, and allow the join() to succeed.
+        print("Releasing media capture to unblock feeder thread...")
+        if self.media_capture:
+            misc_helpers.release_capture(self.media_capture)
+            self.media_capture = None  # Important: set to None after release
+
+        # 3b. Wait for the feeder thread (now it should exit quickly)
         print("Waiting for feeder thread to complete...")
         if self.feeder_thread and self.feeder_thread.is_alive():
-            self.feeder_thread.join(timeout=2.0)  # Wait 2 seconds
+            self.feeder_thread.join(timeout=3.0)  # Wait 3 seconds
             if self.feeder_thread.is_alive():
-                print("[WARN] Feeder thread did not join gracefully.")
+                print(
+                    "[WARN] Feeder thread did not join gracefully even after capture release."
+                )
         self.feeder_thread = None
         print("Feeder thread joined.")
+        # --- FIN MODIFICATION ---
 
-        # 3b. Wait for worker threads
+        # 3c. Wait for worker threads
         print("Waiting for worker threads to complete...")
         self.join_and_clear_threads()
         print("Worker threads joined.")
@@ -950,15 +1092,39 @@ class VideoProcessor(QObject):
         self.playback_display_start_time = 0.0  # Reset display start time
 
         # 8. Reset capture position
-        if self.file_type == "video" and self.media_capture:
+        # MODIFICATION: Re-open the media capture since we released it
+        if self.file_type == "video" and self.media_path:
             try:
-                current_slider_pos = self.main_window.videoSeekSlider.value()
-                self.current_frame_number = current_slider_pos
-                self.next_frame_to_display = current_slider_pos
+                print("Re-opening video capture...")
+                self.media_capture = cv2.VideoCapture(self.media_path)
                 if self.media_capture.isOpened():
-                    self.media_capture.set(cv2.CAP_PROP_POS_FRAMES, current_slider_pos)
+                    current_slider_pos = self.main_window.videoSeekSlider.value()
+                    self.current_frame_number = current_slider_pos
+                    self.next_frame_to_display = current_slider_pos
+                    misc_helpers.seek_frame(self.media_capture, current_slider_pos)
+                    print("Video capture re-opened and seeked.")
+                else:
+                    print("[WARN] Failed to re-open media capture after stop.")
+                    self.media_capture = None
             except Exception as e:
-                print(f"[WARN] Could not reset video capture position: {e}")
+                print(f"[WARN] Error re-opening media capture: {e}")
+                self.media_capture = None
+        elif self.file_type == "video":
+            print("[WARN] media_path not set, cannot re-open video capture.")
+        elif self.file_type == "webcam":
+            # Also re-open webcam
+            try:
+                print("Re-opening webcam capture...")
+                webcam_index = int(
+                    self.main_window.control.get("WebcamDeviceSelection", 0)
+                )
+                self.media_capture = cv2.VideoCapture(webcam_index)
+                if not self.media_capture.isOpened():
+                    print("[WARN] Failed to re-open webcam capture after stop.")
+                    self.media_capture = None
+            except Exception as e:
+                print(f"[WARN] Error re-opening webcam capture: {e}")
+                self.media_capture = None
 
         # 9. Re-enable UI
         if was_processing_segments or was_recording_default_style:
@@ -1014,17 +1180,52 @@ class VideoProcessor(QObject):
         return True  # Processing was stopped
 
     def join_and_clear_threads(self):
-        """Waits for all active worker threads to finish and clears the list."""
-        active_threads = list(self.threads.values())
+        """
+        Stops and waits for all pool worker threads to finish.
+        This function's *only* job is to set events, send pills, and join.
+        It does NOT clear the queue.
+        """
+        active_threads = self.worker_threads
+        if not active_threads:
+            return  # Nothing to do
+
+        print(f"Signaling {len(active_threads)} active worker(s) to stop...")
+
+        # 1. Set stop event for all workers in the pool
+        for thread in active_threads:
+            if hasattr(thread, "stop_event") and not thread.stop_event.is_set():
+                try:
+                    thread.stop_event.set()
+                except Exception as e:
+                    print(
+                        f"[WARN] Error setting stop_event on thread {thread.name}: {e}"
+                    )
+
+        # 2. Wake up any workers blocked on queue.get() by sending a "poison pill" (None)
+        # We must send one pill for each worker.
+        for _ in active_threads:
+            try:
+                # Use non-blocking put with a small timeout in case the queue is full
+                # (which shouldn't happen, but is safer)
+                self.frame_queue.put(None, timeout=0.1)
+            except queue.Full:
+                # print(f"[WARN] Could not put poison pill in full queue during stop.")
+                pass
+            except Exception as e:
+                print(f"[WARN] Error putting poison pill in queue: {e}")
+
+        # 3. Join all threads
         for thread in active_threads:
             try:
                 if thread.is_alive():
-                    thread.join(timeout=1.0)
+                    thread.join(timeout=2.0)
                     if thread.is_alive():
                         print(f"[WARN] Thread {thread.name} did not join gracefully.")
             except Exception as e:
                 print(f"[WARN] Error joining thread {thread.name}: {e}")
-        self.threads.clear()
+
+        # 4. Clear the worker list
+        self.worker_threads.clear()
 
     # --- Utility Methods ---
 
@@ -1380,6 +1581,9 @@ class VideoProcessor(QObject):
         print("Waiting for final worker threads...")
         self.join_and_clear_threads()
         self.frames_to_display.clear()
+        print("Clearing frame queue of residual pills...")
+        with self.frame_queue.mutex:
+            self.frame_queue.queue.clear()
 
         # 3. Finalize ffmpeg (close stdin, wait for file to be written)
         if self.recording_sp:
@@ -1586,6 +1790,31 @@ class VideoProcessor(QObject):
             json_file_path += ".json"
             save_load_actions.save_current_workspace(self.main_window, json_file_path)
 
+        # Reset Media Capture
+        if self.file_type == "video" and self.media_path:
+            try:
+                # First check if released
+                if self.media_capture:
+                    misc_helpers.release_capture(self.media_capture)
+                    self.media_capture = None
+
+                print("Re-opening video capture post-recording...")
+                self.media_capture = cv2.VideoCapture(self.media_path)
+                if self.media_capture.isOpened():
+                    current_slider_pos = self.main_window.videoSeekSlider.value()
+                    self.current_frame_number = current_slider_pos
+                    self.next_frame_to_display = current_slider_pos
+                    misc_helpers.seek_frame(self.media_capture, current_slider_pos)
+                    print("Video capture re-opened and seeked.")
+                else:
+                    print("[WARN] Failed to re-open media capture after recording.")
+                    self.media_capture = None
+            except Exception as e:
+                print(f"[WARN] Error re-opening media capture: {e}")
+                self.media_capture = None
+        elif self.file_type == "video":
+            print("[WARN] media_path not set, cannot re-open video capture.")
+
         layout_actions.enable_all_parameters_and_control_widget(self.main_window)
         video_control_actions.reset_media_buttons(self.main_window)
 
@@ -1787,14 +2016,17 @@ class VideoProcessor(QObject):
 
         # 4. Seek to the start frame of the segment
         print(f"Seeking to start frame {start_frame}...")
-        self.media_capture.set(cv2.CAP_PROP_POS_FRAMES, start_frame)
-        ret, frame_bgr = misc_helpers.read_frame(self.media_capture, preview_mode=False)
+        misc_helpers.seek_frame(self.media_capture, start_frame)
+        # We use preview_target_height=None to ensure segments are always read at full resolution
+        ret, frame_bgr = misc_helpers.read_frame(
+            self.media_capture, preview_target_height=None
+        )
         if ret:
             self.current_frame = numpy.ascontiguousarray(
                 frame_bgr[..., ::-1]
             )  # BGR to RGB
             # Must re-set position, as read() advances it
-            self.media_capture.set(cv2.CAP_PROP_POS_FRAMES, start_frame)
+            misc_helpers.seek_frame(self.media_capture, start_frame)
             self.current_frame_number = start_frame
             self.next_frame_to_display = start_frame
             # Update slider for visual feedback
@@ -1808,11 +2040,24 @@ class VideoProcessor(QObject):
             self.stop_processing()
             return
 
-        # 5. Clear containers for the new segment
+        # 5. Clear containers AND START WORKER POOL for the new segment
         self.frames_to_display.clear()
         with self.frame_queue.mutex:
             self.frame_queue.queue.clear()
-        self.threads.clear()
+
+        # [MODIFICATION] Replace self.threads.clear() with worker pool startup logic
+        print(f"Starting {self.num_threads} persistent worker thread(s) for segment...")
+        # Ensure old workers are cleaned up (if present)
+        self.join_and_clear_threads()
+        self.worker_threads = []
+        for i in range(self.num_threads):
+            worker = FrameWorker(
+                frame_queue=self.frame_queue,  # Pass the task queue
+                main_window=self.main_window,
+                worker_id=i,
+            )
+            worker.start()
+            self.worker_threads.append(worker)
 
         # 6. Setup FFmpeg subprocess for this segment
         temp_segment_filename = f"segment_{self.current_segment_index:03d}.mp4"
@@ -1834,11 +2079,14 @@ class VideoProcessor(QObject):
         )
         with self.frame_queue.mutex:
             self.frame_queue.queue.clear()
-        self.frame_queue.put(current_start_frame)
+
+        # [MODIFICATION] Removed erroneous line: self.frame_queue.put(current_start_frame)
+        # This was putting an 'int' into the task queue, causing the pool workers to crash.
+        # The line below handles the first frame processing (synchronously or via one-shot thread).
+
         self.start_frame_worker(
             current_start_frame, self.current_frame, is_single_frame=True
         )
-        # Now, self.frames_to_display[current_start_frame] is ready.
 
         # 8. Update counters
         # self.current_frame_number was set to start_frame (e.g., 100)
@@ -1850,6 +2098,9 @@ class VideoProcessor(QObject):
         is_first = self.current_segment_index == 0
 
         # Start the feeder thread
+        with self.state_lock:
+            self.feeder_parameters = self.main_window.parameters.copy()
+            self.feeder_control = self.main_window.control.copy()
         print(f"Starting feeder thread (Mode: segment {self.current_segment_index})...")
         self.feeder_thread = threading.Thread(target=self._feeder_loop, daemon=True)
         self.feeder_thread.start()
@@ -2129,6 +2380,9 @@ class VideoProcessor(QObject):
             self.temp_segment_files = []
             self.current_segment_end_frame = None
             self.triggered_by_job_manager = False
+            print("Clearing frame queue of residual pills...")
+            with self.frame_queue.mutex:
+                self.frame_queue.queue.clear()
 
             # 8. Final timing
             self.end_time = time.perf_counter()
@@ -2158,6 +2412,31 @@ class VideoProcessor(QObject):
             except Exception as e:
                 print(f"[WARN] Error clearing Torch cache: {e}")
             gc.collect()
+
+            # Reset media capture
+            if self.file_type == "video" and self.media_path:
+                try:
+                    # First check if released
+                    if self.media_capture:
+                        misc_helpers.release_capture(self.media_capture)
+                        self.media_capture = None
+
+                    print("Re-opening video capture post-segments...")
+                    self.media_capture = cv2.VideoCapture(self.media_path)
+                    if self.media_capture.isOpened():
+                        current_slider_pos = self.main_window.videoSeekSlider.value()
+                        self.current_frame_number = current_slider_pos
+                        self.next_frame_to_display = current_slider_pos
+                        misc_helpers.seek_frame(self.media_capture, current_slider_pos)
+                        print("Video capture re-opened and seeked.")
+                    else:
+                        print("[WARN] Failed to re-open media capture after segments.")
+                        self.media_capture = None
+                except Exception as e:
+                    print(f"[WARN] Error re-opening media capture: {e}")
+                    self.media_capture = None
+            elif self.file_type == "video":
+                print("[WARN] media_path not set, cannot re-open video capture.")
 
             layout_actions.enable_all_parameters_and_control_widget(self.main_window)
             video_control_actions.reset_media_buttons(self.main_window)

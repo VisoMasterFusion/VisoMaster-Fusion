@@ -113,9 +113,15 @@ def set_launcher_enabled_to_cfg(value: int) -> None:
         print(f"[Launcher] Config updated: LAUNCHER_ENABLED={value}")
 
 
+# ---------- Branch Management ----------
+def get_branch_from_cfg() -> str:
+    """Read the configured branch from portable.cfg, defaulting to 'main'."""
+    cfg = read_portable_cfg()
+    # Ensure there's always a fallback
+    return (cfg.get("BRANCH") or "main").strip() or "main"
+
+
 # ---------- Version Tracking ----------
-
-
 def update_current_commit_in_cfg() -> None:
     """Fetch the current Git commit hash and save it to portable.cfg."""
     from .gittools import run_git  # local import to avoid circular deps

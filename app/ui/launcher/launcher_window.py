@@ -19,6 +19,7 @@
 import sys
 from datetime import datetime, timezone
 from PySide6 import QtWidgets, QtGui, QtCore
+from PySide6.QtWidgets import QMessageBox
 
 from .core import PATHS, run_python, uv_pip_install
 from app.processors.models_data import models_list
@@ -28,20 +29,22 @@ from .gittools import (
     git_changed_files,
     backup_changed_files,
     get_current_short_commit,
+    is_launcher_update_available,
+    trigger_self_update_if_needed,
 )
 from .cfgtools import (
-    read_portable_cfg,
     get_launcher_enabled_from_cfg,
     set_launcher_enabled_to_cfg,
     update_current_commit_in_cfg,
     update_last_updated_in_cfg,
     read_version_info,
-    format_last_updated_local,
     read_checksum_state,
     write_checksum_state,
     compute_file_sha256,
     compute_models_sha256,
     check_models_presence,
+    write_portable_cfg,
+    get_branch_from_cfg,
 )
 from .uiutils import (
     notify_backup_created,
@@ -53,7 +56,6 @@ from .launcher_widgets import ToggleSwitch, StatusPill
 
 
 # ---------- Page Actions ----------
-
 ACTIONS_HOME = [
     ("Launch VisoMaster Fusion", "on_launch", "Start normally"),
     ("Update / Maintenance", "_go_maint", "Open maintenance tools"),
@@ -65,20 +67,19 @@ ACTIONS_MAINT = [
     ("Repair Installation", "on_repair_installation", "Restore tracked files to HEAD"),
     ("Check / Update Dependencies", "on_update_deps", "Reinstall requirements via UV"),
     ("Check / Update Models", "on_update_models", "Run model downloader"),
+    ("Update Launcher Script", "on_self_update", "Apply launcher batch update"),
     ("Revert to Previous Version", "_go_rollback", "Select and revert to older commit"),
     ("Back", "_go_home", "Return to home screen"),
 ]
 
 
 # ---------- Update Check ----------
-
-
 def check_update_status():
     """Return 'behind', 'up_to_date', or 'offline' after a quick origin fetch."""
-    print("[Launcher] Checking for updates...")
+    branch = get_branch_from_cfg()
+    print(f"[Launcher] Checking for updates on branch '{branch}'...")
     try:
-        r = run_git(["fetch", "origin"], capture=True)
-        # ── handle None safely ────────────────────────────────
+        r = run_git(["fetch", "origin", branch], capture=True)
         if r is None or r.returncode != 0:
             err = r.stderr.strip() if r and getattr(r, "stderr", None) else "unknown"
             print(f"[Launcher] Git fetch failed (offline?): {err}")
@@ -88,20 +89,19 @@ def check_update_status():
         return "offline"
 
     head = run_git(["rev-parse", "HEAD"], capture=True)
-    origin = run_git(["rev-parse", "origin/main"], capture=True)
+    origin = run_git(["rev-parse", f"origin/{branch}"], capture=True)
 
     if head and origin and head.returncode == 0 and origin.returncode == 0:
         head_hash, origin_hash = head.stdout.strip(), origin.stdout.strip()
         if head_hash != origin_hash:
             print(
-                f"[Launcher] Local version behind origin "
-                f"(HEAD={head_hash[:7]} → {origin_hash[:7]})"
+                f"[Launcher] Local version behind origin (HEAD={head_hash[:7]} -> {origin_hash[:7]})"
             )
             return "behind"
         print(f"[Launcher] Repository up to date (HEAD={head_hash[:7]})")
         return "up_to_date"
 
-    print("[Launcher] Unable to read HEAD or origin/main; treating as offline.")
+    print(f"[Launcher] Unable to read HEAD or origin/{branch}; treating as offline.")
     return "offline"
 
 
@@ -117,10 +117,13 @@ class LauncherWindow(QtWidgets.QWidget):
         if PATHS["SMALL_ICON"].exists():
             self.setWindowIcon(QtGui.QIcon(str(PATHS["SMALL_ICON"])))
 
-        # Safety defaults for checksum flags (prevents AttributeError if checksum load fails)
+        # Safety defaults
         self.deps_changed = self.models_changed = self.files_changed = False
         self._user_moved = False
         self.last_checked_utc: datetime | None = None
+
+        # Check for launcher script update
+        self.launcher_update_available = is_launcher_update_available()
         self.update_status = self._check_and_log_update_status()
 
         update_current_commit_in_cfg()
@@ -143,15 +146,19 @@ class LauncherWindow(QtWidgets.QWidget):
         if tooltip:
             btn.setToolTip(tooltip)
 
+        # Highlight maintenance button if any issue is detected
         if "Update / Maintenance" in label:
             if (
                 self.update_status == "behind"
+                or self.launcher_update_available
                 or getattr(self, "deps_changed", False)
                 or getattr(self, "models_changed", False)
                 or getattr(self, "files_changed", False)
             ):
                 icon = self.style().standardIcon(QtWidgets.QStyle.SP_MessageBoxWarning)
 
+        if "Update Launcher Script" in label and self.launcher_update_available:
+            icon = self.style().standardIcon(QtWidgets.QStyle.SP_MessageBoxWarning)
         if "Update from Git" in label and self.update_status == "behind":
             icon = self.style().standardIcon(QtWidgets.QStyle.SP_MessageBoxWarning)
         if "Dependencies" in label and getattr(self, "deps_changed", False):
@@ -331,8 +338,12 @@ class LauncherWindow(QtWidgets.QWidget):
         lay.addWidget(make_divider())
         lay.addSpacing(10)
 
+        if self.launcher_update_available:
+            lay.addWidget(StatusPill("⚠️ Launcher script update available"))
+
         if self.update_status == "behind":
             lay.addWidget(StatusPill("⚠️ Git updates available"))
+
         elif self.update_status == "offline":
             lay.addWidget(
                 StatusPill(
@@ -383,19 +394,47 @@ class LauncherWindow(QtWidgets.QWidget):
         lay = QtWidgets.QVBoxLayout(self.page_maint)
         lay.addWidget(make_header_widget("VisoMaster Fusion — Maintenance"))
 
+        # --- Branch Switcher ---
+        branch_box = QtWidgets.QFrame()
+        branch_box.setObjectName("BranchBox")
+        branch_box.setStyleSheet(
+            "QFrame#BranchBox { border: 1px solid #363636; border-radius: 6px; }"
+        )
+        branch_layout = QtWidgets.QHBoxLayout(branch_box)
+        branch_layout.setContentsMargins(10, 5, 10, 5)
+
+        branch_label = QtWidgets.QLabel("Active Branch:")
+        branch_label.setStyleSheet("border: none; background: transparent;")
+
+        self.branch_combo = QtWidgets.QComboBox()
+        self.branch_combo.addItems(["main", "dev"])
+
+        # Set the current branch from config without triggering the signal
+        self.branch_combo.blockSignals(True)
+        self.branch_combo.setCurrentText(get_branch_from_cfg())
+        self.branch_combo.blockSignals(False)
+
+        self.branch_combo.currentTextChanged.connect(self.on_switch_branch)
+
+        branch_layout.addWidget(branch_label)
+        branch_layout.addStretch()
+        branch_layout.addWidget(self.branch_combo)
+        lay.addWidget(branch_box)
+        lay.addWidget(make_divider())
+
         for text, method, *tip in ACTIONS_MAINT:
             fn = getattr(self, method)
             lay.addWidget(self._register_action(text, fn, tip[0] if tip else None))
 
-        cfg = read_portable_cfg()
-        last = cfg.get("LAST_UPDATED")
-        nice_last = format_last_updated_local(last) if last else "—"
-        self.lbl_last_updated = QtWidgets.QLabel(f"Last updated: {nice_last}")
-        self.lbl_last_updated.setAlignment(QtCore.Qt.AlignRight)
-        self.lbl_last_updated.setStyleSheet(
-            "color: rgba(255,255,255,0.58); font-size: 12px; padding: 2px;"
-        )
-        lay.addWidget(self.lbl_last_updated)
+        lay.addWidget(make_divider())
+
+        curr, last = read_version_info()
+        curr_short = curr[:7] if curr else None
+        if curr_short or last:
+            meta = self._build_meta_panel(curr_short, last)
+            meta.setContentsMargins(0, 0, 0, 0)
+            lay.addWidget(meta)
+
         lay.addStretch(1)
 
     def _build_rollback_page(self):
@@ -447,6 +486,10 @@ class LauncherWindow(QtWidgets.QWidget):
 
     # ---------- Actions ----------
 
+    def on_self_update(self):
+        """Action to trigger the self-update mechanism."""
+        trigger_self_update_if_needed(self)
+
     def on_launch(self):
         self.hide()
         QtWidgets.QApplication.processEvents()
@@ -460,18 +503,81 @@ class LauncherWindow(QtWidgets.QWidget):
         )
         QtWidgets.QApplication.quit()
 
+    def on_switch_branch(self, new_branch: str):
+        """Action to switch the git branch."""
+        current_branch = get_branch_from_cfg()
+        if new_branch == current_branch:
+            return
+
+        confirm = QtWidgets.QMessageBox.question(
+            self,
+            "Confirm Branch Switch",
+            f"You are about to switch from '{current_branch}' to '{new_branch}'.\n\n"
+            "This will discard any local changes and synchronize with the new branch.\n"
+            "Are you sure you want to continue?",
+            QtWidgets.QMessageBox.Yes | QtWidgets.QMessageBox.No,
+        )
+
+        if confirm != QtWidgets.QMessageBox.Yes:
+            # Revert the combobox selection if the user cancels
+            self.branch_combo.blockSignals(True)
+            self.branch_combo.setCurrentText(current_branch)
+            self.branch_combo.blockSignals(False)
+            return
+
+        print(f"[Launcher] Switching branch to '{new_branch}'...")
+        with with_busy_state(self, busy=True, text=f"Switching to {new_branch}..."):
+            try:
+                write_portable_cfg({"BRANCH": new_branch})
+                run_git(["checkout", new_branch])
+                run_git(["reset", "--hard", f"origin/{new_branch}"])
+
+                # After switching, update config and force dependency check
+                update_current_commit_in_cfg()
+                update_last_updated_in_cfg()
+
+                # Invalidate checksums to prompt for an update
+                write_checksum_state(deps_sha="changed", models_sha="changed")
+
+                self._refresh_update_indicators()
+
+                QtWidgets.QMessageBox.information(
+                    self,
+                    "Branch Switched",
+                    f"Successfully switched to the '{new_branch}' branch.\n\n"
+                    "It is highly recommended to run 'Check / Update Dependencies' now.",
+                )
+
+            except Exception as e:
+                print(f"[Launcher] Error during branch switch: {e}")
+                QtWidgets.QMessageBox.critical(
+                    self, "Error", f"Failed to switch branch:\n{e}"
+                )
+                # Revert config if it failed
+                write_portable_cfg({"BRANCH": current_branch})
+                self._refresh_update_indicators()
+
     def on_update_git(self):
-        print("[Launcher] Checking for updates (git fetch/pull)...")
+        print("[Launcher] Checking for updates (git fetch/reset)...")
         with with_busy_state(self, busy=True, text="Updating..."):
             try:
-                run_git(["fetch", "origin"])
-                run_git(["pull", "origin", "main"])
+                branch = get_branch_from_cfg()
+                run_git(["fetch", "origin", branch])
+                run_git(["reset", "--hard", f"origin/{branch}"])
                 update_current_commit_in_cfg()
                 update_last_updated_in_cfg()
                 self.commits = fetch_commit_list(10)
                 self._rebuild_page("page_rollback", self._build_rollback_page)
                 self._refresh_update_indicators()
                 print("[Launcher] Update complete.")
+                # After updating, check if the launcher script itself needs an update
+                if is_launcher_update_available():
+                    self._refresh_update_indicators()
+                    QMessageBox.information(
+                        self,
+                        "Launcher Update Available",
+                        "The launcher script (Start_Portable.bat) has an update.\nPlease close the launcher and run Start_Portable.bat again to apply it.",
+                    )
             except Exception as e:
                 print(f"[Launcher] Error during update: {e}")
 
@@ -499,11 +605,9 @@ class LauncherWindow(QtWidgets.QWidget):
                 backup_path = backup_changed_files(changed)
                 if backup_path:
                     notify_backup_created(self, backup_path)
-                r = run_git(
-                    ["restore", "--worktree", "--source=HEAD", "--", "."], capture=True
-                )
-                if not r or r.returncode != 0:
-                    run_git(["checkout", "--", "."], capture=False)
+                # A more forceful repair: reset to HEAD
+                print("[Launcher] Forcefully resetting all tracked files to HEAD...")
+                run_git(["reset", "--hard", "HEAD"])
                 update_current_commit_in_cfg()
                 update_last_updated_in_cfg()
                 write_checksum_state(
@@ -512,6 +616,13 @@ class LauncherWindow(QtWidgets.QWidget):
                 )
                 self._load_checksum_status()
                 self._refresh_update_indicators()
+                if is_launcher_update_available():
+                    self._refresh_update_indicators()
+                    QMessageBox.information(
+                        self,
+                        "Launcher Update",
+                        "An update for the launcher script may be available after repair.",
+                    )
                 print("[Launcher] Repair complete.")
             except Exception as e:
                 print(f"[Launcher] Error during repair: {e}")
@@ -566,6 +677,13 @@ class LauncherWindow(QtWidgets.QWidget):
                 self.commits = fetch_commit_list(10)
                 self._rebuild_page("page_rollback", self._build_rollback_page)
                 self._refresh_update_indicators()
+                if is_launcher_update_available():
+                    self._refresh_update_indicators()
+                    QMessageBox.information(
+                        self,
+                        "Launcher Update",
+                        "An update for the launcher script may be available after reverting.",
+                    )
             except Exception as e:
                 print(f"[Launcher] Error during revert: {e}")
 
@@ -671,6 +789,7 @@ class LauncherWindow(QtWidgets.QWidget):
     def _refresh_update_indicators(self):
         """Recheck update status and rebuild visible pages accordingly."""
         self.update_status = self._check_and_log_update_status()
+        self.launcher_update_available = is_launcher_update_available()
         self._load_checksum_status()
 
         current = self.stack.currentWidget()

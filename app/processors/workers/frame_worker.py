@@ -1,9 +1,9 @@
 import traceback
 from typing import TYPE_CHECKING, Dict, cast
 import threading
+import queue
 import math
 from math import floor, ceil
-
 from PIL import Image
 from app.ui.widgets import widget_components
 import torch
@@ -21,7 +21,6 @@ import torch.nn.functional as F
 
 from app.processors.utils import faceutil
 import app.ui.widgets.actions.common_actions as common_widget_actions
-from app.ui.widgets.actions import video_control_actions
 from app.helpers.miscellaneous import ParametersDict, get_scaling_transforms
 from app.helpers.vr_utils import EquirectangularConverter, PerspectiveConverter
 from app.helpers.typing_helper import ParametersTypes
@@ -36,13 +35,18 @@ torchvision.disable_beta_transforms_warning()
 class FrameWorker(threading.Thread):
     def __init__(
         self,
-        frame,
         main_window: "MainWindow",
-        frame_number,
-        frame_queue,
-        is_single_frame=False,
+        # Pool worker args (frame_queue is a task queue)
+        frame_queue: queue.Queue | None = None,
+        worker_id: int = -1,
+        # Single-frame worker args
+        frame: np.ndarray | None = None,
+        frame_number: int = -1,
+        is_single_frame: bool = False,
     ):
         super().__init__()
+        # This event will be used to signal the thread to stop
+        self.stop_event = threading.Event()
         self.t512 = None
         self.t384 = None
         self.t256 = None
@@ -56,13 +60,30 @@ class FrameWorker(threading.Thread):
         self.interpolation_expression_faceeditor_back = None
         self.interpolation_block_shift = None
 
-        self.frame_queue = frame_queue
-        self.frame = frame  # Expected to be HxWxC RGB uint8 NumPy array
+        # --- Refactored Init ---
         self.main_window = main_window
-        self.frame_number = frame_number
         self.models_processor = main_window.models_processor
         self.video_processor = main_window.video_processor
+
+        # Mode-specific args
+        self.frame_queue = frame_queue  # This is now the TASK queue
+        self.worker_id = worker_id
+
+        # Single-frame data
+        self.frame = frame  # Will be None in pool mode until a task is dequeued
+        self.frame_number = (
+            frame_number  # Will be -1 in pool mode until a task is dequeued
+        )
         self.is_single_frame = is_single_frame
+
+        # Determine mode
+        self.is_pool_worker = (frame_queue is not None) and (worker_id != -1)
+
+        if self.is_pool_worker:
+            self.name = f"FrameWorker-Pool-{worker_id}"
+        else:
+            self.name = f"FrameWorker-Single-{frame_number}"
+        # --- End Refactor ---
         self.parameters: Dict[
             str, ParametersTypes
         ] = {}  # Will be populated from main_window.parameters
@@ -92,26 +113,126 @@ class FrameWorker(threading.Thread):
         ) = get_scaling_transforms(control_params)
 
     def run(self):
-        try:
-            # Update parameters from markers (if exists)
-            with (
-                self.main_window.models_processor.model_lock
-            ):  # Ensure thread safety for UI data access
-                video_control_actions.update_parameters_and_control_from_marker(
-                    self.main_window, self.frame_number
-                )
-                self.parameters = self.main_window.parameters.copy()
-                current_control_state = self.main_window.control.copy()
+        """
+        Main thread execution loop.
+        - In Pool Mode, this loops, gets tasks from self.frame_queue, and calls process_and_emit_task().
+        - In Single-Frame Mode, this calls process_and_emit_task() just once.
+        """
+        if self.is_pool_worker:
+            # --- Pool Worker Mode ---
+            while not self.stop_event.is_set():
+                task = None  # Ensure task is defined for 'finally'
+                try:
+                    # Block until a task is available or a poison pill is received
+                    # Use a timeout to periodically check the stop_event
+                    task = self.frame_queue.get(timeout=1.0)
 
+                    if task is None:
+                        # Poison pill received: Exit the loop
+                        print(f"{self.name} received poison pill. Exiting.")
+                        break  # 'finally' will call task_done()
+
+                    if self.stop_event.is_set():
+                        # Stopped while waiting, discard task
+                        break  # 'finally' will call task_done()
+
+                    # Unpack the task which now includes parameters
+                    (
+                        self.frame_number,
+                        self.frame,
+                        local_params_from_feeder,
+                        local_control_from_feeder,
+                    ) = task
+
+                    # Store them locally in the worker
+                    self.parameters = local_params_from_feeder
+                    self.local_control_state_from_feeder = local_control_from_feeder
+
+                    # Process the frame
+                    self.process_and_emit_task()
+
+                except queue.Empty:
+                    # Timeout occurred, just loop again to check stop_event
+                    # 'task' is still None, so 'finally' will do nothing
+                    continue
+                except Exception as e:
+                    # An error happened *during* processing (process_and_emit_task)
+                    print(f"Error in {self.name} (frame {self.frame_number}): {e}")
+                    traceback.print_exc()
+                    # We still need to mark the task as done in 'finally'
+
+                finally:
+                    # This block executes *no matter what* (success, exception, or break)
+                    # as long as 'task' was assigned (i.e. not a queue.Empty)
+                    if task is not None and self.frame_queue is not None:
+                        try:
+                            self.frame_queue.task_done()
+                        except ValueError:
+                            # This can happen if stop_processing cleared the queue
+                            # while this worker was busy. It's safe to ignore.
+                            print(
+                                f"[WARN] {self.name} tried to task_done() on a cleared queue."
+                            )
+                            pass
+
+            # After 'while' loop breaks (by poison pill or stop_event)
+            # We exit the run() method
+
+        else:
+            # --- Single-Frame Mode ---
+            if self.stop_event.is_set():
+                print(f"{self.name} cancelled before start.")
+                return
+            try:
+                # A Single-Frame worker (from manual edit or scrub)
+                # must *NEVER* use "look-behind" logic. It must
+                # use the *current* global state, which contains
+                # the user's manual changes.
+
+                with self.main_window.models_processor.model_lock:
+                    local_parameters_copy = self.main_window.parameters.copy()
+                    local_control_copy = self.main_window.control.copy()
+
+                # Ensure parameter dicts exist (failsafe)
+                active_target_face_ids = list(self.main_window.target_faces.keys())
+                for face_id_key in active_target_face_ids:
+                    if str(face_id_key) not in local_parameters_copy:
+                        local_parameters_copy[str(face_id_key)] = (
+                            self.main_window.default_parameters.copy()
+                        )
+
+                # Store locally
+                self.parameters = local_parameters_copy
+                self.local_control_state_from_feeder = local_control_copy
+                # Just run the processing logic once
+                self.process_and_emit_task()
+            except Exception as e:
+                print(f"Error in {self.name}: {e}")
+                traceback.print_exc()
+
+    def process_and_emit_task(self):
+        """
+        This was the original 'run' method.
+        It processes self.frame and emits the result.
+        It NO LONGER touches the frame_queue.
+        """
+        try:
+            # This worker (pool or single) already has its state
+            # loaded into self.parameters and self.local_control_state_from_feeder.
+            # Just use them.
+
+            local_control_state = self.local_control_state_from_feeder
+
+            # Get UI state (which is safe, it's just reading)
             self.is_view_face_compare = self.main_window.faceCompareCheckBox.isChecked()
             self.is_view_face_mask = self.main_window.faceMaskCheckBox.isChecked()
 
-            # Determine if any processing is needed
+            # Determine if processing is needed
             needs_processing = (
                 self.main_window.swapfacesButton.isChecked()
                 or self.main_window.editFacesButton.isChecked()
-                or current_control_state.get("FrameEnhancerEnableToggle", False)
-                or current_control_state.get(
+                or local_control_state.get("FrameEnhancerEnableToggle", False)
+                or local_control_state.get(
                     "ModeEnableToggle", False
                 )  #  always processes
             )
@@ -122,13 +243,23 @@ class FrameWorker(threading.Thread):
                 ]:  # Ensure input frame is C-contiguous
                     self.frame = np.ascontiguousarray(self.frame)
                 # process_frame returns BGR, uint8
-                processed_frame_bgr_np_uint8 = self.process_frame(current_control_state)
+
+                # Pass the *local* control state to process_frame
+                processed_frame_bgr_np_uint8 = self.process_frame(
+                    local_control_state, self.stop_event
+                )
+
                 # Ensure output is C-contiguous for Qt display
                 self.frame = np.ascontiguousarray(processed_frame_bgr_np_uint8)
             else:
                 # If no processing, just convert RGB to BGR for display
                 self.frame = self.frame[..., ::-1]
                 self.frame = np.ascontiguousarray(self.frame)
+
+            # If a stop was requested during processing, exit this task cleanly.
+            if self.stop_event.is_set():
+                print(f"{self.name} cancelled during process_frame.")
+                return  # Eject from this task. The `run` loop will call task_done().
 
             # self.frame is now consistently BGR. It can be used for both pixmap creation and signal emission.
             pixmap = common_widget_actions.get_pixmap_from_frame(
@@ -148,19 +279,10 @@ class FrameWorker(threading.Thread):
                     self.frame_number, pixmap, self.frame
                 )
 
-            self.video_processor.frame_queue.get()
-            self.video_processor.frame_queue.task_done()
-
-            if (
-                self.video_processor.frame_queue.empty()
-                and not self.video_processor.processing
-                and self.video_processor.next_frame_to_display
-                >= self.video_processor.max_frame_number
-            ):
-                self.video_processor.stop_processing()
+            # --- ALL QUEUE LOGIC IS REMOVED FROM HERE ---
 
         except Exception as e:
-            print(f"Error in FrameWorker for frame {self.frame_number}: {e}")
+            print(f"Error in {self.name} (frame {self.frame_number}): {e}")
             traceback.print_exc()
 
     def tensor_to_pil(self, tensor):
@@ -220,11 +342,20 @@ class FrameWorker(threading.Thread):
             self.main_window.target_faces.items()
         ):
             face_specific_params_dict = self.parameters.get(target_id, {})
+
+            # --- START FIX ---
+            # The original code incorrectly tried: dict(self.main_window.default_parameters)
+            # This does not correctly get the default parameter dictionary
+            # from the ParametersDict object.
+            # The correct attribute is .data, which holds the actual dictionary.
             default_params_dict = (
-                dict(self.main_window.default_parameters)
+                dict(self.main_window.default_parameters.data)
                 if isinstance(self.main_window.default_parameters, ParametersDict)
-                else dict(self.main_window.default_parameters)
+                else dict(
+                    self.main_window.default_parameters.data
+                )  # Assume .data is always the target
             )
+            # --- END FIX ---
 
             current_params_pd = ParametersDict(
                 dict(face_specific_params_dict), cast(dict, default_params_dict)
@@ -340,14 +471,19 @@ class FrameWorker(threading.Thread):
                 parameters_for_face["SwapModelSelection"], kps_5_on_crop_param
             )
 
+            # Define the 512x512 resizer for masks
+            t512_mask = v2.Resize(
+                (512, 512), interpolation=v2.InterpolationMode.BILINEAR, antialias=False
+            )
+
             if (
                 comprehensive_mask_1x512x512_from_swap_core is None
                 or comprehensive_mask_1x512x512_from_swap_core.numel() == 0
             ):
+                # This path is a fallback if swap_core returns no mask.
+                # default to just the border mask if swapping is on.
                 persp_final_combined_mask_1x512x512_float_for_paste = (
-                    cast(v2.Resize, self.t512)(
-                        self.get_border_mask(parameters_for_face)[0]
-                    ).float()
+                    t512_mask(self.get_border_mask(parameters_for_face.data)[0]).float()
                     if swap_button_is_checked_global
                     else torch.zeros(
                         (1, 512, 512),
@@ -356,9 +492,21 @@ class FrameWorker(threading.Thread):
                     )
                 )
             else:
+                # This is the primary path. Start with the mask from swap_core.
                 persp_final_combined_mask_1x512x512_float_for_paste = (
                     comprehensive_mask_1x512x512_from_swap_core.float()
                 )
+
+                # apply the border mask if it's enabled for this face.
+                if parameters_for_face.get("BordermaskEnableToggle", False):
+                    # get_border_mask returns a 128x128 mask tensor.
+                    border_mask_128, _ = self.get_border_mask(parameters_for_face.data)
+                    # Resize it to 512x512 to match the comprehensive mask.
+                    border_mask_512 = t512_mask(border_mask_128)
+                    # Multiply the masks together to combine them.
+                    persp_final_combined_mask_1x512x512_float_for_paste *= (
+                        border_mask_512
+                    )
 
             persp_final_combined_mask_3x512x512_float_for_paste = (
                 persp_final_combined_mask_1x512x512_float_for_paste.repeat(3, 1, 1)
@@ -454,7 +602,10 @@ class FrameWorker(threading.Thread):
 
         return processed_crop_torch_rgb_uint8
 
-    def process_frame(self, control: dict):
+    def process_frame(self, control: dict, stop_event: threading.Event):
+        # Check 1: At the very beginning
+        if stop_event.is_set():
+            return self.frame[..., ::-1]  # Return original BGR frame
         self.set_scaling_transforms(control)
         img_numpy_rgb_uint8 = self.frame
         swap_button_is_checked_global = self.main_window.swapfacesButton.isChecked()
@@ -548,6 +699,10 @@ class FrameWorker(threading.Thread):
             analyzed_faces_for_vr = []
             # This loop now iterates over the correctly de-duplicated bounding boxes.
             for bbox_eq_single in bboxes_eq_np:
+                # Check 2: Inside VR face loop
+                if stop_event.is_set():
+                    break
+
                 theta, phi = equirect_converter.calculate_theta_phi_from_bbox(
                     bbox_eq_single
                 )
@@ -789,6 +944,10 @@ class FrameWorker(threading.Thread):
             if det_faces_data_for_display:
                 if control["SwapOnlyBestMatchEnableToggle"]:
                     for _, target_face in self.main_window.target_faces.items():
+                        # Check 3: Inside standard face loop
+                        if stop_event.is_set():
+                            break
+
                         params = ParametersDict(
                             self.parameters[target_face.face_id],
                             self.main_window.default_parameters.data,
@@ -855,7 +1014,7 @@ class FrameWorker(threading.Thread):
                                 best_fface["kps_all"],
                                 s_e=s_e,
                                 t_e=target_face.get_embedding(arcface_model),
-                                parameters=params.data,
+                                parameters=params,
                                 control=control,
                                 dfm_model_name=params["DFMModelSelection"],
                                 kv_map=kv_map_for_swap,
@@ -874,6 +1033,10 @@ class FrameWorker(threading.Thread):
                                 )
                 else:
                     for fface in det_faces_data_for_display:
+                        # Check 4: Inside standard face loop (else branch)
+                        if stop_event.is_set():
+                            break
+
                         best_target, params, _ = self._find_best_target_match(
                             fface["embedding"], control
                         )
@@ -923,7 +1086,7 @@ class FrameWorker(threading.Thread):
                                     fface["kps_all"],
                                     s_e=s_e,
                                     t_e=best_target.get_embedding(arcface_model),
-                                    parameters=params.data,
+                                    parameters=params,
                                     control=control,
                                     dfm_model_name=params["DFMModelSelection"],
                                     kv_map=kv_map_for_swap,
@@ -985,6 +1148,10 @@ class FrameWorker(threading.Thread):
             )
 
         if control["FrameEnhancerEnableToggle"] and not compare_mode_active:
+            # Check 5: Before final heavy operation
+            if stop_event.is_set():
+                return img_numpy_rgb_uint8[..., ::-1]  # Return original BGR frame
+
             processed_tensor_rgb_uint8 = self.enhance_core(
                 processed_tensor_rgb_uint8, control=control
             )
@@ -3120,9 +3287,6 @@ class FrameWorker(threading.Thread):
 
             x_d_i_info = self.models_processor.lp_motion_extractor(
                 driving_face_256, "Human-Face"
-            )
-            faceutil.get_rotation_matrix(
-                x_d_i_info["pitch"], x_d_i_info["yaw"], x_d_i_info["roll"]
             )
 
             # --- VARIABLE DEFINITION (Original Placement) ---
