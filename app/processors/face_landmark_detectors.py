@@ -250,7 +250,22 @@ class FaceLandmarkDetectors:
         Returns:
             List[np.ndarray]: A list of numpy arrays containing the model's output.
         """
-        model = self.models_processor.models[model_name]
+        # We must use load_model (which is thread-safe) instead of direct
+        # dictionary access (self.models_processor.models[model_name]).
+        # This prevents a KeyError if another thread unloads the model
+        # between the check in run_detect_landmark and the execution here.
+        model = self.models_processor.load_model(model_name)
+        
+        # Failsafe: If load_model fails (e.g., file not found, TRT build fail),
+        # model will be None. We must abort to prevent a crash.
+        if model is None:
+            print(f"[ERROR] _run_onnx_binding: Failed to get or load model '{model_name}'.")
+            # Return empty arrays matching the expected output structure (list of np.ndarray)
+            # We must create dummy outputs based on output_names to avoid crashes upstream.
+            # A simpler approach for now: return empty list, let caller handle it.
+            # This will likely result in an empty kpss list, which is handled.
+            return []
+
         io_binding = model.io_binding()
 
         # Bind inputs to the model.

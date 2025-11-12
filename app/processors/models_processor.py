@@ -199,6 +199,7 @@ class ModelsProcessor(QtCore.QObject):
         )
         self.internal_kv_map_source_filename: str | None = None
         self.kv_extractor: Optional[KVExtractor] = None
+        self.kv_extraction_lock = threading.Lock()
         self.device = device
         self.model_lock = threading.RLock()  # Reentrant lock for model access
         # A dictionary to hold locks for each TRT model build process.
@@ -1062,8 +1063,48 @@ class ModelsProcessor(QtCore.QObject):
 
         print("GPU Memory Cleared.")
 
+    def get_kv_map_for_face(self, input_face_image_pil: "Image.Image") -> Dict[str, Dict[str, torch.Tensor]]:
+        """
+        (Thread-unsafe) Loads the KV Extractor, extracts K/V maps, and unloads.
+        The caller MUST wrap this function in the 'kv_extraction_lock'.
+
+        Args:
+            input_face_image_pil: A 512x512 PIL Image.
+        """
+        
+        kv_map = {}
+        try:
+            # 1. Load the extractor
+            self.ensure_kv_extractor_loaded()
+
+            if self.kv_extractor is None:
+                raise RuntimeError("KV Extractor model failed to load.")
+
+            # 2. Perform the extraction
+            print("Extracting K/V from reference image...")
+            kv_map = self.kv_extractor.extract_kv(input_face_image_pil)
+            print(f"Successfully extracted K/V for {len(kv_map)} attention layers.")
+
+        except Exception as e:
+            print(f"[ERROR] Failed during K/V extraction: {e}")
+            traceback.print_exc()
+            kv_map = {}  # Retourne une map vide en cas d'échec
+        
+        finally:
+            # 3. Unload the extractor
+            self.unload_kv_extractor()
+        
+        return kv_map
+
     def ensure_kv_extractor_loaded(self):
-        if self.kv_extractor is None:
+        # This lock is critical to prevent a race condition where multiple
+        # FrameWorkers might try to load the KV Extractor simultaneously
+        # at the beginning of a video processing segment.
+        with self.model_lock:
+            # Check *again* inside the lock (double-checked locking pattern)
+            if self.kv_extractor is not None:
+                return  # Already loaded by another thread while this one was waiting
+
             try:
                 print("Loading KV Extractor...")
 
@@ -1099,7 +1140,7 @@ class ModelsProcessor(QtCore.QObject):
                     print(
                         "ReF-LDM model files not found even after download attempt. Cannot load KV Extractor."
                     )
-                    return
+                    return # Return early if files are missing
 
                 self.kv_extractor = KVExtractor(
                     model_config_path=config_path,
