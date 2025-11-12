@@ -694,50 +694,53 @@ class TargetFaceCardButton(CardButton):
             input_face_button = main_window.input_faces.get(first_input_face_id)
 
             if input_face_button:
-                # If the input face has a map, use it.
-                if (
-                    hasattr(input_face_button, "kv_map")
-                    and input_face_button.kv_map is not None
-                ):
-                    # print(f"Using cached K/V map for input face: {input_face_button.media_path}")
-                    self.assigned_kv_map = input_face_button.kv_map
-                else:
-                    # Otherwise, generate a new one
-                    # print(f"Generating K/V map for input face: {input_face_button.media_path}")
-                    try:
-                        from PIL import Image
-
-                        models_processor = main_window.models_processor
-                        models_processor.ensure_kv_extractor_loaded()
-
-                        if models_processor.kv_extractor:
-                            cropped_face_np = input_face_button.cropped_face
-                            pil_img = Image.fromarray(cropped_face_np[..., ::-1])
+                
+                # This lock ensures that only one thread (either the main thread
+                # during job loading, or a FrameWorker) can
+                # check the cache and generate the K/V map at a time.
+                with main_window.models_processor.kv_extraction_lock:
+                    
+                    # 1. Check the cache *inside* the lock.
+                    # If another thread generated it while we were waiting,
+                    # we can use it directly.
+                    if (
+                        hasattr(input_face_button, "kv_map")
+                        and input_face_button.kv_map is not None
+                    ):
+                        # Cache found! Assign and exit the lock.
+                        self.assigned_kv_map = input_face_button.kv_map
+                    else:
+                        # Cache missing. We are the first thread.
+                        # Generate, cache, and assign the map.
+                        print(f"Generating K/V map for input face: {input_face_button.media_path}")
+                        try:
+                            from PIL import Image
+                            models_processor = main_window.models_processor
+                            
+                            # Prepare the image for the extractor
+                            cropped_face_np = input_face_button.cropped_face # BGR Numpy
+                            pil_img = Image.fromarray(cropped_face_np[..., ::-1]) # RGB PIL
 
                             if pil_img.size != (512, 512):
                                 pil_img = pil_img.resize(
                                     (512, 512), Image.Resampling.LANCZOS
                                 )
 
-                            kv_map = models_processor.kv_extractor.extract_kv(pil_img)
+                            # Call the function (which no longer has an internal lock)
+                            # It will load, extract, AND unload.
+                            kv_map = models_processor.get_kv_map_for_face(pil_img)
 
-                            # Cache the generated map on the input face button
+                            # Cache and assign
                             input_face_button.kv_map = kv_map
-
-                            # Assign to the target face
                             self.assigned_kv_map = kv_map
-                            # print(f"Generated and cached K/V map.")
-                        else:
-                            print(
-                                "KV Extractor not available, cannot generate K/V map."
-                            )
-                    except Exception as e:
-                        print(f"Error generating K/V map: {e}")
-                        traceback.print_exc()
-                    finally:
-                        if not main_window.control.get("DenoiserUNetModelSelection"):
-                            main_window.models_processor.unload_kv_extractor()
-
+                            print(f"Generated and cached K/V map.")
+                        
+                        except Exception as e:
+                            print(f"Error generating K/V map: {e}")
+                            traceback.print_exc()
+                            input_face_button.kv_map = {} # Empty cache in case of error
+                            self.assigned_kv_map = {}
+                
         if main_window.selected_target_face_id == self.face_id:
             main_window.current_kv_tensors_map = self.assigned_kv_map
 
