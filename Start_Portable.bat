@@ -113,20 +113,20 @@ if not exist "%APP_DIR%\.git" (
     set "NEEDS_INSTALL=true"
 ) else (
     echo Repository exists. Checking for updates...
-    
+
     :: Clear any git environment variables that might interfere
     set "GIT_DIR="
     set "GIT_WORK_TREE="
-    
+
     pushd "%APP_DIR%"
-    
+
     "%GIT_EXE%" checkout %BRANCH%
     if !ERRORLEVEL! neq 0 (
         echo ERROR: Failed to checkout branch.
         popd
         exit /b 1
     )
-    
+
     "%GIT_EXE%" fetch
     if !ERRORLEVEL! neq 0 (
         echo ERROR: Failed to fetch updates.

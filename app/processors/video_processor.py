@@ -2098,6 +2098,9 @@ class VideoProcessor(QObject):
         is_first = self.current_segment_index == 0
 
         # Start the feeder thread
+        with self.state_lock:
+            self.feeder_parameters = self.main_window.parameters.copy()
+            self.feeder_control = self.main_window.control.copy()
         print(f"Starting feeder thread (Mode: segment {self.current_segment_index})...")
         self.feeder_thread = threading.Thread(target=self._feeder_loop, daemon=True)
         self.feeder_thread.start()

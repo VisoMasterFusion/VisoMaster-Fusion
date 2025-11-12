@@ -55,7 +55,7 @@ SETTINGS_LAYOUT_DATA: Any = {  # noqa: F811
             "level": 1,
             "label": "Track Markers on Video Seek",
             "default": False,
-            "help": "Update parameters and cotrols when seeking the video to reflect the options status for it's position.",
+            "help": "Update parameters and controls when seeking the video to reflect the options status for it's position.",
         },
     },
     "Video Playback Settings": {
