@@ -342,11 +342,20 @@ class FrameWorker(threading.Thread):
             self.main_window.target_faces.items()
         ):
             face_specific_params_dict = self.parameters.get(target_id, {})
+
+            # --- START FIX ---
+            # The original code incorrectly tried: dict(self.main_window.default_parameters)
+            # This does not correctly get the default parameter dictionary
+            # from the ParametersDict object.
+            # The correct attribute is .data, which holds the actual dictionary.
             default_params_dict = (
-                dict(self.main_window.default_parameters)
+                dict(self.main_window.default_parameters.data)
                 if isinstance(self.main_window.default_parameters, ParametersDict)
-                else dict(self.main_window.default_parameters)
+                else dict(
+                    self.main_window.default_parameters.data
+                )  # Assume .data is always the target
             )
+            # --- END FIX ---
 
             current_params_pd = ParametersDict(
                 dict(face_specific_params_dict), cast(dict, default_params_dict)
@@ -474,9 +483,7 @@ class FrameWorker(threading.Thread):
                 # This path is a fallback if swap_core returns no mask.
                 # default to just the border mask if swapping is on.
                 persp_final_combined_mask_1x512x512_float_for_paste = (
-                    t512_mask(
-                        self.get_border_mask(parameters_for_face.data)[0]
-                    ).float()
+                    t512_mask(self.get_border_mask(parameters_for_face.data)[0]).float()
                     if swap_button_is_checked_global
                     else torch.zeros(
                         (1, 512, 512),
@@ -1007,7 +1014,7 @@ class FrameWorker(threading.Thread):
                                 best_fface["kps_all"],
                                 s_e=s_e,
                                 t_e=target_face.get_embedding(arcface_model),
-                                parameters=params.data,
+                                parameters=params,
                                 control=control,
                                 dfm_model_name=params["DFMModelSelection"],
                                 kv_map=kv_map_for_swap,
@@ -1079,7 +1086,7 @@ class FrameWorker(threading.Thread):
                                     fface["kps_all"],
                                     s_e=s_e,
                                     t_e=best_target.get_embedding(arcface_model),
-                                    parameters=params.data,
+                                    parameters=params,
                                     control=control,
                                     dfm_model_name=params["DFMModelSelection"],
                                     kv_map=kv_map_for_swap,
