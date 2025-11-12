@@ -10,7 +10,7 @@ set "BASE_DIR=%~dp0"
 set "APP_PYTHON=%BASE_DIR%portable-files\python\python.exe"
 set "GIT_DIR_PRESENT=%BASE_DIR%VisoMaster-Fusion\.git"
 set "PORTABLE_CFG=%BASE_DIR%portable.cfg"
-set "FFMPEG_EXTRACT_DIR=%BASE_DIR%dependencies"
+set "FFMPEG_EXTRACT_DIR=%BASE_DIR%portable-files"
 set "FFMPEG_DIR_NAME=ffmpeg-7.1.1-essentials_build"
 set "FFMPEG_BIN_PATH=%FFMPEG_EXTRACT_DIR%\%FFMPEG_DIR_NAME%\bin"
 
@@ -113,9 +113,26 @@ if not exist "%APP_DIR%\.git" (
     set "NEEDS_INSTALL=true"
 ) else (
     echo Repository exists. Checking for updates...
+    
+    :: Clear any git environment variables that might interfere
+    set "GIT_DIR="
+    set "GIT_WORK_TREE="
+    
     pushd "%APP_DIR%"
+    
     "%GIT_EXE%" checkout %BRANCH%
+    if !ERRORLEVEL! neq 0 (
+        echo ERROR: Failed to checkout branch.
+        popd
+        exit /b 1
+    )
+    
     "%GIT_EXE%" fetch
+    if !ERRORLEVEL! neq 0 (
+        echo ERROR: Failed to fetch updates.
+        popd
+        exit /b 1
+    )
 
     for /f "tokens=*" %%i in ('"%GIT_EXE%" rev-parse HEAD') do set "LOCAL=%%i"
     for /f "tokens=*" %%i in ('"%GIT_EXE%" rev-parse origin/%BRANCH%') do set "REMOTE=%%i"
@@ -134,10 +151,10 @@ if not exist "%APP_DIR%\.git" (
             echo Repository updated.
             set "NEEDS_INSTALL=true"
             set "DOWNLOAD_RUN=false"
+            popd
             powershell -Command "(Get-Content '%CONFIG_FILE%') -replace 'DOWNLOAD_RUN=.*', 'DOWNLOAD_RUN=false' | Set-Content '%CONFIG_FILE%'"
 
             :: SELF-UPDATE CHECK
-            popd
             call :self_update_check
         ) else (
             popd
@@ -261,13 +278,19 @@ if "%LAUNCHER_ENABLED%"=="1" (
                 echo timeout /t 2 /nobreak ^>nul
                 echo echo Replacing Start_Portable.bat...
                 echo copy /y "%REPO_BAT%" "%ROOT_BAT%"
+                echo if errorlevel 1 ^(
+                echo     echo ERROR: Failed to update launcher script.
+                echo     pause
+                echo     exit /b 1
+                echo ^)
                 echo echo Update complete. Relaunching...
-                echo start "" /d "%BASE_DIR%" "Start_Portable.bat"
-                echo exit
-            ) > "%UPDATER_BAT%"
+                echo start "" /d "%BASE_DIR%" "%ROOT_BAT%"
+                echo del "%%~f0"
+            ) > "!UPDATER_BAT!"
 
-            start "" cmd /c "%UPDATER_BAT%"
-            exit /b 0
+            echo Launching updater and exiting...
+            start "" cmd /c "!UPDATER_BAT!"
+            exit
         )
     )
 goto :eof
