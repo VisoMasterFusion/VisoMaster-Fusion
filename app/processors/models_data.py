@@ -1,13 +1,11 @@
 import os
 from pathlib import Path
 
+models_dir = Path(__file__).resolve().parent.parent.parent / "model_assets"
 # ensure ref-ldm paths exist
-refldm_ckpts_path = "model_assets/ref-ldm_embedding/ckpts"
+refldm_ckpts_path = models_dir / "ref-ldm_embedding/ckpts"
 os.makedirs(refldm_ckpts_path, exist_ok=True)
 
-models_dir = str(
-    Path(__file__).resolve().parent.parent.parent / "model_assets"
-)  # More robust path
 assets_repo = "https://github.com/visomaster/visomaster-assets/releases/download"
 
 try:
@@ -477,3 +475,4 @@ models_list = [
         "url": "https://github.com/ChiWeiHsiao/ref-ldm/releases/download/1.0.0/vqgan.ckpt",
     },
 ]
+
