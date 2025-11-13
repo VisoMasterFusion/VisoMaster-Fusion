@@ -461,8 +461,23 @@ class VideoProcessor(QObject):
 
                 frame_rgb = frame_bgr[..., ::-1]
 
-                # Create the task tuple (frame_number, frame_data)
-                task = (0, frame_rgb)  # Frame number is 0
+                # The worker pool expects a 4-tuple task.
+                # For webcam, we must read the *current* global parameters
+                # and control state for every frame, as there are no markers.
+
+                # Acquire lock to safely read global state from main window
+                # We use the model_lock for consistency with single-frame mode
+                with self.main_window.models_processor.model_lock:
+                    local_params_for_worker = self.main_window.parameters.copy()
+                    local_control_for_worker = self.main_window.control.copy()
+
+                # Create the 4-tuple task
+                task = (
+                    0,  # frame_number is always 0 for webcam
+                    frame_rgb,
+                    local_params_for_worker,
+                    local_control_for_worker,
+                )
 
                 # Put the task in the queue for the worker pool
                 self.frame_queue.put(task)

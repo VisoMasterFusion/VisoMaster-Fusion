@@ -7,7 +7,7 @@ import multiprocessing
 import re
 import time
 from typing import Dict, TYPE_CHECKING, Optional
-
+from PIL import Image
 from packaging import version
 import numpy as np
 import onnxruntime
@@ -241,10 +241,13 @@ class ModelsProcessor(QtCore.QObject):
 
         self.dfm_models: Dict[str, DFMModel] = {}
 
+        # MODIFICATION: Initialize TRT dicts *outside* the check
+        # This prevents AttributeError on systems without TensorRT
+        self.models_trt: Dict[str, Optional[TensorRTPredictor]] = {}
+        self.models_trt_path = {}
+
         if TENSORRT_AVAILABLE:
-            # Initialize models_trt and models_trt_path
-            self.models_trt: Dict[str, Optional[TensorRTPredictor]] = {}
-            self.models_trt_path = {}
+            # Populate models_trt and models_trt_path
             for model_data in models_trt_list:
                 model_name, model_path = (
                     model_data["model_name"],
@@ -1063,7 +1066,9 @@ class ModelsProcessor(QtCore.QObject):
 
         print("GPU Memory Cleared.")
 
-    def get_kv_map_for_face(self, input_face_image_pil: "Image.Image") -> Dict[str, Dict[str, torch.Tensor]]:
+    def get_kv_map_for_face(
+        self, input_face_image_pil: "Image.Image"
+    ) -> Dict[str, Dict[str, torch.Tensor]]:
         """
         (Thread-unsafe) Loads the KV Extractor, extracts K/V maps, and unloads.
         The caller MUST wrap this function in the 'kv_extraction_lock'.
@@ -1071,7 +1076,7 @@ class ModelsProcessor(QtCore.QObject):
         Args:
             input_face_image_pil: A 512x512 PIL Image.
         """
-        
+
         kv_map = {}
         try:
             # 1. Load the extractor
@@ -1089,11 +1094,11 @@ class ModelsProcessor(QtCore.QObject):
             print(f"[ERROR] Failed during K/V extraction: {e}")
             traceback.print_exc()
             kv_map = {}  # Retourne une map vide en cas d'échec
-        
+
         finally:
             # 3. Unload the extractor
             self.unload_kv_extractor()
-        
+
         return kv_map
 
     def ensure_kv_extractor_loaded(self):
@@ -1140,7 +1145,7 @@ class ModelsProcessor(QtCore.QObject):
                     print(
                         "ReF-LDM model files not found even after download attempt. Cannot load KV Extractor."
                     )
-                    return # Return early if files are missing
+                    return  # Return early if files are missing
 
                 self.kv_extractor = KVExtractor(
                     model_config_path=config_path,
@@ -1498,7 +1503,7 @@ class ModelsProcessor(QtCore.QObject):
         return self.frame_enhancers.run_deoldify_artistic(image, output)
 
     def run_deoldify_stable(self, image, output):
-        return self.frame_enhancers.run_deoldify_artistic(image, output)
+        return self.frame_enhancers.run_deoldify_stable(image, output)
 
     def run_deoldify_video(self, image, output):
         return self.frame_enhancers.run_deoldify_video(image, output)
