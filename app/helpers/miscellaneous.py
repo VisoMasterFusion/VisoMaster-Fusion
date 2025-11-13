@@ -11,6 +11,8 @@ from pathlib import Path
 from torchvision.transforms import v2
 from typing import Dict, Tuple, Optional
 import threading
+import subprocess
+import json
 
 lock = threading.Lock()
 
@@ -489,6 +491,119 @@ def get_scaled_resolution(
     return int(media_width), int(media_height)
 
 
+def get_video_rotation(media_path: str) -> int:
+    """
+    Uses ffprobe to get the video rotation metadata tag.
+    Checks both 'side_data_list' and 'tags'.
+    Returns 0 if no rotation tag is found or ffprobe fails.
+    """
+    # Log when the check starts
+    print(
+        f"[Info] Checking video rotation metadata for: {os.path.basename(media_path)}..."
+    )
+    try:
+        cmd = [
+            "ffprobe",
+            "-v",
+            "quiet",
+            "-print_format",
+            "json",
+            "-show_streams",
+            "-select_streams",
+            "v:0",
+            str(media_path),
+        ]
+
+        process = subprocess.Popen(
+            cmd,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            text=True,
+            encoding="utf-8",
+        )
+        stdout_data, stderr_data = process.communicate(timeout=10)  # 10s timeout
+
+        if process.returncode != 0:
+            print(f"[WARN] ffprobe failed for {media_path}. Error: {stderr_data}")
+            return 0
+
+        data = json.loads(stdout_data)
+
+        if "streams" in data and data["streams"]:
+            stream = data["streams"][0]
+            rotation_angle = 0  # Initialize rotation
+
+            # --- MODIFICATION: Check 'side_data_list' first (more robust) ---
+            if "side_data_list" in stream:
+                for side_data in stream["side_data_list"]:  # Variable is 'side_data'
+                    if "rotation" in side_data:
+                        try:
+                            # Use int(float(...)) to handle potential float values like "90.0"
+                            # --- CORRECTION: Changed 'side_Data' to 'side_data' ---
+                            rotation_angle = int(float(side_data["rotation"]))
+                            break  # Found it
+                        except (ValueError, TypeError, KeyError):
+                            pass  # Not a valid number
+
+            # --- FALLBACK: Check 'tags' (original logic) ---
+            if rotation_angle == 0 and "tags" in stream and "rotate" in stream["tags"]:
+                try:
+                    rotation_angle = int(float(stream["tags"]["rotate"]))
+                except (ValueError, TypeError):
+                    rotation_angle = 0  # Reset if tag is invalid
+
+            # --- Process the found rotation angle ---
+            if rotation_angle != 0:
+                # Handle negative rotations (e.g., -90)
+                if rotation_angle < 0:
+                    rotation_angle += 360
+
+                # Normalize common angles (90, 180, 270)
+                if 85 <= rotation_angle <= 95:
+                    print("Detected video rotation: 90°")
+                    return 90
+                if 175 <= rotation_angle <= 185:
+                    print("Detected video rotation: 180°")
+                    return 180
+                if 265 <= rotation_angle <= 275:
+                    print("Detected video rotation: 270°")
+                    return 270
+
+                print(
+                    f"[Info] Found rotation tag, but angle '{rotation_angle}' is not standard. Ignoring."
+                )
+            else:
+                print(
+                    "[Info] ffprobe ran, but no 'rotate' tag was found in stream (checked tags and side_data_list)."
+                )
+
+        else:
+            print("[Info] ffprobe ran, but no video streams were found.")
+
+    except FileNotFoundError:
+        print(
+            "[WARN] ffprobe command not found. Cannot check video rotation. Please ensure ffprobe is in your system's PATH."
+        )
+    except Exception as e:
+        print(f"[WARN] Could not get video rotation metadata. Error: {e}")
+
+    print("[Info] No rotation metadata applied (returning 0).")
+    return 0  # Default to 0
+
+
+def _apply_frame_rotation(frame: np.ndarray, angle: int) -> np.ndarray:
+    """Applies OpenCV rotation to a frame based on a metadata angle."""
+    # The 'rotation: 90' tag typically implies a counter-clockwise rotation
+    # to turn landscape (1920x1080) into portrait (1080x1920).
+    if angle == 90:
+        return cv2.rotate(frame, cv2.ROTATE_90_COUNTERCLOCKWISE)
+    elif angle == 180:
+        return cv2.rotate(frame, cv2.ROTATE_180)
+    elif angle == 270:
+        return cv2.rotate(frame, cv2.ROTATE_90_CLOCKWISE)
+    return frame
+
+
 def benchmark(func):
     @wraps(func)
     def wrapper(*args, **kwargs):
@@ -503,35 +618,30 @@ def benchmark(func):
 
 
 def read_frame(
-    capture_obj: cv2.VideoCapture, preview_target_height: Optional[int] = None
+    capture_obj: cv2.VideoCapture,
+    media_rotation: int = 0,
+    preview_target_height: Optional[int] = None,
 ) -> Tuple[bool, Optional[np.ndarray]]:
     """
-    Reads a single frame from the video capture object in a thread-safe manner.
+    Reads a single frame from the video capture object in a thread-safe manner
+    and applies rotation.
 
     The 'lock' (Point 5) is critical as 'capture_obj' is a shared resource.
     It prevents race conditions between the feeder thread and seek operations.
-
-    If 'preview_target_height' is provided (e.g., 360), the frame is downscaled
-    to that specific height while maintaining aspect ratio. This is used for
-    the "fast preview" mode.
-
-    This downscaling is done *after* the lock to avoid holding the lock
-    during the resize operation (performance and thread safety).
-
-    Args:
-        capture_obj (cv2.VideoCapture): The shared OpenCV capture object.
-        preview_target_height (int, optional): If provided, the frame will be
-                                               downscaled to this height.
-
-    Returns:
-        tuple[bool, np.ndarray | None]: (ret, frame) from capture_obj.read().
-                                        The frame is full-res or downscaled.
     """
     with lock:
         # This is the only operation that needs to be locked
         ret, frame = capture_obj.read()
 
-    # Perform resizing only if read was successful AND a target height is specified
+    if not ret:
+        return False, None  # Return immediately if read fails
+
+    # 1. Apply rotation (if necessary)
+    if media_rotation != 0:
+        frame = _apply_frame_rotation(frame, media_rotation)
+
+    # 2. Apply resizing (if necessary)
+    # This is done *after* the lock to avoid holding it during resizing.
     if ret and preview_target_height is not None:
         try:
             original_height, original_width = frame.shape[:2]
@@ -553,10 +663,10 @@ def read_frame(
             )
         except Exception as e:
             print(f"[ERROR] Failed to resize frame in preview_mode: {e}")
-            # Fallback: return the original frame if resize fails
+            # Fallback: return the original (rotated) frame if resize fails
             return ret, frame
 
-    # Return the (potentially resized) frame
+    # Return the (potentially rotated and resized) frame
     return ret, frame
 
 

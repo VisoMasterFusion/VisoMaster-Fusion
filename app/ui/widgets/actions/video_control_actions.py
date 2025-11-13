@@ -13,6 +13,7 @@ from PIL import Image
 from PySide6 import QtGui, QtWidgets, QtCore
 
 from app.helpers.typing_helper import ControlTypes, FacesParametersTypes
+from app.helpers.miscellaneous import get_video_rotation
 
 if TYPE_CHECKING:
     from app.ui.main_ui import MainWindow
@@ -877,7 +878,10 @@ def on_change_video_seek_slider(main_window: "MainWindow", new_position=0):
         misc_helpers.seek_frame(video_processor.media_capture, new_position)
 
         # Read the raw frame without triggering the full pipeline.
-        ret, frame = misc_helpers.read_frame(video_processor.media_capture)
+        ret, frame = misc_helpers.read_frame(
+            video_processor.media_capture,
+            video_processor.media_rotation,  # MODIFICATION: Pass rotation
+        )
         if ret:
             # For preview, show the raw frame immediately.
             # The processed frame will be shown when the slider is released.
@@ -1288,6 +1292,9 @@ def process_batch_images(main_window: "MainWindow", process_all_faces: bool):
                     main_window.videoSeekSlider.setMaximum(0)
 
                 elif file_type == "video":
+                    # MODIFICATION: Get rotation for batch processing
+                    rotation_angle = get_video_rotation(media_path)
+                    main_window.video_processor.media_rotation = rotation_angle
                     media_capture = cv2.VideoCapture(media_path)
                     if not media_capture.isOpened():
                         raise Exception(f"Could not open video file: {media_path}")
@@ -1304,7 +1311,9 @@ def process_batch_images(main_window: "MainWindow", process_all_faces: bool):
                     main_window.videoSeekSlider.setMaximum(max_frames)
                     main_window.videoSeekSlider.blockSignals(False)
 
-                    ret, frame_bgr = misc_helpers.read_frame(media_capture)
+                    ret, frame_bgr = misc_helpers.read_frame(
+                        media_capture, rotation_angle
+                    )
                     if ret:
                         # Reset capture to frame 0 for processing
                         misc_helpers.seek_frame(media_capture, 0)

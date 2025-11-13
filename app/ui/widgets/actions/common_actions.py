@@ -9,6 +9,7 @@ from app.ui.widgets import widget_components
 from app.ui.widgets.settings_layout_data import SETTINGS_LAYOUT_DATA
 from app.ui.widgets.common_layout_data import COMMON_LAYOUT_DATA
 import app.helpers.miscellaneous as misc_helpers
+from app.helpers.miscellaneous import get_video_rotation
 from app.helpers.typing_helper import ControlTypes
 
 if TYPE_CHECKING:
@@ -472,17 +473,20 @@ def extract_frame_as_pixmap(
     if file_type == "image":
         frame = misc_helpers.read_image_file(media_file_path)
     elif file_type == "video":
+        # MODIFICATION: Get rotation for thumbnail
+        rotation_angle = get_video_rotation(media_file_path)
         cap = cv2.VideoCapture(media_file_path)
         if cap.isOpened():
             total_frames = int(cap.get(cv2.CAP_PROP_FRAME_COUNT))
             middle_frame_no = total_frames // 2
             cap.set(cv2.CAP_PROP_POS_FRAMES, middle_frame_no)
-            ret, frame = misc_helpers.read_frame(cap)
+            ret, frame = misc_helpers.read_frame(cap, rotation_angle)
             cap.release()
     elif file_type == "webcam":
         camera = cv2.VideoCapture(webcam_index, webcam_backend)
         if camera.isOpened():
-            ret, frame = misc_helpers.read_frame(camera)
+            # MODIFICATION: Pass 0 for webcam rotation
+            ret, frame = misc_helpers.read_frame(camera, 0)
             camera.release()  # Release camera immediately after grabbing one frame
 
     if isinstance(frame, np.ndarray):

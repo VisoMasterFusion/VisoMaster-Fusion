@@ -82,6 +82,7 @@ class VideoProcessor(QObject):
         self.file_type = None  # "video", "image", or "webcam"
         self.fps = 0.0  # Target FPS for playback or recording
         self.media_path = None
+        self.media_rotation: int = 0
         self.current_frame_number = 0  # The *next* frame to be read/processed
         self.max_frame_number = 0
         self.current_frame: numpy.ndarray = []  # The most recently read/processed frame
@@ -365,6 +366,7 @@ class VideoProcessor(QObject):
 
                 ret, frame_bgr = misc_helpers.read_frame(
                     self.media_capture,
+                    self.media_rotation,  # MODIFICATION: Pass rotation
                     preview_target_height=preview_target_height,
                 )
                 if not ret:
@@ -453,7 +455,9 @@ class VideoProcessor(QObject):
                     continue
 
                 ret, frame_bgr = misc_helpers.read_frame(
-                    self.media_capture, preview_target_height=None
+                    self.media_capture,
+                    0,
+                    preview_target_height=None,  # MODIFICATION: Pass 0 for rotation
                 )
                 if not ret:
                     print("[WARN] Feeder: Failed to read webcam frame.")
@@ -799,6 +803,7 @@ class VideoProcessor(QObject):
         )
         ret, frame_bgr = misc_helpers.read_frame(
             self.media_capture,
+            self.media_rotation,  # MODIFICATION: Pass rotation
             preview_target_height=None,
         )
         print(f"Sync: Initial read complete (Result: {ret}).")
@@ -820,7 +825,9 @@ class VideoProcessor(QObject):
                 f"Sync: Retrying read for frame {fallback_frame_to_try} using locked helper..."
             )
             ret, frame_bgr = misc_helpers.read_frame(
-                self.media_capture, preview_target_height=None
+                self.media_capture,
+                self.media_rotation,
+                preview_target_height=None,  # MODIFICATION: Pass rotation
             )
             print(f"Sync: Retry read complete (Result: {ret}).")
             if not ret:
@@ -957,7 +964,9 @@ class VideoProcessor(QObject):
         if self.file_type == "video" and self.media_capture:
             misc_helpers.seek_frame(self.media_capture, self.current_frame_number)
             ret, frame_bgr = misc_helpers.read_frame(
-                self.media_capture, preview_target_height=None
+                self.media_capture,
+                self.media_rotation,
+                preview_target_height=None,  # MODIFICATION: Pass rotation
             )
             if ret:
                 frame_to_process = frame_bgr[..., ::-1]  # BGR to RGB
@@ -984,7 +993,9 @@ class VideoProcessor(QObject):
 
         elif self.file_type == "webcam" and self.media_capture:
             ret, frame_bgr = misc_helpers.read_frame(
-                self.media_capture, preview_target_height=None
+                self.media_capture,
+                0,
+                preview_target_height=None,  # MODIFICATION: Pass 0 for rotation
             )
             if ret:
                 frame_to_process = frame_bgr[..., ::-1]  # BGR to RGB
@@ -2034,7 +2045,9 @@ class VideoProcessor(QObject):
         misc_helpers.seek_frame(self.media_capture, start_frame)
         # We use preview_target_height=None to ensure segments are always read at full resolution
         ret, frame_bgr = misc_helpers.read_frame(
-            self.media_capture, preview_target_height=None
+            self.media_capture,
+            self.media_rotation,
+            preview_target_height=None,  # MODIFICATION: Pass rotation
         )
         if ret:
             self.current_frame = numpy.ascontiguousarray(

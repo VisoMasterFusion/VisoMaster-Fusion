@@ -20,6 +20,7 @@ from app.ui.widgets.actions import graphics_view_actions
 from app.ui.widgets.actions import card_actions
 from app.ui.widgets.actions import save_load_actions
 import app.helpers.miscellaneous as misc_helpers
+from app.helpers.miscellaneous import get_video_rotation
 
 if TYPE_CHECKING:
     from app.ui.main_ui import MainWindow
@@ -204,8 +205,12 @@ class TargetMediaCardButton(CardButton):
 
         frame = None
         max_frames_number = 0  # Initialize max_frames_number for either video or image
+        rotation_angle = 0  # MODIFICATION: Added rotation variable
 
         if self.file_type == "video":
+            # MODIFICATION: Get video rotation metadata before loading
+            rotation_angle = get_video_rotation(self.media_path)
+            main_window.video_processor.media_rotation = rotation_angle
             media_capture = cv2.VideoCapture(self.media_path)
             if not media_capture.isOpened():
                 print(f"Error opening video {self.media_path}")
@@ -213,7 +218,7 @@ class TargetMediaCardButton(CardButton):
 
             media_capture.set(cv2.CAP_PROP_POS_FRAMES, 0)
             max_frames_number = int(media_capture.get(cv2.CAP_PROP_FRAME_COUNT)) - 1
-            _, frame = misc_helpers.read_frame(media_capture)
+            _, frame = misc_helpers.read_frame(media_capture, rotation_angle)
             main_window.video_processor.media_capture = media_capture
             self.media_capture = media_capture
             main_window.video_processor.fps = media_capture.get(cv2.CAP_PROP_FPS)
@@ -225,6 +230,8 @@ class TargetMediaCardButton(CardButton):
             main_window.video_processor.max_frame_number = max_frames_number
 
         elif self.file_type == "webcam":
+            # MODIFICATION: Set rotation to 0 for webcam
+            main_window.video_processor.media_rotation = 0
             res_width, res_height = self.main_window.control[
                 "WebcamMaxResSelection"
             ].split("x")
@@ -233,7 +240,7 @@ class TargetMediaCardButton(CardButton):
             media_capture.set(cv2.CAP_PROP_FRAME_WIDTH, int(res_width))
             media_capture.set(cv2.CAP_PROP_FRAME_HEIGHT, int(res_height))
             max_frames_number = 999999
-            _, frame = misc_helpers.read_frame(media_capture)
+            _, frame = misc_helpers.read_frame(media_capture, 0)  # 0 for webcam
             main_window.video_processor.media_capture = media_capture
             self.media_capture = media_capture
             main_window.video_processor.fps = media_capture.get(cv2.CAP_PROP_FPS)
