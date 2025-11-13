@@ -185,7 +185,7 @@ def create_and_add_embed_button_to_list(
     )
 
     button_size = QtCore.QSize(
-        105, 35
+        120, 25
     )  # Adjusted width to fit 3 per row with proper spacing
     embed_button.setFixedSize(button_size)
 
@@ -210,7 +210,7 @@ def create_and_add_embed_button_to_list(
     inputEmbeddingsList.setMovement(QtWidgets.QListView.Static)
 
     # Set viewport mode and item size
-    viewport_height = 180  # Fixed height for 3 rows (35px + padding per row)
+    viewport_height = 140  # Fixed height for 3 rows (35px + padding per row)
     inputEmbeddingsList.setFixedHeight(viewport_height)
 
     # Calculate grid dimensions
