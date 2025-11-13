@@ -475,4 +475,3 @@ models_list = [
         "url": "https://github.com/ChiWeiHsiao/ref-ldm/releases/download/1.0.0/vqgan.ckpt",
     },
 ]
-

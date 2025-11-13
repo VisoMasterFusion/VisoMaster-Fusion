@@ -255,11 +255,13 @@ class FaceLandmarkDetectors:
         # This prevents a KeyError if another thread unloads the model
         # between the check in run_detect_landmark and the execution here.
         model = self.models_processor.load_model(model_name)
-        
+
         # Failsafe: If load_model fails (e.g., file not found, TRT build fail),
         # model will be None. We must abort to prevent a crash.
         if model is None:
-            print(f"[ERROR] _run_onnx_binding: Failed to get or load model '{model_name}'.")
+            print(
+                f"[ERROR] _run_onnx_binding: Failed to get or load model '{model_name}'."
+            )
             # Return empty arrays matching the expected output structure (list of np.ndarray)
             # We must create dummy outputs based on output_names to avoid crashes upstream.
             # A simpler approach for now: return empty list, let caller handle it.
@@ -432,7 +434,7 @@ class FaceLandmarkDetectors:
     def detect_face_landmark_3d68(self, img, bbox, det_kpss, from_points=False):
         # --- START: Added Dependency Check ---
         # Ensure the 'meanshape_68.pkl' dependency is loaded once
-        if not self.models_processor.mean_lmk:
+        if len(self.models_processor.mean_lmk) == 0:
             try:
                 with open(f"{models_dir}/meanshape_68.pkl", "rb") as f:
                     self.models_processor.mean_lmk = pickle.load(f)

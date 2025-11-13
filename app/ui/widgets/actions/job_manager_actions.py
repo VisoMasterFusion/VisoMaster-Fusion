@@ -429,7 +429,9 @@ def _load_job_target_faces_and_params(main_window: "MainWindow", data: dict):
             # final embedding and (critically) the K/V map.
             # This is done *here* in the main thread, *before*
             # any FrameWorker starts, to prevent a race condition.
-            print(f"[DEBUG] (Main Thread) Pre-calculating embedding and K/V map for target face {face_id}...")
+            print(
+                f"[DEBUG] (Main Thread) Pre-calculating embedding and K/V map for target face {face_id}..."
+            )
             target_face_obj.calculate_assigned_input_embedding()
             print(f"[DEBUG] (Main Thread) Pre-calculation complete for {face_id}.")
         else:
@@ -1315,12 +1317,14 @@ def load_master_assets(main_window: "MainWindow", master_data: dict):
 
         progress_dialog.update_progress(3, total_steps, steps[2])
         _load_job_input_faces(main_window, master_data)  # Loads all unique faces
-        
+
         # We must wait for the InputFacesLoaderWorker to finish before proceeding,
         # otherwise the next job_settings_load might clear its required models.
         worker = main_window.input_faces_loader_worker
         if isinstance(worker, ui_workers.InputFacesLoaderWorker) and worker.isRunning():
-            print("[DEBUG] (Main Thread) Waiting for InputFacesLoaderWorker to finish...")
+            print(
+                "[DEBUG] (Main Thread) Waiting for InputFacesLoaderWorker to finish..."
+            )
             loop = QEventLoop()
             worker.finished.connect(loop.quit)
             loop.exec()  # Block until the worker's finished signal is emitted
@@ -1344,6 +1348,7 @@ def load_master_assets(main_window: "MainWindow", master_data: dict):
         # Use the instance event from the job_processor
         if main_window.job_processor:
             main_window.job_processor.master_assets_loaded_event.set()
+
 
 @Slot(dict)
 def load_job_settings(main_window: "MainWindow", job_data: dict):
@@ -1521,13 +1526,16 @@ def handle_batch_completion(main_window: "MainWindow"):
             )
         except RuntimeError as e:
             # This is normal if signals were not connected or already disconnected
-            print(f"[WARN] (Main Thread) Error disconnecting signals (expected if no job ran): {e}")
+            print(
+                f"[WARN] (Main Thread) Error disconnecting signals (expected if no job ran): {e}"
+            )
         except Exception as e:
             print(f"[ERROR] (Main Thread) Unexpected error disconnecting signals: {e}")
-        
+
         # Set the object to None to allow the garbage collector to remove it
         main_window.job_processor = None
         print("[DEBUG] (Main Thread) JobProcessor cleaned up.")
+
 
 # --- Job Processing Thread ---
 

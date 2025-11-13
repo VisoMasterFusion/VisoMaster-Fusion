@@ -458,7 +458,12 @@ def advance_video_slider_by_n_frames(main_window: "MainWindow", n=30):
         # Execute post seek (Markers, Autoswap)
         run_post_seek_actions(main_window, new_position)
 
-        main_window.video_processor.process_current_frame()
+        # Check if this is a single frame step (like 'V' key)
+        is_single_frame_step = n == 1
+        # Run synchronously only for single frame steps to prevent "flash"
+        main_window.video_processor.process_current_frame(
+            synchronous=is_single_frame_step
+        )
 
 
 def rewind_video_slider_by_n_frames(main_window: "MainWindow", n=30):
@@ -473,7 +478,12 @@ def rewind_video_slider_by_n_frames(main_window: "MainWindow", n=30):
         # Execute post seek (Markers, Autoswap)
         run_post_seek_actions(main_window, new_position)
 
-        main_window.video_processor.process_current_frame()
+        # Check if this is a single frame step (like 'C' key)
+        is_single_frame_step = n == 1
+        # Run synchronously only for single frame steps to prevent "flash"
+        main_window.video_processor.process_current_frame(
+            synchronous=is_single_frame_step
+        )
 
 
 def delete_all_markers(main_window: "MainWindow"):

@@ -372,5 +372,3 @@ goto :eof
     "%PYTHON_EXE%" "%PYTHON_DIR%\get-pip.py" --no-warn-script-location
     del "%PYTHON_DIR%\get-pip.py"
 goto :eof
-
-
