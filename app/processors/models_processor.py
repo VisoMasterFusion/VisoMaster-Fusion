@@ -241,6 +241,9 @@ class ModelsProcessor(QtCore.QObject):
 
         self.dfm_models: Dict[str, DFMModel] = {}
 
+        # MODIFICATION: Add a flag to bypass the 'KeepModelsAlive' check
+        self.force_unload_in_progress = False
+
         # MODIFICATION: Initialize TRT dicts *outside* the check
         # This prevents AttributeError on systems without TensorRT
         self.models_trt: Dict[str, Optional[TensorRTPredictor]] = {}
@@ -911,6 +914,11 @@ class ModelsProcessor(QtCore.QObject):
         self.clip_session = []
 
     def unload_dfm_model(self, model_name_to_unload):
+        # MODIFICATION: Check if unloading should be skipped
+        if not self.force_unload_in_progress:
+            if self.main_window.control.get("KeepModelsAliveToggle", False):
+                # print(f"[Info] KeepModelsAlive: Skipping unload for {model_name_to_unload}") # Optional debug
+                return  # Skip unloading
         with self.model_lock:
             if (
                 model_name_to_unload
@@ -926,6 +934,11 @@ class ModelsProcessor(QtCore.QObject):
                     torch.cuda.empty_cache()
 
     def unload_model(self, model_name_to_unload):
+        # MODIFICATION: Check if unloading should be skipped
+        if not self.force_unload_in_progress:
+            if self.main_window.control.get("KeepModelsAliveToggle", False):
+                # print(f"[Info] KeepModelsAlive: Skipping unload for {model_name_to_unload}") # Optional debug
+                return  # Skip unloading
         with self.model_lock:
             unloaded = False
 
@@ -1037,26 +1050,32 @@ class ModelsProcessor(QtCore.QObject):
         print("Clearing GPU Memory: Unloading all models...")
         self.main_window.video_processor.stop_processing()  # Ensure no workers are active
 
-        # Explicitly call unloaders for each category
-        self.face_detectors.unload_models()
-        self.face_landmark_detectors.unload_models()
-        self.face_masks.unload_models()
-        self.face_restorers.unload_models()
-        self.face_swappers.unload_models()
-        self.frame_enhancers.unload_models()
-        self.face_editors.unload_models()
+        # MODIFICATION: Set the force_unload flag to bypass the 'KeepModelsAlive' check
+        self.force_unload_in_progress = True
+        try:
+            # Explicitly call unloaders for each category
+            self.face_detectors.unload_models()
+            self.face_landmark_detectors.unload_models()
+            self.face_masks.unload_models()
+            self.face_restorers.unload_models()
+            self.face_swappers.unload_models()
+            self.frame_enhancers.unload_models()
+            self.face_editors.unload_models()
 
-        # Unload any remaining models in the main dictionaries (as a fallback)
-        self.delete_models()
-        self.delete_models_dfm()
-        self.delete_models_trt()
+            # Unload any remaining models in the main dictionaries (as a fallback)
+            self.delete_models()
+            self.delete_models_dfm()
+            self.delete_models_trt()
 
-        # Unload the Clip and KV Extractor models specifically
-        self.unload_kv_extractor()
-        if self.clip_session:
-            print("Unloading CLIP model.")
-            del self.clip_session
-            self.clip_session = []
+            # Unload the Clip and KV Extractor models specifically
+            self.unload_kv_extractor()
+            if self.clip_session:
+                print("Unloading CLIP model.")
+                del self.clip_session
+                self.clip_session = []
+        finally:
+            # MODIFICATION: Always reset the flag, even if an error occurs
+            self.force_unload_in_progress = False
 
         # Finally, clear caches
         print("Running garbage collection and clearing CUDA cache.")

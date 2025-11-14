@@ -468,6 +468,12 @@ SETTINGS_LAYOUT_DATA: Any = {  # noqa: F811
         },
     },
     "Misc": {
+        "KeepModelsAliveToggle": {
+            "level": 1,
+            "label": "Keep Loaded Models in Memory",
+            "default": False,
+            "help": "Stops the models from automatically unloading when changing settings, only with CLEAR GPU button.",
+        },
         "TargetMediaFolderRecursiveToggle": {
             "level": 1,
             "label": "Target Media Include Subfolders",
