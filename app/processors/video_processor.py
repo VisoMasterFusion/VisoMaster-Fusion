@@ -2639,6 +2639,23 @@ class VideoProcessor(QObject):
 
         print(f"Webcam target FPS: {self.fps}")
 
+        # [MODIFICATION] START WORKER POOL
+        # This was the missing piece. The webcam mode needs to start
+        # the persistent worker threads to consume tasks from the frame_queue.
+        print(f"Starting {self.num_threads} persistent worker thread(s)...")
+        # Ensure old workers are cleared (from a previous run)
+        self.join_and_clear_threads()
+        self.worker_threads = []
+        for i in range(self.num_threads):
+            worker = FrameWorker(
+                frame_queue=self.frame_queue,  # Pass the task queue
+                main_window=self.main_window,
+                worker_id=i,
+            )
+            worker.start()
+            self.worker_threads.append(worker)
+        # [FIN MODIFICATION]
+
         # Start the feeder thread
         print("Starting feeder thread (Mode: webcam)...")
         self.feeder_thread = threading.Thread(target=self._feeder_loop, daemon=True)
