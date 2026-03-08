@@ -104,6 +104,8 @@ class MainWindow(QtWidgets.QMainWindow, Ui_MainWindow):
         self._rightFacesButtonsRow = None  # HLayout für Buttons
         self._faceButtonsOriginalTexts = {}  # zum Wiederherstellen
         self._rightFacesStripVisible = False
+        self._theatre_normal_panel_states: dict[str, bool] | None = None
+        self._theatre_mode_panel_states: dict[str, bool] | None = None
 
         # --- Initialize Managers ---
         self.thumbnail_manager = ThumbnailManager()
@@ -343,6 +345,10 @@ class MainWindow(QtWidgets.QMainWindow, Ui_MainWindow):
         )
         self.JobsCheckBox.toggled.connect(
             partial(layout_actions.show_hide_input_jobs_panel, self)
+        )
+        self.theatreModeButton.clicked.connect(self._toggle_theatre_mode_from_button)
+        self.theatreModeCheckBox.toggled.connect(
+            partial(layout_actions.show_hide_theatre_mode_panels, self)
         )
 
         self.faceMaskCheckBox.clicked.connect(
@@ -791,6 +797,9 @@ class MainWindow(QtWidgets.QMainWindow, Ui_MainWindow):
 
     def save_last_workspace(self):
         pass
+
+    def _toggle_theatre_mode_from_button(self, *_):
+        self.theatreModeCheckBox.setChecked(not self.theatreModeCheckBox.isChecked())
 
     @QtCore.Slot(bool)
     def _on_faces_panel_toggled(self, checked: bool):

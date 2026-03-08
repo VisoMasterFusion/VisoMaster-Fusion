@@ -547,6 +547,49 @@ def show_hide_parameters_panel(main_window: "MainWindow", checked):
     fit_image_to_view_onchange(main_window)
 
 
+def show_hide_theatre_mode_panels(main_window: "MainWindow", checked):
+    def collect_states():
+        return {
+            "TargetMediaCheckBox": main_window.TargetMediaCheckBox.isChecked(),
+            "facesPanelCheckBox": main_window.facesPanelCheckBox.isChecked(),
+            "parametersPanelCheckBox": main_window.parametersPanelCheckBox.isChecked(),
+        }
+
+    def apply_states(states):
+        main_window.TargetMediaCheckBox.setChecked(
+            states.get("TargetMediaCheckBox", True)
+        )
+        main_window.facesPanelCheckBox.setChecked(
+            states.get("facesPanelCheckBox", True)
+        )
+        main_window.parametersPanelCheckBox.setChecked(
+            states.get("parametersPanelCheckBox", True)
+        )
+
+    if checked:
+        main_window._theatre_normal_panel_states = collect_states()
+        apply_states(
+            main_window._theatre_mode_panel_states
+            or {
+                "TargetMediaCheckBox": False,
+                "facesPanelCheckBox": False,
+                "parametersPanelCheckBox": False,
+            }
+        )
+    else:
+        main_window._theatre_mode_panel_states = collect_states()
+        apply_states(
+            main_window._theatre_normal_panel_states
+            or {
+                "TargetMediaCheckBox": True,
+                "facesPanelCheckBox": True,
+                "parametersPanelCheckBox": True,
+            }
+        )
+        main_window._theatre_normal_panel_states = None
+    fit_image_to_view_onchange(main_window)
+
+
 def fit_image_to_view_onchange(main_window: "MainWindow", *args):
     pixmap_items = main_window.scene.items()
     if pixmap_items:
