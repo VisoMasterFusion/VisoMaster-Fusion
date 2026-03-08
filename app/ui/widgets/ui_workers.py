@@ -92,6 +92,11 @@ class TargetMediaLoaderWorker(qtc.QThread):
             self.main_window.targetVideosList, True
         )
         media_files = files_list
+        # Ensure media_files is a list before sorting
+        if isinstance(media_files, tuple):
+            media_files = list(media_files)
+        # Sorting the list
+        media_files.sort(key=lambda x: os.path.basename(str(x)).lower())
         i = 0
         for media_file_path in media_files:
             if not self._running:  # Check if the thread is still running
