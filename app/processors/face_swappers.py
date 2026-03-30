@@ -792,6 +792,7 @@ class FaceSwappers:
 
         self._run_model_with_lazy_build_check(model_name, model, io_binding)
 
+
     def calc_swapper_latent_simswap512(self, source_embedding):
         latent = source_embedding.reshape(1, -1)
         # latent /= np.linalg.norm(latent)
