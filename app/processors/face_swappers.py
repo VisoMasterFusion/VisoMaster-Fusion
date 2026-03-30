@@ -35,6 +35,9 @@ class FaceSwappers:
             "InStyleSwapper256 Version A",
             "InStyleSwapper256 Version B",
             "InStyleSwapper256 Version C",
+            "Hyperswap256 Version A",
+            "Hyperswap256 Version B",
+            "Hyperswap256 Version C",
             "SimSwap512",
             "GhostFacev1",
             "GhostFacev2",
@@ -747,6 +750,46 @@ class FaceSwappers:
         )
 
         # Run the model with lazy build handling
+        self._run_model_with_lazy_build_check(model_name, model, io_binding)
+
+    def calc_swapper_latent_hyperswap256(self, source_embedding, version="A"):
+        latent = source_embedding / l2norm(source_embedding)
+        latent = latent.reshape((1, -1))
+        return latent
+
+    def run_hyperswap256(self, image, embedding, output, version="A"):
+        model_name = f"Hyperswap256 Version {version}"
+        model = self._load_swapper_model(model_name)
+        if not model:
+            print(f"[ERROR] {model_name} model not loaded.")
+            return
+
+        io_binding = model.io_binding()
+        io_binding.bind_input(
+            name="target",
+            device_type=self.models_processor.device,
+            device_id=0,
+            element_type=np.float32,
+            shape=(1, 3, 256, 256),
+            buffer_ptr=image.data_ptr(),
+        )
+        io_binding.bind_input(
+            name="source",
+            device_type=self.models_processor.device,
+            device_id=0,
+            element_type=np.float32,
+            shape=(1, 512),
+            buffer_ptr=embedding.data_ptr(),
+        )
+        io_binding.bind_output(
+            name="output",
+            device_type=self.models_processor.device,
+            device_id=0,
+            element_type=np.float32,
+            shape=(1, 3, 256, 256),
+            buffer_ptr=output.data_ptr(),
+        )
+
         self._run_model_with_lazy_build_check(model_name, model, io_binding)
 
     def calc_swapper_latent_simswap512(self, source_embedding):
