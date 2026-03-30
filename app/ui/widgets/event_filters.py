@@ -3,6 +3,7 @@ from functools import partial
 
 from PySide6 import QtWidgets, QtGui, QtCore
 from app.ui.widgets.actions import list_view_actions
+from app.ui.widgets.actions import video_control_actions
 from app.ui.widgets import ui_workers
 import app.helpers.miscellaneous as misc_helpers
 
@@ -69,15 +70,19 @@ class VideoSeekSliderEventFilter(QtCore.QObject):
                 )
 
                 return result  # Return the result of the default handling
-        elif event.type() == QtCore.QEvent.Type.Wheel:
-            # Allow default slider movement
-            result = super().eventFilter(slider, event)
 
-            # After the slider moves, call the custom processing function
-            QtCore.QTimer.singleShot(
-                0, self.main_window.video_processor.process_current_frame
-            )
-            return result
+        elif event.type() == QtCore.QEvent.Type.Wheel:
+            # Intercept mousewheel to force FrameSkipStepSlider
+            delta = event.angleDelta().y()
+            if delta > 0:
+                # If wheel up (Advance)
+                video_control_actions.advance_video_slider_by_n_frames(self.main_window)
+            elif delta < 0:
+                # If wheel up (Rewind)
+                video_control_actions.rewind_video_slider_by_n_frames(self.main_window)
+
+            # Return True to stop QT from applying default values
+            return True
 
         # For other events, use the default behavior
         return super().eventFilter(slider, event)

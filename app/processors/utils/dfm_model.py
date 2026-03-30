@@ -8,6 +8,28 @@ onnxruntime.set_default_logger_severity(4)
 onnxruntime.log_verbosity_level = -1
 
 
+def _load_model_bytes_with_shape_inference(model_path: str) -> bytes:
+    """Load an ONNX model and run shape inference so TensorRT can partition the graph.
+
+    DFM models exported by MVE PyTorch Trainer (and similar tools) often lack
+    intermediate tensor shape annotations.  TensorRT's execution provider
+    requires those annotations and raises a RuntimeException if they are absent.
+    Running onnx.shape_inference.infer_shapes() fills them in without modifying
+    the original file on disk.
+    """
+    try:
+        import onnx
+        from onnx import shape_inference as onnx_shape_inference
+
+        model_proto = onnx.load(str(model_path))
+        model_proto = onnx_shape_inference.infer_shapes(model_proto)
+        return model_proto.SerializeToString()
+    except Exception:
+        # If onnx is unavailable or shape inference fails, fall back to the raw file.
+        with open(str(model_path), "rb") as f:
+            return f.read()
+
+
 class DFMModel:
     def __init__(self, model_path: str, providers, device="cuda"):
         self._model_path = model_path
@@ -15,9 +37,39 @@ class DFMModel:
         self.device = device
         self.syncvec = torch.empty((1, 1), dtype=torch.float32, device=device)
 
-        sess = self._sess = onnxruntime.InferenceSession(
-            str(model_path), providers=self.providers
-        )
+        # Run ONNX shape inference before session creation so TensorRT can
+        # partition the graph.  Models without shape annotations (e.g. those
+        # exported by MVE PyTorch Trainer) would otherwise raise:
+        #   "TensorRT input: … has no shape specified. Please run shape inference first."
+        model_bytes = _load_model_bytes_with_shape_inference(model_path)
+
+        # D-05: wrap session creation with descriptive error context.
+        # If TensorRT still fails (e.g. unsupported ops), retry without it.
+        try:
+            sess = self._sess = onnxruntime.InferenceSession(
+                model_bytes, providers=self.providers
+            )
+        except Exception as e:
+            trt_error = "TensorRT" in str(e) or "tensorrt" in str(e).lower()
+            if trt_error:
+                # Strip TensorRT from the provider list and retry on CUDA/CPU.
+                fallback_providers = [
+                    p
+                    for p in self.providers
+                    if (p[0] if isinstance(p, (list, tuple)) else p)
+                    != "TensorrtExecutionProvider"
+                ]
+                print(
+                    f"[WARN] DFM model TensorRT load failed ({e}); retrying without TensorRT."
+                )
+                try:
+                    sess = self._sess = onnxruntime.InferenceSession(
+                        model_bytes, providers=fallback_providers
+                    )
+                except Exception as e2:
+                    raise RuntimeError(f"Failed to load DFM model: {e2}") from e2
+            else:
+                raise RuntimeError(f"Failed to load DFM model: {e}") from e
         inputs = sess.get_inputs()
 
         if len(inputs) == 0 or "in_face" not in inputs[0].name:
@@ -147,11 +199,8 @@ class DFMModel:
                 buffer_ptr=binding_outputs[idx].data_ptr(),
             )
 
-        # Run the model
         if self.device == "cuda":
-            torch.cuda.synchronize()
-        elif self.device != "cpu":
-            self.syncvec.cpu()
+            torch.cuda.current_stream().synchronize()
         self._sess.run_with_iobinding(io_binding)
 
         # Process outputs (resize, clip channels, and convert back to original dtype)

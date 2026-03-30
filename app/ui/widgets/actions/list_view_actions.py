@@ -1,4 +1,3 @@
-import time
 from functools import partial
 from typing import TYPE_CHECKING, Dict, Type
 import subprocess
@@ -17,18 +16,24 @@ from app.ui.widgets import ui_workers
 if TYPE_CHECKING:
     from app.ui.main_ui import MainWindow
 
+_WORKER_STOP_TIMEOUT_MS = 1000
+_TARGET_BUTTON_SIZE = (90, 90)
+_FACE_BUTTON_SIZE = (70, 70)
+_EMBED_BUTTON_SIZE = (120, 25)
+_EMBED_LIST_HEIGHT = 140
+
 
 # Functions to add Buttons with thumbnail for selecting videos/images and faces
-@QtCore.Slot(str, QtGui.QPixmap)
+@QtCore.Slot(str, QtGui.QImage, str, str)
 def add_media_thumbnail_to_target_videos_list(
-    main_window: "MainWindow", media_path, pixmap, file_type, media_id
+    main_window: "MainWindow", media_path, q_image, file_type, media_id
 ):
     add_media_thumbnail_button(
         main_window,
         widget_components.TargetMediaCardButton,
         main_window.targetVideosList,
         main_window.target_videos,
-        pixmap,
+        q_image,
         media_path=media_path,
         file_type=file_type,
         media_id=media_id,
@@ -36,11 +41,11 @@ def add_media_thumbnail_to_target_videos_list(
 
 
 # Functions to add Buttons with thumbnail for selecting videos/images and faces
-@QtCore.Slot(str, QtGui.QPixmap, str, int, int)
+@QtCore.Slot(str, QtGui.QImage, str, str, int, int)
 def add_webcam_thumbnail_to_target_videos_list(
     main_window: "MainWindow",
     media_path,
-    pixmap,
+    q_image,
     file_type,
     media_id,
     webcam_index,
@@ -51,7 +56,7 @@ def add_webcam_thumbnail_to_target_videos_list(
         widget_components.TargetMediaCardButton,
         main_window.targetVideosList,
         main_window.target_videos,
-        pixmap,
+        q_image,
         media_path=media_path,
         file_type=file_type,
         media_id=media_id,
@@ -63,27 +68,27 @@ def add_webcam_thumbnail_to_target_videos_list(
 
 @QtCore.Slot()
 def add_media_thumbnail_to_target_faces_list(
-    main_window: "MainWindow", cropped_face, embedding_store, pixmap, face_id
+    main_window: "MainWindow", cropped_face, embedding_store, image_data, face_id
 ):
     add_media_thumbnail_button(
         main_window,
         widget_components.TargetFaceCardButton,
         main_window.targetFacesList,
         main_window.target_faces,
-        pixmap,
+        image_data,
         cropped_face=cropped_face,
         embedding_store=embedding_store,
         face_id=face_id,
     )
 
 
-@QtCore.Slot()
+@QtCore.Slot(str, object, object, QtGui.QImage, str)
 def add_media_thumbnail_to_source_faces_list(
     main_window: "MainWindow",
     media_path,
     cropped_face,
     embedding_store,
-    pixmap,
+    q_image,
     face_id,
 ):
     add_media_thumbnail_button(
@@ -91,7 +96,7 @@ def add_media_thumbnail_to_source_faces_list(
         widget_components.InputFaceCardButton,
         main_window.inputFacesList,
         main_window.input_faces,
-        pixmap,
+        q_image,
         media_path=media_path,
         cropped_face=cropped_face,
         embedding_store=embedding_store,
@@ -104,7 +109,7 @@ def add_media_thumbnail_button(
     buttonClass: "Type[widget_components.CardButton]",
     listWidget: QtWidgets.QListWidget,
     buttons_list: Dict,
-    pixmap,
+    image_data,  # Accepts QImage (from workers) or QPixmap (from main thread)
     **kwargs,
 ):
     if buttonClass == widget_components.TargetMediaCardButton:
@@ -131,20 +136,29 @@ def add_media_thumbnail_button(
             kwargs.get("embedding_store"),
             kwargs.get("face_id"),
         ]
+
     if buttonClass == widget_components.TargetMediaCardButton:
-        button_size = QtCore.QSize(90, 90)  # Set a fixed size for the buttons
+        button_size = QtCore.QSize(*_TARGET_BUTTON_SIZE)
     else:
-        button_size = QtCore.QSize(70, 70)  # Set a fixed size for the buttons
+        button_size = QtCore.QSize(*_FACE_BUTTON_SIZE)
 
     button: widget_components.CardButton = buttonClass(
         *constructor_args, main_window=main_window
     )
+
+    # --- Main thread conversion ---
+    if isinstance(image_data, QtGui.QImage):
+        pixmap = QtGui.QPixmap.fromImage(image_data)
+    else:
+        pixmap = image_data
+
     button.setIcon(QtGui.QIcon(pixmap))
     button.setIconSize(
         button_size - QtCore.QSize(8, 8)
     )  # Slightly smaller than the button size to add some margin
     button.setFixedSize(button_size)
     button.setCheckable(True)
+
     if buttonClass in [
         widget_components.TargetFaceCardButton,
         widget_components.InputFaceCardButton,
@@ -154,6 +168,7 @@ def add_media_thumbnail_button(
         buttons_list[button.media_id] = button
     elif buttonClass == widget_components.EmbeddingCardButton:
         buttons_list[button.embedding_id] = button
+
     # Create a QListWidgetItem and set the button as its widget
     list_item = QtWidgets.QListWidgetItem(listWidget)
     list_item.setSizeHint(button_size)
@@ -162,44 +177,29 @@ def add_media_thumbnail_button(
     # Align the item to center
     list_item.setTextAlignment(QtCore.Qt.AlignmentFlag.AlignCenter)
     listWidget.setItemWidget(list_item, button)
-    # Adjust the QListWidget properties to handle the grid layout
-    grid_size_with_padding = button_size + QtCore.QSize(
-        4, 4
-    )  # Add padding around the buttons
-    listWidget.setGridSize(grid_size_with_padding)  # Set grid size with padding
-    listWidget.setWrapping(True)  # Enable wrapping to have items in rows
-    listWidget.setFlow(QtWidgets.QListView.LeftToRight)  # Set flow direction
-    listWidget.setResizeMode(QtWidgets.QListView.Adjust)  # Adjust layout automatically
 
 
-def create_and_add_embed_button_to_list(
-    main_window: "MainWindow", embedding_name, embedding_store, embedding_id
-):
+def initialize_media_list_widgets(main_window: "MainWindow"):
+    """One-time configuration for target/input media and face list widgets."""
+    for listWidget, button_size_tuple in [
+        (main_window.targetVideosList, _TARGET_BUTTON_SIZE),
+        (main_window.targetFacesList, _FACE_BUTTON_SIZE),
+        (main_window.inputFacesList, _FACE_BUTTON_SIZE),
+    ]:
+        button_size = QtCore.QSize(*button_size_tuple)
+        grid_size_with_padding = button_size + QtCore.QSize(4, 4)
+        listWidget.setGridSize(grid_size_with_padding)
+        listWidget.setWrapping(True)
+        listWidget.setFlow(QtWidgets.QListView.LeftToRight)
+        listWidget.setResizeMode(QtWidgets.QListView.Adjust)
+
+
+def initialize_embeddings_list_widget(main_window: "MainWindow"):
+    """One-time configuration for the inputEmbeddingsList widget."""
     inputEmbeddingsList = main_window.inputEmbeddingsList
-    # Passa l'intero embedding_store
-    embed_button = widget_components.EmbeddingCardButton(
-        main_window=main_window,
-        embedding_name=embedding_name,
-        embedding_store=embedding_store,
-        embedding_id=embedding_id,
-    )
+    button_size = QtCore.QSize(*_EMBED_BUTTON_SIZE)
+    grid_size_with_padding = button_size + QtCore.QSize(4, 4)
 
-    button_size = QtCore.QSize(
-        120, 25
-    )  # Adjusted width to fit 3 per row with proper spacing
-    embed_button.setFixedSize(button_size)
-
-    list_item = QtWidgets.QListWidgetItem(inputEmbeddingsList)
-    list_item.setSizeHint(button_size)
-    embed_button.list_item = list_item
-    list_item.setTextAlignment(QtCore.Qt.AlignmentFlag.AlignCenter)
-
-    inputEmbeddingsList.setItemWidget(list_item, embed_button)
-
-    # Configure grid layout for 3x3 minimum grid
-    grid_size_with_padding = button_size + QtCore.QSize(
-        4, 4
-    )  # Add padding around buttons
     inputEmbeddingsList.setGridSize(grid_size_with_padding)
     inputEmbeddingsList.setWrapping(True)
     inputEmbeddingsList.setFlow(QtWidgets.QListView.TopToBottom)
@@ -209,20 +209,12 @@ def create_and_add_embed_button_to_list(
     inputEmbeddingsList.setViewMode(QtWidgets.QListView.IconMode)
     inputEmbeddingsList.setMovement(QtWidgets.QListView.Static)
 
-    # Set viewport mode and item size
-    viewport_height = 140  # Fixed height for 3 rows (35px + padding per row)
-    inputEmbeddingsList.setFixedHeight(viewport_height)
+    inputEmbeddingsList.setFixedHeight(_EMBED_LIST_HEIGHT)
 
-    # Calculate grid dimensions
     col_width = grid_size_with_padding.width()
-
-    # Set minimum width for 3 columns and adjust spacing
-    min_width = (
-        3 * col_width
-    ) + 16  # Add extra padding for better spacing between columns
+    min_width = (3 * col_width) + 16
     inputEmbeddingsList.setMinimumWidth(min_width)
 
-    # Configure scrolling behavior
     inputEmbeddingsList.setVerticalScrollBarPolicy(QtCore.Qt.ScrollBarAlwaysOff)
     inputEmbeddingsList.setHorizontalScrollBarPolicy(QtCore.Qt.ScrollBarAsNeeded)
     inputEmbeddingsList.setVerticalScrollMode(
@@ -232,21 +224,43 @@ def create_and_add_embed_button_to_list(
         QtWidgets.QAbstractItemView.ScrollPerPixel
     )
 
-    # Set layout direction to ensure proper filling
     inputEmbeddingsList.setLayoutDirection(QtCore.Qt.LeftToRight)
     inputEmbeddingsList.setLayoutMode(QtWidgets.QListView.Batched)
+
+
+def create_and_add_embed_button_to_list(
+    main_window: "MainWindow", embedding_name, embedding_store, embedding_id
+):
+    inputEmbeddingsList = main_window.inputEmbeddingsList
+    embed_button = widget_components.EmbeddingCardButton(
+        main_window=main_window,
+        embedding_name=embedding_name,
+        embedding_store=embedding_store,
+        embedding_id=embedding_id,
+    )
+
+    button_size = QtCore.QSize(*_EMBED_BUTTON_SIZE)
+    embed_button.setFixedSize(button_size)
+
+    list_item = QtWidgets.QListWidgetItem(inputEmbeddingsList)
+    list_item.setSizeHint(button_size)
+    embed_button.list_item = list_item
+    list_item.setTextAlignment(QtCore.Qt.AlignmentFlag.AlignCenter)
+
+    inputEmbeddingsList.setItemWidget(list_item, embed_button)
 
     main_window.merged_embeddings[embed_button.embedding_id] = embed_button
 
 
 def clear_stop_loading_target_media(main_window: "MainWindow"):
-    if main_window.video_loader_worker and not isinstance(
-        main_window.video_loader_worker, bool
-    ):
-        main_window.video_loader_worker.stop()
-        main_window.video_loader_worker.terminate()
-        main_window.video_loader_worker = False
-        time.sleep(0.5)
+    if main_window.video_loader_worker is not None:
+        worker = main_window.video_loader_worker
+        worker._running = False
+        worker.quit()
+        if not worker.wait(_WORKER_STOP_TIMEOUT_MS):
+            worker.terminate()
+            worker.wait()
+        main_window.video_loader_worker = None
         main_window.targetVideosList.clear()
 
 
@@ -329,13 +343,14 @@ def load_target_webcams(
 
 
 def clear_stop_loading_input_media(main_window: "MainWindow"):
-    if main_window.input_faces_loader_worker and not isinstance(
-        main_window.input_faces_loader_worker, bool
-    ):
-        main_window.input_faces_loader_worker.stop()
-        main_window.input_faces_loader_worker.terminate()
-        main_window.input_faces_loader_worker = False
-        time.sleep(0.5)
+    if main_window.input_faces_loader_worker is not None:
+        worker = main_window.input_faces_loader_worker
+        worker._running = False
+        worker.quit()
+        if not worker.wait(_WORKER_STOP_TIMEOUT_MS):
+            worker.terminate()
+            worker.wait()
+        main_window.input_faces_loader_worker = None
         main_window.inputFacesList.clear()
 
 
@@ -414,7 +429,7 @@ def set_up_list_widget_placeholder(
 
 
 def select_output_media_folder(main_window: "MainWindow"):
-    folder_name = QtWidgets.QFileDialog.getExistingDirectory()
+    folder_name = QtWidgets.QFileDialog.getExistingDirectory(main_window)
     if folder_name:
         main_window.outputFolderLineEdit.setText(folder_name)
         common_widget_actions.create_control(
@@ -454,6 +469,7 @@ def show_shortcuts(main_window: "MainWindow"):
     shortcuts_text = (
         "<b><u>Actions:</u></b><br>"
         "<b>F11</b> : View fullscreen<br>"
+        "<b>T</b> : Theatre Mode<br>"
         "<b>Space</b> : Play/Stop<br>"
         "<b>R</b> : Record start/stop<br>"
         "<b>S</b> : Swap face"
@@ -461,8 +477,8 @@ def show_shortcuts(main_window: "MainWindow"):
         "<b><u>Seeking:</u></b><br>"
         "<b>V</b> : Advance 1 frame<br>"
         "<b>C</b> : Rewind 1 frame<br>"
-        "<b>D</b> : Advance 30 frames<br>"
-        "<b>A</b> : Rewind 30 frames<br>"
+        "<b>D</b> : Advance frames by slider value<br>"
+        "<b>A</b> : Rewind frames by slider value<br>"
         "<b>Z</b> : Seek to start<br>"
         "<br>"
         "<b><u>Markers:</u></b><br>"

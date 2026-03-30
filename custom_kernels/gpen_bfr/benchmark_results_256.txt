@@ -1,0 +1,7 @@
+ORT FP32 CUDA EP: 3.56 ms  (vs CUDA EP: 1.00x, vs TRT EP: 0.68x)
+ORT TensorRT EP (app default): 2.40 ms  (vs CUDA EP: 1.48x, vs TRT EP: 1.00x)
+PyTorch FP32: 5.58 ms  (vs CUDA EP: 0.64x, vs TRT EP: 0.43x)
+PyTorch FP16 + demod: 5.33 ms  (vs CUDA EP: 0.67x, vs TRT EP: 0.45x)
+PyTorch FP16 + demod + CUDAGraph: 1.19 ms  (vs CUDA EP: 2.99x, vs TRT EP: 2.02x)
+PT FP16 + demod + compile + CUDAGraph: 1.27 ms  (vs CUDA EP: 2.80x, vs TRT EP: 1.89x)
+torch.compile reduce-overhead (no CUDA graph): 1.32 ms  (vs CUDA EP: 2.69x, vs TRT EP: 1.82x)

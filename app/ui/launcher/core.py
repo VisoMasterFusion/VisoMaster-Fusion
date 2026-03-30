@@ -40,6 +40,7 @@ def resolve_paths():
         "REQ_FILE": repo_dir / "requirements_cu129.txt",
         "MAIN_PY": repo_dir / "main.py",
         "DOWNLOAD_PY": repo_dir / "download_models.py",
+        "OPTIMIZE_PY": app_dir / "tools" / "optimize_models.py",
         "PORTABLE_CFG": base_dir / "portable.cfg",
     }
 

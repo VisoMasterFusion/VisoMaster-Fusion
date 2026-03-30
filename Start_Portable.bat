@@ -55,7 +55,7 @@ set "GIT_DIR=%PORTABLE_DIR%\git"
 set "GIT_EXE=%GIT_DIR%\bin\git.exe"
 
 :: Download URLs and temp file paths
-set "PYTHON_EMBED_URL=https://www.python.org/ftp/python/3.11.9/python-3.11.9-embed-amd64.zip"
+set "PYTHON_EMBED_URL=https://www.python.org/ftp/python/3.11.9/python-3.11.9-amd64.zip"
 set "PYTHON_NUGET_URL=https://www.nuget.org/api/v2/package/python/3.11.9"
 set "UV_URL=https://github.com/astral-sh/uv/releases/download/0.8.22/uv-x86_64-pc-windows-msvc.zip"
 set "GIT_URL=https://github.com/git-for-windows/git/releases/download/v2.51.0.windows.1/PortableGit-2.51.0-64-bit.7z.exe"

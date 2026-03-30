@@ -465,6 +465,23 @@
              </property>
             </widget>
            </item>
+		   <item>
+		    <widget class="QPushButton" name="theatreModeButton">
+		     <property name="toolTip">
+			  <string>FullScreen Theatre (T)</string>
+		     </property>
+		     <property name="text">
+			  <string/>
+		     </property>
+			 <property name="icon">
+              <iconset resource="media.qrc">
+               <normaloff>:/media/media/theatre_hover.png</normaloff>:/media/media/theatre_hover.png</iconset>
+             </property>
+             <property name="flat">
+              <bool>true</bool>
+             </property>
+		    </widget>
+		   </item>
            <item>
             <spacer name="horizontalSpacer_5">
              <property name="orientation">

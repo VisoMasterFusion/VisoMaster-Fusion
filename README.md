@@ -1,11 +1,17 @@
 # VisoMaster Fusion
 
-### Visomaster Fusion is a powerful yet easy-to-use tool for face swapping and editing in images and videos. It utilizes AI to produce natural-looking results with minimal effort, making it ideal for both casual users and professionals.
+VisoMaster Fusion is a powerful yet easy-to-use tool for face swapping and editing in images and videos. It uses AI to produce natural-looking results with minimal effort, making it useful for both casual users and professionals.
 
 This version integrates major features developed by the community to create a single, enhanced application. It is built upon the incredible work of the original VisoMaster developers, **@argenspin** and **@Alucard24**.
 
 ---
 <img src=".github/screenshot.png" height="auto"/>
+
+## Quick Links
+
+- [Quick Start Guide](./docs/quickstart.md)
+- [User Manual](./docs/user_manual.md)
+- [Join Discord](https://discord.gg/5rx4SQuDbp)
 
 ## Fusion Features - Changelog v1.0.0
 
@@ -82,127 +88,123 @@ VisoMaster Fusion includes all the great features of the original plus major enh
 
 ## Detailed Feature List
 
-### 🔄 **Face Swap**
--   Supports multiple face swapper models
--   Compatible with DeepFaceLab trained models (DFM)
--   Advanced multi-face swapping with improved masking (Occlusion/XSeg integration for mouth and face)
--   "Swap only best match" logic for cleaner results in multi-face scenes
--   Works with all popular face detectors & landmark detectors
--   Expression Restorer: Transfers original expressions to the swapped face
+### Face Swap
+- Supports multiple face swapper models
+- Compatible with DeepFaceLab trained models (DFM)
+- Advanced multi-face swapping with improved masking (Occlusion/XSeg integration for mouth and face)
+- "Swap only best match" logic for cleaner results in multi-face scenes
+- Works with all popular face detectors and landmark detectors
+- Expression Restorer transfers original expressions to the swapped face
 
-### ✨ **Restoration & Enhancement**
--   **Face Restoration**: Supports popular upscaling models, including the newly added **GFPGAN-1024**.
--   **ReF-LDM Denoiser**: A powerful reference-based U-Net denoiser to clean up and enhance face quality, with options to apply before or after other restorers.
--   **Advanced Texture Transfer**: Multiple modes for transferring texture details.
--   **AutoColor Transfer**: Improved color matching with a "Test_Mask" feature for more precise and stable results.
--   **Auto-Restore Blend**: Intelligently blends restored faces back into the original scene.
+### Restoration & Enhancement
+- **Face Restoration**: Supports popular upscaling models, including **GFPGAN-1024**
+- **ReF-LDM Denoiser**: A reference-based U-Net denoiser to clean up and enhance face quality, with options to apply before or after other restorers
+- **Advanced Texture Transfer**: Multiple modes for transferring texture details
+- **AutoColor Transfer**: Improved color matching with a `Test_Mask` feature for more precise and stable results
+- **Auto-Restore Blend**: Intelligently blends restored faces back into the original scene
 
-### 🎬 **Job Manager & Batch Processing**
--   **Dockable UI**: Manage all your jobs from a simple, integrated widget.
--   **Save/Load Jobs**: Save your entire workspace state (models, settings, faces) as a job file.
--   **Automated Batch Processing**: Queue up multiple jobs and process them all with a single click.
--   **Segmented Recording**: Set multiple start and end markers to render and combine various sections of a video into one final output.
--   **Custom File Naming**: Optionally use the job name for the output video file.
+### Job Manager & Batch Processing
+- **Dockable UI**: Manage all your jobs from a simple, integrated widget
+- **Save/Load Jobs**: Save your entire workspace state as a job file
+- **Automated Batch Processing**: Queue up multiple jobs and process them all with a single click
+- **Segmented Recording**: Set multiple start and end markers to render and combine sections of a video into one final output
+- **Custom File Naming**: Optionally use the job name for the output video file
 
-### 🚀 **Other Powerful Features**
--   **VR180 Mode**: Process and swap faces in hemispherical VR videos.
--   **Virtual Camera Streaming**: Send processed frames to OBS, Zoom, etc.
--   **Live Playback**: See processed video in real-time before saving.
--   **Face Embeddings**: Use multiple source faces for better accuracy & similarity.
--   **Live Swapping via Webcam**: Swap your face in real-time.
--   **Improved User Interface**: Pan the preview window by holding the right mouse button, batch select input faces with the Shift key, and choose from several new themes.
--   **Video Markers**: Adjust settings per frame for precise results.
--   **TensorRT Support**: Leverages supported GPUs for ultra-fast processing.
+### Other Powerful Features
+- **VR180 Mode**: Process and swap faces in hemispherical VR videos
+- **Virtual Camera Streaming**: Send processed frames to OBS, Zoom, and similar apps
+- **Live Playback**: Preview processed video in real time before saving
+- **Face Embeddings**: Use multiple source faces for better accuracy and similarity
+- **Live Swapping via Webcam**: Swap your face in real time
+- **Improved User Interface**: Pan the preview window by holding the right mouse button, batch-select input faces with `Shift`, and choose from several themes
+- **Video Markers**: Adjust settings per frame for precise results
+- **TensorRT Support**: Leverages supported GPUs for faster processing
 
 ---
 
-### **Prerequisites**
-- Portable Version: No pre-requirements - Minimum Nvidia driver version: >=576.57
+### Prerequisites
+- Portable Version: No pre-requirements - minimum Nvidia driver version: `>=576.57`
 - Non-Portable Version:
-    -   **Git** ([Download](https://git-scm.com/downloads))
-    -   **Miniconda** ([Download](https://www.anaconda.com/download))
-        <br> or
-    -   **uv** ([Installation choices])(https://docs.astral.sh/uv/getting-started/installation/)
+  - **Git** ([Download](https://git-scm.com/downloads))
+  - **Miniconda** ([Download](https://www.anaconda.com/download))
+  - or **uv** ([Installation choices](https://docs.astral.sh/uv/getting-started/installation/))
 
-## **Installation Guide (VisoMaster-Fusion)**
+## Installation Guide
 
-### **Portable version**
+### Portable Version
 
-Download only the Run_Portable.bat file from this repo (you don't need to clone the whole repo) from link below and put it in a new directory were you want to run VisoMaster from. Then just execute the bat file to run VisoMaster. Portable dependencies will be installed on the first run to portable-files directory.
+Download only the `Start_Portable.bat` file from this repo using the link below and place it in a new directory where you want to run VisoMaster. Then execute the batch file to start VisoMaster. Portable dependencies will be installed on the first run into the portable files directory.
+
 - [Download - Start_Portable.bat](Start_Portable.bat)
 
-You don't need any other steps from below for the portable version. Always start visomaster with Start_Portable.bat
+You do not need any of the non-portable steps below for the portable version. Always start VisoMaster with `Start_Portable.bat`.
 
-### **Non-Portable - Installation Steps**
+### Non-Portable Installation Steps
 
-**1. Clone the Repository**
+**1. Clone the repository**
+
 Open a terminal or command prompt and run:
+
 ```sh
-git clone <URL_TO_YOUR_VISOMASTER_FUSION_REPO>
-```
-```sh
-cd VisoMaster
-```
-```sh
-git checkout fusion
+git clone https://github.com/VisoMasterFusion/VisoMaster-Fusion
+cd VisoMaster-Fusion
 ```
 
-**2. Create and Activate a python Environment (Skip if you already have one)**
+> Most users should use the `main` branch. The repository also has a `dev` branch for newer or in-progress changes.
 
+**2. Create and activate a Python environment**
 
-#### In case you like to use "anaconda"
+Skip this if you already have one.
+
+#### Using Anaconda
 
 ```sh
 conda create -n visomaster python=3.11 -y
-```
-```sh
 conda activate visomaster
-```
-```sh
 pip install uv
 ```
 
-### In case you like to use "uv" directly
+#### Using uv directly
 
 ```sh
 uv venv --python 3.11
-```
-```sh
 .venv\Scripts\activate
 ```
 
 **3. Install requirements**
-```
+
+```sh
 uv pip install -r requirements_cu129.txt
 ```
 
 **4. Download required models**
+
 ```sh
 python download_models.py
 ```
 
-**5. Run the Application**
+**5. Run the application**
 
 Once everything is set up, start the application:
-- by opening the **Start.bat** file (for Windows)
-or
-Activate conda or uv environment in a terminal in the visomaster directory:
 
-```
+- Open `Start.bat` on Windows
+- Or activate your conda or uv environment in a terminal inside the `VisoMaster-Fusion` directory and run:
+
+```sh
 # If you use Anaconda
 conda activate visomaster
 
 # If you use uv only
 .venv\Scripts\activate
 
-# Start visomaster
+# Start VisoMaster
 python main.py
 ```
 
+**5.1 Update to the latest code state**
 
-**5.1 Update to latest code state**
 ```sh
-cd VisoMaster
+cd VisoMaster-Fusion
 git pull
 ```
 
@@ -210,70 +212,130 @@ git pull
 
 **6. Install ffmpeg**
 
-In Windows - Either via:
+On Windows, either:
 
-- powershell command: "winget install -e --id Gyan.FFmpeg --version 7.1.1"
+- Run: `winget install -e --id Gyan.FFmpeg --version 7.1.1`
+- Or:
+  - Download: https://www.gyan.dev/ffmpeg/builds/packages/ffmpeg-7.1.1-essentials_build.zip
+  - Unzip it somewhere
+  - Add `\<unzipped ffmpeg path>\bin` to your Windows `PATH`
 
-<br>or
+## More Documentation
 
-- Download ffmpeg zip: https://www.gyan.dev/ffmpeg/builds/packages/ffmpeg-7.1.1-essentials_build.zip
-- Unzip it somewhere
-- Add "\<unzipped ffmpeg path>\bin" folder to your Windows environment PATH variable
-
-## How to use the Job Manager
-1.  Set up your workspace as you normally would before recording (select source/target faces, adjust settings, etc.).
-2.  In the Job Manager widget, click the **"Save Job"** button.
-3.  Give your job a name. You can also choose whether to use this name for the final output file.
-4.  The job will appear in the list. Set up more jobs if you wish.
-5.  To process, select one or more jobs and click **"Process Selected"**, or click **"Process All"** to run the entire queue.
-6.  Processing will begin automatically. A pop-up will notify you when all jobs are complete.
+- For a practical first-run guide, see [Quick Start Guide](./docs/quickstart.md).
+- For detailed workflows, settings, and feature coverage, see [User Manual](./docs/user_manual.md).
 
 ## Development
 
-- Please use pre-commit before doing git add & commit. And fix found issues before the commit.
+### Custom Kernels (Provider: "Custom")
 
-  ```
-  # Install pre-commit
-  uv pip install pre-commit
+The "Custom" inference provider delivers faster PyTorch FP16 + CUDA graph runners for all key models. It also uses a small set of hand-written CUDA kernels for fused ops (AdaIN, weight demodulation, cuBLASLt HGEMM) and Triton JIT kernels for everything else (GroupNorm+SiLU, pixel-shift, im2col-reflect, etc.).
 
-  # Usage before commits - (run twice in case of found auto corrections)
-  pre-commit run --all-files
-  ```
+**Pre-built binaries** (committed to the repo under `model_assets/custom_kernels/`):
+
+| File | Purpose |
+|---|---|
+| `adain_fp16_ext.pyd` | Fused Adaptive Instance Normalisation (InSwapper, FP16) |
+| `gfpgan_demod_ext.pyd` | Fused weight demodulation (GFPGAN / GPEN) |
+| `style_block_ext.pyd` | cuBLASLt HGEMM + fused BIAS (InSwapper style blocks) |
+
+These are multi-arch fat binaries covering **sm_75 → sm_120** (RTX 2000 through RTX 5000). End users need no compiler — the binaries are loaded directly at runtime.
+
+**Rebuilding** (required when CUDA kernel sources change):
+
+```sh
+# Requires Visual Studio 2019/2022 (C++ workload) + CUDA Toolkit 12.8+
+python custom_kernels/build_kernels.py
+```
+
+Then commit the updated `.pyd` files. The Triton kernels in `triton_ops.py` do **not** need a manual build step — they JIT-compile at first use on the user's GPU and cache automatically under `model_assets/custom_kernels/triton_cache/`. The cache is versioned by Triton+CUDA+Python version and old entries are pruned automatically on startup.
+
+- Please use pre-commit before `git add` and commit, and fix any issues it reports.
+
+```sh
+# Install pre-commit
+uv pip install pre-commit
+
+# Usage before commits - run twice if auto-fixes were applied
+pre-commit run --all-files
+```
+
+### Unit Tests
+
+The project has a test suite covering core pipeline logic such as VR math, face masks, face detectors, serialization, job validation, and widget logic. Tests run without a GPU and without Qt installed.
+
+**Setup (one-time)**
+
+```sh
+# Create a lightweight test venv (separate from the main app venv)
+uv venv --python 3.12 .venv-test
+.venv-test\Scripts\activate
+
+# Install test dependencies
+uv pip install torch torchvision --index-url https://download.pytorch.org/whl/cpu
+uv pip install numpy scipy scikit-image opencv-python pillow pytest pytest-mock
+```
+
+> If you already have a `.venv` with the full `requirements_cu129.txt` installed, you can run tests directly in it - the GPU packages do not interfere.
+
+**Running the tests**
+
+```sh
+# Activate your venv first, then:
+python -m pytest                     # run the full suite (206 tests, ~2s)
+python -m pytest tests/unit/         # unit tests only
+python -m pytest tests/integration/  # integration tests only
+python -m pytest -k "vr"             # filter by keyword
+python -m pytest -v                  # verbose output
+```
+
+**Test structure**
+
+```text
+tests/
+|-- unit/
+|   |-- helpers/      # ParametersDict, miscellaneous utils, VR math, thumbnails
+|   |-- processors/   # Face detectors, masks, swappers, frame worker VR flow
+|   |-- ui/           # Settings layout schema, save/load actions, job manager, widget logic
+|   `-- utils/        # faceutil math
+`-- integration/      # VR180 pipeline end-to-end
+```
 
 ---
 
-## [Join Discord](https://discord.gg/5rx4SQuDbp)
+## Troubleshooting
 
-## Support The Project
-This project was made possible by the combined efforts of the original developers and the modding community. If you appreciate this work, please consider supporting them.
-
-### **Mod Credits**
-VisoMaster-Fusion would not be possible without the incredible work of:
--   **Job Manager Mod**: Axel (https://github.com/axel-devs/VisoMaster-Job-Manager)
--   **Experimental Mod**: Hans (https://github.com/asdf31jsa/VisoMaster-Experimental)
--   **VR180/Ref-ldm Mod**: Glat0s (https://github.com/Glat0s/VisoMaster/tree/dev-vr180)
--   **Many Optimizations**: Nyny (https://github.com/Elricfae/VisoMaster---Modded)
-
-## **Troubleshooting**
 - If you face CUDA-related issues, ensure your GPU drivers are up to date.
 - For missing models, double-check that all models are placed in the correct directories.
 
-## [Join Discord](https://discord.gg/5rx4SQuDbp)
+## Support The Project
 
-## Support The Project ##
-This project was made possible by the combined efforts of **[@argenspin](https://github.com/argenspin)** and **[@Alucard24](https://github.com/alucard24)** with the support of countless other members in our Discord community. If you wish to support us for the continued development of **Visomaster**, you can donate to either of us (or Both if you're double Awesome :smiley: )
+This project was made possible by the combined efforts of **[@argenspin](https://github.com/argenspin)** and **[@Alucard24](https://github.com/alucard24)**, with support from many other members of the Discord community. If you would like to support the continued development of **VisoMaster**, you can donate to either of us.
 
-### **argenspin** ###
+### Mod Credits
+
+VisoMaster-Fusion would not be possible without the incredible work of:
+
+- **Job Manager Mod**: Axel (https://github.com/axel-devs/VisoMaster-Job-Manager)
+- **Experimental Mod**: Hans (https://github.com/asdf31jsa/VisoMaster-Experimental)
+- **VR180/Ref-ldm Mod**: Glat0s (https://github.com/Glat0s/VisoMaster/tree/dev-vr180)
+- **Many Optimizations**: Nyny (https://github.com/Elricfae/VisoMaster---Modded)
+- **Launcher**: Tenka (https://github.com/t3nka)
+
+### argenspin
+
 - [BuyMeACoffee](https://buymeacoffee.com/argenspin)
 - BTC: bc1qe8y7z0lkjsw6ssnlyzsncw0f4swjgh58j9vrqm84gw2nscgvvs5s4fts8g
 - ETH: 0x967a442FBd13617DE8d5fDC75234b2052122156B
-### **Alucard24** ###
+
+### Alucard24
+
 - [BuyMeACoffee](https://buymeacoffee.com/alucard_24)
 - [PayPal](https://www.paypal.com/donate/?business=XJX2E5ZTMZUSQ&no_recurring=0&item_name=Support+us+with+a+donation!+Your+contribution+helps+us+continue+improving+and+providing+quality+content.+Thank+you!&currency_code=EUR)
 - BTC: 15ny8vV3ChYsEuDta6VG3aKdT6Ra7duRAc
 
+## Disclaimer
 
-## Disclaimer: ##
 **VisoMaster** is a hobby project that we are making available to the community as a thank you to all of the contributors ahead of us. We've copied the disclaimer from Swap-Mukham here since it is well-written and applies 100% to this repo.
 
 We would like to emphasize that our swapping software is intended for responsible and ethical use only. We must stress that users are solely responsible for their actions when using our software.

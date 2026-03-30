@@ -1,3 +1,4 @@
+import queue
 import numpy as np
 import torch
 import platform
@@ -30,7 +31,8 @@ numpy_to_torch_dtype_dict = {
     np.complex128: torch.complex128,
 }
 # Handle boolean type compatibility across numpy versions.
-if np.version.full_version >= "1.24.0":
+# T-05: use tuple comparison instead of string comparison for version numbers
+if tuple(int(x) for x in np.__version__.split(".")[:3]) >= (1, 24, 0):
     numpy_to_torch_dtype_dict[np.bool_] = torch.bool
 else:
     numpy_to_torch_dtype_dict[np.bool] = torch.bool
@@ -84,6 +86,10 @@ class TensorRTPredictor:
             except Exception as e:
                 raise RuntimeError(f"Error loading the custom plugin: {e}")
 
+        # T-02: guard against missing TRT at the point of use
+        if "trt" not in globals():
+            raise ImportError("TensorRT is required but not installed.")
+
         engine_path = kwargs.get("model_path", None)
         if not engine_path:
             raise ValueError("The 'model_path' parameter is mandatory.")
@@ -128,6 +134,10 @@ class TensorRTPredictor:
                                                 The output tensors must be pre-allocated with the correct shape and dtype.
             stream (torch.cuda.Stream): The CUDA stream on which to execute the inference.
         """
+        # T-02: guard against missing TRT at the point of use
+        if "trt" not in globals():
+            raise ImportError("TensorRT is required but not installed.")
+
         if self.context_pool is None:
             raise RuntimeError(
                 "The context pool has been cleaned up and is no longer available."
@@ -156,10 +166,9 @@ class TensorRTPredictor:
             if not noerror:
                 raise RuntimeError("ERROR: Asynchronous inference failed.")
 
-            # Pop the NVTX range.
-            nvtx.range_pop()
-
         finally:
+            # T-01: pop NVTX range in finally so it always executes even on exception
+            nvtx.range_pop()
             # CRITICAL: Return the context to the pool so other threads can use it.
             # This is done in a `finally` block to ensure it happens even if errors occur.
             if self.context_pool is not None:
@@ -175,10 +184,15 @@ class TensorRTPredictor:
             self.engine = None
 
         if hasattr(self, "context_pool") and self.context_pool is not None:
-            while not self.context_pool.empty():
-                context = self.context_pool.get()
-                if context is not None:
-                    del context
+            # T-04: use get_nowait() to avoid blocking indefinitely; the pool may
+            # already be partially drained by in-flight predict_async calls.
+            while True:
+                try:
+                    ctx = self.context_pool.get_nowait()
+                    if ctx is not None:
+                        del ctx
+                except queue.Empty:
+                    break
             self.context_pool = None
 
     def __del__(self) -> None:

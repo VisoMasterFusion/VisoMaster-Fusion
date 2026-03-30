@@ -36,10 +36,12 @@ class MasterData(TypedDict):
     embeddings_data: dict[str, dict[str, Any]]
 
 
-# --- Constants ---
+def get_jobs_dir(main_window: "MainWindow") -> Path:
+    """Helper function to get the correct 'jobs' directory using pathlib."""
+    jobs_dir = main_window.project_root_path / "jobs"
+    jobs_dir.mkdir(parents=True, exist_ok=True)
+    return jobs_dir
 
-jobs_dir = os.path.join(os.getcwd(), "jobs")
-os.makedirs(jobs_dir, exist_ok=True)  # Ensure the directory exists
 
 # --- Parameter Conversion Helpers ---
 
@@ -133,11 +135,12 @@ def save_job(
     This is a wrapper for save_job_workspace.
     """
     try:
-        data_filename = os.path.join(jobs_dir, f"{job_name}")
+        jobs_dir = get_jobs_dir(main_window)
+        data_filename = str(jobs_dir / f"{job_name}")
         save_job_workspace(
             main_window, data_filename, use_job_name_for_output, output_file_name
         )
-        print(f"[INFO] Job saved: {data_filename}")
+        print(f"[INFO] Job saved: {data_filename}.json")
         common_widget_actions.create_and_show_toast_message(
             main_window, "Job Saved", f"Job '{job_name}' has been saved."
         )
@@ -148,12 +151,13 @@ def save_job(
         )
 
 
-def list_jobs() -> list[str]:
+def list_jobs(main_window: "MainWindow") -> list[str]:
     """Lists all saved jobs (JSON files) from the 'jobs' directory."""
-    if not os.path.exists(jobs_dir):
+    jobs_dir = get_jobs_dir(main_window)
+    if not jobs_dir.exists():
         return []
-    # Return job names without the .json extension
-    return [f.replace(".json", "") for f in os.listdir(jobs_dir) if f.endswith(".json")]
+    # Return job names without the .json extension using Pathlib
+    return [f.stem for f in jobs_dir.glob("*.json")]
 
 
 def delete_job(main_window: "MainWindow") -> bool:
@@ -181,11 +185,12 @@ def delete_job(main_window: "MainWindow") -> bool:
         return False
 
     deleted_any = False
+    jobs_dir = get_jobs_dir(main_window)
     for job_name in selected_jobs:
-        job_file = os.path.join(jobs_dir, f"{job_name}.json")
-        if os.path.exists(job_file):
+        job_file = jobs_dir / f"{job_name}.json"
+        if job_file.exists():
             try:
-                send2trash(job_file)  # Use send2trash for safety
+                send2trash(str(job_file))  # Use send2trash for safety
                 print(f"[INFO] Job moved to trash: {job_file}")
                 deleted_any = True
             except Exception as e:
@@ -281,11 +286,11 @@ def _load_job_target_media(main_window: "MainWindow", data: dict):
                 f"[WARN] Target media path not found, skipping: {m.get('media_path')}"
             )
 
-    target_medias_files_list, target_media_ids = (
-        zip(*[(m["media_path"], m["media_id"]) for m in valid_target_medias_data])
-        if valid_target_medias_data
-        else ([], [])
-    )
+    if valid_target_medias_data:
+        target_medias_files_list = [m["media_path"] for m in valid_target_medias_data]
+        target_media_ids = [m["media_id"] for m in valid_target_medias_data]
+    else:
+        target_medias_files_list, target_media_ids = [], []
 
     main_window.video_loader_worker = ui_workers.TargetMediaLoaderWorker(
         main_window=main_window,
@@ -320,19 +325,16 @@ def _load_job_input_faces(main_window: "MainWindow", data: dict):
                 f"[WARN] Input face media path not found, skipping: {f.get('media_path')}"
             )
 
-    input_media_paths, input_face_ids = (
-        zip(
-            *[
-                (f["media_path"], face_id)
-                for face_id, f in valid_input_faces_data.items()
-            ]
-        )
-        if valid_input_faces_data
-        else ([], [])
-    )
+    if valid_input_faces_data:
+        input_media_paths = [
+            f["media_path"] for face_id, f in valid_input_faces_data.items()
+        ]
+        input_face_ids = list(valid_input_faces_data.keys())
+    else:
+        input_media_paths, input_face_ids = [], []
 
     if not input_media_paths:
-        main_window.input_faces_loader_worker = False
+        main_window.input_faces_loader_worker = None
         return
 
     # Create the worker and run it to load the faces.
@@ -485,7 +487,7 @@ def _load_job_controls_and_state(
 
     # Update parameter widgets to default (or first face's)
     common_widget_actions.set_widgets_values_using_face_id_parameters(
-        main_window, face_id=False
+        main_window, face_id=None
     )
 
     if not is_batch_load:
@@ -509,11 +511,53 @@ def _load_job_markers(main_window: "MainWindow", data: dict):
             int(marker_position),
         )
 
+    loaded_issue_frames_by_face = data.get("issue_frames_by_face")
+    if loaded_issue_frames_by_face is not None:
+        video_control_actions.set_issue_frames_by_face(
+            main_window, loaded_issue_frames_by_face
+        )
+    else:
+        selected_face_id = getattr(main_window, "selected_target_face_id", None)
+        if selected_face_id is None and getattr(main_window, "target_faces", {}):
+            selected_face_id = str(next(iter(main_window.target_faces.keys())))
+        if selected_face_id is not None:
+            video_control_actions.set_issue_frames_for_face(
+                main_window, selected_face_id, data.get("issue_frames", [])
+            )
+        else:
+            video_control_actions.set_issue_frames_by_face(main_window, {})
+    video_control_actions.set_dropped_frames(
+        main_window, data.get("dropped_frames", [])
+    )
+
     # Load job marker pairs (segments)
     main_window.job_marker_pairs = data.get("job_marker_pairs", [])
 
     # Update slider visuals to show markers
     main_window.videoSeekSlider.update()
+    video_control_actions.update_drop_frame_button_label(main_window)
+    if hasattr(main_window, "scanToolsToggleButton"):
+        video_control_actions.set_scan_tools_expanded(
+            main_window, data.get("scan_tools_expanded", False)
+        )
+
+
+def _begin_batch_refresh_suppression(main_window: "MainWindow") -> bool:
+    """Suppress intermediate frame refreshes and return the previous flag value."""
+    previous_batch_flag = getattr(main_window, "_batch_update_in_progress", False)
+    main_window._batch_update_in_progress = True
+    return previous_batch_flag
+
+
+def _restore_batch_refresh_state(main_window: "MainWindow", previous_batch_flag: bool):
+    """Restore the previous frame-refresh suppression state."""
+    main_window._batch_update_in_progress = previous_batch_flag
+
+
+def _restore_state_and_refresh(main_window: "MainWindow", previous_batch_flag: bool):
+    """Restore suppression flag and run a single final frame refresh."""
+    _restore_batch_refresh_state(main_window, previous_batch_flag)
+    common_widget_actions.refresh_frame(main_window)
 
 
 def _validate_job_files_exist(data: dict) -> tuple[bool, str | None]:
@@ -525,6 +569,51 @@ def _validate_job_files_exist(data: dict) -> tuple[bool, str | None]:
     """
     is_job_valid = True
     skip_reason = ""
+
+    # --- RETRO-COMPATIBILITY ---
+    # Convert old single-job format to unified batch format to prevent empty loads
+    if "target_medias_data" not in data and "target_media_path" in data:
+        data["target_medias_data"] = [
+            {
+                "media_path": data["target_media_path"],
+                "media_id": data.get("target_media_id", "default_id"),
+                "file_type": data.get("target_media_type", "video"),
+            }
+        ]
+    if "selected_media_id" not in data and "target_media_id" in data:
+        data["selected_media_id"] = data["target_media_id"]
+
+    # --- SMART PATH RESOLUTION ---
+    # Automatically rebuilds paths if folders or sub-folders were moved
+    def resolve_path(saved_path: str, is_target: bool) -> str:
+        if not saved_path or os.path.exists(saved_path):
+            return saved_path
+
+        root_folder = data.get(
+            "last_target_media_folder_path"
+            if is_target
+            else "last_input_media_folder_path",
+            "",
+        )
+        if root_folder and os.path.exists(root_folder):
+            from pathlib import Path
+
+            parts = Path(saved_path).parts
+            # Try to match the trailing folder structure against the active root folder
+            for i in range(1, len(parts)):
+                fallback = os.path.join(root_folder, *parts[-i:])
+                if os.path.exists(fallback):
+                    return fallback
+        return saved_path
+
+    # Apply smart resolution in-place to the data payload
+    for m in data.get("target_medias_data", []):
+        if "media_path" in m:
+            m["media_path"] = resolve_path(m["media_path"], is_target=True)
+
+    for f in data.get("input_faces_data", {}).values():
+        if "media_path" in f:
+            f["media_path"] = resolve_path(f["media_path"], is_target=False)
 
     # --- 1. Validate the SINGLE required target media ---
     job_selected_media_id = data.get("selected_media_id")
@@ -618,8 +707,10 @@ def load_job_workspace(main_window: "MainWindow", job_name: str):
     """
 
     print("[INFO] Loading job workspace...")
-    data_filename = os.path.join(jobs_dir, f"{job_name}.json")
-    if not Path(data_filename).is_file():
+    jobs_dir = get_jobs_dir(main_window)
+    data_filename = jobs_dir / f"{job_name}.json"
+
+    if not data_filename.is_file():
         print(f"[ERROR] No valid file found for job: {job_name}.")
         QMessageBox.critical(
             main_window, "Load Error", f"Job file not found:\n{data_filename}"
@@ -664,6 +755,7 @@ def load_job_workspace(main_window: "MainWindow", job_name: str):
     )
     progress_dialog.show()
     QtWidgets.QApplication.processEvents()
+    previous_batch_flag = _begin_batch_refresh_suppression(main_window)
 
     # --- Execute Loading Steps ---
     try:
@@ -748,7 +840,7 @@ def load_job_workspace(main_window: "MainWindow", job_name: str):
 
         else:
             # If no faces were loaded, ensure selection is cleared
-            main_window.selected_target_face_id = False
+            main_window.selected_target_face_id = None
             main_window.cur_selected_target_face_button = None
             main_window.current_widget_parameters = (
                 main_window.default_parameters.copy()
@@ -761,7 +853,7 @@ def load_job_workspace(main_window: "MainWindow", job_name: str):
         main_window.videoSeekSlider.update()
 
         # Final refresh ensures graphics view is up-to-date after potential parameter changes
-        common_widget_actions.refresh_frame(main_window)
+        _restore_state_and_refresh(main_window, previous_batch_flag)
 
         # --- Re-enable all UI controls after loading ---
         layout_actions.enable_all_parameters_and_control_widget(main_window)
@@ -778,6 +870,7 @@ def load_job_workspace(main_window: "MainWindow", job_name: str):
             f"An error occurred while loading job '{job_name}':\n{e}",
         )
     finally:
+        _restore_batch_refresh_state(main_window, previous_batch_flag)
         progress_dialog.close()
 
 
@@ -816,6 +909,7 @@ def _restore_workspace_from_snapshot(main_window: "MainWindow", data: dict):
     progress_dialog.update_progress(0, total_steps, "Initializing restore...")
     progress_dialog.show()
     QtWidgets.QApplication.processEvents()
+    previous_batch_flag = _begin_batch_refresh_suppression(main_window)
 
     # --- Execute Loading Steps ---
     try:
@@ -906,7 +1000,7 @@ def _restore_workspace_from_snapshot(main_window: "MainWindow", data: dict):
             ].copy()
         else:
             # If no faces were restored
-            main_window.selected_target_face_id = False
+            main_window.selected_target_face_id = None
             main_window.cur_selected_target_face_button = None
             main_window.current_widget_parameters = (
                 main_window.default_parameters.copy()
@@ -919,7 +1013,7 @@ def _restore_workspace_from_snapshot(main_window: "MainWindow", data: dict):
         main_window.videoSeekSlider.update()
 
         # Final refresh ensures graphics view is up-to-date
-        common_widget_actions.refresh_frame(main_window)
+        _restore_state_and_refresh(main_window, previous_batch_flag)
 
         # --- Re-enable all UI controls after restoring ---
         layout_actions.enable_all_parameters_and_control_widget(main_window)
@@ -936,6 +1030,7 @@ def _restore_workspace_from_snapshot(main_window: "MainWindow", data: dict):
             f"An error occurred while restoring the workspace:\n{e}",
         )
     finally:
+        _restore_batch_refresh_state(main_window, previous_batch_flag)
         progress_dialog.close()
 
 
@@ -1021,6 +1116,12 @@ def _serialize_job_data(main_window: "MainWindow") -> dict:
         "target_faces_data": target_faces_data,
         "control": control_to_save,
         "markers": markers_to_save,
+        "issue_frames_by_face": {
+            str(face_id): sorted(frames)
+            for face_id, frames in main_window.issue_frames_by_face.items()
+        },
+        "dropped_frames": sorted(main_window.dropped_frames),
+        "scan_tools_expanded": getattr(main_window, "scan_tools_expanded", False),
         "job_marker_pairs": copy.deepcopy(main_window.job_marker_pairs),
         "selected_media_id": selected_media_id,
         "swap_faces_enabled": main_window.swapfacesButton.isChecked(),
@@ -1145,9 +1246,7 @@ def prompt_job_name(main_window: "MainWindow"):
             return
 
     output_folder = str(main_window.control.get("OutputMediaFolder", "")).strip()
-    if not output_folder and not main_window.control.get(
-        "OutputToTargetLocationToggle", False
-    ):
+    if not output_folder:
         QMessageBox.warning(
             main_window,
             "Workspace Not Ready",
@@ -1179,7 +1278,8 @@ def prompt_job_name(main_window: "MainWindow"):
             return
     # --- End Validation ---
 
-    dialog = widget_components.SaveJobDialog(main_window)
+    input_filename = Path(main_window.video_processor.media_path).stem
+    dialog = widget_components.SaveJobDialog(main_window, input_filename)
     if dialog.exec() == QtWidgets.QDialog.Accepted:
         job_name = dialog.job_name
         use_job_name_for_output = dialog.use_job_name_for_output
@@ -1191,22 +1291,30 @@ def prompt_job_name(main_window: "MainWindow"):
                 main_window, "Invalid Job Name", "Job name cannot be empty."
             )
             return
-        if not re.match(r"^[\w\- ]+$", job_name):
+
+        invalid_chars = '<>:"/\\|?*'
+        if any(ch in job_name for ch in invalid_chars) or re.search(
+            r"[\x00-\x1f]", job_name
+        ):
             QMessageBox.warning(
                 main_window,
                 "Invalid Job Name",
-                "Job name contains invalid characters. Only letters, numbers, spaces, dashes, and underscores are allowed.",
+                "Job name contains invalid characters.\n"
+                'Characters not allowed: <> : " / \\ | ? * or control characters.',
             )
             return
 
         # Validate output file name if provided
         if not use_job_name_for_output and output_file_name:
-            if not re.match(r"^[\w\- ]+$", output_file_name):
+            # Simple check for characters not allowed in filenames (e.g. Windows)
+            if any(ch in output_file_name for ch in invalid_chars) or re.search(
+                r"[\x00-\x1f]", output_file_name
+            ):
                 QMessageBox.warning(
                     main_window,
                     "Invalid Output File Name",
                     "Output file name contains invalid characters.\n"
-                    "Only letters, numbers, spaces, dashes, and underscores are allowed.",
+                    'Characters not allowed: <> : " / \\ | ? * or control characters.',
                 )
                 return
 
@@ -1247,7 +1355,7 @@ def refresh_job_list(main_window: "MainWindow"):
     """Updates the job queue list widget with the latest job files."""
     if main_window.jobQueueList:
         main_window.jobQueueList.clear()
-        job_names = list_jobs()
+        job_names = list_jobs(main_window)
         main_window.jobQueueList.addItems(job_names)
         update_job_manager_buttons(main_window)
 
@@ -1340,6 +1448,7 @@ def load_job_settings(main_window: "MainWindow", job_data: dict):
     Assumes master assets are already loaded.
     """
     print("[INFO] Load job settings called.")
+    previous_batch_flag = _begin_batch_refresh_suppression(main_window)
     try:
         # Store job name context for processing
         main_window.current_job_name = job_data.get("job_name_internal", "Unknown Job")
@@ -1348,10 +1457,10 @@ def load_job_settings(main_window: "MainWindow", job_data: dict):
         )
         main_window.output_file_name = job_data.get("output_file_name", None)
 
-        # --- Re-ordered loading logic ---
+        # During job restore, suppress intermediate refreshes so the first processed
+        # frame sees fully restored controls instead of stale pre-load state.
 
-        # 1. Select the media FIRST. This triggers the (asynchronous) loading
-        # of the first frame via process_current_frame.
+        # 1. Select the media.
         selected_media_id = job_data.get("selected_media_id", False)
         if (
             selected_media_id
@@ -1373,15 +1482,17 @@ def load_job_settings(main_window: "MainWindow", job_data: dict):
                 print("[ERROR] No target media loaded, cannot proceed.")
                 # This job will likely fail, but we must continue
 
-        # 2. Load target faces and parameters. This is safe.
+        # 2. Load target faces and parameters.
         _load_job_target_faces_and_params(main_window, job_data)
 
-        # 3. Load controls. This is now safe because the swap_button logic
-        #    is fixed (is_batch_load=True) and won't trigger a bad refresh.
+        # 3. Load controls/state.
         _load_job_controls_and_state(main_window, job_data, is_batch_load=True)
 
-        # 4. Load markers. This is safe.
+        # 4. Load markers.
         _load_job_markers(main_window, job_data)
+
+        # Run exactly one refresh with the final restored state.
+        _restore_state_and_refresh(main_window, previous_batch_flag)
 
         print(
             f"[INFO] Lightweight settings loaded for job: {main_window.current_job_name}"
@@ -1396,6 +1507,7 @@ def load_job_settings(main_window: "MainWindow", job_data: dict):
             f"An error occurred while loading settings for job:\n{e}",
         )
     finally:
+        _restore_batch_refresh_state(main_window, previous_batch_flag)
         # Allow pending UI events to process before signaling completion
         QtWidgets.QApplication.processEvents()
         # Use the instance event from the job_processor
@@ -1634,13 +1746,15 @@ class JobProcessor(QThread):
         """
         super().__init__()
         self.main_window = main_window
-        self.jobs_dir = os.path.join(os.getcwd(), "jobs")
-        self.completed_dir = os.path.join(self.jobs_dir, "completed")
+
+        # Use pathlib
+        self.jobs_dir = main_window.project_root_path / "jobs"
+        self.completed_dir = self.jobs_dir / "completed"
 
         if jobs_to_process is not None:
             self.jobs = jobs_to_process
         else:
-            self.jobs = list_jobs()  # Get all current jobs
+            self.jobs = list_jobs(main_window)
 
         self.current_job_name = None
         self.batch_succeeded = (
@@ -1648,8 +1762,7 @@ class JobProcessor(QThread):
         )
         self.skipped_jobs: list[str] = []  # Store jobs that fail pre-flight checks
 
-        if not os.path.exists(self.completed_dir):
-            os.makedirs(self.completed_dir)
+        self.completed_dir.mkdir(parents=True, exist_ok=True)
 
         # --- Encapsulated Threading Events ---
         self.master_assets_loaded_event = threading.Event()
@@ -1700,8 +1813,8 @@ class JobProcessor(QThread):
 
     def _read_job_file(self, job_name: str) -> dict | None:
         """Reads and parses a job's JSON file."""
-        data_filename = os.path.join(self.jobs_dir, f"{job_name}.json")
-        if not Path(data_filename).is_file():
+        data_filename = self.jobs_dir / f"{job_name}.json"
+        if not data_filename.is_file():
             print(f"[ERROR] No valid file found for job: {job_name}.")
             self.job_failed_signal.emit(
                 job_name, f"Job file not found: {data_filename}"

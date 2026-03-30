@@ -12,7 +12,13 @@ MAX_DOWNLOAD_ATTEMPTS = 3  # Number of retries for a failed download.
 REQUEST_TIMEOUT = 10  # Timeout for network requests in seconds.
 
 
-def download_file(model_name: str, file_path: str, correct_hash: str, url: str) -> bool:
+def download_file(
+    model_name: str,
+    file_path: str,
+    correct_hash: str,
+    url: str,
+    skip_hash_check: bool = False,
+) -> bool:
     """
     Downloads a model file from a given URL, verifies its integrity using a hash,
     and handles retries on failure.
@@ -34,6 +40,11 @@ def download_file(model_name: str, file_path: str, correct_hash: str, url: str) 
     # First, check if the file already exists and has the correct integrity.
     # This avoids re-downloading large files unnecessarily.
     if Path(file_path).is_file():
+        if skip_hash_check:
+            print(
+                f"\n[INFO] Skipping '{model_name}': file exists (hash check skipped — optimized models mode)."
+            )
+            return True
         if check_file_integrity(file_path, correct_hash):
             print(
                 f"\n[INFO] Skipping '{model_name}': file already exists and is valid."

@@ -1,9 +1,18 @@
 import hashlib
 import os
 import urllib
+import urllib.request
 import warnings
 from typing import Union, List, Optional
-from pkg_resources import packaging
+try:
+    import packaging
+    import packaging.version
+except ImportError:
+    # Fallback for older environments
+    try:
+        from pkg_resources import packaging
+    except ImportError:
+        raise ImportError("The 'packaging' library is required. Please install it with: pip install packaging")
 
 import torch
 from PIL import Image

@@ -1,5 +1,4 @@
 import json
-from pathlib import Path
 from PySide6 import QtWidgets, QtCore
 from typing import TYPE_CHECKING
 from functools import partial
@@ -14,7 +13,11 @@ if TYPE_CHECKING:
 
 
 def control_preset_toggle(main_window: "MainWindow"):
-    return
+    main_window.controlPresetButton.setToolTip(
+        "Apply Settings from preset: ON"
+        if main_window.controlPresetButton.isChecked()
+        else "Apply Settings from preset: OFF"
+    )
 
 
 def handle_preset_double_click(main_window: "MainWindow", item: "QListWidgetItem"):
@@ -38,10 +41,11 @@ def rename_preset(main_window: "MainWindow", item: "QListWidgetItem"):
     )
 
     if ok and new_name and new_name != old_name:
-        old_path = Path("presets") / f"{old_name}.json"
-        new_path = Path("presets") / f"{new_name}.json"
-        old_path_ctl = Path("presets") / f"{old_name}_ctl.json"
-        new_path_ctl = Path("presets") / f"{new_name}_ctl.json"
+        presets_dir = main_window.project_root_path / "presets"
+        old_path = presets_dir / f"{old_name}.json"
+        new_path = presets_dir / f"{new_name}.json"
+        old_path_ctl = presets_dir / f"{old_name}_ctl.json"
+        new_path_ctl = presets_dir / f"{new_name}_ctl.json"
 
         if new_path.exists():
             QtWidgets.QMessageBox.warning(
@@ -54,7 +58,13 @@ def rename_preset(main_window: "MainWindow", item: "QListWidgetItem"):
 
         try:
             old_path.rename(new_path)
-            old_path_ctl.rename(new_path_ctl)
+            if old_path_ctl.exists():
+                try:
+                    old_path_ctl.rename(new_path_ctl)
+                except Exception as e_ctl:
+                    # Rollback the main rename if the control file rename fails
+                    new_path.rename(old_path)
+                    raise e_ctl
             refresh_presets_list(main_window)
             common_widget_actions.create_and_show_toast_message(
                 main_window,
@@ -71,15 +81,19 @@ def rename_preset(main_window: "MainWindow", item: "QListWidgetItem"):
 
 
 def delete_preset(main_window: "MainWindow", item: "QListWidgetItem"):
-    """Rename the selected preset"""
-    delete_preset = item.text()
-    delete_path = Path("presets") / f"{delete_preset}.json"
-    delete_path_ctl = Path("presets") / f"{delete_preset}_ctl.json"
+    """Delete the selected preset by sending it to the trash."""
+    preset_name = item.text()
+    presets_dir = main_window.project_root_path / "presets"
+    delete_path = presets_dir / f"{preset_name}.json"
+    delete_path_ctl = presets_dir / f"{preset_name}_ctl.json"
 
     try:
-        send2trash(delete_path)
-        send2trash(delete_path_ctl)
-        print(f"[INFO] Preset: {delete_preset} has been sent to the trash.")
+        if delete_path.exists():
+            send2trash(str(delete_path))
+        if delete_path_ctl.exists():
+            send2trash(str(delete_path_ctl))
+
+        print(f"[INFO] Preset: {preset_name} has been sent to the trash.")
         refresh_presets_list(main_window)
 
     except Exception as e:
@@ -98,12 +112,12 @@ def show_preset_context_menu(main_window: "MainWindow", position):
         menu = QtWidgets.QMenu()
         rename_action = menu.addAction("Rename")
         delete_action = menu.addAction("Delete")
-        action = menu.exec_(main_window.presetsList.viewport().mapToGlobal(position))
+
+        action = menu.exec(main_window.presetsList.viewport().mapToGlobal(position))
 
         if action == rename_action:
             rename_preset(main_window, item)
-
-        if action == delete_action:
+        elif action == delete_action:
             delete_preset(main_window, item)
 
 
@@ -118,7 +132,7 @@ def setup_preset_list_context_menu(main_window: "MainWindow"):
 def refresh_presets_list(main_window: "MainWindow"):
     """Refresh the presets list with all JSON files in the presets directory"""
     main_window.presetsList.clear()
-    presets_dir = Path("presets")
+    presets_dir = main_window.project_root_path / "presets"
     if not presets_dir.exists():
         presets_dir.mkdir(exist_ok=True)
 
@@ -180,9 +194,10 @@ def save_current_as_preset(main_window: "MainWindow"):
             return
 
     if ok and name:
-        preset_path = Path("presets") / f"{name}.json"
+        presets_dir = main_window.project_root_path / "presets"
+        preset_path = presets_dir / f"{name}.json"
         preset_path.parent.mkdir(exist_ok=True)
-        preset_path_ctl = Path("presets") / f"{name}_ctl.json"
+        preset_path_ctl = presets_dir / f"{name}_ctl.json"
         preset_path_ctl.parent.mkdir(exist_ok=True)
 
         # Get current parameters but exclude input/output paths
@@ -200,7 +215,6 @@ def save_current_as_preset(main_window: "MainWindow"):
             params.pop("InputFolder", None)
             params.pop("OutputFolder", None)
             current_params = params
-        current_ctl = {}
         control = main_window.control.copy()
         current_ctl = control
         # Save to file
@@ -220,22 +234,26 @@ def apply_selected_preset(main_window: "MainWindow"):
     if not current_item:
         return
 
-    preset_path = Path("presets") / f"{current_item.text()}.json"
+    presets_dir = main_window.project_root_path / "presets"
+    preset_name = current_item.text()
+    preset_path = presets_dir / f"{preset_name}.json"
     if not preset_path.exists():
+        print(f"[WARN] Preset file not found: {preset_path}")
         return
 
     with open(preset_path, "r") as f:
         preset_params = json.load(f)
 
-    preset_path_ctl = Path("presets") / f"{current_item.text()}_ctl.json"
-    if not preset_path_ctl.exists():
-        return
+    preset_path_ctl = presets_dir / f"{preset_name}_ctl.json"
+    preset_ctl = {}
+    if preset_path_ctl.exists():
+        with open(preset_path_ctl, "r") as c:
+            preset_ctl = json.load(c)
 
-    with open(preset_path_ctl, "r") as c:
-        preset_ctl = json.load(c)
     # Preserve current input/output directories
     if main_window.selected_target_face_id:
-        current_params = main_window.parameters[main_window.selected_target_face_id]
+        face_id = main_window.selected_target_face_id
+        current_params = main_window.parameters[face_id]
 
         input_folder = current_params.get("InputFolder")
         output_folder = current_params.get("OutputFolder")
@@ -247,34 +265,32 @@ def apply_selected_preset(main_window: "MainWindow"):
         if output_folder:
             new_params["OutputFolder"] = output_folder
 
-        main_window.parameters[main_window.selected_target_face_id] = ParametersDict(
+        main_window.parameters[face_id] = ParametersDict(
             new_params, main_window.default_parameters.data
         )  # type: ignore
-        if main_window.selected_target_face_id == main_window.selected_target_face_id:
-            common_widget_actions.set_widgets_values_using_face_id_parameters(
-                main_window, main_window.selected_target_face_id
-            )
-        else:
-            # Handle case when no face is selected
-            current_input = main_window.current_widget_parameters.get("InputFolder", "")
-            current_output = main_window.current_widget_parameters.get(
-                "OutputFolder", ""
-            )
+        common_widget_actions.set_widgets_values_using_face_id_parameters(
+            main_window, face_id
+        )
+    else:
+        # Handle case when no face is selected
+        current_input = main_window.current_widget_parameters.get("InputFolder", "")
+        current_output = main_window.current_widget_parameters.get("OutputFolder", "")
 
-            new_params = preset_params.copy()
-            if current_input:
-                new_params["InputFolder"] = current_input
-            if current_output:
-                new_params["OutputFolder"] = current_output
+        new_params = preset_params.copy()
+        if current_input:
+            new_params["InputFolder"] = current_input
+        if current_output:
+            new_params["OutputFolder"] = current_output
 
         main_window.current_widget_parameters = ParametersDict(
             new_params, main_window.default_parameters.data
         )  # type: ignore
+
         common_widget_actions.set_widgets_values_using_face_id_parameters(
-            main_window, False
+            main_window, None
         )
 
-    if main_window.controlPresetButton.isChecked():
+    if main_window.controlPresetButton.isChecked() and preset_ctl:
         new_ctl = preset_ctl.copy()
         main_window.control.update(new_ctl)
         common_widget_actions.set_control_widgets_values(main_window)
@@ -282,5 +298,5 @@ def apply_selected_preset(main_window: "MainWindow"):
     # Refresh the frame to show changes
     common_widget_actions.refresh_frame(main_window)
     common_widget_actions.create_and_show_toast_message(
-        main_window, "Preset Applied", f"Applied preset: {current_item.text()}"
+        main_window, "Preset Applied", f"Applied preset: {preset_name}"
     )

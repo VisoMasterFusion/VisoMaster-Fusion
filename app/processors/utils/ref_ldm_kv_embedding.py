@@ -117,6 +117,7 @@ cache_kv_module = CacheKVModule()
 
 
 def checkpoint(func, inputs, params, flag):
+    # R-06: NOTE: gradient checkpointing intentionally disabled in this inference-only build
     return func(*inputs)
 
 
@@ -707,7 +708,19 @@ class VQModelInterface(nn.Module):
             self.init_from_ckpt(ckpt_path, ignore_keys=ignore_keys or [])
 
     def init_from_ckpt(self, path, ignore_keys=None):
-        sd = torch.load(path, map_location="cpu", weights_only=False)["state_dict"]
+        # R-03: weights_only=True for safe loading; allowlist the pytorch_lightning
+        # ModelCheckpoint global that is embedded in this checkpoint's pickle data.
+        try:
+            from pytorch_lightning.callbacks.model_checkpoint import ModelCheckpoint
+
+            with torch.serialization.safe_globals([ModelCheckpoint]):
+                sd = torch.load(path, map_location="cpu", weights_only=True)[
+                    "state_dict"
+                ]
+        except (ImportError, AttributeError):
+            # pytorch_lightning not available or torch version lacks safe_globals —
+            # fall back to weights_only=False (file is a trusted local asset).
+            sd = torch.load(path, map_location="cpu", weights_only=False)["state_dict"]
         keys = list(sd.keys())
         for k in keys:
             for ik in ignore_keys:
@@ -886,8 +899,10 @@ class UNet_ResBlock(UNet_TimestepBlock):
         else:
             h = self.in_layers(x)
         emb_out = self.emb_layers(emb).type(h.dtype)
-        while len(emb_out.shape) < len(h.shape):
-            emb_out = emb_out[..., None]
+        # OPTIMIZED: Replaced the slow Python 'while' loop with direct dimensional expansion.
+        diff = h.dim() - emb_out.dim()
+        if diff > 0:
+            emb_out = emb_out.view(emb_out.shape + (1,) * diff)
         if self.use_scale_shift_norm:
             out_norm, out_rest = self.out_layers[0], self.out_layers[1:]
             scale, shift = torch.chunk(emb_out, 2, dim=1)
@@ -921,10 +936,15 @@ class QKVAttentionLegacy(nn.Module):
                 cache_kv_module.k[id(self)].append(k.detach().clone())
                 cache_kv_module.v[id(self)].append(v.detach().clone())
 
-        scale = ch**-0.5
-        weight = torch.bmm(q.transpose(1, 2), k) * scale
-        weight = F.softmax(weight.float(), dim=-1).type(weight.dtype)
-        a = torch.bmm(v, weight.transpose(1, 2))
+        # OPTIMIZED: Native PyTorch 2.0+ Scaled Dot-Product Attention
+        # Bypasses manual bmm and softmax allocations, automatically enabling
+        # hardware acceleration like FlashAttention.
+        q_t = q.transpose(1, 2)
+        k_t = k.transpose(1, 2)
+        v_t = v.transpose(1, 2)
+        # sdpa handles the scale (ch**-0.5) automatically based on the last dimension
+        a_t = torch.nn.functional.scaled_dot_product_attention(q_t, k_t, v_t)
+        a = a_t.transpose(1, 2)
         return a.reshape(bs, -1, length)
 
 
@@ -1322,8 +1342,9 @@ class KVExtractor:
         self.model: LatentDiffusion = instantiate_from_config(model_config_full.model)
 
         print(f"[INFO] Loading ReF-LDM UNet weights from: {model_ckpt_path}")
+        # R-03: use weights_only=True for safe standard weight loading
         state_dict_container = torch.load(
-            model_ckpt_path, map_location="cpu", weights_only=False
+            model_ckpt_path, map_location="cpu", weights_only=True
         )
         ldm_state_dict = (
             state_dict_container["state_dict"]
@@ -1349,23 +1370,42 @@ class KVExtractor:
 
     @staticmethod
     def _normalize_image(image) -> torch.Tensor:
+        """Normalize an image to the [-1, 1] range expected by the ReF-LDM model.
+
+        Accepts a PIL Image or a torch.Tensor. PIL images are read as uint8 [0,255]
+        and scaled to [-1, 1]. Tensor inputs are assumed to be already in [0, 1]
+        float range; passing values outside this range will raise an assertion error.
+
+        Returns:
+            torch.Tensor: shape (1, C, H, W), float32, values in [-1, 1].
+        """
         if isinstance(image, Image.Image):
             if image.size != (512, 512):
                 image = image.resize((512, 512), Image.Resampling.LANCZOS)
 
             image_rgb = image.convert("RGB")
-            img_np = np.array(image_rgb, dtype=np.float32)
-            img_tensor = torch.from_numpy(img_np).permute(2, 0, 1)
+            # OPTIMIZED: Avoid allocating slow float32 numpy arrays on CPU.
+            img_tensor = torch.from_numpy(np.array(image_rgb)).permute(2, 0, 1).float()
         elif isinstance(image, torch.Tensor):
             if image.shape[1:] != (512, 512):
-                img_tensor = v2.Resize((512, 512), antialias=True)(image)
+                # OPTIMIZED: Functional resize avoids object instantiation
+                img_tensor = v2.functional.resize(
+                    image, [512, 512], antialias=True
+                ).float()
             else:
                 img_tensor = image.float()
+            # R-02: tensor inputs must be in [0, 1]; values in [0, 255] will produce
+            # wildly out-of-range latents. Assert here to catch callers that forget to normalize.
+            assert img_tensor.max() <= 1.0 + 1e-5, (
+                f"_normalize_image expects [0,1] input for Tensor, got max={img_tensor.max().item():.4f}. "
+                "Divide by 255.0 before passing a float tensor."
+            )
         else:
             raise TypeError(f"Unsupported image type: {type(image)}")
 
-        image_tensor_norm = img_tensor / 127.5 - 1.0
-        return image_tensor_norm.unsqueeze(0)
+        # OPTIMIZED: In-place mathematical operations to save VRAM and CPU overhead
+        img_tensor.div_(127.5).sub_(1.0)
+        return img_tensor.unsqueeze(0)
 
     @torch.no_grad()
     def extract_kv(
@@ -1438,9 +1478,15 @@ class KVExtractor:
                     final_k = k_list[0].clone().detach() * scale_factor
                     final_v = v_list[0].clone().detach() * scale_factor
 
-                    extracted_kv_map[name] = {"k": final_k.cpu(), "v": final_v.cpu()}
+                    # R-05: copy to CPU then immediately release the GPU tensor
+                    k_cpu = final_k.cpu()
+                    del final_k  # free GPU memory
+                    v_cpu = final_v.cpu()
+                    del final_v  # free GPU memory
 
-        cache_kv_module.clear_cache()
+                    extracted_kv_map[name] = {"k": k_cpu, "v": v_cpu}
+
+        cache_kv_module.clear_cache()  # R-05: release any remaining GPU caches
         cache_kv_module.mode = None
 
         print(

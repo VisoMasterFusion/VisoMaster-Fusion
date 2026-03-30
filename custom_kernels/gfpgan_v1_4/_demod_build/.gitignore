@@ -1,0 +1,4 @@
+# Track only the pre-built binary; ignore JIT build artifacts
+*
+!.gitignore
+!*.pyd

@@ -326,6 +326,8 @@ def add_widgets_to_tab_layout(
                     step_size=widget_data["step"],
                     main_window=main_window,
                 )
+                if widget_data.get("enable_refresh_frame") is False:
+                    widget.enable_refresh_frame = False
                 widget.line_edit = widget_components.ParameterLineEdit(
                     min_value=int(
                         cast(Union[int, float, str], widget_data["min_value"])
@@ -338,12 +340,27 @@ def add_widgets_to_tab_layout(
                 widget.reset_default_button = (
                     widget_components.ParameterResetDefaultButton(related_widget=widget)
                 )
-                horizontal_layout = add_horizontal_layout_to_category(
-                    category_layout,
+                _slider_row_widgets: list = [
                     label,
                     widget,
                     widget.line_edit,
                     widget.reset_default_button,
+                ]
+                if "action_button" in widget_data:
+                    _ab_data: dict = cast(dict, widget_data["action_button"])
+                    _action_btn = QtWidgets.QPushButton(cast(str, _ab_data["label"]))
+                    _action_btn.setToolTip(cast(str, _ab_data.get("help", "")))
+                    _action_btn.setMaximumWidth(55)
+                    if "exec_function" in _ab_data:
+                        _action_btn.clicked.connect(
+                            partial(
+                                cast(Callable, _ab_data["exec_function"]), main_window
+                            )
+                        )
+                    _slider_row_widgets.append(_action_btn)
+                horizontal_layout = add_horizontal_layout_to_category(
+                    category_layout,
+                    *_slider_row_widgets,
                 )
 
                 if data_type == "parameter":
@@ -547,10 +564,73 @@ def show_hide_parameters_panel(main_window: "MainWindow", checked):
     fit_image_to_view_onchange(main_window)
 
 
+def show_hide_theatre_mode_panels(main_window: "MainWindow", checked):
+    # Collects the current state of all UI panel checkboxes
+    def collect_states():
+        return {
+            "TargetMediaCheckBox": main_window.TargetMediaCheckBox.isChecked(),
+            "facesPanelCheckBox": main_window.facesPanelCheckBox.isChecked(),
+            "parametersPanelCheckBox": main_window.parametersPanelCheckBox.isChecked(),
+            "InputFacesCheckBox": main_window.InputFacesCheckBox.isChecked(),
+            "JobsCheckBox": main_window.JobsCheckBox.isChecked(),
+        }
+
+    # Applies the saved states to the UI panel checkboxes
+    def apply_states(states):
+        main_window.TargetMediaCheckBox.setChecked(
+            states.get("TargetMediaCheckBox", True)
+        )
+        main_window.facesPanelCheckBox.setChecked(
+            states.get("facesPanelCheckBox", True)
+        )
+        main_window.parametersPanelCheckBox.setChecked(
+            states.get("parametersPanelCheckBox", True)
+        )
+        main_window.InputFacesCheckBox.setChecked(
+            states.get("InputFacesCheckBox", True)
+        )
+        main_window.JobsCheckBox.setChecked(states.get("JobsCheckBox", True))
+
+    if checked:
+        # Entering Theatre Mode: Save normal states and apply theatre states (default all False/Hidden)
+        main_window._theatre_normal_panel_states = collect_states()
+        apply_states(
+            main_window._theatre_mode_panel_states
+            or {
+                "TargetMediaCheckBox": False,
+                "facesPanelCheckBox": False,
+                "parametersPanelCheckBox": False,
+                "InputFacesCheckBox": False,
+                "JobsCheckBox": False,
+            }
+        )
+    else:
+        # Exiting Theatre Mode: Save theatre states and restore normal states (default all True/Visible)
+        main_window._theatre_mode_panel_states = collect_states()
+        apply_states(
+            main_window._theatre_normal_panel_states
+            or {
+                "TargetMediaCheckBox": True,
+                "facesPanelCheckBox": True,
+                "parametersPanelCheckBox": True,
+                "InputFacesCheckBox": True,
+                "JobsCheckBox": True,
+            }
+        )
+        main_window._theatre_normal_panel_states = None
+
+    fit_image_to_view_onchange(main_window)
+
+
 def fit_image_to_view_onchange(main_window: "MainWindow", *args):
-    pixmap_items = main_window.scene.items()
-    if pixmap_items:
-        pixmap_item = pixmap_items[0]
+    pixmap_item = None
+    # Secure image search
+    for item in main_window.scene.items():
+        if isinstance(item, QtWidgets.QGraphicsPixmapItem):
+            pixmap_item = item
+            break
+
+    if pixmap_item:
         scene_rect = pixmap_item.boundingRect()
         QtCore.QTimer.singleShot(
             0,
@@ -596,7 +676,7 @@ def set_up_menu_actions(main_window: "MainWindow"):
         partial(save_load_actions.save_embeddings_to_file, main_window)
     )
     main_window.actionSave_Embeddings_As.triggered.connect(
-        partial(save_load_actions.save_embeddings_to_file, main_window)
+        partial(save_load_actions.save_embeddings_to_file, main_window, True)
     )
     main_window.actionView_Fullscreen_F11.triggered.connect(
         partial(video_control_actions.view_fullscreen, main_window)
@@ -609,91 +689,82 @@ def set_up_menu_actions(main_window: "MainWindow"):
     )
 
 
-def disable_all_parameters_and_control_widget(main_window: "MainWindow"):
-    # Disable all bottom buttons
-    main_window.saveImageButton.setDisabled(True)
-    main_window.batchImageButton.setDisabled(True)
-    main_window.batchallImageButton.setDisabled(True)
-    main_window.findTargetFacesButton.setDisabled(True)
-    main_window.clearTargetFacesButton.setDisabled(True)
-    main_window.swapfacesButton.setDisabled(True)
-    main_window.editFacesButton.setDisabled(True)
-    main_window.openEmbeddingButton.setDisabled(True)
-    main_window.saveEmbeddingButton.setDisabled(True)
-    main_window.saveEmbeddingAsButton.setDisabled(True)
+def set_all_parameters_and_control_widgets_enabled(
+    main_window: "MainWindow", enabled: bool
+):
+    disabled = not enabled
 
-    # Disable all video control buttons
-    main_window.videoSeekSlider.setDisabled(True)
-    main_window.addMarkerButton.setDisabled(True)
-    main_window.removeMarkerButton.setDisabled(True)
-    main_window.nextMarkerButton.setDisabled(True)
-    main_window.previousMarkerButton.setDisabled(True)
-    main_window.frameAdvanceButton.setDisabled(True)
-    main_window.frameRewindButton.setDisabled(True)
+    # Bottom buttons
+    main_window.saveImageButton.setDisabled(disabled)
+    main_window.batchImageButton.setDisabled(disabled)
+    main_window.batchallImageButton.setDisabled(disabled)
+    main_window.findTargetFacesButton.setDisabled(disabled)
+    main_window.clearTargetFacesButton.setDisabled(disabled)
+    main_window.swapfacesButton.setDisabled(disabled)
+    main_window.editFacesButton.setDisabled(disabled)
+    main_window.openEmbeddingButton.setDisabled(disabled)
+    main_window.saveEmbeddingButton.setDisabled(disabled)
+    main_window.saveEmbeddingAsButton.setDisabled(disabled)
 
-    # Enable compare checkboxes
-    main_window.faceCompareCheckBox.setDisabled(True)
-    main_window.faceMaskCheckBox.setDisabled(True)
+    # Video control buttons
+    main_window.videoSeekSlider.setDisabled(disabled)
+    main_window.addMarkerButton.setDisabled(disabled)
+    main_window.removeMarkerButton.setDisabled(disabled)
+    main_window.nextMarkerButton.setDisabled(disabled)
+    main_window.previousMarkerButton.setDisabled(disabled)
+    main_window.frameAdvanceButton.setDisabled(disabled)
+    main_window.frameRewindButton.setDisabled(disabled)
+    for attr_name in (
+        "scanToolsToggleButton",
+        "runScanButton",
+        "clearScanResultsButton",
+        "prevIssueButton",
+        "nextIssueButton",
+        "dropFrameButton",
+        "dropAllIssueFramesButton",
+        "clearDroppedFramesButton",
+    ):
+        if hasattr(main_window, attr_name):
+            getattr(main_window, attr_name).setDisabled(disabled)
 
-    # Disable list items
+    # Compare checkboxes
+    main_window.faceCompareCheckBox.setDisabled(disabled)
+    main_window.faceMaskCheckBox.setDisabled(disabled)
+
+    # List items
     for _, embed_button in main_window.merged_embeddings.items():
-        embed_button.setDisabled(True)
+        embed_button.setDisabled(disabled)
     for _, target_media_button in main_window.target_videos.items():
-        target_media_button.setDisabled(True)
+        target_media_button.setDisabled(disabled)
     for _, input_face_button in main_window.input_faces.items():
-        input_face_button.setDisabled(True)
+        input_face_button.setDisabled(disabled)
     for _, target_face_button in main_window.target_faces.items():
-        target_face_button.setDisabled(True)
+        target_face_button.setDisabled(disabled)
 
-    # Disable parameters and controls dict widgets
+    # Parameters and controls dict widgets - SECURED
     for _, widget in main_window.parameter_widgets.items():
-        widget.setDisabled(True)
-        widget.reset_default_button.setDisabled(True)
-        widget.label_widget.setDisabled(True)
-        if widget.line_edit:
-            widget.line_edit.setDisabled(True)
+        if not widget:
+            continue
+
+        widget.setDisabled(disabled)
+
+        # Check safely if the attributes exist before disabling them
+        reset_btn = getattr(widget, "reset_default_button", None)
+        if reset_btn:
+            reset_btn.setDisabled(disabled)
+
+        label_w = getattr(widget, "label_widget", None)
+        if label_w:
+            label_w.setDisabled(disabled)
+
+        line_e = getattr(widget, "line_edit", None)
+        if line_e:
+            line_e.setDisabled(disabled)
+
+
+def disable_all_parameters_and_control_widget(main_window: "MainWindow"):
+    set_all_parameters_and_control_widgets_enabled(main_window, False)
 
 
 def enable_all_parameters_and_control_widget(main_window: "MainWindow"):
-    # Enable all bottom buttons
-    main_window.saveImageButton.setDisabled(False)
-    main_window.batchImageButton.setDisabled(False)
-    main_window.batchallImageButton.setDisabled(False)
-    main_window.findTargetFacesButton.setDisabled(False)
-    main_window.clearTargetFacesButton.setDisabled(False)
-    main_window.swapfacesButton.setDisabled(False)
-    main_window.editFacesButton.setDisabled(False)
-    main_window.openEmbeddingButton.setDisabled(False)
-    main_window.saveEmbeddingButton.setDisabled(False)
-    main_window.saveEmbeddingAsButton.setDisabled(False)
-
-    # Enable all video control buttons
-    main_window.videoSeekSlider.setDisabled(False)
-    main_window.addMarkerButton.setDisabled(False)
-    main_window.removeMarkerButton.setDisabled(False)
-    main_window.nextMarkerButton.setDisabled(False)
-    main_window.previousMarkerButton.setDisabled(False)
-    main_window.frameAdvanceButton.setDisabled(False)
-    main_window.frameRewindButton.setDisabled(False)
-
-    # Enable compare checkboxes
-    main_window.faceCompareCheckBox.setDisabled(False)
-    main_window.faceMaskCheckBox.setDisabled(False)
-
-    # Enable list items
-    for _, embed_button in main_window.merged_embeddings.items():
-        embed_button.setDisabled(False)
-    for _, target_media_button in main_window.target_videos.items():
-        target_media_button.setDisabled(False)
-    for _, input_face_button in main_window.input_faces.items():
-        input_face_button.setDisabled(False)
-    for _, target_face_button in main_window.target_faces.items():
-        target_face_button.setDisabled(False)
-
-    # Enable parameters and controls dict widgets
-    for _, widget in main_window.parameter_widgets.items():
-        widget.setDisabled(False)
-        widget.reset_default_button.setDisabled(False)
-        widget.label_widget.setDisabled(False)
-        if widget.line_edit:
-            widget.line_edit.setDisabled(False)
+    set_all_parameters_and_control_widgets_enabled(main_window, True)

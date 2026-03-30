@@ -6,7 +6,7 @@ import copy
 from functools import partial
 from typing import TYPE_CHECKING, Dict, Union, cast
 
-from PySide6 import QtWidgets
+from PySide6 import QtWidgets, QtCore
 import numpy as np
 import torch
 
@@ -32,29 +32,35 @@ def open_embeddings_from_file(main_window: "MainWindow"):
         dir=misc_helpers.get_dir_of_file(main_window.loaded_embedding_filename),
     )
     if embedding_filename:
-        with open(embedding_filename, "r") as embed_file:  # pylint: disable=unspecified-encoding
-            embeddings_list = json.load(embed_file)
-            card_actions.clear_merged_embeddings(main_window)
+        try:
+            with open(embedding_filename, "r") as embed_file:  # pylint: disable=unspecified-encoding
+                embeddings_list = json.load(embed_file)
+                card_actions.clear_merged_embeddings(main_window)
 
-            # Reset per ogni target face
-            for _, target_face in main_window.target_faces.items():
-                target_face.assigned_merged_embeddings = {}
-                target_face.assigned_input_embedding = {}
+                # Reset for each target face
+                for _, target_face in main_window.target_faces.items():
+                    target_face.assigned_merged_embeddings = {}
+                    target_face.assigned_input_embedding = {}
 
-            # Carica gli embedding dal file e crea il dizionario embedding_store
-            for embed_data in embeddings_list:
-                embedding_store = embed_data.get("embedding_store", {})
-                # Converte ogni embedding in numpy array
-                for recogn_model, embed in embedding_store.items():
-                    embedding_store[recogn_model] = np.array(embed)
+                # Load embeddings from file and build the embedding_store dictionary
+                for embed_data in embeddings_list:
+                    embedding_store = embed_data.get("embedding_store", {})
+                    # Convert each embedding to a numpy array
+                    for recogn_model, embed in embedding_store.items():
+                        embedding_store[recogn_model] = np.array(embed)
 
-                # Passa l'intero embedding_store alla funzione
-                list_view_actions.create_and_add_embed_button_to_list(
-                    main_window,
-                    embed_data["name"],
-                    embedding_store,  # Passa l'intero embedding_store
-                    embedding_id=str(uuid.uuid1().int),
-                )
+                    # Pass the entire embedding_store to the function
+                    list_view_actions.create_and_add_embed_button_to_list(
+                        main_window,
+                        embed_data["name"],
+                        embedding_store,
+                        embedding_id=str(uuid.uuid1().int),
+                    )
+        except (json.JSONDecodeError, KeyError, TypeError, Exception) as e:
+            QtWidgets.QMessageBox.critical(
+                main_window, "Error", f"Failed to load embeddings: {e}"
+            )
+            return
 
     main_window.loaded_embedding_filename = (
         embedding_filename or main_window.loaded_embedding_filename
@@ -71,7 +77,7 @@ def save_embeddings_to_file(main_window: "MainWindow", save_as=False):
         )
         return
 
-    # Definisce il nome del file di salvataggio
+    # Define the save filename
     embedding_filename = main_window.loaded_embedding_filename
     if (
         not embedding_filename
@@ -82,26 +88,26 @@ def save_embeddings_to_file(main_window: "MainWindow", save_as=False):
             main_window, filter="JSON (*.json)"
         )
 
-    # Crea una lista di dizionari, ciascuno con il nome dell'embedding e il relativo embedding_store
+    # Build a list of dicts, each containing the embedding name and its embedding_store
     embeddings_list = [
         {
             "name": embed_button.embedding_name,
             "embedding_store": {
                 k: v.tolist() for k, v in embed_button.embedding_store.items()
-            },  # Converti gli embedding in liste
+            },  # Convert embeddings to lists
         }
         for embedding_id, embed_button in main_window.merged_embeddings.items()
     ]
 
-    # Salva su file
+    # Save to file
     if embedding_filename:
         with open(embedding_filename, "w") as embed_file:  # pylint: disable=unspecified-encoding
             embeddings_as_json = json.dumps(
                 embeddings_list, indent=4
-            )  # Salva con indentazione per leggibilità
+            )  # Save with indentation for readability
             embed_file.write(embeddings_as_json)
 
-            # Mostra un messaggio di conferma
+            # Show a confirmation message
             common_widget_actions.create_and_show_toast_message(
                 main_window,
                 "Embeddings Saved",
@@ -163,7 +169,7 @@ def save_current_parameters_and_control(main_window: "MainWindow", face_id):
         with open(data_filename, "w") as data_file:  # pylint: disable=unspecified-encoding
             data_as_json = json.dumps(
                 data, indent=4
-            )  # Salva con indentazione per leggibilità
+            )  # Save with indentation for readability
             data_file.write(data_as_json)
 
 
@@ -201,7 +207,10 @@ def get_auto_load_workspace_toggle(
         data_filename = False
     if data_filename:
         with open(data_filename, "r") as data_file:  # pylint: disable=unspecified-encoding
-            data = json.load(data_file)
+            try:
+                data = json.load(data_file)
+            except json.JSONDecodeError:
+                return False
             control = data["control"]
             return control.get("AutoLoadWorkspaceToggle", False)
 
@@ -219,6 +228,7 @@ def load_saved_workspace(
     if data_filename:
         with open(data_filename, "r") as data_file:  # pylint: disable=unspecified-encoding
             data = json.load(data_file)
+        try:
             list_view_actions.clear_stop_loading_input_media(main_window)
             list_view_actions.clear_stop_loading_target_media(main_window)
             main_window.target_videos = {}
@@ -227,12 +237,12 @@ def load_saved_workspace(
             card_actions.clear_merged_embeddings(main_window)
 
             # Load control (settings)
-            control = data["control"]
+            control = data.get("control", {})
             for control_name, control_value in control.items():
                 main_window.control[control_name] = control_value
 
             # Add target medias
-            target_medias_data = data["target_medias_data"]
+            target_medias_data = data.get("target_medias_data", [])
             target_medias_files_list = []
             target_media_ids = []
             for media_data in target_medias_data:
@@ -253,16 +263,18 @@ def load_saved_workspace(
             )
             main_window.video_loader_worker.run()
 
-            # Select target media
-            selected_media_id = data["selected_media_id"]
-            if selected_media_id is not False and main_window.target_videos.get(
-                selected_media_id
-            ):
+            # OPTIMIZED: Force PySide6 to process the pending 'thumbnail_ready' signals
+            # before continuing, ensuring UI elements are fully instantiated.
+            QtWidgets.QApplication.processEvents()
+
+            # Select target media (Secured with .get to prevent KeyError on older workspaces)
+            selected_media_id = data.get("selected_media_id", False)
+            if selected_media_id and main_window.target_videos.get(selected_media_id):
                 main_window.target_videos[selected_media_id].click()
 
             # Add input faces (imgs)
             input_media_paths, input_face_ids = [], []
-            for face_id, input_face_data in data["input_faces_data"].items():
+            for face_id, input_face_data in data.get("input_faces_data", {}).items():
                 input_media_paths.append(input_face_data["media_path"])
                 input_face_ids.append(face_id)
             main_window.input_faces_loader_worker = ui_workers.InputFacesLoaderWorker(
@@ -283,7 +295,11 @@ def load_saved_workspace(
             # Use run() instead of start(), as we dont want it running in a different thread as it could create synchronisation issues in the steps below
             main_window.input_faces_loader_worker.run()
 
-            for face_id, input_face_data in data["input_faces_data"].items():
+            # Force PySide6 event loop to flush the queue.
+            # This instantly populates `main_window.input_faces` before the next loop tries to access them.
+            QtWidgets.QApplication.processEvents()
+
+            for face_id, input_face_data in data.get("input_faces_data", {}).items():
                 if face_id in main_window.input_faces:
                     input_face_button = main_window.input_faces[face_id]
                     kv_map_path = input_face_data.get("kv_map")
@@ -300,7 +316,7 @@ def load_saved_workspace(
                             )
 
             # Add embeddings
-            embeddings_data = data["embeddings_data"]
+            embeddings_data = data.get("embeddings_data", {})
             for embedding_id, embedding_data in embeddings_data.items():
                 embedding_store_loaded = {
                     embed_model: np.array(embedding)
@@ -317,7 +333,7 @@ def load_saved_workspace(
                 )
 
             # Add target_faces
-            for face_id, target_face_data in data["target_faces_data"].items():
+            for face_id, target_face_data in data.get("target_faces_data", {}).items():
                 cropped_face = np.array(target_face_data["cropped_face"]).astype(
                     "uint8"
                 )
@@ -352,9 +368,16 @@ def load_saved_workspace(
                 # Set assigned input face buttons
                 assigned_input_faces: list = target_face_data["assigned_input_faces"]
                 for assigned_input_face_id in assigned_input_faces:
-                    main_window.target_faces[face_id].assigned_input_faces[
-                        assigned_input_face_id
-                    ] = main_window.input_faces[assigned_input_face_id].embedding_store
+                    if assigned_input_face_id in main_window.input_faces:
+                        main_window.target_faces[face_id].assigned_input_faces[
+                            assigned_input_face_id
+                        ] = main_window.input_faces[
+                            assigned_input_face_id
+                        ].embedding_store
+                    else:
+                        print(
+                            f"[WARN] Input face {assigned_input_face_id} missing from session. Skipping assignment."
+                        )
 
                 # Set assigned input embedding (Input face + merged embeddings)
                 assigned_input_embedding = {
@@ -385,7 +408,7 @@ def load_saved_workspace(
 
             # Convert params to ParametersDict
             data["markers"] = convert_markers_to_supported_type(
-                main_window, data["markers"], misc_helpers.ParametersDict
+                main_window, data.get("markers", {}), misc_helpers.ParametersDict
             )
 
             for marker_position, marker_data in data["markers"].items():
@@ -395,11 +418,32 @@ def load_saved_workspace(
                     marker_data["control"],
                     int(marker_position),
                 )
+            loaded_issue_frames_by_face = data.get("issue_frames_by_face")
+            if loaded_issue_frames_by_face is not None:
+                video_control_actions.set_issue_frames_by_face(
+                    main_window, loaded_issue_frames_by_face
+                )
+            else:
+                selected_face_id = getattr(main_window, "selected_target_face_id", None)
+                if selected_face_id is None and getattr(
+                    main_window, "target_faces", {}
+                ):
+                    selected_face_id = str(next(iter(main_window.target_faces.keys())))
+                if selected_face_id is not None:
+                    video_control_actions.set_issue_frames_for_face(
+                        main_window, selected_face_id, data.get("issue_frames", [])
+                    )
+                else:
+                    video_control_actions.set_issue_frames_by_face(main_window, {})
+            video_control_actions.set_dropped_frames(
+                main_window, data.get("dropped_frames", [])
+            )
             # main_window.videoSeekSlider.setValue(0)
             # video_control_actions.update_widget_values_from_markers(main_window, 0)
 
             # Update slider visuals after loading markers
             main_window.videoSeekSlider.update()
+            video_control_actions.update_drop_frame_button_label(main_window)
 
             # Set target media and input faces folder names
             main_window.last_target_media_folder_path = data.get(
@@ -470,7 +514,7 @@ def load_saved_workspace(
                     ),
                 )
                 common_widget_actions.set_widgets_values_using_face_id_parameters(
-                    main_window, face_id=False
+                    main_window, face_id=None
                 )
 
             # Restore Window State
@@ -515,8 +559,26 @@ def load_saved_workspace(
             main_window.filterWebcamsCheckBox.setChecked(
                 window_state.get("filterWebcamsCheckBox", False)
             )
+            if hasattr(main_window, "scanToolsToggleButton"):
+                video_control_actions.set_scan_tools_expanded(
+                    main_window, window_state.get("scan_tools_expanded", False)
+                )
             filter_actions.filter_target_videos(main_window)
             list_view_actions.load_target_webcams(main_window)
+
+            # restore dock layout if it was saved
+            dock_state_str = window_state.get("dock_state", data.get("dock_state", ""))
+            if dock_state_str:
+                try:
+                    ba = QtCore.QByteArray.fromBase64(dock_state_str.encode("utf-8"))
+                    main_window.restoreState(ba)
+                except Exception as e:
+                    print(f"[WARN] Failed to restore dock layout: {e}")
+        except (json.JSONDecodeError, KeyError, TypeError) as e:
+            QtWidgets.QMessageBox.critical(
+                main_window, "Error", f"Failed to load workspace: {e}"
+            )
+            return
 
 
 def save_current_workspace(
@@ -528,6 +590,13 @@ def save_current_workspace(
     target_medias_data = []
 
     # --- Save Window State ---
+    # --- Save dock layout / panel sizes ---
+    try:
+        # saveState returns QByteArray; convert to base64 string for json compatibility
+        dock_state_data = main_window.saveState().toBase64().data().decode("utf-8")
+    except Exception:
+        dock_state_data = ""
+
     window_state_data = {
         "x": main_window.x(),
         "y": main_window.y(),
@@ -543,6 +612,8 @@ def save_current_workspace(
         "filterImagesCheckBox": main_window.filterImagesCheckBox.isChecked(),
         "filterVideosCheckBox": main_window.filterVideosCheckBox.isChecked(),
         "filterWebcamsCheckBox": main_window.filterWebcamsCheckBox.isChecked(),
+        "scan_tools_expanded": getattr(main_window, "scan_tools_expanded", False),
+        "dock_state": dock_state_data,
     }
 
     # --- Check if Denoiser is enabled ---
@@ -569,18 +640,21 @@ def save_current_workspace(
     # --- Serialize Input Faces ---
     for face_id, input_face in main_window.input_faces.items():
         kv_map_path = None
-        if is_denoiser_enabled and hasattr(input_face, "kv_map") and input_face.kv_map:
-            kv_data_dir = os.path.join("model_assets", "reference_kv_data")
-            os.makedirs(kv_data_dir, exist_ok=True)
-            kv_map_path = os.path.join(kv_data_dir, f"input_{input_face.face_id}.pt")
+        if is_denoiser_enabled and getattr(input_face, "kv_map", None) is not None:
+            # Use Pathlib
+            kv_data_dir = (
+                main_window.project_root_path / "model_assets" / "reference_kv_data"
+            )
+            kv_data_dir.mkdir(parents=True, exist_ok=True)
+            kv_map_file = kv_data_dir / f"input_{input_face.face_id}.pt"
             try:
                 payload = {"kv_map": input_face.kv_map}
-                torch.save(payload, kv_map_path)
+                torch.save(payload, str(kv_map_file))
+                kv_map_path = str(kv_map_file)
             except Exception as e:
                 print(
-                    f"[ERROR] Error saving K/V map for input face {input_face.face_id} to {kv_map_path}: {e}"
+                    f"[ERROR] Error saving K/V map for input face {input_face.face_id} to {kv_map_file}: {e}"
                 )
-                kv_map_path = None
         input_faces_data[face_id] = {
             "media_path": input_face.media_path,
             "kv_map": kv_map_path,
@@ -662,6 +736,11 @@ def save_current_workspace(
         "target_faces_data": target_faces_data,
         "embeddings_data": embeddings_data,
         "markers": markers_to_save,
+        "issue_frames_by_face": {
+            str(face_id): sorted(frames)
+            for face_id, frames in main_window.issue_frames_by_face.items()
+        },
+        "dropped_frames": sorted(main_window.dropped_frames),
         "job_marker_pairs": main_window.job_marker_pairs,  # Save the list of tuples
         "last_target_media_folder_path": main_window.last_target_media_folder_path,
         "last_input_media_folder_path": main_window.last_input_media_folder_path,
@@ -680,7 +759,7 @@ def save_current_workspace(
             with open(data_filename, "w") as data_file:  # pylint: disable=unspecified-encoding
                 data_as_json = json.dumps(
                     data, indent=4
-                )  # Salva con indentazione per leggibilità
+                )  # Save with indentation for readability
                 data_file.write(data_as_json)
             if isinstance(data_filename, str) and data_filename.endswith(
                 "last_workspace.json"
@@ -718,8 +797,10 @@ def save_current_job(main_window: "MainWindow"):
             main_window, "Error", "No target faces detected or assigned.", main_window
         )
         return
+
+    # Check on Dict to prevent crash
     if not any(
-        tf.get_assigned_total_input_faces() for tf in main_window.target_faces.values()
+        len(tf.assigned_input_faces) > 0 for tf in main_window.target_faces.values()
     ):
         common_widget_actions.create_and_show_messagebox(
             main_window,
@@ -755,18 +836,21 @@ def save_current_job(main_window: "MainWindow"):
     input_faces_data = {}
     for face_id, input_face in main_window.input_faces.items():
         kv_map_path = None
-        if is_denoiser_enabled and hasattr(input_face, "kv_map") and input_face.kv_map:
-            kv_data_dir = os.path.join("model_assets", "reference_kv_data")
-            os.makedirs(kv_data_dir, exist_ok=True)
-            kv_map_path = os.path.join(kv_data_dir, f"input_{input_face.face_id}.pt")
+        if is_denoiser_enabled and getattr(input_face, "kv_map", None) is not None:
+            # Use Pathlib
+            kv_data_dir = (
+                main_window.project_root_path / "model_assets" / "reference_kv_data"
+            )
+            kv_data_dir.mkdir(parents=True, exist_ok=True)
+            kv_map_file = kv_data_dir / f"input_{input_face.face_id}.pt"
             try:
                 payload = {"kv_map": input_face.kv_map}
-                torch.save(payload, kv_map_path)
+                torch.save(payload, str(kv_map_file))
+                kv_map_path = str(kv_map_file)
             except Exception as e:
                 print(
-                    f"[ERROR] Error saving K/V map for input face {input_face.face_id} to {kv_map_path}: {e}"
+                    f"[ERROR] Error saving K/V map for input face {input_face.face_id} to {kv_map_file}: {e}"
                 )
-                kv_map_path = None
         input_faces_data[face_id] = {
             "media_path": input_face.media_path,
             "kv_map": kv_map_path,
@@ -804,31 +888,51 @@ def save_current_job(main_window: "MainWindow"):
         "markers": convert_markers_to_supported_type(
             main_window, copy.deepcopy(main_window.markers), dict
         ),
+        "issue_frames_by_face": {
+            str(face_id): sorted(frames)
+            for face_id, frames in main_window.issue_frames_by_face.items()
+        },
+        "dropped_frames": sorted(main_window.dropped_frames),
         "control": main_window.control.copy(),
         "job_marker_pairs": main_window.job_marker_pairs,
-        "current_widget_parameters": main_window.current_widget_parameters.data.copy(),
+        "scan_tools_expanded": getattr(main_window, "scan_tools_expanded", False),
+        "current_widget_parameters": main_window.current_widget_parameters.data.copy()
+        if isinstance(
+            main_window.current_widget_parameters, misc_helpers.ParametersDict
+        )
+        else main_window.current_widget_parameters.copy(),
+        "last_target_media_folder_path": main_window.last_target_media_folder_path,
+        "last_input_media_folder_path": main_window.last_input_media_folder_path,
     }
 
     # Serialize target face specifics for the job
     for face_id, target_face in main_window.target_faces.items():
+        # Security to handle either custom ParametersDict or native dict
+        params_source = main_window.parameters.get(
+            str(face_id), main_window.default_parameters
+        )
+        params_to_save = (
+            params_source.data.copy()
+            if isinstance(params_source, misc_helpers.ParametersDict)
+            else params_source.copy()
+        )
+
         job_data["target_faces_data"][face_id] = {
             "cropped_face": target_face.cropped_face.tolist(),
             "embedding_store": {
                 m: e.tolist() for m, e in target_face.embedding_store.items()
             },
-            "parameters": main_window.parameters.get(
-                str(face_id), main_window.default_parameters
-            ).data.copy(),
+            "parameters": params_to_save,
             "assigned_input_faces": list(target_face.assigned_input_faces.keys()),
             "assigned_merged_embeddings": list(
                 target_face.assigned_merged_embeddings.keys()
             ),
         }
 
-    # Define save path
-    jobs_dir = os.path.join(os.getcwd(), ".jobs")
-    os.makedirs(jobs_dir, exist_ok=True)
-    save_path = os.path.join(jobs_dir, f"{job_name}.json")
+    # Use pathlib
+    jobs_dir = main_window.project_root_path / ".jobs"
+    jobs_dir.mkdir(parents=True, exist_ok=True)
+    save_path = jobs_dir / f"{job_name}.json"
 
     # Save the job file
     try:

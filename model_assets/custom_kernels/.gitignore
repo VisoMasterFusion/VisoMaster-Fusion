@@ -1,0 +1,14 @@
+# Build artifacts from torch.utils.cpp_extension.load_inline
+# Keep only the compiled multi-arch fat binaries (.pyd) and the git marker.
+*.lib
+*.exp
+*.o
+*.obj
+build.ninja
+.ninja_deps
+.ninja_log
+*.cu
+*.cpp
+
+# Triton JIT cache is GPU-architecture specific — rebuild on each machine
+triton_cache/

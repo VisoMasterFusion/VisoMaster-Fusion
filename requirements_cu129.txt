@@ -1,7 +1,7 @@
 numpy
 opencv-python
 pillow
-scikit-image
+scikit-image==0.26.0
 onnx
 protobuf
 psutil
@@ -31,3 +31,5 @@ omegaconf
 einops
 lightning
 send2trash
+tensorflow
+triton-windows==3.4.0.post20

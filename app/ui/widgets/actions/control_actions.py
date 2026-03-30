@@ -1,5 +1,12 @@
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Any
+from pathlib import Path
+import traceback
+
+import numpy as np
 import torch
+from torchvision.transforms import v2
+from PIL import Image
+
 import qdarkstyle
 from PySide6 import QtWidgets
 import qdarktheme
@@ -14,11 +21,103 @@ from app.ui.widgets.actions import common_actions as common_widget_actions
 #'''
 
 
+def handle_face_detector_tracking_reset(main_window: "MainWindow", value):
+    """Resets the tracker instance when tracking is toggled or media changes."""
+    main_window.models_processor.face_detectors.reset_tracker()
+    # When ByteTrack is disabled, reset its child toggle so it doesn't stay True
+    # while hidden (parentToggle mechanism only hides the widget, it doesn't reset the value).
+    if not value:
+        main_window.control["ShowByteTrackBBoxToggle"] = False
+        widget = main_window.parameter_widgets.get("ShowByteTrackBBoxToggle")
+        if widget is not None:
+            widget.blockSignals(True)
+            widget.setChecked(False)
+            widget.blockSignals(False)
+    common_widget_actions.refresh_frame(main_window)
+
+
 def change_execution_provider(main_window: "MainWindow", new_provider):
     main_window.video_processor.stop_processing()
     main_window.models_processor.switch_providers_priority(new_provider)
     main_window.models_processor.clear_gpu_memory()
     common_widget_actions.update_gpu_memory_progressbar(main_window)
+    # Custom provider uses lazy initialisation: each CUDA graph runner is built
+    # on first use and a build-progress dialog is shown at that point.  Do NOT
+    # pre-warm all models here — that would load every model into VRAM at once
+    # regardless of which ones the user actually needs, wasting GPU memory.
+
+
+def warm_up_active_models_for_custom(main_window: "MainWindow") -> None:
+    """BUG-C04: Pre-build Custom-provider CUDA graph runners for the currently
+    active pipeline in a background thread so the first processed frame does not
+    stall while sequential lazy builds run (20–60 s total on first use).
+
+    Called from process_swap_faces() when the button is enabled with the Custom
+    provider active.  Builds only the runners that match the current UI settings.
+    Each runner is guarded by its own init lock, so if the FrameWorker arrives
+    first it simply waits for the background build to finish — there is no race.
+    """
+    import threading
+
+    def _build():
+        mp = main_window.models_processor
+        control = main_window.control
+
+        try:
+            # Core: face detector
+            detector = control.get("DetectorTypeSelection", "RetinaFace")
+            if detector == "Yolov8":
+                mp.face_detectors._get_yolo_runner()
+            else:
+                mp.face_detectors._get_det10g_runner()
+
+            # Core: primary landmark model (always needed for keypoints)
+            mp.face_landmark_detectors._get_landmark203_runner()
+
+            # Core: ArcFace + InSwapper (only for Inswapper128)
+            swapper = control.get("FaceSwapperTypeSelection", "Inswapper128")
+            if swapper == "Inswapper128":
+                mp.face_swappers._get_w600k_runner()
+                mp.face_swappers._get_inswapper_runner_b1()
+
+            # Conditional: face mask / occlusion
+            mask_type = control.get("FaceMaskTypeSelection", "")
+            if mask_type == "FaceParser":
+                mp.face_masks._get_faceparser_runner()
+            elif mask_type == "Occluder":
+                mp.face_masks._get_occluder_runner()
+            elif mask_type in ("XSeg", "XSeg Mouth"):
+                mp.face_masks._get_xseg_runner()
+
+            # Conditional: face editor (needs landmark478)
+            if control.get("FaceEditorEnableToggle", False):
+                mp.face_landmark_detectors._get_landmark478_runner()
+
+            # Conditional: restorers
+            restorer = control.get("FaceRestorerTypeSelection", "")
+            if "GPEN" in restorer:
+                parts = restorer.split("-")
+                size = int(parts[-1]) if parts and parts[-1].isdigit() else 256
+                mp.face_restorers._get_gpen_runner(size)
+            elif restorer == "RestoreFormer++":
+                mp.face_restorers._get_restoreformer_runner()
+            elif restorer == "GFPGAN-v1.4":
+                mp.face_restorers._get_gfpgan_runner(is_1024=False)
+            elif restorer == "GFPGAN-1024":
+                mp.face_restorers._get_gfpgan_runner(is_1024=True)
+            elif restorer == "CodeFormer":
+                mp.face_restorers._get_codeformer_torch()
+
+            # Conditional: RefLDM denoiser
+            if control.get("RefLDMEnableToggle", False):
+                mp.face_restorers._get_ref_ldm_encoder_runner()
+                mp.face_restorers._get_ref_ldm_decoder_runner()
+                mp.face_restorers._get_ref_ldm_unet_torch()
+
+        except Exception as e:
+            print(f"[Custom] Smart warm-up error (non-fatal): {e}")
+
+    threading.Thread(target=_build, daemon=True, name="CustomSmartWarmUp").start()
 
 
 def change_threads_number(main_window: "MainWindow", new_threads_number):
@@ -30,7 +129,8 @@ def change_threads_number(main_window: "MainWindow", new_threads_number):
 def change_theme(main_window: "MainWindow", new_theme):
     def get_style_data(filename, theme="dark", custom_colors=None):
         custom_colors = custom_colors or {"primary": "#4090a3"}
-        with open(f"app/ui/styles/{filename}", "r") as f:  # pylint: disable=unspecified-encoding
+        styles_dir = Path(__file__).resolve().parent.parent.parent / "styles"
+        with open(styles_dir / filename, "r") as f:  # pylint: disable=unspecified-encoding
             _style = f.read()
             _style = (
                 qdarktheme.load_stylesheet(theme=theme, custom_colors=custom_colors)
@@ -62,6 +162,12 @@ def change_theme(main_window: "MainWindow", new_theme):
         )
     elif new_theme == "True-Dark":
         _style = get_style_data("true_dark.qss", "dark")
+    elif new_theme == "Windows11-Dark":
+        _style = get_style_data(
+            "windows11_dark.qss",
+            "dark",
+            {"primary": "#4cc2ff"},
+        )
     elif new_theme == "Solarized-Dark":
         _style = get_style_data("solarized_dark.qss", "dark")
     elif new_theme == "Solarized-Light":
@@ -367,7 +473,7 @@ def handle_landmark_state_change(
         current_selection = main_window.control.get(
             "LandmarkDetectModelSelection", "203"
         )
-        model_to_load = landmark_model_mapping.get(current_selection)
+        model_to_load = landmark_model_mapping.get(str(current_selection))
 
         if model_to_load:
             print(
@@ -526,3 +632,243 @@ def handle_face_expression_toggle_change(
     # This function is called by the parameter change.
     # We just need to check the overall state.
     _check_and_manage_face_editor_models(main_window)
+
+
+def _set_parameter_toggle_state(
+    main_window: "MainWindow", parameter_name: str, value: bool
+) -> bool:
+    widget = main_window.parameter_widgets.get(parameter_name)
+    if widget is None or widget.isChecked() == value:
+        return False
+
+    widget.blockSignals(True)
+    widget.setChecked(value)
+    widget.blockSignals(False)
+
+    common_widget_actions.update_parameter(
+        main_window,
+        parameter_name,
+        value,
+        enable_refresh_frame=False,
+    )
+    common_widget_actions.show_hide_related_widgets(
+        main_window,
+        widget,
+        parameter_name,
+    )
+    return True
+
+
+def handle_face_expression_eye_blend_toggle(
+    main_window: "MainWindow", new_value: bool, control_name: str
+) -> None:
+    """
+    Keeps the Relative Lids + Retargeted Gaze eye mode in a valid state.
+
+    - Enabling the combined eye mode auto-enables Relative Position and
+      Retargeting Eyes.
+    - Disabling either dependency auto-disables the combined eye mode.
+    """
+    stable_toggle = "FaceExpressionStableGazeEyesToggle"
+    relative_toggle = "FaceExpressionRelativeEyesToggle"
+    retarget_toggle = "FaceExpressionRetargetingEyesBothEnableToggle"
+    changed_dependency_state = False
+
+    if control_name == stable_toggle and new_value:
+        changed_dependency_state |= _set_parameter_toggle_state(
+            main_window, relative_toggle, True
+        )
+        changed_dependency_state |= _set_parameter_toggle_state(
+            main_window, retarget_toggle, True
+        )
+    elif control_name in {relative_toggle, retarget_toggle} and not new_value:
+        changed_dependency_state |= _set_parameter_toggle_state(
+            main_window, stable_toggle, False
+        )
+
+    if changed_dependency_state:
+        common_widget_actions.refresh_frame(main_window)
+
+
+def apply_face_reaging(main_window: "MainWindow", *_args) -> None:
+    """Apply age transformation to the assigned input face for the selected target face.
+
+    Re-computes ArcFace embeddings (and optionally the denoiser KV map) from the
+    age-transformed face image, storing the results on the target face button so
+    frame_worker can use them when FaceReagingEnableToggle is active.
+    """
+    # Guard: do nothing if Swap Faces is not active
+    if not main_window.swapfacesButton.isChecked():
+        return
+
+    target_face = main_window.cur_selected_target_face_button
+    if target_face is None:
+        return
+
+    face_id = target_face.face_id
+    params: Any = main_window.parameters.get(face_id, {})
+
+    # Guard: do nothing if the toggle is currently disabled
+    if not params.get("FaceReagingEnableToggle", False):
+        return
+
+    if not target_face.assigned_input_faces:
+        print(
+            "[WARN] apply_face_reaging: No input face assigned to the selected target face."
+        )
+        return
+    source_age = int(params.get("FaceReagingSourceAgeSlider", 25))
+    target_age_val = int(params.get("FaceReagingTargetAgeSlider", 70))
+
+    first_input_id = list(target_face.assigned_input_faces.keys())[0]
+    input_face_button = main_window.input_faces.get(first_input_id)
+    if input_face_button is None:
+        print("[WARN] apply_face_reaging: Input face button not found.")
+        return
+
+    cropped_face_bgr = input_face_button.cropped_face
+    if cropped_face_bgr is None or cropped_face_bgr.size == 0:
+        print("[WARN] apply_face_reaging: Input face has no cropped image.")
+        return
+
+    try:
+        models_processor = main_window.models_processor
+
+        # BGR numpy → RGB CHW uint8 tensor
+        face_rgb_np = np.ascontiguousarray(cropped_face_bgr[..., ::-1])
+        face_chw = torch.from_numpy(face_rgb_np).permute(2, 0, 1)  # CHW uint8
+
+        # Ensure 512 × 512
+        if face_chw.shape[1] != 512 or face_chw.shape[2] != 512:
+            face_chw = v2.Resize((512, 512), antialias=False)(face_chw)
+
+        # Run re-aging
+        aged_chw = models_processor.face_reaging.apply_reaging(
+            face_chw, source_age, target_age_val
+        )  # CHW uint8 RGB
+
+        # Move to the device for recognition
+        aged_chw_dev = aged_chw.to(models_processor.device)
+
+        # Approximate 5-point keypoints for the 512 × 512 face crop
+        h, w = aged_chw.shape[1], aged_chw.shape[2]
+        approx_kps_5 = np.array(
+            [
+                [w * 0.3, h * 0.40],  # left eye
+                [w * 0.7, h * 0.40],  # right eye
+                [w * 0.5, h * 0.55],  # nose
+                [w * 0.35, h * 0.70],  # left mouth corner
+                [w * 0.65, h * 0.70],  # right mouth corner
+            ],
+            dtype=np.float32,
+        )
+
+        similarity_type = main_window.control.get("SimilarityTypeSelection", "Opal")
+
+        # Determine which arcface models to recompute. Filter strictly to known
+        # arcface model names so that non-model keys (e.g. "kps_5") that may also
+        # live inside assigned_input_embedding are never passed to run_recognize_direct.
+        # Local import kept to prevent circular dependency with models_data
+        from app.processors.models_data import arcface_mapping_model_dict
+
+        _valid_arcface_models: set = set(arcface_mapping_model_dict.values())
+
+        # Guard against None / empty assigned_input_embedding
+        _assigned = target_face.assigned_input_embedding
+        models_to_compute = (
+            (set(_assigned.keys()) & _valid_arcface_models) if _assigned else set()
+        )
+        if not models_to_compute:
+            models_to_compute = _valid_arcface_models
+
+        aged_embeddings = {}
+        for arcface_model in models_to_compute:
+            try:
+                embedding, _ = models_processor.run_recognize_direct(
+                    aged_chw_dev, approx_kps_5, similarity_type, arcface_model
+                )
+                if embedding is not None and embedding.size > 0:
+                    aged_embeddings[arcface_model] = embedding
+            except Exception as e_emb:
+                print(
+                    f"[WARN] apply_face_reaging: embedding for '{arcface_model}' failed: {e_emb}"
+                )
+
+        target_face.aged_input_embedding = aged_embeddings
+
+        # Recompute KV map if denoiser is active
+        control = main_window.control
+        denoiser_on = (
+            control.get("DenoiserUNetEnableBeforeRestorersToggle", False)
+            or control.get("DenoiserAfterFirstRestorerToggle", False)
+            or control.get("DenoiserAfterRestorersToggle", False)
+        )
+        if denoiser_on:
+            try:
+                aged_hwc = aged_chw.permute(1, 2, 0).cpu().numpy()
+                pil_img = Image.fromarray(aged_hwc)
+                with models_processor.kv_extraction_lock:
+                    kv_map = models_processor.get_kv_map_for_face(pil_img)
+                target_face.aged_kv_map = kv_map
+            except Exception as e_kv:
+                print(f"[ERROR] apply_face_reaging: KV map extraction failed: {e_kv}")
+                target_face.aged_kv_map = None
+        else:
+            target_face.aged_kv_map = None
+
+        print(
+            f"[INFO] apply_face_reaging: Applied (source={source_age}, target={target_age_val}) "
+            f"for face {face_id}. Embeddings computed for: {list(aged_embeddings.keys())}"
+        )
+
+        common_widget_actions.refresh_frame(main_window)
+
+    except Exception as exc:
+        print(f"[ERROR] apply_face_reaging: {exc}")
+        traceback.print_exc()
+
+
+def update_video_slider_step(main_window: "MainWindow", new_step) -> None:
+    """Updates the video slider step size dynamically from the settings slider."""
+    if hasattr(main_window, "videoSeekSlider"):
+        step_val = int(new_step)
+        main_window.videoSeekSlider.setSingleStep(step_val)
+        main_window.videoSeekSlider.setPageStep(step_val)
+
+
+def handle_face_reaging_toggle_change(
+    main_window: "MainWindow", new_value: bool
+) -> None:
+    """Clear aged embedding/KV map when Face Re-Aging toggle is disabled.
+
+    When the toggle is turned off the original (non-aged) embedding and KV map
+    should be used immediately, so we wipe the cached aged data and refresh.
+    """
+    if new_value:
+        # Toggle just enabled — user still needs to press Apply, nothing to clear.
+        return
+    target_face = main_window.cur_selected_target_face_button
+    if target_face is None:
+        return
+    target_face.aged_input_embedding = {}
+    target_face.aged_kv_map = None
+    common_widget_actions.refresh_frame(main_window)
+
+
+def handle_auto_mouth_toggle(main_window: "MainWindow", new_value: bool) -> None:
+    """Called when AutoMouthExpressionEnableToggle changes.
+
+    When enabled, prints a one-time status message.  The actual detection model
+    is loaded lazily on the first processed frame.
+    """
+    if not new_value:
+        return
+
+    from app.processors.mouth_action_detector import MouthActionDetector
+
+    detector = MouthActionDetector.get()
+    if not detector.available:
+        err = detector.load_error or "unknown error"
+        print(f"[WARN] Auto Mouth Expression: detector unavailable — {err}")
+    else:
+        print("[INFO] Auto Mouth Expression enabled. Mouth action detector ready.")

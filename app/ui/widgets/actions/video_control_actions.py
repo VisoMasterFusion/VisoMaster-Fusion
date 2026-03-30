@@ -3,6 +3,7 @@ from typing import TYPE_CHECKING, cast
 import copy
 from functools import partial
 import os
+from pathlib import Path
 import traceback
 
 from PySide6.QtCore import QPoint
@@ -12,7 +13,7 @@ import numpy
 from PIL import Image
 from PySide6 import QtGui, QtWidgets, QtCore
 
-from app.helpers.typing_helper import ControlTypes, FacesParametersTypes
+from app.helpers.typing_helper import ControlTypes, FacesParametersTypes, MarkerData
 from app.helpers.miscellaneous import get_video_rotation
 
 if TYPE_CHECKING:
@@ -23,9 +24,11 @@ from app.ui.widgets.actions import graphics_view_actions
 import app.ui.widgets.actions.layout_actions as layout_actions
 from app.ui.widgets.actions import card_actions
 from app.ui.widgets import widget_components
+from app.ui.widgets import ui_workers
 
 
 def set_up_video_seek_line_edit(main_window: "MainWindow"):
+    """Configures the video seek line-edit widget: centres text and restricts input to valid frame numbers."""
     video_processor = main_window.video_processor
     videoSeekLineEdit = main_window.videoSeekLineEdit
     videoSeekLineEdit.setAlignment(QtCore.Qt.AlignCenter)
@@ -36,10 +39,20 @@ def set_up_video_seek_line_edit(main_window: "MainWindow"):
 
 
 def set_up_video_seek_slider(main_window: "MainWindow"):
+    """
+    Configures the video seek slider with custom painting, marker management, and
+    job-bracket rendering.  Attaches add_marker_and_paint, remove_marker_and_paint,
+    and a custom paintEvent directly to the slider instance.
+    """
     main_window.videoSeekSlider.markers = set()  # Store unique tick positions
+    main_window.videoSeekSlider.markers_sorted = []  # Sorted list for iteration in paintEvent
+    main_window.videoSeekSlider.issue_markers = set()
+    main_window.videoSeekSlider.issue_markers_sorted = []
+    main_window.videoSeekSlider.dropped_markers = set()
+    main_window.videoSeekSlider.dropped_markers_sorted = []
     main_window.videoSeekSlider.setTickPosition(
         QtWidgets.QSlider.TickPosition.TicksBelow
-    )  # Default position for tick marks
+    )
 
     def add_marker_and_paint(self: QtWidgets.QSlider, value=None):
         """Add a tick mark at a specific slider value."""
@@ -47,6 +60,9 @@ def set_up_video_seek_slider(main_window: "MainWindow"):
             value = self.value()
         if self.minimum() <= value <= self.maximum() and value not in self.markers:
             self.markers.add(value)
+            if value not in self.markers_sorted:
+                self.markers_sorted.append(value)
+                self.markers_sorted.sort()
             self.update()
 
     def remove_marker_and_paint(self: QtWidgets.QSlider, value=None):
@@ -55,9 +71,64 @@ def set_up_video_seek_slider(main_window: "MainWindow"):
             value = self.value()
         if value in self.markers:
             self.markers.remove(value)
+            if value in self.markers_sorted:
+                self.markers_sorted.remove(value)
+            self.update()
+
+    def _add_sorted_marker(
+        marker_set: set[int], marker_list: list[int], value: int
+    ) -> bool:
+        if value not in marker_set:
+            marker_set.add(value)
+            marker_list.append(value)
+            marker_list.sort()
+            return True
+        return False
+
+    def _remove_sorted_marker(
+        marker_set: set[int], marker_list: list[int], value: int
+    ) -> bool:
+        if value in marker_set:
+            marker_set.remove(value)
+            if value in marker_list:
+                marker_list.remove(value)
+            return True
+        return False
+
+    def add_issue_marker_and_paint(self: QtWidgets.QSlider, value=None):
+        if value is None or isinstance(value, bool):
+            value = self.value()
+        if self.minimum() <= value <= self.maximum() and _add_sorted_marker(
+            self.issue_markers, self.issue_markers_sorted, value
+        ):
+            self.update()
+
+    def remove_issue_marker_and_paint(self: QtWidgets.QSlider, value=None):
+        if value is None or isinstance(value, bool):
+            value = self.value()
+        if _remove_sorted_marker(self.issue_markers, self.issue_markers_sorted, value):
+            self.update()
+
+    def add_dropped_marker_and_paint(self: QtWidgets.QSlider, value=None):
+        if value is None or isinstance(value, bool):
+            value = self.value()
+        if self.minimum() <= value <= self.maximum() and _add_sorted_marker(
+            self.dropped_markers, self.dropped_markers_sorted, value
+        ):
+            self.update()
+
+    def remove_dropped_marker_and_paint(self: QtWidgets.QSlider, value=None):
+        if value is None or isinstance(value, bool):
+            value = self.value()
+        if _remove_sorted_marker(
+            self.dropped_markers, self.dropped_markers_sorted, value
+        ):
             self.update()
 
     def paintEvent(self: QtWidgets.QSlider, event: QtGui.QPaintEvent):
+        """Custom paint: draws the groove, a thin white handle, coloured marker ticks, and job-bracket characters."""
+        if self.maximum() == self.minimum():
+            return super(QtWidgets.QSlider, self).paintEvent(event)
         # Do not draw the slider if the current media is a single image
         if main_window.video_processor.file_type == "image":
             return super(QtWidgets.QSlider, self).paintEvent(event)
@@ -108,55 +179,61 @@ def set_up_video_seek_slider(main_window: "MainWindow"):
         painter.setBrush(QtGui.QBrush(QtGui.QColor("white")))  # Handle fill color
         painter.drawRect(handle_rect)
 
-        # Draw markers (if any)
+        def marker_x_for_value(value: int) -> float:
+            marker_normalized_value = (value - self.minimum()) / (
+                self.maximum() - self.minimum()
+            )
+            return groove_start + marker_normalized_value * groove_width
+
+        # Draw issue markers underneath saved markers.
+        if self.issue_markers:
+            issue_pen = QtGui.QPen(QtGui.QColor("#ff9800"), 3)
+            issue_pen.setCapStyle(QtCore.Qt.PenCapStyle.SquareCap)
+            painter.setPen(issue_pen)
+            issue_top = groove_y - 2
+            issue_bottom = groove_y + 2
+            for value in self.issue_markers_sorted:
+                if value in self.dropped_markers:
+                    continue
+                marker_x = marker_x_for_value(value)
+                painter.drawLine(marker_x, issue_top, marker_x, issue_bottom)
+
+        # Draw standard markers (if any)
         if self.markers:
             painter.setPen(
                 QtGui.QPen(QtGui.QColor("#4090a3"), 3)
             )  # Marker color and thickness
-            for value in sorted(self.markers):
-                # Calculate marker position
-                marker_normalized_value = (value - self.minimum()) / (
-                    self.maximum() - self.minimum()
-                )
-                marker_x = groove_start + marker_normalized_value * groove_width
+            for value in self.markers_sorted:
+                marker_x = marker_x_for_value(value)
                 painter.drawLine(
                     marker_x, groove_rect.top(), marker_x, groove_rect.bottom()
                 )
+
+        # Draw dropped markers above all frame markers.
+        if self.dropped_markers:
+            painter.setPen(QtGui.QPen(QtGui.QColor("#e8483c"), 3))
+            for value in self.dropped_markers_sorted:
+                marker_x = marker_x_for_value(value)
+                painter.drawLine(
+                    marker_x, groove_rect.top(), marker_x, groove_rect.bottom()
+                )
+
         # Draw Job Start/End Brackets on the groove line
-        painter.setFont(
-            QtGui.QFont("Arial", 16, QtGui.QFont.Bold)
-        )  # Increased font size from 12 to 16
+        painter.setFont(QtGui.QFont("Arial", 16, QtGui.QFont.Bold))
         font_metrics = painter.fontMetrics()
         bracket_height = font_metrics.height()
         bracket_y_pos = groove_y + (bracket_height // 4)
 
-        # Iterate through all defined job marker pairs
         for start_frame, end_frame in main_window.job_marker_pairs:
             if start_frame is not None:
-                start_normalized_value = (start_frame - self.minimum()) / (
-                    self.maximum() - self.minimum()
-                )
-                start_x = groove_start + start_normalized_value * groove_width
-                # Draw the green start bracket
-                painter.setPen(
-                    QtGui.QPen(QtGui.QColor("#4CAF50"), 1)
-                )  # Green for start bracket
-                painter.drawText(
-                    int(start_x - 4), int(bracket_y_pos), "["
-                )  # Adjusted X offset slightly
+                start_x = marker_x_for_value(int(start_frame))
+                painter.setPen(QtGui.QPen(QtGui.QColor("#4CAF50"), 1))
+                painter.drawText(int(start_x - 4), int(bracket_y_pos), "[")
 
             if end_frame is not None:
-                end_normalized_value = (end_frame - self.minimum()) / (
-                    self.maximum() - self.minimum()
-                )
-                end_x = groove_start + end_normalized_value * groove_width
-                # Draw the red end bracket
-                painter.setPen(
-                    QtGui.QPen(QtGui.QColor("#e8483c"), 1)
-                )  # Red for end bracket
-                painter.drawText(
-                    int(end_x - 4), int(bracket_y_pos), "]"
-                )  # Adjusted X offset slightly
+                end_x = marker_x_for_value(int(end_frame))
+                painter.setPen(QtGui.QPen(QtGui.QColor("#e8483c"), 1))
+                painter.drawText(int(end_x - 4), int(bracket_y_pos), "]")
 
     main_window.videoSeekSlider.add_marker_and_paint = partial(
         add_marker_and_paint, main_window.videoSeekSlider
@@ -164,12 +241,31 @@ def set_up_video_seek_slider(main_window: "MainWindow"):
     main_window.videoSeekSlider.remove_marker_and_paint = partial(
         remove_marker_and_paint, main_window.videoSeekSlider
     )
+    main_window.videoSeekSlider.add_issue_marker_and_paint = partial(
+        add_issue_marker_and_paint, main_window.videoSeekSlider
+    )
+    main_window.videoSeekSlider.remove_issue_marker_and_paint = partial(
+        remove_issue_marker_and_paint, main_window.videoSeekSlider
+    )
+    main_window.videoSeekSlider.add_dropped_marker_and_paint = partial(
+        add_dropped_marker_and_paint, main_window.videoSeekSlider
+    )
+    main_window.videoSeekSlider.remove_dropped_marker_and_paint = partial(
+        remove_dropped_marker_and_paint, main_window.videoSeekSlider
+    )
     main_window.videoSeekSlider.paintEvent = partial(
         paintEvent, main_window.videoSeekSlider
     )
 
 
 def add_video_slider_marker(main_window: "MainWindow"):
+    """
+    Adds a standard parameter marker at the current slider position.
+
+    Requires a video to be loaded and at least one target face to be present.
+    Shows an error message box if either precondition is not met, or if a marker
+    already exists at that position.
+    """
     if (
         not isinstance(
             main_window.selected_video_button, widget_components.TargetMediaCardButton
@@ -314,6 +410,12 @@ def set_job_end_frame(main_window: "MainWindow"):
 
 
 def remove_video_slider_marker(main_window: "MainWindow"):
+    """
+    Removes the marker (standard or job-bracket) at the current slider position.
+
+    If the position belongs to a job marker pair, the entire pair is removed.
+    If no marker exists at the position, an error message box is shown.
+    """
     if (
         not isinstance(
             main_window.selected_video_button, widget_components.TargetMediaCardButton
@@ -367,12 +469,14 @@ def add_marker(
     control,
     position,
 ):
+    """Stores a snapshot of the current parameters and control state at the given frame position."""
     main_window.videoSeekSlider.add_marker_and_paint(position)
     main_window.markers[position] = {"parameters": parameters, "control": control}
     print(f"[INFO] Marker Added for Frame: {position}")
 
 
 def remove_marker(main_window: "MainWindow", position):
+    """Removes the marker at the specified frame position, if one exists."""
     if main_window.markers.get(position):
         main_window.videoSeekSlider.remove_marker_and_paint(position)
         main_window.markers.pop(position)
@@ -419,14 +523,688 @@ def move_slider_to_nearest_marker(main_window: "MainWindow", direction: str):
 
 # Wrappers for specific directions
 def move_slider_to_next_nearest_marker(main_window: "MainWindow"):
+    """Moves the slider to the nearest marker that is after the current position."""
     move_slider_to_nearest_marker(main_window, "next")
 
 
 def move_slider_to_previous_nearest_marker(main_window: "MainWindow"):
+    """Moves the slider to the nearest marker that is before the current position."""
     move_slider_to_nearest_marker(main_window, "previous")
 
 
+def add_scan_review_controls(main_window: "MainWindow"):
+    """Creates a collapsible second row of scan/review controls."""
+    if hasattr(main_window, "scanToolsToggleButton"):
+        return
+
+    def create_divider(parent, height: int = 16, margin: int = 12):
+        divider_container = QtWidgets.QWidget(parent)
+        divider_layout = QtWidgets.QHBoxLayout(divider_container)
+        divider_layout.setContentsMargins(margin, 0, margin, 0)
+        divider_layout.setSpacing(0)
+        divider = QtWidgets.QFrame(divider_container)
+        divider.setFrameShape(QtWidgets.QFrame.Shape.VLine)
+        divider.setFrameShadow(QtWidgets.QFrame.Shadow.Plain)
+        divider.setLineWidth(1)
+        divider.setMidLineWidth(0)
+        divider.setFixedHeight(height)
+        divider.setStyleSheet("color: rgba(180, 180, 180, 110);")
+        divider_layout.addWidget(divider)
+        return divider_container
+
+    toggle_button = QtWidgets.QPushButton("Scan Tools")
+    toggle_button.setCheckable(True)
+    toggle_button.setChecked(False)
+    toggle_button.setFlat(True)
+    toggle_button.setToolTip("Show or hide the scan tools.")
+    toggle_button.clicked.connect(
+        lambda checked: set_scan_tools_expanded(main_window, checked)
+    )
+    main_window.scanToolsToggleButton = toggle_button
+    media_layout = main_window.horizontalLayoutMediaButtons
+    media_layout.addWidget(toggle_button)
+
+    section = QtWidgets.QWidget(main_window)
+    section_layout = QtWidgets.QVBoxLayout(section)
+    section_layout.setContentsMargins(0, 0, 0, 0)
+    section_layout.setSpacing(4)
+
+    container = QtWidgets.QWidget(section)
+    container_layout = QtWidgets.QHBoxLayout(container)
+    container_layout.setContentsMargins(0, 0, 0, 0)
+    container_layout.setSpacing(6)
+    main_window.scanControlsLayout = container_layout
+    main_window.scanControlsContainer = container
+    left_group = QtWidgets.QWidget(container)
+    left_layout = QtWidgets.QHBoxLayout(left_group)
+    left_layout.setContentsMargins(0, 0, 0, 0)
+    left_layout.setSpacing(6)
+    navigation_group = QtWidgets.QWidget(container)
+    navigation_layout = QtWidgets.QHBoxLayout(navigation_group)
+    navigation_layout.setContentsMargins(0, 0, 0, 0)
+    navigation_layout.setSpacing(6)
+    frame_group = QtWidgets.QWidget(container)
+    frame_layout = QtWidgets.QHBoxLayout(frame_group)
+    frame_layout.setContentsMargins(0, 0, 0, 0)
+    frame_layout.setSpacing(6)
+    cleanup_group = QtWidgets.QWidget(container)
+    cleanup_layout = QtWidgets.QHBoxLayout(cleanup_group)
+    cleanup_layout.setContentsMargins(0, 0, 0, 0)
+    cleanup_layout.setSpacing(6)
+    main_window.scanControlsLeftGroup = left_group
+    main_window.scanControlsNavigationGroup = navigation_group
+    main_window.scanControlsFrameGroup = frame_group
+    main_window.scanControlsCleanupGroup = cleanup_group
+
+    run_scan_button = QtWidgets.QPushButton("Scan for Issues")
+    run_scan_button.setToolTip(
+        "Scans the current render range using your current settings.\n"
+        "If record markers exist, only those ranges are scanned.\n"
+        "Saved settings markers are applied during the scan.\n"
+        "Flags likely issue frames for the selected target face.\n"
+        "Single-frame preview may differ from playback on borderline frames."
+    )
+    run_scan_button.setSizePolicy(
+        QtWidgets.QSizePolicy.Policy.Fixed, QtWidgets.QSizePolicy.Policy.Fixed
+    )
+    run_scan_button.setFlat(True)
+    run_scan_button.clicked.connect(lambda: toggle_issue_scan(main_window))
+    main_window.runScanButton = run_scan_button
+
+    button_specs = [
+        (
+            "prevIssueButton",
+            "Prev Issue",
+            "Move to the previous issue frame for the selected target face.",
+            lambda: move_slider_to_previous_issue(main_window),
+            "navigation",
+        ),
+        (
+            "nextIssueButton",
+            "Next Issue",
+            "Move to the next issue frame for the selected target face.",
+            lambda: move_slider_to_next_issue(main_window),
+            "navigation",
+        ),
+        (
+            "dropFrameButton",
+            "Drop Frame",
+            "Drops the current frame from render output.",
+            lambda: toggle_drop_frame(main_window),
+            "frame",
+        ),
+        (
+            "dropAllIssueFramesButton",
+            "Drop Issue Frames",
+            "Marks the selected target face's issue frames as dropped.\n"
+            "Dropped frames are excluded from render output.",
+            lambda: drop_all_issue_frames(main_window),
+            "frame",
+        ),
+        (
+            "clearScanResultsButton",
+            "Clear Issues",
+            "Removes the current scan issue markers.\nDoes not affect dropped frames.",
+            lambda: clear_scan_results(main_window),
+            "cleanup",
+        ),
+        (
+            "clearDroppedFramesButton",
+            "Restore Dropped",
+            "Restores all dropped frames to render output.",
+            lambda: clear_dropped_frames(main_window),
+            "cleanup",
+        ),
+    ]
+
+    left_layout.addWidget(run_scan_button)
+
+    for attr_name, text, tooltip, handler, group_name in button_specs:
+        button = QtWidgets.QPushButton(text)
+        button.setToolTip(tooltip)
+        button.setFlat(True)
+        button.setSizePolicy(
+            QtWidgets.QSizePolicy.Policy.Fixed, QtWidgets.QSizePolicy.Policy.Fixed
+        )
+        button.clicked.connect(handler)
+        setattr(main_window, attr_name, button)
+        if group_name == "left":
+            target_layout = left_layout
+        elif group_name == "navigation":
+            target_layout = navigation_layout
+        elif group_name == "frame":
+            target_layout = frame_layout
+        else:
+            target_layout = cleanup_layout
+        target_layout.addWidget(button)
+
+    container_layout.addStretch(1)
+    container_layout.addWidget(left_group, 0, QtCore.Qt.AlignmentFlag.AlignLeft)
+    container_layout.addWidget(create_divider(container))
+    container_layout.addWidget(
+        navigation_group, 0, QtCore.Qt.AlignmentFlag.AlignHCenter
+    )
+    container_layout.addWidget(create_divider(container))
+    container_layout.addWidget(frame_group, 0, QtCore.Qt.AlignmentFlag.AlignHCenter)
+    container_layout.addWidget(create_divider(container))
+    container_layout.addWidget(cleanup_group, 0, QtCore.Qt.AlignmentFlag.AlignRight)
+    container_layout.addStretch(1)
+    section_layout.addWidget(container)
+    main_window.scanToolsSection = section
+    main_window.verticalLayoutMediaControls.addWidget(section)
+    set_scan_tools_expanded(
+        main_window, getattr(main_window, "scan_tools_expanded", False)
+    )
+
+    update_drop_frame_button_label(main_window)
+    update_scan_review_button_states(main_window)
+
+
+# --- Scan / Issue / Drop UI state helpers ---
+def set_scan_tools_expanded(main_window: "MainWindow", expanded: bool):
+    """Shows or hides the scan-tools row and updates the toggle label."""
+    main_window.scan_tools_expanded = expanded
+    toggle_button = getattr(main_window, "scanToolsToggleButton", None)
+    container = getattr(main_window, "scanControlsContainer", None)
+    if toggle_button is not None:
+        toggle_button.blockSignals(True)
+        toggle_button.setChecked(expanded)
+        toggle_button.blockSignals(False)
+    if container is not None:
+        container.setVisible(expanded)
+
+
+def update_drop_frame_button_label(main_window: "MainWindow"):
+    """Updates the drop-frame button text to reflect the current frame state."""
+    button = getattr(main_window, "dropFrameButton", None)
+    if button is None:
+        return
+    current_frame = int(main_window.videoSeekSlider.value())
+    if current_frame in main_window.dropped_frames:
+        button.setText("Restore Frame")
+        button.setToolTip("Restore this frame so it is included in render output.")
+    else:
+        button.setText("Drop Frame")
+        button.setToolTip("Drop this frame from render output.")
+
+
+def update_scan_review_button_states(main_window: "MainWindow"):
+    """Enable scan/review actions based on available target-face context."""
+    has_target_faces = bool(getattr(main_window, "target_faces", {}))
+    has_selected_face = (
+        getattr(main_window, "selected_target_face_id", None) is not None
+    )
+
+    scan_button = getattr(main_window, "runScanButton", None)
+    if scan_button is not None:
+        scan_button.setEnabled(has_target_faces)
+
+    for button_name in (
+        "runScanButton",
+        "prevIssueButton",
+        "nextIssueButton",
+        "dropAllIssueFramesButton",
+    ):
+        button = getattr(main_window, button_name, None)
+        if button is not None:
+            if button_name == "runScanButton":
+                continue
+            button.setEnabled(has_selected_face)
+
+
+def _set_slider_marker_values(
+    slider: QtWidgets.QSlider,
+    attr_set_name: str,
+    attr_sorted_name: str,
+    values: list[int],
+):
+    slider_set = set(values)
+    setattr(slider, attr_set_name, slider_set)
+    setattr(slider, attr_sorted_name, sorted(slider_set))
+
+
+def get_selected_face_issue_frames(main_window: "MainWindow") -> set[int]:
+    selected_face_id = getattr(main_window, "selected_target_face_id", None)
+    if selected_face_id is None:
+        return set()
+    return set(main_window.issue_frames_by_face.get(str(selected_face_id), set()))
+
+
+def refresh_issue_frames_for_selected_face(main_window: "MainWindow"):
+    """Refresh visible issue markers to match the currently selected target face."""
+    visible_issue_frames = get_selected_face_issue_frames(main_window)
+    main_window.issue_frames = visible_issue_frames
+    _set_slider_marker_values(
+        main_window.videoSeekSlider,
+        "issue_markers",
+        "issue_markers_sorted",
+        list(visible_issue_frames),
+    )
+    main_window.videoSeekSlider.update()
+    update_scan_review_button_states(main_window)
+
+
+def set_issue_frames_for_face(main_window: "MainWindow", face_id, frames):
+    """Stores issue frames for a specific target face and refreshes visible markers if selected."""
+    if face_id is None:
+        return
+    normalized = {int(frame) for frame in frames}
+    main_window.issue_frames_by_face[str(face_id)] = normalized
+    if str(face_id) == str(getattr(main_window, "selected_target_face_id", None)):
+        refresh_issue_frames_for_selected_face(main_window)
+
+
+def add_issue_frame_for_face(main_window: "MainWindow", face_id, frame_number: int):
+    """Merge a single issue frame into the stored per-face mapping."""
+    if face_id is None:
+        return
+    normalized_face_id = str(face_id)
+    face_frames = main_window.issue_frames_by_face.setdefault(normalized_face_id, set())
+    normalized_frame = int(frame_number)
+    if normalized_frame in face_frames:
+        return
+    face_frames.add(normalized_frame)
+    if normalized_face_id == str(getattr(main_window, "selected_target_face_id", None)):
+        refresh_issue_frames_for_selected_face(main_window)
+
+
+def set_issue_frames_by_face(main_window: "MainWindow", frames_by_face):
+    """Replaces all stored issue results and refreshes visible markers for the selected face."""
+    normalized_mapping: dict[str, set[int]] = {}
+    for face_id, frames in (frames_by_face or {}).items():
+        normalized_mapping[str(face_id)] = {int(frame) for frame in frames}
+    main_window.issue_frames_by_face = normalized_mapping
+    refresh_issue_frames_for_selected_face(main_window)
+
+
+def set_dropped_frames(main_window: "MainWindow", frames):
+    """Replaces the current dropped-frame set and refreshes slider visuals."""
+    normalized = {int(frame) for frame in frames}
+    main_window.dropped_frames = normalized
+    _set_slider_marker_values(
+        main_window.videoSeekSlider,
+        "dropped_markers",
+        "dropped_markers_sorted",
+        list(normalized),
+    )
+    main_window.videoSeekSlider.update()
+    update_drop_frame_button_label(main_window)
+
+
+def clear_scan_results(main_window: "MainWindow"):
+    selected_face_id = getattr(main_window, "selected_target_face_id", None)
+    if selected_face_id is None:
+        main_window.issue_frames_by_face.clear()
+    else:
+        main_window.issue_frames_by_face[str(selected_face_id)] = set()
+    refresh_issue_frames_for_selected_face(main_window)
+
+
+def clear_dropped_frames(main_window: "MainWindow"):
+    set_dropped_frames(main_window, [])
+
+
+def toggle_drop_frame(main_window: "MainWindow"):
+    current_position = int(main_window.videoSeekSlider.value())
+    if current_position in main_window.dropped_frames:
+        main_window.dropped_frames.remove(current_position)
+        main_window.videoSeekSlider.remove_dropped_marker_and_paint(current_position)
+    else:
+        main_window.dropped_frames.add(current_position)
+        main_window.videoSeekSlider.add_dropped_marker_and_paint(current_position)
+    update_drop_frame_button_label(main_window)
+
+
+def drop_all_issue_frames(main_window: "MainWindow"):
+    selected_issue_frames = get_selected_face_issue_frames(main_window)
+    if not selected_issue_frames:
+        return
+    reply = QtWidgets.QMessageBox.question(
+        main_window,
+        "Drop Issue Frames",
+        "Mark all current issue frames as dropped for render output?",
+        QtWidgets.QMessageBox.Yes | QtWidgets.QMessageBox.No,
+        QtWidgets.QMessageBox.No,
+    )
+    if reply != QtWidgets.QMessageBox.Yes:
+        return
+    merged = set(main_window.dropped_frames)
+    merged.update(selected_issue_frames)
+    set_dropped_frames(main_window, merged)
+
+
+# --- Issue scan execution / progress helpers ---
+def _move_slider_to_nearest_issue(main_window: "MainWindow", direction: str):
+    current_position = int(main_window.videoSeekSlider.value())
+    review_frames = sorted(
+        get_selected_face_issue_frames(main_window) | set(main_window.dropped_frames)
+    )
+    if not review_frames:
+        return
+
+    new_position = None
+    if direction == "next":
+        filtered = [frame for frame in review_frames if frame > current_position]
+        new_position = filtered[0] if filtered else None
+    else:
+        filtered = [frame for frame in review_frames if frame < current_position]
+        new_position = filtered[-1] if filtered else None
+
+    if new_position is not None:
+        main_window.videoSeekSlider.setValue(new_position)
+        main_window.video_processor.process_current_frame()
+
+
+def move_slider_to_next_issue(main_window: "MainWindow"):
+    _move_slider_to_nearest_issue(main_window, "next")
+
+
+def move_slider_to_previous_issue(main_window: "MainWindow"):
+    _move_slider_to_nearest_issue(main_window, "previous")
+
+
+def _set_slider_frame_without_side_effects(
+    main_window: "MainWindow", frame_number: int
+) -> None:
+    slider = main_window.videoSeekSlider
+    slider.blockSignals(True)
+    slider.setValue(int(frame_number))
+    slider.blockSignals(False)
+    slider.update()
+
+
+def _get_issue_scan_ui_state(main_window: "MainWindow") -> dict:
+    state = getattr(main_window, "scan_issue_ui_state", None)
+    if state is None:
+        state = {}
+        main_window.scan_issue_ui_state = state
+    return state
+
+
+def _restore_issue_scan_display(main_window: "MainWindow") -> None:
+    video_processor = getattr(main_window, "video_processor", None)
+    process_current_frame = getattr(video_processor, "process_current_frame", None)
+    if callable(process_current_frame):
+        process_current_frame()
+
+
+def _set_issue_scan_tool_button_state(
+    main_window: "MainWindow", scan_active: bool
+) -> None:
+    run_button = getattr(main_window, "runScanButton", None)
+    if run_button is not None:
+        run_button.setEnabled(
+            True if scan_active else bool(getattr(main_window, "target_faces", {}))
+        )
+
+    for button_name in (
+        "prevIssueButton",
+        "nextIssueButton",
+        "dropFrameButton",
+        "dropAllIssueFramesButton",
+        "clearScanResultsButton",
+        "clearDroppedFramesButton",
+    ):
+        button = getattr(main_window, button_name, None)
+        if button is not None:
+            button.setEnabled(not scan_active)
+
+
+def _start_issue_scan_ui(main_window: "MainWindow", worker, scope_text: str) -> None:
+    state = _get_issue_scan_ui_state(main_window)
+    state.clear()
+    state.update(
+        {
+            "active": True,
+            "start_frame": int(main_window.videoSeekSlider.value()),
+            "scope_text": scope_text,
+            "keep_controls": bool(main_window.control.get("KeepControlsToggle", False)),
+        }
+    )
+
+    if not state["keep_controls"]:
+        layout_actions.disable_all_parameters_and_control_widget(main_window)
+
+    _set_issue_scan_tool_button_state(main_window, True)
+
+    run_button = getattr(main_window, "runScanButton", None)
+    if run_button is not None:
+        run_button.setText("Abort Scan")
+        run_button.setToolTip(
+            f"{scope_text}\nAbort the active issue scan and keep the issue frames found so far."
+        )
+
+    play_button = getattr(main_window, "buttonMediaPlay", None)
+    if play_button is not None:
+        play_button.setEnabled(False)
+
+    record_button = getattr(main_window, "buttonMediaRecord", None)
+    if record_button is not None:
+        record_button.setEnabled(False)
+
+    toggle_button = getattr(main_window, "scanToolsToggleButton", None)
+    if toggle_button is not None:
+        toggle_button.setEnabled(False)
+
+    QtCore.QCoreApplication.processEvents()
+
+
+def _restore_issue_scan_ui(main_window: "MainWindow") -> None:
+    state = _get_issue_scan_ui_state(main_window)
+    if not state.get("active"):
+        return
+
+    if not state.get("keep_controls", False):
+        layout_actions.enable_all_parameters_and_control_widget(main_window)
+
+    start_frame = int(state.get("start_frame", main_window.videoSeekSlider.value()))
+    _set_slider_frame_without_side_effects(main_window, start_frame)
+    main_window.video_processor.current_frame_number = start_frame
+
+    run_button = getattr(main_window, "runScanButton", None)
+    if run_button is not None:
+        run_button.setText("Scan for Issues")
+        run_button.setToolTip(
+            "Scans the current render range using your current settings.\n"
+            "If record markers exist, only those ranges are scanned.\n"
+            "Saved settings markers are applied during the scan.\n"
+            "Flags likely issue frames for the selected target face.\n"
+            "Single-frame preview may differ from playback on borderline frames."
+        )
+
+    play_button = getattr(main_window, "buttonMediaPlay", None)
+    if play_button is not None:
+        play_button.setEnabled(True)
+
+    record_button = getattr(main_window, "buttonMediaRecord", None)
+    if record_button is not None:
+        record_button.setEnabled(True)
+
+    toggle_button = getattr(main_window, "scanToolsToggleButton", None)
+    if toggle_button is not None:
+        toggle_button.setEnabled(True)
+
+    state.clear()
+    _set_issue_scan_tool_button_state(main_window, False)
+    update_scan_review_button_states(main_window)
+    update_drop_frame_button_label(main_window)
+    _restore_issue_scan_display(main_window)
+    QtCore.QCoreApplication.processEvents()
+
+
+def toggle_issue_scan(main_window: "MainWindow") -> None:
+    worker = getattr(main_window, "scan_issue_worker", None)
+    if worker is not None:
+        worker.cancel()
+        return
+    run_issue_scan(main_window)
+
+
+def _handle_issue_scan_progress(
+    main_window: "MainWindow",
+    scope_text: str,
+    processed: int,
+    total: int,
+    frame_number: int,
+    scan_fps: float,
+):
+    _set_slider_frame_without_side_effects(main_window, frame_number)
+    run_button = getattr(main_window, "runScanButton", None)
+    if run_button is not None:
+        run_button.setText(f"Abort Scan ({processed}/{max(total, 1)})")
+    QtCore.QCoreApplication.processEvents()
+
+
+def _handle_issue_scan_issue_found(
+    main_window: "MainWindow", face_id: str, frame_number: int
+) -> None:
+    add_issue_frame_for_face(main_window, face_id, frame_number)
+
+
+def _cleanup_issue_scan_worker(main_window: "MainWindow"):
+    worker = getattr(main_window, "scan_issue_worker", None)
+    if worker is not None:
+        worker.deleteLater()
+        main_window.scan_issue_worker = None
+
+
+def _handle_issue_scan_completed(
+    main_window: "MainWindow",
+    issue_frames_by_face: dict,
+    frames_scanned: int,
+    faces_with_issues: int,
+    scope_text: str,
+    elapsed_seconds: float,
+    cancelled: bool = False,
+):
+    set_issue_frames_by_face(main_window, issue_frames_by_face)
+    _restore_issue_scan_ui(main_window)
+    _cleanup_issue_scan_worker(main_window)
+    total_issue_frames = sum(
+        len(set(frames)) for frames in issue_frames_by_face.values()
+    )
+    scan_fps = (frames_scanned / elapsed_seconds) if elapsed_seconds > 0 else 0.0
+    print(
+        f"[INFO] Scan: Scope: {scope_text.removeprefix('Scanning ')} | Frames: {frames_scanned} | Time: {elapsed_seconds:.1f}s | FPS: {scan_fps:.1f} | Issues: {total_issue_frames} | Faces with issues: {faces_with_issues} | Cancelled: {cancelled}"
+    )
+    if cancelled:
+        common_widget_actions.create_and_show_toast_message(
+            main_window,
+            "Scan Aborted",
+            f"Stopped after {frames_scanned} scanned frames. Kept {total_issue_frames} issue frames found so far.",
+            style_type="warning",
+        )
+    elif total_issue_frames:
+        common_widget_actions.create_and_show_toast_message(
+            main_window,
+            "Scan Complete",
+            f"Scanned {frames_scanned} frames in {elapsed_seconds:.1f}s ({scan_fps:.1f} FPS). Found {total_issue_frames} issues across {faces_with_issues} faces.",
+        )
+    else:
+        common_widget_actions.create_and_show_toast_message(
+            main_window,
+            "Scan Complete",
+            f"Scanned {frames_scanned} frames in {elapsed_seconds:.1f}s ({scan_fps:.1f} FPS). No issue frames found.",
+        )
+
+
+def _handle_issue_scan_cancelled(main_window: "MainWindow"):
+    _restore_issue_scan_ui(main_window)
+    _cleanup_issue_scan_worker(main_window)
+    common_widget_actions.create_and_show_toast_message(
+        main_window,
+        "Scan Cancelled",
+        "Issue scan aborted before finalizing. Kept any issue frames found so far.",
+        style_type="warning",
+    )
+
+
+def _handle_issue_scan_failed(main_window: "MainWindow", error_message: str):
+    _restore_issue_scan_ui(main_window)
+    _cleanup_issue_scan_worker(main_window)
+    common_widget_actions.create_and_show_messagebox(
+        main_window,
+        "Scan Failed",
+        error_message,
+        main_window.runScanButton,
+    )
+
+
+def run_issue_scan(main_window: "MainWindow"):
+    video_processor = main_window.video_processor
+    if not getattr(main_window, "target_faces", {}):
+        common_widget_actions.create_and_show_messagebox(
+            main_window,
+            "Scan Not Available",
+            "No target faces found. Use Find Faces before running a scan.",
+            main_window.videoSeekSlider,
+        )
+        return
+    if video_processor.file_type != "video" or not video_processor.media_path:
+        common_widget_actions.create_and_show_messagebox(
+            main_window,
+            "Scan Not Available",
+            "Issue scans are only available when a video is loaded.",
+            main_window.videoSeekSlider,
+        )
+        return
+    if not Path(video_processor.media_path).is_file():
+        common_widget_actions.create_and_show_messagebox(
+            main_window,
+            "Scan Not Available",
+            "The selected video could not be found on disk.",
+            main_window.videoSeekSlider,
+        )
+        return
+    if getattr(main_window, "scan_issue_worker", None) is not None:
+        return
+
+    was_processing = video_processor.stop_processing()
+    if was_processing:
+        print("[INFO] Stopped active processing before running issue scan.")
+
+    worker = ui_workers.IssueScanWorker(main_window)
+    main_window.scan_issue_worker = worker
+    scope_text = worker._scan_scope_text
+    set_issue_frames_by_face(main_window, {})
+    _start_issue_scan_ui(main_window, worker, scope_text)
+    worker.progress.connect(
+        lambda processed, total, frame_number, scan_fps: _handle_issue_scan_progress(
+            main_window, scope_text, processed, total, frame_number, scan_fps
+        )
+    )
+    worker.issue_found.connect(
+        lambda face_id, frame_number: _handle_issue_scan_issue_found(
+            main_window, face_id, frame_number
+        )
+    )
+    worker.completed.connect(
+        lambda issue_frames_by_face, frames_scanned, faces_with_issues, completed_scope_text, elapsed_seconds, cancelled: (
+            _handle_issue_scan_completed(
+                main_window,
+                issue_frames_by_face,
+                frames_scanned,
+                faces_with_issues,
+                completed_scope_text,
+                elapsed_seconds,
+                cancelled,
+            )
+        )
+    )
+    worker.cancelled.connect(lambda: _handle_issue_scan_cancelled(main_window))
+    worker.failed.connect(
+        lambda error_message: _handle_issue_scan_failed(main_window, error_message)
+    )
+    worker.start()
+
+
 def remove_face_parameters_and_control_from_markers(main_window: "MainWindow", face_id):
+    """
+    Removes all stored parameter entries for *face_id* from every marker.
+
+    If any marker's parameter dict becomes empty after the removal, all markers are
+    deleted because there is no longer any face data to track.
+    """
     for _, marker_data in main_window.markers.items():
         marker_data["parameters"].pop(
             face_id, None
@@ -438,62 +1216,97 @@ def remove_face_parameters_and_control_from_markers(main_window: "MainWindow", f
 
 
 def remove_all_markers(main_window: "MainWindow"):
+    """Removes all standard, issue, and dropped-frame markers plus job pairs."""
     standard_markers_positions = list(main_window.markers.keys())
     for marker_position in standard_markers_positions:
         remove_marker(main_window, marker_position)
     main_window.markers.clear()
+    set_issue_frames_by_face(main_window, {})
+    set_dropped_frames(main_window, [])
     if main_window.job_marker_pairs:
         print("[INFO] Clearing job marker pairs.")
         main_window.job_marker_pairs.clear()
 
 
-def advance_video_slider_by_n_frames(main_window: "MainWindow", n=30):
+def advance_video_slider_by_n_frames(main_window: "MainWindow", n=None):
+    """
+    Advances the seek slider forward by *n* frames (clamped to the last frame).
+
+    Relies on the slider's valueChanged signal to handle raw frame reading and
+    post-seek actions natively, avoiding duplicated heavy processing.
+    """
     video_processor = main_window.video_processor
     if video_processor.media_capture:
+        if n is None:
+            n = int(main_window.control.get("FrameSkipStepSlider", 30))
+
         current_position = int(main_window.videoSeekSlider.value())
         new_position = current_position + n
         if new_position > video_processor.max_frame_number:
             new_position = video_processor.max_frame_number
+
+        # 1. Setting the value triggers 'on_change_video_seek_slider' automatically.
+        # Since the slider is not being dragged (isSliderDown() == False),
+        # that slot will naturally execute 'run_post_seek_actions' ONCE.
         main_window.videoSeekSlider.setValue(new_position)
 
-        # Execute post seek (Markers, Autoswap)
-        run_post_seek_actions(main_window, new_position)
-
-        # Check if this is a single frame step (like 'V' key)
+        # 2. Check if this is a single frame step (like 'V' key)
         is_single_frame_step = n == 1
-        # Run synchronously only for single frame steps to prevent "flash"
+
+        # 3. Run AI models. Runs synchronously only for single steps to prevent "flash".
         main_window.video_processor.process_current_frame(
             synchronous=is_single_frame_step
         )
 
 
-def rewind_video_slider_by_n_frames(main_window: "MainWindow", n=30):
+def rewind_video_slider_by_n_frames(main_window: "MainWindow", n=None):
+    """
+    Rewinds the seek slider backward by *n* frames (clamped to frame 0).
+
+    Relies on the slider's valueChanged signal to handle raw frame reading and
+    post-seek actions natively, avoiding duplicated heavy processing.
+    """
     video_processor = main_window.video_processor
     if video_processor.media_capture:
+        if n is None:
+            n = int(main_window.control.get("FrameSkipStepSlider", 30))
+
         current_position = int(main_window.videoSeekSlider.value())
         new_position = current_position - n
         if new_position < 0:
             new_position = 0
+
+        # 1. Setting the value triggers 'on_change_video_seek_slider' automatically.
+        # Prevents double execution of heavy Face Detection.
         main_window.videoSeekSlider.setValue(new_position)
 
-        # Execute post seek (Markers, Autoswap)
-        run_post_seek_actions(main_window, new_position)
-
-        # Check if this is a single frame step (like 'C' key)
+        # 2. Check if this is a single frame step (like 'C' key)
         is_single_frame_step = n == 1
-        # Run synchronously only for single frame steps to prevent "flash"
+
+        # 3. Run AI models. Runs synchronously only for single steps to prevent "flash".
         main_window.video_processor.process_current_frame(
             synchronous=is_single_frame_step
         )
 
 
 def delete_all_markers(main_window: "MainWindow"):
+    """Clears all slider marker overlays and marker dictionaries without removing job pairs."""
     main_window.videoSeekSlider.markers = set()
+    main_window.videoSeekSlider.markers_sorted = []
+    main_window.videoSeekSlider.issue_markers = set()
+    main_window.videoSeekSlider.issue_markers_sorted = []
+    main_window.videoSeekSlider.dropped_markers = set()
+    main_window.videoSeekSlider.dropped_markers_sorted = []
     main_window.videoSeekSlider.update()
     main_window.markers.clear()
+    main_window.issue_frames_by_face.clear()
+    main_window.issue_frames.clear()
+    main_window.dropped_frames.clear()
+    update_drop_frame_button_label(main_window)
 
 
 def view_fullscreen(main_window: "MainWindow"):
+    """Toggles the main window between full-screen and normal mode, hiding/showing the menu bar."""
     if main_window.is_full_screen:
         main_window.showNormal()  # Exit full-screen mode
         main_window.menuBar().show()
@@ -505,6 +1318,12 @@ def view_fullscreen(main_window: "MainWindow"):
 
 
 def enable_zoom_and_pan(view: QtWidgets.QGraphicsView):
+    """
+    Attaches mouse-wheel zoom and right-click pan behaviour to a QGraphicsView instance.
+
+    Monkey-patches zoom, reset_zoom, wheelEvent, mousePressEvent, mouseMoveEvent,
+    and mouseReleaseEvent directly onto the view object so no subclass is required.
+    """
     SCALE_FACTOR = 1.1
     view.zoom_value = 0  # Track zoom level
     view.last_scale_factor = 1.0  # Track the last scale factor (1.0 = no scaling)
@@ -529,8 +1348,8 @@ def enable_zoom_and_pan(view: QtWidgets.QGraphicsView):
             zoom(self, delta // abs(delta))
 
     def reset_zoom(self: QtWidgets.QGraphicsView):
+        """Resets the view transform so the scene content fits the viewport exactly."""
         # print("Called reset_zoom()")
-        # Reset zoom level to fit the view.
         self.zoom_value = 0
         if not self.scene():
             return
@@ -607,6 +1426,13 @@ def enable_zoom_and_pan(view: QtWidgets.QGraphicsView):
 
 
 def play_video(main_window: "MainWindow", checked: bool):
+    """
+    Starts or stops video/webcam playback in response to the Play button toggle.
+
+    When *checked* is True: starts playback (or webcam stream) if not already running
+    and the slider is not at the end of the video.
+    When *checked* is False: stops any active processing and resets button states.
+    """
     video_processor = main_window.video_processor
     if checked and video_processor.file_type == "webcam":
         if video_processor.processing:
@@ -643,6 +1469,17 @@ def play_video(main_window: "MainWindow", checked: bool):
 
 
 def record_video(main_window: "MainWindow", checked: bool):
+    """
+    Starts or stops recording in response to the Record button toggle.
+
+    Supports three recording modes:
+      - Default style (no job markers): records from the current slider position.
+      - Multi-segment style (job markers set): records each marker-pair segment.
+      - Batch processing: forces recording from frame 0.
+
+    When *checked* is False: prompts the user to confirm stopping (unless triggered
+    programmatically by the Job Manager) and finalises the current recording.
+    """
     video_processor = main_window.video_processor
     # Determine if this record action was initiated by the Job Manager
     job_mgr_flag = getattr(main_window, "job_manager_initiated_record", False)
@@ -767,7 +1604,8 @@ def record_video(main_window: "MainWindow", checked: bool):
                     main_window.buttonMediaRecord.setChecked(False)
                     return  # Stop if invalid
                 else:
-                    valid_pairs.append(pair)
+                    # Force cast to tuple of ints.
+                    valid_pairs.append((int(pair[0]), int(pair[1])))
 
             # Proceed if we have valid marker pairs
             if valid_pairs:
@@ -792,6 +1630,43 @@ def record_video(main_window: "MainWindow", checked: bool):
                 )
 
     else:
+        # --- Stop confirmation (manual UI only) ---
+        # The record button is toggle-based, and many call sites do not check return
+        # values. Therefore, cancellation must be handled here without relying on
+        # callers.
+        #
+        # Do NOT prompt when this stop was initiated programmatically by Job Manager.
+        if (
+            video_processor.is_processing_segments or video_processor.recording
+        ) and not job_mgr_flag:
+            try:
+                box = QtWidgets.QMessageBox(main_window)
+                box.setIcon(QtWidgets.QMessageBox.Warning)
+                box.setWindowTitle("Confirm stop")
+                box.setText("Stop multi-segment recording?")
+                box.setInformativeText(
+                    "Segment recording will stop immediately. Output may be incomplete."
+                )
+                box.setStandardButtons(
+                    QtWidgets.QMessageBox.Yes | QtWidgets.QMessageBox.No
+                )
+                box.setDefaultButton(QtWidgets.QMessageBox.No)
+
+                if box.exec() != QtWidgets.QMessageBox.Yes:
+                    # User declined. Re-arm the toggle to the ON state.
+                    main_window.buttonMediaRecord.blockSignals(True)
+                    main_window.buttonMediaRecord.setChecked(True)
+                    main_window.buttonMediaRecord.blockSignals(False)
+                    set_record_button_icon_to_stop(main_window)
+                    return
+            except Exception:
+                # If anything goes wrong with the dialog, fail safe by NOT stopping.
+                main_window.buttonMediaRecord.blockSignals(True)
+                main_window.buttonMediaRecord.setChecked(True)
+                main_window.buttonMediaRecord.blockSignals(False)
+                set_record_button_icon_to_stop(main_window)
+                return
+
         if video_processor.is_processing_segments:
             print(
                 "[INFO] Record button released: User requested stop during segment processing. Finalizing..."
@@ -813,26 +1688,34 @@ def record_video(main_window: "MainWindow", checked: bool):
 
 
 def set_record_button_icon_to_play(main_window: "MainWindow"):
+    """Sets the Record button icon and tooltip to the 'ready-to-record' (stopped) state."""
     main_window.buttonMediaRecord.setIcon(QtGui.QIcon(":/media/media/rec_off.png"))
     main_window.buttonMediaRecord.setToolTip("Start Recording")
 
 
 def set_record_button_icon_to_stop(main_window: "MainWindow"):
+    """Sets the Record button icon and tooltip to the 'recording active' (stop) state."""
     main_window.buttonMediaRecord.setIcon(QtGui.QIcon(":/media/media/rec_on.png"))
     main_window.buttonMediaRecord.setToolTip("Stop Recording")
 
 
 def set_play_button_icon_to_play(main_window: "MainWindow"):
+    """Sets the Play button icon and tooltip to the 'ready-to-play' (stopped) state."""
     main_window.buttonMediaPlay.setIcon(QtGui.QIcon(":/media/media/play_off.png"))
     main_window.buttonMediaPlay.setToolTip("Play")
 
 
 def set_play_button_icon_to_stop(main_window: "MainWindow"):
+    """Sets the Play button icon and tooltip to the 'playing active' (stop) state."""
     main_window.buttonMediaPlay.setIcon(QtGui.QIcon(":/media/media/play_on.png"))
     main_window.buttonMediaPlay.setToolTip("Stop")
 
 
 def reset_media_buttons(main_window: "MainWindow"):
+    """
+    Resets the Play and Record buttons to their unchecked, enabled state without
+    triggering their toggled/clicked signals.  Updates icons to match the new state.
+    """
     # Rest the state and icons of the buttons without triggering Onchange methods
     main_window.buttonMediaPlay.blockSignals(True)
     main_window.buttonMediaPlay.setChecked(False)
@@ -846,6 +1729,7 @@ def reset_media_buttons(main_window: "MainWindow"):
 
 
 def set_play_button_icon(main_window: "MainWindow"):
+    """Updates the Play button icon and tooltip to reflect its current checked state."""
     if main_window.buttonMediaPlay.isChecked():
         main_window.buttonMediaPlay.setIcon(QtGui.QIcon(":/media/media/play_on.png"))
         main_window.buttonMediaPlay.setToolTip("Stop")
@@ -855,6 +1739,7 @@ def set_play_button_icon(main_window: "MainWindow"):
 
 
 def set_record_button_icon(main_window: "MainWindow"):
+    """Updates the Record button icon and tooltip to reflect its current checked state."""
     if main_window.buttonMediaRecord.isChecked():
         main_window.buttonMediaRecord.setIcon(QtGui.QIcon(":/media/media/rec_on.png"))
         main_window.buttonMediaRecord.setToolTip("Stop Recording")
@@ -866,6 +1751,13 @@ def set_record_button_icon(main_window: "MainWindow"):
 # @misc_helpers.benchmark
 @QtCore.Slot(int)
 def on_change_video_seek_slider(main_window: "MainWindow", new_position=0):
+    """
+    Slot connected to the slider's valueChanged signal.
+
+    Stops any active processing, seeks the capture to the new position, reads the
+    raw frame for immediate preview, and defers heavy post-seek work (marker
+    application, AutoSwap) until the slider is released.
+    """
     # print("Called on_change_video_seek_slider()")
     video_processor = main_window.video_processor
 
@@ -875,6 +1767,7 @@ def on_change_video_seek_slider(main_window: "MainWindow", new_position=0):
 
     video_processor.current_frame_number = new_position
     video_processor.next_frame_to_display = new_position
+    update_drop_frame_button_label(main_window)
     if video_processor.media_capture:
         misc_helpers.seek_frame(video_processor.media_capture, new_position)
 
@@ -883,6 +1776,9 @@ def on_change_video_seek_slider(main_window: "MainWindow", new_position=0):
             video_processor.media_capture, video_processor.media_rotation
         )
         if ret:
+            # Cache the raw frame so process_current_frame() can use it as a
+            # fallback when the near-EOF re-read fails (OpenCV reliability issue).
+            video_processor._seek_cached_frame = (new_position, frame)
             # For preview, show the raw frame immediately.
             # The processed frame will be shown when the slider is released.
             pixmap = common_widget_actions.get_pixmap_from_frame(main_window, frame)
@@ -891,7 +1787,13 @@ def on_change_video_seek_slider(main_window: "MainWindow", new_position=0):
             )
 
         else:
+            # VP-34: Read failed. Trigger a stop/reopen cycle to recover from silent handle failures.
+            print(
+                f"[WARN] on_change_video_seek_slider: Read failed at frame {new_position}. Attempting recovery..."
+            )
+            video_processor._seek_cached_frame = None
             main_window.last_seek_read_failed = True
+            video_processor.stop_processing()
     # Only update parameters and widgets if the slider is NOT being actively dragged.
     # This ensures playback, clicks, and button presses update the UI,
     # but fast scrubbing does not cause lag or skip marker updates.
@@ -903,7 +1805,7 @@ def on_change_video_seek_slider(main_window: "MainWindow", new_position=0):
 
 def _get_marker_data_for_position(
     main_window: "MainWindow", new_position: int
-) -> dict | None:
+) -> MarkerData | None:
     """
     Finds the marker data that should be active at a given frame position.
     It looks for the marker at the exact position, or the nearest one *before* it.
@@ -931,6 +1833,13 @@ def _get_marker_data_for_position(
 def update_parameters_and_control_from_marker(
     main_window: "MainWindow", new_position: int
 ):
+    """
+    Loads the parameters and control state stored in the nearest marker at or before
+    *new_position* into the live main_window state.
+
+    If no marker is found, the current state is left unchanged.  The global
+    TrackMarkersToggle value is always preserved after the load.
+    """
     # Find marker only at the *exact* new position
     marker_data = _get_marker_data_for_position(main_window, new_position)
     # Save the Global Marker Track toggle
@@ -973,6 +1882,10 @@ def update_parameters_and_control_from_marker(
 
 
 def update_widget_values_from_markers(main_window: "MainWindow", new_position: int):
+    """
+    Refreshes all UI widgets to reflect the parameter and control state that was
+    loaded by update_parameters_and_control_from_marker for *new_position*.
+    """
     # 1. Update Parameter-based widgets (Face Swap, Editor, Restorers)
     if main_window.selected_target_face_id is not None:
         common_widget_actions.set_widgets_values_using_face_id_parameters(
@@ -992,12 +1905,14 @@ def update_widget_values_from_markers(main_window: "MainWindow", new_position: i
 
 
 def on_slider_moved(main_window: "MainWindow"):
+    """Slot connected to sliderMoved; currently a no-op placeholder for future drag-time logic."""
     # print("Called on_slider_moved()")
     main_window.videoSeekSlider.value()
     # print(f"\nSlider Moved. position: {position}\n")
 
 
 def on_slider_pressed(main_window: "MainWindow"):
+    """Slot connected to sliderPressed; currently a no-op placeholder for future press-time logic."""
     main_window.videoSeekSlider.value()
     # print(f"\nSlider Pressed. position: {position}\n")
 
@@ -1007,6 +1922,10 @@ def run_post_seek_actions(main_window: "MainWindow", new_position: int):
     Executes heavy operations (markers, AutoSwap) after a seek.
     This function is called after a slider release or a jump via button/shortcut.
     """
+
+    # Reset ByteTracker state on every user-initiated seek so stale Kalman predictions
+    # from the previous position do not corrupt detection on the new position.
+    main_window.models_processor.face_detectors.reset_tracker()
 
     # Check if the user wants to update the UI based on markers when seeking
     track_markers_enabled = main_window.control.get("TrackMarkersToggle", False)
@@ -1055,24 +1974,42 @@ def on_slider_released(main_window: "MainWindow"):
 
 
 def process_swap_faces(main_window: "MainWindow"):
+    """Triggers a single-frame re-process after the Swap Faces button state changes.
+
+    Runs synchronously so the processed result (including any required model loading
+    or first-time CUDA graph builds) is applied to the currently displayed frame
+    before control returns to the UI, matching the behaviour of the single-frame-step
+    advance button.  For the Custom provider, build-progress dialogs are shown via
+    show_build_dialog signals emitted before each CUDA graph capture; those signals
+    call processEvents() so the dialog paints even while the main thread is occupied.
+    """
     video_processor = main_window.video_processor
-    video_processor.process_current_frame()
+    video_processor.process_current_frame(synchronous=True)
 
 
 def process_edit_faces(main_window: "MainWindow"):
+    """Triggers a single-frame re-process after the Edit Faces button state changes.
+
+    Runs synchronously for the same reason as process_swap_faces.
+    """
     video_processor = main_window.video_processor
-    video_processor.process_current_frame()
+    video_processor.process_current_frame(synchronous=True)
 
 
 def process_compare_checkboxes(main_window: "MainWindow"):
+    """Triggers a single-frame re-process and view resize after a compare/mask checkbox changes."""
     main_window.video_processor.process_current_frame()
     layout_actions.fit_image_to_view_onchange(main_window)
 
 
 def save_current_frame_to_file(main_window: "MainWindow"):
-    if not main_window.outputFolderLineEdit.text() and not main_window.control.get(
-        "OutputToTargetLocationToggle", False
-    ):
+    """
+    Saves the currently displayed (processed) frame to an image file in the output folder.
+
+    The format (PNG or JPEG) is determined by the ImageFormatToggle control.
+    Shows an error message if no output folder is configured or no valid frame is available.
+    """
+    if not main_window.outputFolderLineEdit.text():
         common_widget_actions.create_and_show_messagebox(
             main_window,
             "No Output Folder Selected",
@@ -1268,7 +2205,7 @@ def process_batch_images(main_window: "MainWindow", process_all_faces: bool):
         original_target_faces = main_window.target_faces.copy()
 
     # 6. Setup Progress Dialog
-    progress_dialog = QtWidgets.QProgressDialog(
+    progress_dialog = widget_components.ProgressDialog(
         "Starting batch processing...",
         "Cancel",
         0,
@@ -1292,7 +2229,7 @@ def process_batch_images(main_window: "MainWindow", process_all_faces: bool):
             progress_dialog.setLabelText(f"Processing: {os.path.basename(media_path)}")
             QtWidgets.QApplication.processEvents()  # Keep UI responsive
 
-            if progress_dialog.wasCanceled():
+            if progress_dialog.confirmedCanceled():
                 break
 
             try:
@@ -1324,6 +2261,9 @@ def process_batch_images(main_window: "MainWindow", process_all_faces: bool):
                     rotation_angle = get_video_rotation(media_path)
                     main_window.video_processor.media_rotation = rotation_angle
                     media_capture = cv2.VideoCapture(media_path)
+                    # Explicitly enable OpenCV's auto-rotation ---
+                    if hasattr(cv2, "CAP_PROP_ORIENTATION_AUTO"):
+                        media_capture.set(cv2.CAP_PROP_ORIENTATION_AUTO, 1)
                     if not media_capture.isOpened():
                         raise Exception(f"Could not open video file: {media_path}")
 
@@ -1474,7 +2414,7 @@ def process_batch_images(main_window: "MainWindow", process_all_faces: bool):
                         QtWidgets.QApplication.processEvents()  # Process UI events (like cancel button)
 
                         # Check for cancellation *inside* the video wait loop
-                        if progress_dialog.wasCanceled():
+                        if progress_dialog.confirmedCanceled():
                             print(
                                 f"[WARN] Cancel detected during video processing: {media_path}. Aborting..."
                             )
@@ -1489,7 +2429,7 @@ def process_batch_images(main_window: "MainWindow", process_all_faces: bool):
                     # 3. At this point, record_video has completed (or been aborted)
                     # We must check *again* if the loop was exited due to cancellation
                     # to avoid incorrectly incrementing the 'processed_count'.
-                    if not progress_dialog.wasCanceled():
+                    if not progress_dialog.confirmedCanceled():
                         print(f"[INFO] Finished processing video: {media_path}")
                         processed_count += 1
                     else:
@@ -1515,7 +2455,7 @@ def process_batch_images(main_window: "MainWindow", process_all_faces: bool):
         progress_dialog.close()
 
         # 9. Show completion message
-        if progress_dialog.wasCanceled():
+        if progress_dialog.confirmedCanceled():
             result_msg = (
                 f"Batch processing cancelled.\n\n"
                 f"Processed: {processed_count}\n"
@@ -1559,6 +2499,9 @@ def process_batch_images(main_window: "MainWindow", process_all_faces: bool):
                 # --- Re-open the original video capture ---
                 print(f"[INFO] Restoring original video capture: {original_media_path}")
                 new_capture = cv2.VideoCapture(original_media_path)
+                # Explicitly enable OpenCV's auto-rotation ---
+                if hasattr(cv2, "CAP_PROP_ORIENTATION_AUTO"):
+                    new_capture.set(cv2.CAP_PROP_ORIENTATION_AUTO, 1)
                 if new_capture and new_capture.isOpened():
                     main_window.video_processor.media_capture = new_capture
                     # Set the slider max back to the original video's max
@@ -1599,6 +2542,12 @@ def process_batch_images(main_window: "MainWindow", process_all_faces: bool):
 
 
 def toggle_live_sound(main_window: "MainWindow", toggle_value: bool):
+    """
+    Enables or disables live audio playback during video preview.
+
+    If video was already playing, it is stopped and restarted so the audio
+    subprocess is created (or destroyed) with the new setting in effect.
+    """
     video_processor = main_window.video_processor
     was_processing = video_processor.processing
 
@@ -1608,3 +2557,259 @@ def toggle_live_sound(main_window: "MainWindow", toggle_value: bool):
     if was_processing:
         main_window.buttonMediaPlay.click()
         main_window.buttonMediaPlay.click()
+
+
+def _set_media_controls_visible(main_window: "MainWindow", visible: bool):
+    """
+    Role: Recursively shows/hides media control widgets and safely manages layout spacers.
+    Impact: Avoids blank spaces (cadres) by cleanly detaching spacers using takeAt()
+            instead of forcing their sizes to 0.
+    """
+    if not hasattr(main_window, "_media_controls_currently_visible"):
+        main_window._media_controls_currently_visible = True
+
+    if main_window._media_controls_currently_visible == visible:
+        return  # State unchanged
+
+    main_window._media_controls_currently_visible = visible
+
+    if not visible:
+        main_window._media_spacers_storage = []
+
+        def hide_and_remove(layout):
+            # Iterate backwards to safely use takeAt() without breaking layout indices
+            for i in reversed(range(layout.count())):
+                item = layout.itemAt(i)
+                if item.widget():
+                    item.widget().hide()
+                elif item.spacerItem():
+                    spacer = layout.takeAt(i)
+                    main_window._media_spacers_storage.append((layout, i, spacer))
+                elif item.layout():
+                    hide_and_remove(item.layout())
+
+        hide_and_remove(main_window.verticalLayoutMediaControls)
+    else:
+        # Restore spacers safely in the exact original order
+        storage = getattr(main_window, "_media_spacers_storage", [])
+        for layout, i, spacer in reversed(storage):
+            layout.insertItem(i, spacer)
+        main_window._media_spacers_storage = []
+
+        def show_widgets(layout):
+            for i in range(layout.count()):
+                item = layout.itemAt(i)
+                if item.widget():
+                    item.widget().show()
+                elif item.layout():
+                    show_widgets(item.layout())
+
+        show_widgets(main_window.verticalLayoutMediaControls)
+
+    main_window.verticalLayout.invalidate()
+
+
+def toggle_theatre_mode(main_window: "MainWindow"):
+    """
+    Role: Activates Theatre Mode by safely detaching UI elements and preventing layout crushing.
+    Impact: Solves the "squashed text" bug and preserves exact QDockWidget sizes using saveState/restoreState.
+    """
+    is_theatre = getattr(main_window, "is_theatre_mode", False)
+
+    if not is_theatre:
+        # --- ENTER THEATRE MODE ---
+        main_window.is_theatre_mode = True
+
+        # 0. Save the exact state of all docks and toolbars (sizes, proportions, splitters)
+        main_window._saved_window_state = main_window.saveState()
+        main_window._was_maximized = main_window.isMaximized()
+        main_window._was_custom_fullscreen = getattr(
+            main_window, "is_full_screen", False
+        )
+
+        # 1. Save state and hide Docks, MenuBar
+        main_window._saved_dock_states = {
+            "input_Target_DockWidget": main_window.input_Target_DockWidget.isVisible(),
+            "input_Faces_DockWidget": main_window.input_Faces_DockWidget.isVisible(),
+            "jobManagerDockWidget": main_window.jobManagerDockWidget.isVisible(),
+            "controlOptionsDockWidget": main_window.controlOptionsDockWidget.isVisible(),
+            "menuBar": main_window.menuBar().isVisible(),
+            "facesPanelGroupBox": main_window.facesPanelGroupBox.isVisible(),
+        }
+
+        main_window.input_Target_DockWidget.hide()
+        main_window.input_Faces_DockWidget.hide()
+        main_window.jobManagerDockWidget.hide()
+        main_window.controlOptionsDockWidget.hide()
+        main_window.menuBar().hide()
+        main_window.facesPanelGroupBox.hide()
+
+        # 2. Save and remove layout margins/spacings (Removes borders)
+        main_window._saved_layout_props = {
+            "h_margin": main_window.horizontalLayout.contentsMargins(),
+            "v_margin": main_window.verticalLayout.contentsMargins(),
+            "h_spacing": main_window.horizontalLayout.spacing(),
+            "v_spacing": main_window.verticalLayout.spacing(),
+            "frame_shape": main_window.graphicsViewFrame.frameShape(),
+        }
+
+        main_window.horizontalLayout.setContentsMargins(0, 0, 0, 0)
+        main_window.verticalLayout.setContentsMargins(0, 0, 0, 0)
+        main_window.horizontalLayout.setSpacing(0)
+        main_window.verticalLayout.setSpacing(0)
+
+        # 3. Safely detach spacers and hide Top Bar widgets
+        main_window._top_bar_spacers = []
+        main_window._top_bar_widgets_state = {}
+
+        for i in reversed(range(main_window.panelVisibilityCheckBoxLayout.count())):
+            item = main_window.panelVisibilityCheckBoxLayout.itemAt(i)
+            if item.widget():
+                main_window._top_bar_widgets_state[item.widget()] = (
+                    item.widget().isVisible()
+                )
+                item.widget().hide()
+            elif item.spacerItem():
+                spacer = main_window.panelVisibilityCheckBoxLayout.takeAt(i)
+                main_window._top_bar_spacers.append(
+                    (main_window.panelVisibilityCheckBoxLayout, i, spacer)
+                )
+
+        # Detach main layout stray spacers (top/bottom empty spaces)
+        main_window._main_v_spacers = []
+        for i in reversed(range(main_window.verticalLayout.count())):
+            item = main_window.verticalLayout.itemAt(i)
+            if item.spacerItem():
+                spacer = main_window.verticalLayout.takeAt(i)
+                main_window._main_v_spacers.append(
+                    (main_window.verticalLayout, i, spacer)
+                )
+
+        # 4. Hide media controls safely
+        main_window._media_controls_currently_visible = True
+        _set_media_controls_visible(main_window, False)
+
+        # 5. Clean GraphicsView Frame for edge-to-edge video
+        main_window.graphicsViewFrame.setFrameShape(QtWidgets.QFrame.Shape.NoFrame)
+        main_window.graphicsViewFrame.setStyleSheet("background-color: black;")
+        main_window.graphicsViewFrame.setVerticalScrollBarPolicy(
+            QtCore.Qt.ScrollBarPolicy.ScrollBarAlwaysOff
+        )
+        main_window.graphicsViewFrame.setHorizontalScrollBarPolicy(
+            QtCore.Qt.ScrollBarPolicy.ScrollBarAlwaysOff
+        )
+
+        # 6. Switch to Fullscreen
+        main_window.showFullScreen()
+
+        # 7. Activate Hover Timer for media controls overlay
+        if not hasattr(main_window, "theatre_hover_timer"):
+            main_window.theatre_hover_timer = QtCore.QTimer(main_window)
+            main_window.theatre_hover_timer.setInterval(100)
+
+            def check_mouse_pos():
+                if not getattr(main_window, "is_theatre_mode", False):
+                    return
+                mouse_pos = main_window.mapFromGlobal(QtGui.QCursor.pos())
+                if mouse_pos.y() > main_window.height() * 0.85:
+                    _set_media_controls_visible(main_window, True)
+                else:
+                    _set_media_controls_visible(main_window, False)
+
+            main_window.theatre_hover_timer.timeout.connect(check_mouse_pos)
+
+        main_window.theatre_hover_timer.start()
+
+    else:
+        # --- EXIT THEATRE MODE ---
+        main_window.is_theatre_mode = False
+        main_window.setUpdatesEnabled(False)
+
+        if hasattr(main_window, "theatre_hover_timer"):
+            main_window.theatre_hover_timer.stop()
+
+        # 1. Force media controls to become visible and restore their spacers
+        _set_media_controls_visible(main_window, True)
+
+        # 2. Re-attach main layout stray spacers
+        for layout, i, spacer in reversed(getattr(main_window, "_main_v_spacers", [])):
+            layout.insertItem(i, spacer)
+        main_window._main_v_spacers = []
+
+        # 3. Re-attach top bar spacers and restore widget visibility
+        for layout, i, spacer in reversed(getattr(main_window, "_top_bar_spacers", [])):
+            layout.insertItem(i, spacer)
+        main_window._top_bar_spacers = []
+
+        for i in range(main_window.panelVisibilityCheckBoxLayout.count()):
+            item = main_window.panelVisibilityCheckBoxLayout.itemAt(i)
+            if item.widget():
+                was_visible = getattr(main_window, "_top_bar_widgets_state", {}).get(
+                    item.widget(), True
+                )
+                item.widget().setVisible(was_visible)
+
+        # 4. Restore Main Layout Props (restores spaces and margins)
+        props = getattr(main_window, "_saved_layout_props", {})
+        if "h_margin" in props:
+            main_window.horizontalLayout.setContentsMargins(props["h_margin"])
+        if "v_margin" in props:
+            main_window.verticalLayout.setContentsMargins(props["v_margin"])
+        if "h_spacing" in props:
+            main_window.horizontalLayout.setSpacing(props["h_spacing"])
+        if "v_spacing" in props:
+            main_window.verticalLayout.setSpacing(props["v_spacing"])
+        if "frame_shape" in props:
+            main_window.graphicsViewFrame.setFrameShape(props["frame_shape"])
+
+        main_window.graphicsViewFrame.setStyleSheet("")
+        main_window.graphicsViewFrame.setVerticalScrollBarPolicy(
+            QtCore.Qt.ScrollBarPolicy.ScrollBarAsNeeded
+        )
+        main_window.graphicsViewFrame.setHorizontalScrollBarPolicy(
+            QtCore.Qt.ScrollBarPolicy.ScrollBarAsNeeded
+        )
+
+        # 5. Restore Docks & Panels
+        states = getattr(main_window, "_saved_dock_states", {})
+        if states.get("input_Target_DockWidget"):
+            main_window.input_Target_DockWidget.show()
+        if states.get("input_Faces_DockWidget"):
+            main_window.input_Faces_DockWidget.show()
+        if states.get("jobManagerDockWidget"):
+            main_window.jobManagerDockWidget.show()
+        if states.get("controlOptionsDockWidget"):
+            main_window.controlOptionsDockWidget.show()
+        if states.get("menuBar"):
+            main_window.menuBar().show()
+        if states.get("facesPanelGroupBox"):
+            main_window.facesPanelGroupBox.show()
+            hint_height = main_window.facesPanelGroupBox.sizeHint().height()
+            main_window.facesPanelGroupBox.setMinimumHeight(hint_height)
+
+        # Exit Fullscreen mode
+        was_custom_fullscreen = getattr(main_window, "_was_custom_fullscreen", False)
+        was_maximized = getattr(main_window, "_was_maximized", False)
+
+        if was_custom_fullscreen:
+            main_window.showFullScreen()
+        elif was_maximized:
+            main_window.showMaximized()
+        else:
+            main_window.showNormal()
+
+        # Restores the exact layout state of docks (fixes the Input Faces / Target Video sizing)
+        if hasattr(main_window, "_saved_window_state"):
+            main_window.restoreState(main_window._saved_window_state)
+
+        # Force the application layout engine to process the new geometry immediately
+        QtWidgets.QApplication.processEvents()
+        main_window.verticalLayout.invalidate()
+
+        # Release the minimum height lock so the UI is dynamically responsive again
+        if states.get("facesPanelGroupBox"):
+            main_window.facesPanelGroupBox.setMinimumHeight(0)
+
+        main_window.setUpdatesEnabled(True)
+
+    layout_actions.fit_image_to_view_onchange(main_window)

@@ -474,4 +474,10 @@ models_list = [
         "hash": "7b08407b454f5328aaaf1eda35418a5a53dcc68caaf3bcf12ab88b8f21ec1a5d",
         "url": "https://github.com/ChiWeiHsiao/ref-ldm/releases/download/1.0.0/vqgan.ckpt",
     },
+    {
+        "model_name": "FaceReaging",
+        "local_path": f"{models_dir}/face_reaging.onnx",
+        "hash": "62c62598a71067cf12680c8421230556d08069d172f1dc645be2a5ebe815fb1f",
+        "url": "https://github.com/VisoMasterFusion/VisoMaster-Fusion/releases/download/v1.0.0/face_reaging.onnx",
+    },
 ]

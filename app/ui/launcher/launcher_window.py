@@ -67,6 +67,16 @@ ACTIONS_MAINT = [
     ("Repair Installation", "on_repair_installation", "Restore tracked files to HEAD"),
     ("Check / Update Dependencies", "on_update_deps", "Reinstall requirements via UV"),
     ("Check / Update Models", "on_update_models", "Run model downloader"),
+    (
+        "Optimize Models (onnxsim)",
+        "on_optimize_models",
+        "Simplify ONNX models with onnxsim + shape inference for faster inference",
+    ),
+    (
+        "Revert to Original Models",
+        "on_revert_optimized_models",
+        "Delete optimized models and re-download the originals",
+    ),
     ("Update Launcher Script", "on_self_update", "Apply launcher batch update"),
     ("Revert to Previous Version", "_go_rollback", "Select and revert to older commit"),
     ("Back", "_go_home", "Return to home screen"),
@@ -647,6 +657,94 @@ class LauncherWindow(QtWidgets.QWidget):
             self._load_checksum_status()
             self._refresh_update_indicators()
             print("[Launcher] Model update complete.")
+
+    def on_optimize_models(self):
+        confirm = QtWidgets.QMessageBox.question(
+            self,
+            "Optimize Models",
+            "This will run onnxsim + symbolic shape inference on eligible ONNX models\n"
+            "and replace them with the optimized versions (originals backed up).\n\n"
+            "This may take several minutes. Continue?",
+            QtWidgets.QMessageBox.Yes | QtWidgets.QMessageBox.No,
+        )
+        if confirm != QtWidgets.QMessageBox.Yes:
+            return
+
+        print("[Launcher] Running model optimizer...")
+        with with_busy_state(self, busy=True, text="Optimizing models..."):
+            run_python(PATHS["OPTIMIZE_PY"])
+            try:
+                write_portable_cfg({"USE_OPTIMIZED_MODELS": "true"})
+                print("[Launcher] Set USE_OPTIMIZED_MODELS=true in portable.cfg.")
+            except Exception as e:
+                print(f"[Launcher] Warning: Could not update portable.cfg: {e}")
+            print("[Launcher] Model optimization complete.")
+
+        QtWidgets.QMessageBox.information(
+            self,
+            "Optimization Complete",
+            "Model optimization finished.\n\n"
+            "See optimize_models.log in the application directory for details.\n"
+            "Hash verification will be skipped for existing models on next update check.",
+        )
+
+    def on_revert_optimized_models(self):
+        from pathlib import Path
+
+        backup_dir = Path(PATHS["APP_DIR"]) / "model_assets" / "unopt-backup"
+        backed_up = list(backup_dir.glob("*.onnx")) if backup_dir.is_dir() else []
+
+        if not backed_up:
+            QtWidgets.QMessageBox.information(
+                self,
+                "Nothing to Revert",
+                "No backup found in model_assets/unopt-backup/.\n"
+                "Optimization may not have been run yet.",
+            )
+            return
+
+        confirm = QtWidgets.QMessageBox.question(
+            self,
+            "Revert to Original Models",
+            f"{len(backed_up)} optimized model file(s) will be deleted and re-downloaded "
+            f"from the original source.\n\nThis requires an internet connection. Continue?",
+            QtWidgets.QMessageBox.Yes | QtWidgets.QMessageBox.No,
+        )
+        if confirm != QtWidgets.QMessageBox.Yes:
+            return
+
+        print(f"[Launcher] Reverting {len(backed_up)} optimized model(s)...")
+        with with_busy_state(self, busy=True, text="Reverting models..."):
+            model_dir = Path(PATHS["APP_DIR"]) / "model_assets"
+            removed = 0
+            for backup_file in backed_up:
+                optimized = model_dir / backup_file.name
+                if optimized.is_file():
+                    optimized.unlink()
+                    removed += 1
+                    print(f"[Launcher]   Deleted optimized: {backup_file.name}")
+
+            write_portable_cfg({"USE_OPTIMIZED_MODELS": "false"})
+            print("[Launcher] Set USE_OPTIMIZED_MODELS=false in portable.cfg.")
+
+            print("[Launcher] Re-downloading original models...")
+            run_python(PATHS["DOWNLOAD_PY"])
+
+            try:
+                write_checksum_state(models_sha=compute_models_sha256(models_list))
+            except Exception as e:
+                print(f"[Launcher] Warning: Could not update model checksum: {e}")
+
+            self._load_checksum_status()
+            self._refresh_update_indicators()
+            print("[Launcher] Model revert complete.")
+
+        QtWidgets.QMessageBox.information(
+            self,
+            "Revert Complete",
+            f"Deleted {removed} optimized model(s).\n"
+            "Original models have been re-downloaded.",
+        )
 
     def on_rollback(self, commit_hash: str):
         confirm = QtWidgets.QMessageBox.question(

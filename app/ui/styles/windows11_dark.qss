@@ -1,0 +1,461 @@
+/* Windows 11 Dark Theme for VisoMaster */
+
+/* Global settings */
+QWidget {
+    background-color: #1c1c1c; /* Main neutral charcoal background */
+    color: #f3f3f3; /* Bright foreground text */
+    selection-background-color: #254457; /* Soft Windows-style blue selection */
+    selection-color: #ffffff; /* High-contrast selected text */
+}
+
+QLabel {
+    color: #f3f3f3; /* Keep labels bright but neutral */
+}
+
+QPushButton {
+    color: #f3f3f3;
+    background-color: #242424; /* Raised surface */
+    border: 1px solid #343434; /* Subtle divider border */
+    padding: 5px 10px;
+    border-radius: 4px;
+}
+
+QPushButton:hover {
+    background-color: #2b2b2b; /* Slight lift on hover */
+    border: 1px solid #454545; /* Stronger neutral edge */
+}
+
+QPushButton:pressed {
+    background-color: #323232; /* Neutral pressed surface */
+    color: #f3f3f3;
+    border: 1px solid #454545;
+}
+
+QPushButton:checked {
+    background-color: #143241; /* Soft accent surface */
+    border: 1px solid #409ecf;
+}
+
+QPushButton:focus {
+    border: 1px solid #409ecf;
+}
+
+QPushButton:disabled {
+    background-color: #2b2b2b;
+    color: #7a7a7a;
+    border: 1px solid #343434;
+}
+
+QToolTip {
+    color: #f3f3f3;
+    background-color: #2a2a2a; /* Elevated surface */
+    border: 1px solid #343434;
+    padding: 4px;
+    border-radius: 3px;
+}
+
+/* Base button style for custom cards */
+TargetMediaCardButton, TargetFaceCardButton, InputFaceCardButton, EmbeddingCardButton {
+    background-color: #242424;
+    border-radius: 5px;
+    border: 1px solid #343434;
+    color: #f3f3f3;
+    padding: 10px;
+    font-size: 14px;
+}
+
+/* Icon inside the button */
+TargetMediaCardButton::icon, TargetFaceCardButton::icon, InputFaceCardButton::icon, EmbeddingCardButton::icon {
+    margin: 5px;
+}
+
+/* Hover state */
+TargetMediaCardButton:hover, TargetFaceCardButton:hover, InputFaceCardButton:hover, EmbeddingCardButton:hover {
+    background-color: #2b2b2b;
+    border: 1px solid #454545;
+}
+
+/* Pressed state */
+TargetMediaCardButton:pressed, TargetFaceCardButton:pressed, InputFaceCardButton:pressed, EmbeddingCardButton:pressed {
+    background-color: #323232;
+    border: 1px solid #454545;
+    color: #f3f3f3;
+}
+
+/* Checked state */
+TargetMediaCardButton:checked, TargetFaceCardButton:checked, InputFaceCardButton:checked, EmbeddingCardButton:checked {
+    border: 2px solid #409ecf;
+    background-color: #143241;
+    color: #ffffff;
+}
+
+/* Disabled state */
+TargetMediaCardButton:disabled, TargetFaceCardButton:disabled, InputFaceCardButton:disabled, EmbeddingCardButton:disabled {
+    background-color: #2b2b2b;
+    border: 1px solid #343434;
+    color: #7a7a7a;
+}
+
+/* Focused state */
+TargetMediaCardButton:focus, TargetFaceCardButton:focus, InputFaceCardButton:focus, EmbeddingCardButton:focus {
+    outline: none;
+    border: 2px solid #409ecf;
+}
+
+
+/* QSlider (videoSeekSlider) -------------------------------------- */
+#videoSeekSlider::groove:horizontal {
+    border-radius: 5px;
+    height: 10px;
+    margin: 0px;
+    background-color: #242424;
+}
+
+#videoSeekSlider::groove:horizontal:hover {
+    background-color: #2b2b2b;
+}
+
+#videoSeekSlider::sub-page:horizontal {
+    background-color: #409ecf;
+    border-radius: 5px;
+    height: 10px;
+}
+
+#videoSeekSlider::sub-page:horizontal:hover {
+    background-color: #56b6e3;
+}
+
+#videoSeekSlider::add-page:horizontal {
+    background-color: #343434;
+    border-radius: 5px;
+    height: 10px;
+}
+
+#videoSeekSlider::handle:horizontal {
+    background-color: #f3f3f3;
+    border: 1px solid #5a5a5a;
+    height: 18px;
+    width: 8px;
+    margin: -4px 0;
+    border-radius: 4px;
+}
+
+#videoSeekSlider::handle:horizontal:hover {
+    background-color: #ffffff;
+    border: 1px solid #409ecf;
+}
+
+#videoSeekSlider::handle:horizontal:pressed {
+    background-color: #409ecf;
+    border: 1px solid #2f8fbe;
+}
+
+/* #videoSeekSlider disabled state */
+#videoSeekSlider::handle:horizontal:disabled {
+    background-color: #5a5a5a;
+    border: 1px solid #343434;
+}
+
+#videoSeekSlider::groove:horizontal:disabled {
+    background-color: #343434;
+}
+
+#videoSeekSlider::sub-page:horizontal:disabled {
+    background-color: #7a7a7a;
+}
+
+
+/* ToggleButton (assuming custom class) */
+ToggleButton {
+    border: 1px solid #343434;
+    border-radius: 6px;
+    background-color: #c42b1c; /* Windows-style destructive red */
+    color: #ffffff;
+    text-align: center;
+    padding: 4px;
+    font-weight: bold;
+}
+ToggleButton:hover {
+    background-color: #d13438;
+    border: 1px solid #e38b8f;
+}
+ToggleButton:pressed {
+    background-color: #6bbe6b; /* Existing success semantics */
+}
+ToggleButton:checked {
+    background-color: #6bbe6b;
+    border: 1px solid #9bdb9b;
+}
+ToggleButton:default {
+    border-color: #343434;
+}
+
+
+/* ParameterSlider / ParameterDecimalSlider - Thin Groove and Handle */
+/* -------------------------------------- */
+ParameterSlider::groove:horizontal, ParameterDecimalSlider::groove:horizontal {
+    border-radius: 3px;
+    height: 6px;
+    margin: 0px;
+    background-color: #242424;
+}
+
+ParameterSlider::sub-page:horizontal, ParameterDecimalSlider::sub-page:horizontal {
+    background-color: #409ecf;
+    border-radius: 3px;
+    height: 6px;
+}
+
+ParameterSlider::add-page:horizontal, ParameterDecimalSlider::add-page:horizontal {
+    background-color: #343434;
+    border-radius: 3px;
+    height: 6px;
+}
+
+ParameterSlider::handle:horizontal, ParameterDecimalSlider::handle:horizontal {
+    background-color: #f3f3f3;
+    border: 1px solid #5a5a5a;
+    height: 16px;
+    width: 6px;
+    margin: -5px 0;
+    border-radius: 3px;
+}
+
+ParameterSlider::handle:horizontal:hover, ParameterDecimalSlider::handle:horizontal:hover {
+    background-color: #ffffff;
+    border: 1px solid #409ecf;
+}
+
+/* Disabled state */
+ParameterSlider::handle:horizontal:disabled, ParameterDecimalSlider::handle:horizontal:disabled {
+    background-color: #5a5a5a;
+    border: 1px solid #343434;
+}
+
+ParameterSlider::groove:horizontal:disabled, ParameterDecimalSlider::groove:horizontal:disabled {
+    background-color: #343434;
+}
+
+ParameterSlider::sub-page:horizontal:disabled, ParameterDecimalSlider::sub-page:horizontal:disabled {
+    background-color: #7a7a7a;
+}
+
+/* Add styles for other common widgets if needed */
+QLineEdit, QTextEdit, QPlainTextEdit {
+    background-color: #1f1f1f; /* Input surface */
+    color: #f3f3f3;
+    border: 1px solid #343434;
+    border-radius: 3px;
+    padding: 4px;
+}
+
+QLineEdit:focus, QTextEdit:focus, QPlainTextEdit:focus {
+    border: 1px solid #409ecf;
+    background-color: #202020;
+}
+
+QLineEdit:read-only, QTextEdit:read-only, QPlainTextEdit:read-only {
+    background-color: #242424;
+    color: #c8c8c8;
+}
+
+QLineEdit:disabled, QTextEdit:disabled, QPlainTextEdit:disabled {
+    background-color: #242424;
+    color: #7a7a7a;
+    border: 1px solid #343434;
+}
+
+QComboBox {
+    border: 1px solid #343434;
+    border-radius: 3px;
+    padding: 1px 18px 1px 3px;
+    min-width: 6em;
+    background-color: #242424;
+    color: #f3f3f3;
+}
+
+QComboBox:editable {
+    background: #1f1f1f;
+}
+
+QComboBox:!editable, QComboBox::drop-down:editable {
+     background: #242424;
+}
+
+/* QComboBox gets the "on" state when the popup is open */
+QComboBox:!editable:on, QComboBox::drop-down:editable:on {
+    background: #2b2b2b;
+}
+
+QComboBox:hover {
+    border: 1px solid #454545;
+}
+
+QComboBox:focus {
+    border: 1px solid #409ecf;
+}
+
+QComboBox:disabled {
+    background-color: #242424;
+    color: #7a7a7a;
+    border: 1px solid #343434;
+}
+
+QComboBox::drop-down {
+    subcontrol-origin: padding;
+    subcontrol-position: top right;
+    width: 15px;
+    border-left-width: 1px;
+    border-left-color: #343434;
+    border-left-style: solid;
+    border-top-right-radius: 3px;
+    border-bottom-right-radius: 3px;
+}
+
+QComboBox QAbstractItemView { /* Style for the dropdown list */
+    border: 1px solid #343434;
+    background-color: #242424;
+    selection-background-color: #254457;
+    selection-color: #ffffff;
+    color: #f3f3f3;
+}
+
+QMenuBar {
+    background-color: #242424;
+    color: #f3f3f3;
+}
+
+QMenuBar::item {
+    background: transparent;
+    padding: 4px 8px;
+}
+
+QMenuBar::item:selected { /* when selected using mouse or keyboard */
+    background: #254457;
+    color: #ffffff;
+}
+
+QMenuBar::item:pressed {
+    background: #143241;
+}
+
+QMenu {
+    background-color: #2a2a2a;
+    border: 1px solid #343434;
+    color: #f3f3f3;
+}
+
+QMenu::item {
+    padding: 4px 20px 4px 20px;
+}
+
+QMenu::item:selected {
+    background-color: #254457;
+    color: #ffffff;
+}
+
+QMenu::separator {
+    height: 1px;
+    background: #343434;
+    margin-left: 10px;
+    margin-right: 5px;
+}
+
+QScrollBar:vertical {
+    background: #1e1e1e;
+    width: 12px;
+    margin: 0px 0px 0px 0px;
+}
+QScrollBar::handle:vertical {
+    background: #5a5a5a;
+    min-height: 20px;
+    border-radius: 6px;
+}
+QScrollBar::handle:vertical:hover {
+    background: #787878;
+}
+QScrollBar::add-line:vertical, QScrollBar::sub-line:vertical {
+    height: 0px;
+    background: none;
+}
+QScrollBar::add-page:vertical, QScrollBar::sub-page:vertical {
+    background: none;
+}
+
+QScrollBar:horizontal {
+    background: #1e1e1e;
+    height: 12px;
+    margin: 0px 0px 0px 0px;
+}
+QScrollBar::handle:horizontal {
+    background: #5a5a5a;
+    min-width: 20px;
+    border-radius: 6px;
+}
+QScrollBar::handle:horizontal:hover {
+    background: #787878;
+}
+QScrollBar::add-line:horizontal, QScrollBar::sub-line:horizontal {
+    width: 0px;
+    background: none;
+}
+QScrollBar::add-page:horizontal, QScrollBar::sub-page:horizontal {
+    background: none;
+}
+
+QTabWidget::pane { /* The tab widget frame */
+    border-top: 1px solid #343434;
+}
+
+QTabWidget::tab-bar {
+    left: 5px; /* move to the right by 5px */
+}
+
+/* Style the tab using the tab sub-control. Note that it reads QTabBar _not_ QTabWidget */
+QTabBar::tab {
+    background: #242424;
+    border: 1px solid #343434;
+    border-bottom-color: #343434;
+    border-top-left-radius: 4px;
+    border-top-right-radius: 4px;
+    min-width: 8ex;
+    padding: 4px 8px;
+    color: #f3f3f3;
+}
+
+QTabBar::tab:selected, QTabBar::tab:hover {
+    background: #2b2b2b;
+    border-color: #454545;
+    border-bottom-color: #2b2b2b;
+}
+
+QTabBar::tab:selected {
+    background: #2a2a2a;
+    color: #f3f3f3;
+    border-color: #409ecf;
+    border-bottom-color: #2a2a2a;
+}
+
+QTabBar::tab:!selected {
+    margin-top: 2px; /* make non-selected tabs look smaller */
+}
+
+/* Add more widget styles as needed */
+
+/* Frame borders */
+QFrame, QListWidget {
+	background-color: transparent;
+}
+
+QProgressBar {
+    background-color: #232323;
+    border: 1px solid #343434;
+    border-radius: 4px;
+    color: #f3f3f3;
+    text-align: center;
+}
+
+QProgressBar::chunk {
+    background-color: #409ecf;
+    border-radius: 3px;
+}

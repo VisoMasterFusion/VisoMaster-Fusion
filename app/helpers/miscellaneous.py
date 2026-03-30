@@ -2,24 +2,29 @@ import os
 import shutil
 import cv2
 import time
-from collections import UserDict
+from bisect import bisect_left, bisect_right
+from collections import UserDict, OrderedDict
 import hashlib
 import numpy as np
 from functools import wraps
 from datetime import datetime
 from pathlib import Path
 from torchvision.transforms import v2
-from typing import Dict, Tuple, Optional
+from typing import Dict, Mapping, Tuple, Optional, Any, Collection, Sequence
 import threading
 import subprocess
 import json
 
-lock = threading.Lock()
+import torch
+from PIL import Image
+from skimage import transform as trans
 
 # --- Global Scope ---
 
-# scaling transforms cache dictionary at the module level
-_transform_cache: Dict[tuple, tuple] = {}
+# Scaling transforms cache — bounded LRU so long sessions with many interpolation
+# setting changes cannot grow this indefinitely.  In practice 2–5 entries are used.
+_transform_cache: OrderedDict = OrderedDict()
+_TRANSFORM_CACHE_MAX = 32
 image_extensions = (
     ".jpg",
     ".jpeg",
@@ -72,6 +77,7 @@ class ThumbnailManager:
                                  created in the current working directory.
         """
         self.thumbnail_dir = os.path.join(os.getcwd(), thumbnail_dir)
+        self._lock = threading.Lock()
         self._ensure_directory()
 
     def _ensure_directory(self) -> None:
@@ -122,10 +128,11 @@ class ThumbnailManager:
             str | None: The path to the existing thumbnail, or None if it doesn't exist.
         """
         png_path, jpg_path = self.get_thumbnail_path(file_path)
-        if os.path.exists(png_path):
-            return png_path
-        if os.path.exists(jpg_path):
-            return jpg_path
+        with self._lock:
+            if os.path.exists(png_path):
+                return png_path
+            if os.path.exists(jpg_path):
+                return jpg_path
         return None
 
     def create_thumbnail(self, frame: np.ndarray, file_path: str) -> None:
@@ -157,7 +164,8 @@ class ThumbnailManager:
         )
 
         try:
-            cv2.imwrite(png_path, resized_frame)
+            with self._lock:
+                cv2.imwrite(png_path, resized_frame)
             if os.path.getsize(png_path) > 30 * 1024:  # If PNG is > 30KB
                 os.remove(png_path)
                 raise Exception("PNG file too large, falling back to JPEG.")
@@ -170,7 +178,8 @@ class ThumbnailManager:
                 cv2.IMWRITE_JPEG_PROGRESSIVE,
                 1,
             ]
-            cv2.imwrite(jpg_path, resized_frame, jpeg_params)
+            with self._lock:
+                cv2.imwrite(jpg_path, resized_frame, jpeg_params)
 
 
 class DFMModelManager:
@@ -235,6 +244,131 @@ class ParametersDict(UserDict):
             return self._default_parameters[key]
 
 
+def copy_mapping_data(value: object) -> dict[str, Any]:
+    """Return a plain dict copy when *value* is any mapping-like object.
+
+    This preserves `ParametersDict` and other `Mapping` subclasses while keeping
+    non-mapping inputs on a safe empty-dict fallback.
+    """
+    if isinstance(value, Mapping):
+        return dict(value)
+    return {}
+
+
+def is_detected_face_eligible_for_matching(
+    kps: np.ndarray | None,
+    bbox: np.ndarray | None,
+    min_face_pixels: int,
+) -> bool:
+    """Return True when a detected face is valid enough for matching.
+
+    This mirrors the standard frame-worker gate used before recognition and
+    matching: keypoints must exist and be finite, and the shortest bbox side
+    must meet the minimum face-size threshold.
+    """
+    if kps is None or kps.size == 0:
+        return False
+    if np.any(np.isnan(kps)) or np.any(np.isinf(kps)):
+        return False
+    if bbox is None or bbox.size < 4:
+        return False
+
+    shortest_side = min(float(bbox[2] - bbox[0]), float(bbox[3] - bbox[1]))
+    return shortest_side >= float(min_face_pixels)
+
+
+def find_best_target_match(
+    detected_embedding: np.ndarray,
+    models_processor: Any,
+    target_faces: Mapping[object, Any],
+    face_parameters: Mapping[str, object],
+    default_params: Mapping[str, Any],
+    recognition_model: str,
+) -> tuple[Any | None, ParametersDict | None, float]:
+    """Return the best matching target face for a detected embedding.
+
+    The caller supplies the current face-parameter mapping and default params so
+    this helper can apply the same per-face threshold logic everywhere it is
+    used, including playback/render and issue scans.
+    """
+    best_target = None
+    best_params_pd = None
+    highest_sim = -1.0
+    default_params_dict = dict(default_params)
+
+    for target_id, target_face in target_faces.items():
+        face_id_str = str(getattr(target_face, "face_id", target_id))
+        face_specific_params = copy_mapping_data(face_parameters.get(face_id_str))
+        current_params_pd = ParametersDict(face_specific_params, default_params_dict)
+        target_embedding = target_face.get_embedding(recognition_model)
+        if not isinstance(target_embedding, np.ndarray) or target_embedding.size == 0:
+            continue
+
+        sim = models_processor.findCosineDistance(detected_embedding, target_embedding)
+        if sim >= current_params_pd["SimilarityThresholdSlider"] and sim > highest_sim:
+            highest_sim = sim
+            best_target = target_face
+            best_params_pd = current_params_pd
+
+    return best_target, best_params_pd, highest_sim
+
+
+def count_issue_scan_frames(
+    scan_ranges: Sequence[tuple[int, int]],
+    dropped_frames: Collection[int],
+) -> int:
+    """Count scan frames after excluding dropped render frames.
+
+    This keeps issue-scan progress and summary stats aligned with the frames that
+    render/output will actually keep.
+    """
+    normalized_ranges = normalize_issue_scan_ranges(scan_ranges)
+    normalized_dropped = sorted({int(frame) for frame in dropped_frames})
+    total_frames = 0
+
+    for start_frame, end_frame in normalized_ranges:
+        normalized_start = int(start_frame)
+        normalized_end = int(end_frame)
+        if normalized_end < normalized_start:
+            continue
+
+        dropped_in_range = bisect_right(
+            normalized_dropped, normalized_end
+        ) - bisect_left(normalized_dropped, normalized_start)
+        total_frames += (normalized_end - normalized_start + 1) - dropped_in_range
+
+    return total_frames
+
+
+def normalize_issue_scan_ranges(
+    scan_ranges: Sequence[tuple[int, int]],
+) -> list[tuple[int, int]]:
+    """Return chronologically sorted, overlap-merged scan ranges."""
+    normalized: list[tuple[int, int]] = []
+
+    for start_frame, end_frame in scan_ranges:
+        normalized_start = int(start_frame)
+        normalized_end = int(end_frame)
+        if normalized_end < normalized_start:
+            continue
+        normalized.append((normalized_start, normalized_end))
+
+    if not normalized:
+        return []
+
+    normalized.sort()
+    merged_ranges: list[tuple[int, int]] = [normalized[0]]
+
+    for start_frame, end_frame in normalized[1:]:
+        previous_start, previous_end = merged_ranges[-1]
+        if start_frame <= previous_end:
+            merged_ranges[-1] = (previous_start, max(previous_end, end_frame))
+        else:
+            merged_ranges.append((start_frame, end_frame))
+
+    return merged_ranges
+
+
 # --- Function Definitions ---
 
 
@@ -273,6 +407,7 @@ def get_scaling_transforms(control_params: dict) -> tuple:
 
     # Performance check: If this exact configuration is already in the cache, return it immediately.
     if config_key in _transform_cache:
+        _transform_cache.move_to_end(config_key)  # refresh LRU position
         return _transform_cache[config_key]
 
     # --- If not cached, create the new set of transforms ---
@@ -360,6 +495,9 @@ def get_scaling_transforms(control_params: dict) -> tuple:
     )
 
     # Save the result in the cache before returning it.
+    # Evict the oldest entry first if the cache is at capacity (LRU).
+    if len(_transform_cache) >= _TRANSFORM_CACHE_MAX:
+        _transform_cache.popitem(last=False)
     _transform_cache[config_key] = result
 
     return result
@@ -493,15 +631,26 @@ def get_scaled_resolution(
 
 def get_video_rotation(media_path: str) -> int:
     """
-    Uses ffprobe to get the video rotation metadata tag.
-    Checks both 'side_data_list' and 'tags'.
-    Returns 0 if no rotation tag is found or ffprobe fails.
+    Uses ffprobe to retrieve the video rotation metadata using a recursive search strategy.
+    This is robust against variations in JSON structure (tags vs side_data_list).
+    Returns 0, 90, 180, or 270.
     """
-    # Log when the check starts
+
+    # If OpenCV (>= 4.8.0) supports auto-rotation, we let it handle the rotation natively.
+    # Returning 0 bypasses the slow ffprobe subprocess entirely, which massively
+    # speeds up directory scanning and thumbnail generation!
+    if hasattr(cv2, "CAP_PROP_ORIENTATION_AUTO"):
+        return 0
+
     print(
         f"[INFO] Checking video rotation metadata for: {os.path.basename(media_path)}..."
     )
+
+    if not is_ffmpeg_in_path():
+        return 0
+
     try:
+        # We select only the first video stream (v:0) to avoid getting audio rotation metadata
         cmd = [
             "ffprobe",
             "-v",
@@ -521,74 +670,67 @@ def get_video_rotation(media_path: str) -> int:
             text=True,
             encoding="utf-8",
         )
-        stdout_data, stderr_data = process.communicate(timeout=10)  # 10s timeout
+        stdout_data, stderr_data = process.communicate(timeout=10)
 
         if process.returncode != 0:
-            print(f"[WARN] ffprobe failed for {media_path}. Error: {stderr_data}")
+            print(f"[ERROR] ffprobe failed. Error: {stderr_data}")
             return 0
 
         data = json.loads(stdout_data)
 
-        if "streams" in data and data["streams"]:
-            stream = data["streams"][0]
-            rotation_angle = 0  # Initialize rotation
+        # --- Helper: Recursive Search ---
+        def find_rotation_value(obj):
+            if isinstance(obj, dict):
+                for k, v in obj.items():
+                    if k.lower() == "rotation":
+                        return v
+                    # Recursive call for nested dicts
+                    result = find_rotation_value(v)
+                    if result is not None:
+                        return result
+            elif isinstance(obj, list):
+                for item in obj:
+                    # Recursive call for items in lists
+                    result = find_rotation_value(item)
+                    if result is not None:
+                        return result
+            return None
 
-            # --- MODIFICATION: Check 'side_data_list' first (more robust) ---
-            if "side_data_list" in stream:
-                for side_data in stream["side_data_list"]:  # Variable is 'side_data'
-                    if "rotation" in side_data:
-                        try:
-                            # Use int(float(...)) to handle potential float values like "90.0"
-                            # --- CORRECTION: Changed 'side_Data' to 'side_data' ---
-                            rotation_angle = int(float(side_data["rotation"]))
-                            break  # Found it
-                        except (ValueError, TypeError, KeyError):
-                            pass  # Not a valid number
+        # Search for 'rotation' anywhere in the JSON
+        rotation_raw = find_rotation_value(data)
 
-            # --- FALLBACK: Check 'tags' (original logic) ---
-            if rotation_angle == 0 and "tags" in stream and "rotate" in stream["tags"]:
-                try:
-                    rotation_angle = int(float(stream["tags"]["rotate"]))
-                except (ValueError, TypeError):
-                    rotation_angle = 0  # Reset if tag is invalid
+        if rotation_raw is not None:
+            try:
+                rotation_angle = int(float(rotation_raw))
 
-            # --- Process the found rotation angle ---
-            if rotation_angle != 0:
-                # Handle negative rotations (e.g., -90)
+                # Normalize angle
                 if rotation_angle < 0:
                     rotation_angle += 360
+                rotation_angle = rotation_angle % 360
 
-                # Normalize common angles (90, 180, 270)
+                # Align to standard angles
                 if 85 <= rotation_angle <= 95:
                     print("[INFO] Detected video rotation: 90°")
                     return 90
-                if 175 <= rotation_angle <= 185:
+                elif 175 <= rotation_angle <= 185:
                     print("[INFO] Detected video rotation: 180°")
                     return 180
-                if 265 <= rotation_angle <= 275:
+                elif 265 <= rotation_angle <= 275:
                     print("[INFO] Detected video rotation: 270°")
                     return 270
+                elif rotation_angle != 0:
+                    print(
+                        f"[INFO] Found rotation '{rotation_angle}°', but ignoring non-standard angle."
+                    )
 
-                print(
-                    f"[INFO] Found rotation tag, but angle '{rotation_angle}' is not standard. Ignoring."
-                )
-            else:
-                print(
-                    "[WARN] Ffprobe ran, but no 'rotate' tag was found in stream (checked tags and side_data_list)."
-                )
+            except (ValueError, TypeError):
+                pass  # Found the key but value wasn't a number
 
-        else:
-            print("[WARN] Ffprobe ran, but no video streams were found.")
-
-    except FileNotFoundError:
-        print(
-            "[ERROR] Ffprobe command not found. Cannot check video rotation. Please ensure ffprobe is in your system's PATH."
-        )
     except Exception as e:
-        print(f"[ERROR] Could not get video rotation metadata. Error: {e}")
+        print(f"[ERROR] Video rotation check failed: {e}")
 
     print("[INFO] No rotation metadata applied (returning 0).")
-    return 0  # Default to 0
+    return 0
 
 
 def _apply_frame_rotation(frame: np.ndarray, angle: int) -> np.ndarray:
@@ -602,6 +744,81 @@ def _apply_frame_rotation(frame: np.ndarray, angle: int) -> np.ndarray:
     elif angle == 270:
         return cv2.rotate(frame, cv2.ROTATE_90_CLOCKWISE)
     return frame
+
+
+def check_and_warn_vfr(file_path: str) -> bool:
+    """
+    Samples the first 200 frames using ffprobe to accurately detect Variable Frame Rate (VFR).
+    Headers are often inaccurate, so analyzing actual packet durations is the safest method.
+
+    Args:
+        file_path (str): The absolute path to the video file.
+
+    Returns:
+        bool: True if VFR is detected, False otherwise.
+    """
+    if not file_path or not os.path.isfile(file_path):
+        return False
+
+    try:
+        # We read the packet duration of the first 200 frames.
+        # This is virtually instantaneous as it only reads container metadata, not pixel data.
+        args = [
+            "ffprobe",
+            "-v",
+            "error",
+            "-select_streams",
+            "v:0",
+            "-show_entries",
+            "frame=pkt_duration_time",
+            "-read_intervals",
+            "%+#200",  # Read only the first 200 frames
+            "-of",
+            "default=noprint_wrappers=1:nokey=1",
+            file_path,
+        ]
+        result = subprocess.run(args, capture_output=True, text=True, timeout=10)
+
+        if result.returncode != 0:
+            return False
+
+        durations = set()
+        for line in result.stdout.strip().split("\n"):
+            line = line.strip()
+            if line and line != "N/A":
+                try:
+                    # Round to 3 decimal places to ignore floating point inaccuracies
+                    durations.add(round(float(line), 3))
+                except ValueError:
+                    pass
+
+        # If we have more than one distinct frame duration, the video is Variable Frame Rate.
+        is_vfr = len(durations) > 1
+
+        if is_vfr:
+            print(
+                "[WARN] -------------------------------------------------------------"
+            )
+            print("[WARN] VARIABLE FRAME RATE (VFR) DETECTED IN SOURCE VIDEO!")
+            print("[WARN] The original media does not maintain a constant framerate.")
+            print(
+                "[WARN] Audio sync drift may occur during long recordings. For flawless"
+            )
+            print("[WARN] results, please transcode your video to Constant Frame Rate")
+            print("[WARN] (CFR) using a tool like Handbrake before processing it here.")
+            print(
+                "[WARN] -------------------------------------------------------------"
+            )
+        else:
+            print(
+                "[INFO] Video framerate is Constant (CFR). Audio sync should be perfect."
+            )
+
+        return is_vfr
+
+    except Exception as e:
+        print(f"[WARN] Could not probe VFR status for {file_path}: {e}")
+        return False
 
 
 def benchmark(func):
@@ -619,6 +836,20 @@ def benchmark(func):
     return wrapper
 
 
+# --- OPTIMIZED MULTI-THREADING VIDEO LOCKS ---
+_capture_locks: Dict[int, threading.Lock] = {}
+_locks_mutex = threading.Lock()
+
+
+def _get_capture_lock(capture_obj: cv2.VideoCapture) -> threading.Lock:
+    """Retrieves or creates a unique thread lock for a specific VideoCapture instance."""
+    obj_id = id(capture_obj)
+    with _locks_mutex:
+        if obj_id not in _capture_locks:
+            _capture_locks[obj_id] = threading.Lock()
+        return _capture_locks[obj_id]
+
+
 def read_frame(
     capture_obj: cv2.VideoCapture,
     media_rotation: int = 0,
@@ -631,8 +862,9 @@ def read_frame(
     The 'lock' (Point 5) is critical as 'capture_obj' is a shared resource.
     It prevents race conditions between the feeder thread and seek operations.
     """
-    with lock:
-        # This is the only operation that needs to be locked
+    capture_lock = _get_capture_lock(capture_obj)
+
+    with capture_lock:
         ret, frame = capture_obj.read()
 
     if not ret:
@@ -684,8 +916,8 @@ def seek_frame(capture_obj: cv2.VideoCapture, frame_number: int) -> bool:
     Returns:
         bool: The result of capture_obj.set().
     """
-    with lock:
-        # This is the only operation that needs to be locked
+    capture_lock = _get_capture_lock(capture_obj)
+    with capture_lock:
         return capture_obj.set(cv2.CAP_PROP_POS_FRAMES, frame_number)
 
 
@@ -694,9 +926,18 @@ def release_capture(capture_obj: cv2.VideoCapture):
     Releases the OpenCV capture object in a thread-safe manner.
     Uses the same global lock as read_frame to prevent deadlocks.
     """
-    with lock:
-        if capture_obj and capture_obj.isOpened():
+    if capture_obj is None:
+        return
+
+    obj_id = id(capture_obj)
+    capture_lock = _get_capture_lock(capture_obj)
+
+    with capture_lock:
+        if capture_obj.isOpened():
             capture_obj.release()
+
+    with _locks_mutex:
+        _capture_locks.pop(obj_id, None)
 
 
 def read_image_file(image_path):
@@ -798,3 +1039,244 @@ def get_dir_of_file(file_path):
     if file_path:
         return os.path.dirname(file_path)
     return os.path.curdir
+
+
+def tensor_to_pil(tensor: torch.Tensor) -> Image.Image:
+    """
+    Converts a PyTorch tensor to a PIL Image.
+    """
+    if tensor.dim() == 4:
+        tensor = tensor.squeeze(0)
+    if tensor.dim() == 3 and tensor.shape[0] == 1:
+        tensor = tensor.repeat(3, 1, 1)
+    if tensor.dtype == torch.float32 or tensor.dtype == torch.float64:
+        tensor = (tensor * 255).clamp(0, 255).byte()
+    tensor = tensor.permute(1, 2, 0).cpu().numpy()
+    return Image.fromarray(tensor)
+
+
+def keypoints_adjustments(
+    kps_5: np.ndarray,
+    parameters: Mapping[str, Any],
+    source_kps: Optional[np.ndarray] = None,
+) -> np.ndarray:
+    """
+    Adjusts facial keypoints for morphing and manual alignments.
+    Uses a Local Anisotropic Alignment strategy. This separates horizontal (Yaw)
+    and vertical (Pitch) perspective compression by flat-rotating the face,
+    scaling axes independently, and rotating back. It perfectly preserves
+    inter-ocular distance while allowing jaw compression.
+    """
+    kps_5_adj = kps_5.copy()
+
+    if (
+        parameters.get("FaceKeypointsReplaceEnableToggle", False)
+        and source_kps is not None
+    ):
+        morph_amount = parameters.get("FaceKeypointsReplaceDecimalSlider", 0.0)
+
+        if morph_amount > 0.0:
+            try:
+                # 1. Isolate Translation: Center the keypoints
+                tgt_centroid = np.mean(kps_5_adj, axis=0)
+                src_centroid = np.mean(source_kps, axis=0)
+
+                tgt_centered = kps_5_adj - tgt_centroid
+                src_centered = source_kps - src_centroid
+
+                # 2. Find Roll Angles based strictly on the eyes (Indices 0 and 1)
+                # This gives us the true intrinsic tilt axis of the face
+                angle_tgt = np.arctan2(
+                    kps_5_adj[1, 1] - kps_5_adj[0, 1], kps_5_adj[1, 0] - kps_5_adj[0, 0]
+                )
+                angle_src = np.arctan2(
+                    source_kps[1, 1] - source_kps[0, 1],
+                    source_kps[1, 0] - source_kps[0, 0],
+                )
+
+                # 3. Rotate both faces to be perfectly upright/horizontal (Roll = 0)
+                cos_tgt, sin_tgt = np.cos(-angle_tgt), np.sin(-angle_tgt)
+                R_flat_tgt = np.array([[cos_tgt, -sin_tgt], [sin_tgt, cos_tgt]])
+                tgt_flat = tgt_centered @ R_flat_tgt.T
+
+                cos_src, sin_src = np.cos(-angle_src), np.sin(-angle_src)
+                R_flat_src = np.array([[cos_src, -sin_src], [sin_src, cos_src]])
+                src_flat = src_centered @ R_flat_src.T
+
+                # 4. Local Anisotropic Scale (Independent X and Y)
+                # X std-dev is primarily dictated by eye distance (Width).
+                # Y std-dev is primarily dictated by eye-to-mouth distance (Height).
+                eps = 1e-6
+                std_tgt = np.std(tgt_flat, axis=0) + eps
+                std_src = np.std(src_flat, axis=0) + eps
+
+                scale_x = std_tgt[0] / std_src[0]
+                scale_y = std_tgt[1] / std_src[1]
+
+                # 5. Apply Independent Scaling
+                # If target looks down -> scale_y compresses, scale_x is kept intact!
+                src_flat_scaled = src_flat * np.array([scale_x, scale_y])
+
+                # 6. Rotate back to the Target's original Roll angle
+                cos_inv, sin_inv = np.cos(angle_tgt), np.sin(angle_tgt)
+                R_unflat = np.array([[cos_inv, -sin_inv], [sin_inv, cos_inv]])
+
+                src_aligned = src_flat_scaled @ R_unflat.T
+
+                # 7. Final translation
+                source_kps_aligned = src_aligned + tgt_centroid
+
+                # 8. Apply linear interpolation (Morphing)
+                kps_5_adj = (
+                    kps_5_adj + morph_amount * (source_kps_aligned - kps_5_adj)
+                ).astype(np.float32)
+
+            except Exception as e:
+                print(f"[WARNING] Face Keypoints Morphing bypassed: {e}")
+
+    # --- MANUAL ALIGNMENTS (Sliders) ---
+    if parameters.get("FaceAdjEnableToggle", False):
+        kps_5_adj[:, 0] += parameters["KpsXSlider"]
+        kps_5_adj[:, 1] += parameters["KpsYSlider"]
+        kps_5_adj[:, 0] -= 255
+        kps_5_adj[:, 0] *= 1 + parameters["KpsScaleSlider"] / 100.0
+        kps_5_adj[:, 0] += 255
+        kps_5_adj[:, 1] -= 255
+        kps_5_adj[:, 1] *= 1 + parameters["KpsScaleSlider"] / 100.0
+        kps_5_adj[:, 1] += 255
+
+    if (
+        parameters.get("LandmarksPositionAdjEnableToggle", False)
+        and kps_5_adj.shape[0] >= 5
+    ):
+        kps_5_adj[0][0] += parameters["EyeLeftXAmountSlider"]
+        kps_5_adj[0][1] += parameters["EyeLeftYAmountSlider"]
+        kps_5_adj[1][0] += parameters["EyeRightXAmountSlider"]
+        kps_5_adj[1][1] += parameters["EyeRightYAmountSlider"]
+        kps_5_adj[2][0] += parameters["NoseXAmountSlider"]
+        kps_5_adj[2][1] += parameters["NoseYAmountSlider"]
+        kps_5_adj[3][0] += parameters["MouthLeftXAmountSlider"]
+        kps_5_adj[3][1] += parameters["MouthLeftYAmountSlider"]
+        kps_5_adj[4][0] += parameters["MouthRightXAmountSlider"]
+        kps_5_adj[4][1] += parameters["MouthRightYAmountSlider"]
+
+    return kps_5_adj
+
+
+# Cache for static target grids to prevent massive VRAM reallocation per frame
+_static_grid_cache: Dict[
+    Tuple[int, int, torch.device], Tuple[torch.Tensor, torch.Tensor, torch.Tensor]
+] = {}
+
+
+def get_grid_for_pasting(
+    tform_target_to_source: trans.SimilarityTransform,
+    target_h: int,
+    target_w: int,
+    source_h: int,
+    source_w: int,
+    device: torch.device,
+):
+    """
+    ULTRA-OPTIMIZED: Generates a sampling grid for grid_sample.
+    Uses 1D tensor broadcasting and caches the static target grids to save
+    massive amounts of VRAM allocation/deallocation overhead per face/frame.
+    """
+    grid_key = (target_h, target_w, device)
+
+    # Fetch from cache or create 1D coordinate tensors and target grid once
+    if grid_key not in _static_grid_cache:
+        y = torch.arange(target_h, device=device, dtype=torch.float32).view(-1, 1)
+        x = torch.arange(target_w, device=device, dtype=torch.float32).view(1, -1)
+
+        grid_y = y.expand(target_h, target_w)
+        grid_x = x.expand(target_h, target_w)
+        target_grid_yx_pixels = torch.stack((grid_y, grid_x), dim=-1).unsqueeze(0)
+
+        _static_grid_cache[grid_key] = (x, y, target_grid_yx_pixels)
+
+    x, y, target_grid_yx_pixels = _static_grid_cache[grid_key]
+
+    # Transformation matrix from tform_target_to_source (2x3)
+    M = torch.tensor(
+        tform_target_to_source.params[0:2, :], dtype=torch.float32, device=device
+    )
+
+    # Apply affine transformation using automatic broadcasting -> results in (H, W)
+    src_x = x * M[0, 0] + y * M[0, 1] + M[0, 2]
+    src_y = x * M[1, 0] + y * M[1, 1] + M[1, 2]
+
+    # Normalize source coordinates directly for grid_sample [-1, 1]
+    src_x_norm = (src_x / (source_w - 1.0)) * 2.0 - 1.0
+    src_y_norm = (src_y / (source_h - 1.0)) * 2.0 - 1.0
+
+    # Stack to create the final normalized grid: 1 x H x W x 2
+    source_grid_normalized_xy = torch.stack((src_x_norm, src_y_norm), dim=-1).unsqueeze(
+        0
+    )
+
+    return target_grid_yx_pixels, source_grid_normalized_xy
+
+
+def draw_bounding_boxes_on_detected_faces(
+    img: torch.Tensor, det_faces_data: list, color_rgb: list | None = None
+) -> torch.Tensor:
+    """
+    OPTIMIZED: Removed unnecessary .expand() calls.
+    Relies on PyTorch's native C++ broadcasting for instant assignment.
+    """
+    _color = color_rgb if color_rgb is not None else [0, 255, 0]
+    for i, fface in enumerate(det_faces_data):
+        bbox = fface["bbox"]
+        x_min, y_min, x_max, y_max = map(int, bbox)
+
+        # Ensure bounding box is within the image dimensions
+        _, h, w = img.shape
+        x_min, y_min = max(0, x_min), max(0, y_min)
+        x_max, y_max = min(w - 1, x_max), min(h - 1, y_max)
+
+        # Dynamically compute thickness based on the image resolution
+        max_dimension = max(img.shape[1], img.shape[2])
+        thickness = max(4, max_dimension // 400)
+
+        color_tensor_c11 = torch.tensor(
+            _color, dtype=img.dtype, device=img.device
+        ).view(-1, 1, 1)
+
+        # PyTorch handles the broadcasting automatically, no need to expand()
+        img[:, y_min : y_min + thickness, x_min : x_max + 1] = color_tensor_c11
+        img[:, y_max - thickness + 1 : y_max + 1, x_min : x_max + 1] = color_tensor_c11
+        img[:, y_min : y_max + 1, x_min : x_min + thickness] = color_tensor_c11
+        img[:, y_min : y_max + 1, x_max - thickness + 1 : x_max + 1] = color_tensor_c11
+
+    return img
+
+
+def paint_landmarks_on_image(img: torch.Tensor, landmarks_data: list) -> torch.Tensor:
+    """
+    OPTIMIZED: Replaced deeply nested loops and per-pixel tensor allocations
+    with tensor slicing and pre-allocated colors to eliminate CPU bottlenecks.
+    """
+    img_out_hwc = img.clone()
+    p = 2
+
+    for item in landmarks_data:
+        keypoints = item["kps"]
+        kcolor = item["color"]
+        if keypoints is not None:
+            # OPTIMIZATION: Allocate the color tensor ONCE per face, not per pixel
+            kcolor_tensor = torch.tensor(kcolor, device=img.device, dtype=img.dtype)
+
+            for kpoint in keypoints:
+                kx, ky = int(kpoint[0]), int(kpoint[1])
+
+                # OPTIMIZATION: Use direct slicing instead of nested loops
+                y_min = max(0, ky - p // 2)
+                y_max = min(img_out_hwc.shape[0], ky + p // 2 + 1)
+                x_min = max(0, kx - p // 2)
+                x_max = min(img_out_hwc.shape[1], kx + p // 2 + 1)
+
+                if y_min < y_max and x_min < x_max:
+                    img_out_hwc[y_min:y_max, x_min:x_max] = kcolor_tensor
+
+    return img_out_hwc

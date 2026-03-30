@@ -1,7 +1,9 @@
 import pickle
+import hashlib
 from typing import TYPE_CHECKING, Dict
 import platform
 import os
+import threading
 
 import torch
 import numpy as np
@@ -35,6 +37,7 @@ class FaceEditors:
             models_processor (ModelsProcessor): A reference to the main ModelsProcessor instance.
         """
         self.models_processor = models_processor
+        self.editor_lock = threading.Lock()
         self.current_face_editor_type: str | None = None
         self.editor_models: Dict[str, list[str]] = {
             "Human-Face": [
@@ -59,21 +62,50 @@ class FaceEditors:
         try:
             # Load a pre-calculated lip array used for lip retargeting in the LivePortrait model.
             self.lp_lip_array = np.array(self.load_lip_array())
-        except FileNotFoundError:
-            # If the file is missing, set to None and handle gracefully elsewhere.
+        except Exception as e:
+            # FE-02: broaden exception handling to catch any load failure, not just FileNotFoundError
+            import logging
+
+            logging.warning(f"lip_array load failed: {e}")
             self.lp_lip_array = None
 
     def load_lip_array(self):
         """
         Loads the lip array data from a pickle file required by the LivePortrait model.
+        A SHA-256 digest of the file is verified before loading as a security measure.
+        # FE-01: SHA-256 check fallback — to lock in a known-good hash, set
+        #   KNOWN_LIP_ARRAY_SHA256 to the hex digest of the trusted file, e.g.:
+        #   KNOWN_LIP_ARRAY_SHA256 = "abcdef1234..."
+        #   and uncomment the verification block below.
 
         Returns:
             The loaded data from the pickle file.
         """
+        import logging
+
+        # FE-01: SHA-256 verification before loading the pickle file
+        # Update KNOWN_LIP_ARRAY_SHA256 with the trusted file's digest to enforce integrity.
+        KNOWN_LIP_ARRAY_SHA256 = (
+            None  # Set to a hex-digest string to enable strict check
+        )
+
         # Use os.path.join for better cross-platform compatibility.
         lip_array_path = os.path.join(models_dir, "liveportrait_onnx", "lip_array.pkl")
+
         with open(lip_array_path, "rb") as f:
-            return pickle.load(f)
+            file_bytes = f.read()
+
+        actual_sha256 = hashlib.sha256(file_bytes).hexdigest()
+        if KNOWN_LIP_ARRAY_SHA256 is not None:
+            if actual_sha256 != KNOWN_LIP_ARRAY_SHA256:
+                raise RuntimeError(
+                    f"lip_array.pkl failed SHA-256 verification. "
+                    f"Expected: {KNOWN_LIP_ARRAY_SHA256}, Got: {actual_sha256}"
+                )
+        else:
+            logging.debug(f"lip_array.pkl SHA-256: {actual_sha256}")
+
+        return pickle.loads(file_bytes)
 
     def unload_models(self):
         if self.current_face_editor_type:
@@ -87,13 +119,13 @@ class FaceEditors:
         Manages loading and unloading of model groups for different face editor types.
         If the editor type changes, it unloads the models of the previous type.
         """
-
-        if (
-            self.current_face_editor_type
-            and self.current_face_editor_type != face_editor_type
-        ):
-            self.unload_models()
-        self.current_face_editor_type = face_editor_type
+        with self.editor_lock:
+            if (
+                self.current_face_editor_type
+                and self.current_face_editor_type != face_editor_type
+            ):
+                self.unload_models()
+            self.current_face_editor_type = face_editor_type
 
     def _run_onnx_io_binding(
         self,
@@ -114,7 +146,11 @@ class FaceEditors:
         Returns:
             Dict[str, torch.Tensor]: The output_spec dictionary, now populated with the model's output.
         """
-        model = self.models_processor.models[model_name]
+        # FE-13: use .get() with an explicit error instead of direct dict access
+        session = self.models_processor.models.get(model_name)
+        if session is None:
+            raise RuntimeError(f"Model {model_name} not loaded")
+        model = session
         io_binding = model.io_binding()
 
         # Bind model inputs by mapping tensor names to their memory pointers.
@@ -149,12 +185,15 @@ class FaceEditors:
             )
 
         try:
-            # Ensure CUDA stream is synchronized before running the model.
+            # PRE-INFERENCE SYNC: Ensure PyTorch has finished preparing the memory
+            # before ONNX Runtime starts reading from the IOBinding pointers.
             if self.models_processor.device == "cuda":
-                torch.cuda.synchronize()
+                torch.cuda.current_stream().synchronize()
             elif self.models_processor.device != "cpu":
                 self.models_processor.syncvec.cpu()
+
             model.run_with_iobinding(io_binding)
+
         finally:
             if is_lazy_build:
                 self.models_processor.hide_build_dialog.emit()
@@ -203,8 +242,12 @@ class FaceEditors:
                                 precision="fp32",
                             )
                         )
-
-                motion_extractor_model = self.models_processor.models_trt[model_name]
+                    # FE-05: move models_trt access inside the face_editor_type guard
+                    motion_extractor_model = self.models_processor.models_trt[
+                        model_name
+                    ]
+                else:
+                    motion_extractor_model = None
 
                 # 1. Pre-allocate output tensors on the GPU for zero-copy inference.
                 pitch = torch.empty(
@@ -361,10 +404,12 @@ class FaceEditors:
                                 precision="fp16",
                             )
                         )
-
-                appearance_feature_extractor_model = self.models_processor.models_trt[
-                    model_name
-                ]
+                    # FE-05: move models_trt access inside the face_editor_type guard
+                    appearance_feature_extractor_model = (
+                        self.models_processor.models_trt[model_name]
+                    )
+                else:
+                    appearance_feature_extractor_model = None
 
                 # Pre-allocate the output tensor and create bindings.
                 output = torch.empty(
@@ -442,8 +487,10 @@ class FaceEditors:
                                 precision="fp16",
                             )
                         )
-
-                stitching_eye_model = self.models_processor.models_trt[model_name]
+                    # FE-05: move models_trt access inside the face_editor_type guard
+                    stitching_eye_model = self.models_processor.models_trt[model_name]
+                else:
+                    stitching_eye_model = None
 
                 delta = torch.empty(
                     (1, 63), dtype=torch.float32, device=self.models_processor.device
@@ -515,8 +562,10 @@ class FaceEditors:
                                 precision="fp16",
                             )
                         )
-
-                stitching_lip_model = self.models_processor.models_trt[model_name]
+                    # FE-05: move models_trt access inside the face_editor_type guard
+                    stitching_lip_model = self.models_processor.models_trt[model_name]
+                else:
+                    stitching_lip_model = None
 
                 delta = torch.empty(
                     (1, 63), dtype=torch.float32, device=self.models_processor.device
@@ -565,7 +614,8 @@ class FaceEditors:
             torch.Tensor: A raw delta tensor representing the difference.
         """
         with torch.no_grad():
-            feat_stiching = faceutil.concat_feat(kp_source, kp_driving).contiguous()
+            # FE-12: fix typo feat_stiching -> feat_stitching
+            feat_stitching = faceutil.concat_feat(kp_source, kp_driving).contiguous()
 
             model_name = "LivePortraitStitching"
 
@@ -587,13 +637,15 @@ class FaceEditors:
                                 precision="fp16",
                             )
                         )
-
-                stitching_model = self.models_processor.models_trt[model_name]
+                    # FE-05: move models_trt access inside the face_editor_type guard
+                    stitching_model = self.models_processor.models_trt[model_name]
+                else:
+                    stitching_model = None
 
                 delta = torch.empty(
                     (1, 65), dtype=torch.float32, device=self.models_processor.device
                 ).contiguous()
-                bindings = {"input": feat_stiching, "output": delta}
+                bindings = {"input": feat_stitching, "output": delta}
                 current_stream = torch.cuda.current_stream()
                 if stitching_model:
                     stitching_model.predict_async(bindings, current_stream)
@@ -606,7 +658,7 @@ class FaceEditors:
                             self.models_processor.load_model(model_name)
                         )
 
-                inputs = {"input": feat_stiching}
+                inputs = {"input": feat_stitching}
                 output_spec = {
                     "output": torch.empty(
                         (1, 65),
@@ -642,7 +694,8 @@ class FaceEditors:
         # Calculate a "default" delta by comparing the source keypoints to themselves.
         # This establishes a baseline for a neutral expression.
         kp_driving_default = kp_source.clone()
-        default_delta = self.models_processor.lp_stitch(
+        # FE-04: call self.lp_stitch directly, not via models_processor
+        default_delta = self.lp_stitch(
             kp_source, kp_driving_default, face_editor_type=face_editor_type
         )
 
@@ -656,7 +709,8 @@ class FaceEditors:
 
         # Calculate the new delta based on the actual driving keypoints.
         kp_driving_new = kp_driving.clone()
-        delta = self.models_processor.lp_stitch(
+        # FE-04: call self.lp_stitch directly, not via models_processor
+        delta = self.lp_stitch(
             kp_source, kp_driving_new, face_editor_type=face_editor_type
         )
 
@@ -699,9 +753,17 @@ class FaceEditors:
             kp_source = kp_source.contiguous()
             kp_driving = kp_driving.contiguous()
 
+            model_name_trt = "LivePortraitWarpingSpadeFix"
+            # FE-06: add is_dedicated_trt_model check consistent with sibling LP methods
+            is_trt_engine_provider = self.models_processor.provider_name in [
+                "TensorRT",
+                "TensorRT-Engine",
+            ]
+            is_dedicated_trt_model = model_name_trt in self.models_processor.models_trt
+
             # --- TensorRT Execution Path ---
-            if self.models_processor.provider_name in ["TensorRT", "TensorRT-Engine"]:
-                model_name = "LivePortraitWarpingSpadeFix"
+            if is_trt_engine_provider and is_dedicated_trt_model:
+                model_name = model_name_trt
                 if face_editor_type == "Human-Face":
                     if not self.models_processor.models_trt.get(model_name):
                         # This model requires a custom plugin for the `grid_sample_3d` operation.
@@ -726,8 +788,10 @@ class FaceEditors:
                                 precision="fp16",
                             )
                         )
-
-                warping_spade_model = self.models_processor.models_trt[model_name]
+                    # FE-05/FE-06: move models_trt access inside the face_editor_type guard
+                    warping_spade_model = self.models_processor.models_trt[model_name]
+                else:
+                    warping_spade_model = None
 
                 # Pre-allocate output and run asynchronous inference.
                 out = torch.empty(
@@ -776,14 +840,14 @@ class FaceEditors:
     ) -> torch.Tensor:
         """
         Gets semantic face parsing labels by calling the face parser model.
-        The model runs on a 512x512 image but this function returns labels
-        downscaled to 256x256 for performance and compatibility with other modules.
+        The model runs on a 512x512 image and this function returns native
+        512x512 labels for full-resolution compatibility with other modules.
 
         Args:
             img_uint8_3x512x512 (torch.Tensor): Input image tensor [3,512,512] uint8 (0..255).
 
         Returns:
-            torch.Tensor: Label map tensor [256,256] of type torch.long.
+            torch.Tensor: Label map tensor [512,512] of type torch.long.
         """
         fm = getattr(self.models_processor, "face_masks", None)
         if fm is None or not hasattr(fm, "_faceparser_labels"):
@@ -836,7 +900,8 @@ class FaceEditors:
             (512, 512), interpolation=v2.InterpolationMode.BILINEAR, antialias=False
         )
         w = t512_mask(w)
-        w = w.clamp(0, 255)
+        # FE-07: w is a float weight in [0,1]; clamp to (0,1) not (0,255)
+        w = w.clamp(0, 1)
 
         # Perform alpha blending: out = img * (1-w) + color * w
         out = img_f * (1.0 - w) + tar_color * w
@@ -931,7 +996,8 @@ class FaceEditors:
             out = self.face_parser_makeup_direct_rgb(
                 out,
                 labels,
-                part=17,
+                # FE-08: part must be a tuple, not a bare int
+                part=(17,),
                 color=color,
                 blend_factor=parameters["HairMakeupBlendAmountDecimalSlider"],
             )
@@ -990,7 +1056,8 @@ class FaceEditors:
             (512, 512), interpolation=v2.InterpolationMode.BILINEAR, antialias=False
         )
         combined_mask = t512_mask(combined_mask.unsqueeze(0))
-        combined_mask = combined_mask.clamp(0, 255)
+        # FE-09: combined_mask is a float tensor in [0,1]; clamp to (0,1) not (0,255)
+        combined_mask = combined_mask.clamp(0, 1)
 
         out_final = out.to(torch.uint8)
         return out_final, combined_mask

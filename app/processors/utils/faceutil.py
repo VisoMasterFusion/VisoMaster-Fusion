@@ -73,7 +73,34 @@ src5 = np.array(
     dtype=np.float32,
 )
 
-src = np.array([src1, src2, src3, src4, src5])
+# ^^^ Pitch Up (Tête en arrière)
+# Les yeux descendent légèrement, le nez remonte (plus proche des yeux), la bouche remonte
+src6 = np.array(
+    [
+        [39.730, 55.000],  # LE (Shifted Down)
+        [72.270, 55.000],  # RE (Shifted Down)
+        [56.000, 64.000],  # Nose (Shifted Up/Closer to eyes)
+        [42.463, 78.000],  # LM (Shifted Up)
+        [69.537, 78.000],  # RM (Shifted Up)
+    ],
+    dtype=np.float32,
+)
+
+# vvv Pitch Down (Tête en avant)
+# Les yeux remontent, le nez descend (s'éloigne des yeux), la bouche descend
+src7 = np.array(
+    [
+        [39.730, 45.000],  # LE (Shifted Up)
+        [72.270, 45.000],  # RE (Shifted Up)
+        [56.000, 75.000],  # Nose (Shifted Down/Further from eyes)
+        [42.463, 95.000],  # LM (Shifted Down)
+        [69.537, 95.000],  # RM (Shifted Down)
+    ],
+    dtype=np.float32,
+)
+
+# Ajout des nouveaux gabarits src6 et src7 à la liste
+src = np.array([src1, src2, src3, src4, src5, src6, src7])
 src_map = {112: src, 224: src * 2}
 
 arcface_src = np.array(
@@ -103,6 +130,41 @@ arcface_src_cuda = torch.tensor(
 if torch.cuda.is_available():
     arcface_src_cuda = arcface_src_cuda.to("cuda")
 
+# F-09: module-level constant matrices for color-space conversions (avoid re-allocating per call)
+_RGB_TO_YUV = torch.tensor(
+    [
+        [0.299, 0.587, 0.114],
+        [-0.14713, -0.28886, 0.436],
+        [0.615, -0.51499, -0.10001],
+    ],
+    dtype=torch.float32,
+)
+
+_YUV_TO_RGB = torch.tensor(
+    [[1, 0, 1.13983], [1, -0.39465, -0.58060], [1, 2.03211, 0]],
+    dtype=torch.float32,
+)
+
+_RGB_TO_XYZ = torch.tensor(
+    [
+        [0.4124564, 0.3575761, 0.1804375],
+        [0.2126729, 0.7151522, 0.0721750],
+        [0.0193339, 0.1191920, 0.9503041],
+    ],
+    dtype=torch.float32,
+)
+
+_XYZ_WHITE_D65 = torch.tensor([0.95047, 1.00000, 1.08883], dtype=torch.float32)
+
+_XYZ_TO_RGB = torch.tensor(
+    [
+        [3.2404542, -1.5371385, -0.4985314],
+        [-0.9692660, 1.8760108, 0.0415560],
+        [0.0556434, -0.2040259, 1.0572252],
+    ],
+    dtype=torch.float32,
+)
+
 
 def pad_image_by_size(img, image_size):
     # Se image_size non è una tupla, crea una tupla con altezza e larghezza uguali
@@ -130,6 +192,9 @@ def pad_image_by_size(img, image_size):
 
 
 def transform(img, center, output_size, scale, rotation):
+    """
+    OPTIMIZED: GPU Warping using Kornia.
+    """
     # pad image by image size
     img = pad_image_by_size(img, output_size)
 
@@ -144,18 +209,19 @@ def transform(img, center, output_size, scale, rotation):
     t = t1 + t2 + t3 + t4
     M = t.params[0:2]
 
-    cropped = v2.functional.affine(
-        img,
-        np.rad2deg(t.rotation),
-        (t.translation[0], t.translation[1]),
-        t.scale,
-        0,
-        interpolation=v2.InterpolationMode.BILINEAR,
-        center=(0, 0),
-    )
-    cropped = v2.functional.crop(cropped, 0, 0, output_size, output_size)
+    # Kornia GPU affine
+    M_tensor = torch.from_numpy(M).float().unsqueeze(0).to(img.device)
+    img_b = img.unsqueeze(0) if img.dim() == 3 else img
 
-    return cropped, M
+    cropped = kgm.warp_affine(
+        img_b.float(),
+        M_tensor,
+        dsize=(output_size, output_size),
+        mode="bilinear",
+        align_corners=True,
+    ).squeeze(0)
+
+    return cropped.to(img.dtype), M
 
 
 def trans_points2d(pts, M):
@@ -221,6 +287,9 @@ def P2sRt(P):
     t = P[:, 3]
     R1 = P[0:1, :3]
     R2 = P[1:2, :3]
+    # F-13: guard against zero-norm division
+    if np.linalg.norm(R1) < 1e-9:
+        return 1.0, np.eye(3), np.zeros(3)
     s = (np.linalg.norm(R1) + np.linalg.norm(R2)) / 2.0
     r1 = R1 / np.linalg.norm(R1)
     r2 = R2 / np.linalg.norm(R2)
@@ -261,62 +330,55 @@ def warp_affine_torchvision(
     img,
     matrix,
     image_size,
-    rotation_ratio=0.0,
+    rotation_ratio=0.0,  # Gardé pour compatibilité des anciens appels, mais ignoré
     border_value=0.0,
     border_mode="replicate",
     interpolation_value=v2.functional.InterpolationMode.NEAREST,
     device="cpu",
 ):
-    # Ensure image_size is a tuple (width, height)
+    """
+    OPTIMIZED: Bypasses slow matrix decomposition and CPU trigonometry.
+    Feeds the 2x3 affine matrix directly to Kornia for instant GPU rendering.
+    """
     if isinstance(image_size, int):
         image_size = (image_size, image_size)
 
-    # Ensure the image tensor is on the correct device and of type float
+    # Convertir en tenseur si c'est un numpy array
     if isinstance(img, torch.Tensor):
         img_tensor = img.to(device).float()
-        if img_tensor.dim() == 3:  # If no batch dimension, add one
+        if img_tensor.dim() == 3:
             img_tensor = img_tensor.unsqueeze(0)
     else:
         img_tensor = (
             torch.from_numpy(img).unsqueeze(0).permute(0, 3, 1, 2).float().to(device)
         )
 
-    # Extract the translation parameters from the affine matrix
-    t = trans.SimilarityTransform()
-    t.params[0:2] = matrix
+    # Charger la matrice Numpy sur le GPU
+    M_tensor = torch.from_numpy(matrix).float().unsqueeze(0).to(device)
 
-    # Define default rotation
-    rotation = t.rotation
+    # Mapping des paramètres vers Kornia
+    mode_kgm = (
+        "nearest"
+        if interpolation_value == v2.functional.InterpolationMode.NEAREST
+        else "bilinear"
+    )
+    padding_mode_kgm = "border" if border_mode == "replicate" else "zeros"
 
-    if rotation_ratio != 0:
-        rotation *= rotation_ratio  # Rotation in degrees
-
-    # Convert border mode
-    if border_mode == "replicate":
-        fill = [border_value] * img_tensor.shape[1]  # Same value for all channels
-    elif border_mode == "constant":
-        fill = [border_value] * img_tensor.shape[1]  # Same value for all channels
-    else:
-        raise ValueError("Unsupported border_mode. Use 'replicate' or 'constant'.")
-
-    # Apply the affine transformation
-    warped_img_tensor = v2.functional.affine(
+    # Warping direct sur VRAM
+    warped_img_tensor = kgm.warp_affine(
         img_tensor,
-        angle=rotation,
-        translate=(t.translation[0], t.translation[1]),
-        scale=t.scale,
-        shear=(0.0, 0.0),
-        interpolation=interpolation_value,
-        center=(0, 0),
-        fill=fill,
-    )
+        M_tensor,
+        dsize=image_size,
+        mode=mode_kgm,
+        padding_mode=padding_mode_kgm,
+        align_corners=True,
+    ).squeeze(0)
 
-    # Crop the image to the desired size
-    warped_img_tensor = v2.functional.crop(
-        warped_img_tensor, 0, 0, image_size[1], image_size[0]
-    )
+    # Restauration du type d'origine
+    if isinstance(img, torch.Tensor):
+        warped_img_tensor = warped_img_tensor.to(img.dtype)
 
-    return warped_img_tensor.squeeze(0)
+    return warped_img_tensor
 
 
 def umeyama(src, dst, estimate_scale):
@@ -331,6 +393,10 @@ def umeyama(src, dst, estimate_scale):
     if np.linalg.det(A) < 0:
         d[dim - 1] = -1
     T = np.eye(dim + 1, dtype=np.double)
+    # F-14: guard against zero variance (degenerate point cloud)
+    var_sum = src_demean.var(axis=0).sum()
+    if var_sum < 1e-10:
+        return np.nan * T
     U, S, V = np.linalg.svd(A)
     rank = np.linalg.matrix_rank(A)
     if rank == 0:
@@ -377,7 +443,8 @@ def align_crop(
             templates = float(image_size) / 112.0 * arcface_src
         else:
             factor = float(image_size) / 128.0
-            templates = arcface_src * factor
+            # F-05: copy before modifying to avoid mutating the module-level template
+            templates = arcface_src.copy() * factor
             templates[:, 0] += factor * 8.0
     else:
         templates = float(image_size) / 112.0 * src_map[112]
@@ -422,19 +489,25 @@ def get_arcface_template(image_size=112, mode="arcface112"):
 # lmk is prediction; src is template
 def estimate_norm_arcface_template(lmk, src=arcface_src):
     assert lmk.shape == (5, 2)
-    tform = trans.SimilarityTransform()
     lmk_tran = np.insert(lmk, 2, values=np.ones(5), axis=1)
     min_M = []
     min_index = []
     min_error = float("inf")
 
     for i in np.arange(src.shape[0]):
-        tform.estimate(lmk, src[i])
+        # Use instance-based estimate for compatibility
+        if hasattr(trans.SimilarityTransform, "from_estimate"):
+            tform = trans.SimilarityTransform.from_estimate(lmk, src[i])
+        else:
+            tform = trans.SimilarityTransform()
+            tform.estimate(lmk, src[i])
         M = tform.params[0:2, :]
+
+        # results is (2, 5), we need it to be (5, 2) to match src[i]
         results = np.dot(M, lmk_tran.T)
         results = results.T
+
         error = np.sum(np.sqrt(np.sum((results - src[i]) ** 2, axis=1)))
-        # print((error, min_error))
         if error < min_error:
             min_error = error
             min_M = M
@@ -446,7 +519,6 @@ def estimate_norm_arcface_template(lmk, src=arcface_src):
 # lmk is prediction; src is template
 def estimate_norm(lmk, image_size=112, mode="arcface112"):
     assert lmk.shape == (5, 2)
-    tform = trans.SimilarityTransform()
     lmk_tran = np.insert(lmk, 2, values=np.ones(5), axis=1)
     min_M = []
     min_index = []
@@ -457,18 +529,26 @@ def estimate_norm(lmk, image_size=112, mode="arcface112"):
             src = float(image_size) / 112.0 * arcface_src
         else:
             factor = float(image_size) / 128.0
-            src = arcface_src * factor
+            # F-05: copy before modifying to avoid mutating the module-level template
+            src = arcface_src.copy() * factor
             src[:, 0] += factor * 8.0
     else:
         src = float(image_size) / 112.0 * src_map[112]
 
     for i in np.arange(src.shape[0]):
-        tform.estimate(lmk, src[i])
+        # Use instance-based estimate for compatibility
+        if hasattr(trans.SimilarityTransform, "from_estimate"):
+            tform = trans.SimilarityTransform.from_estimate(lmk, src[i])
+        else:
+            tform = trans.SimilarityTransform()
+            tform.estimate(lmk, src[i])
         M = tform.params[0:2, :]
+
+        # results is (2, 5), we need it to be (5, 2) to match src[i]
         results = np.dot(M, lmk_tran.T)
         results = results.T
+
         error = np.sum(np.sqrt(np.sum((results - src[i]) ** 2, axis=1)))
-        # print((error, min_error))
         if error < min_error:
             min_error = error
             min_M = M
@@ -478,10 +558,12 @@ def estimate_norm(lmk, image_size=112, mode="arcface112"):
 
 
 def warp_face_by_bounding_box(img, bboxes, image_size=112):
+    """
+    OPTIMIZED: GPU Warping using Kornia.
+    """
     # pad image by image size
     img = pad_image_by_size(img, image_size)
 
-    # Set source points from bounding boxes
     source_points = np.array(
         [
             [bboxes[0], bboxes[1]],
@@ -491,29 +573,25 @@ def warp_face_by_bounding_box(img, bboxes, image_size=112):
         ]
     ).astype(np.float32)
 
-    # Set target points from image size
     target_points = np.array(
         [[0, 0], [image_size, 0], [0, image_size], [image_size, image_size]]
     ).astype(np.float32)
 
-    # Find transform
-    tform = trans.SimilarityTransform()
-    tform.estimate(source_points, target_points)
-
-    # Transform
-    img = v2.functional.affine(
-        img,
-        tform.rotation,
-        (tform.translation[0], tform.translation[1]),
-        tform.scale,
-        0,
-        interpolation=v2.InterpolationMode.BILINEAR,
-        center=(0, 0),
-    )
-    img = v2.functional.crop(img, 0, 0, image_size, image_size)
+    tform = trans.SimilarityTransform.from_estimate(source_points, target_points)
     M = tform.params[0:2]
 
-    return img, M
+    M_tensor = torch.from_numpy(M).float().unsqueeze(0).to(img.device)
+    img_b = img.unsqueeze(0) if img.dim() == 3 else img
+
+    img_warped = kgm.warp_affine(
+        img_b.float(),
+        M_tensor,
+        dsize=(image_size, image_size),
+        mode="bilinear",
+        align_corners=True,
+    ).squeeze(0)
+
+    return img_warped.to(img.dtype), M
 
 
 def warp_face_by_face_landmark_5(
@@ -523,24 +601,30 @@ def warp_face_by_face_landmark_5(
     mode="arcface112",
     interpolation=v2.InterpolationMode.NEAREST,
 ):
+    """
+    OPTIMIZED: GPU Warping using Kornia.
+    """
     # pad image by image size
     img = pad_image_by_size(img, image_size)
 
     M, pose_index = estimate_norm(kpss, image_size, mode=mode)
-    t = trans.SimilarityTransform()
-    t.params[0:2] = M
-    img = v2.functional.affine(
-        img,
-        t.rotation * 57.2958,
-        (t.translation[0], t.translation[1]),
-        t.scale,
-        0,
-        interpolation=interpolation,
-        center=(0, 0),
-    )
-    img = v2.functional.crop(img, 0, 0, image_size, image_size)
 
-    return img, M
+    M_tensor = torch.from_numpy(M).float().unsqueeze(0).to(img.device)
+    img_b = img.unsqueeze(0) if img.dim() == 3 else img
+
+    mode_kgm = (
+        "nearest" if interpolation == v2.InterpolationMode.NEAREST else "bilinear"
+    )
+
+    img_warped = kgm.warp_affine(
+        img_b.float(),
+        M_tensor,
+        dsize=(image_size, image_size),
+        mode=mode_kgm,
+        align_corners=True,
+    ).squeeze(0)
+
+    return img_warped.to(img.dtype), M
 
 
 def getRotationMatrix2D(center, output_size, scale, rotation, is_clockwise=True):
@@ -565,52 +649,55 @@ def invertAffineTransform(M):
     t = trans.SimilarityTransform()
     t.params[0:2] = M
     IM = t.inverse.params[0:2, :]
+
+    Returns a 2x3 affine matrix (the inverse), not the full 3x3 homogeneous form.
+    All callers should receive and use a 2x3 matrix.
     """
     M_H = np.vstack([M, np.array([0, 0, 1])])
     IM = np.linalg.inv(M_H)
 
-    return IM
+    # F-02: return only the 2x3 affine rows, not the full 3x3 homogeneous matrix
+    return IM[0:2, :]
 
 
 def warp_face_by_bounding_box_for_landmark_68(img, bbox, input_size):
     """
-    :param img: raw image
-    :param bbox: the bbox for the face
-    :param input_size: tuple input image size
-    :return:
+    OPTIMIZED: GPU Warping using Kornia.
     """
     # pad image by image size
     img = pad_image_by_size(img, input_size[0])
 
     scale = 195 / np.subtract(bbox[2:], bbox[:2]).max()
     translation = (256 - np.add(bbox[2:], bbox[:2]) * scale) * 0.5
-    rotation = 0
-
-    t1 = trans.SimilarityTransform(scale=scale)
-    t2 = trans.SimilarityTransform(rotation=rotation)
-    t3 = trans.SimilarityTransform(translation=translation)
-
-    t = t1 + t2 + t3
     affine_matrix = np.array([[scale, 0, translation[0]], [0, scale, translation[1]]])
 
-    crop_image = v2.functional.affine(
-        img,
-        t.rotation,
-        (t.translation[0], t.translation[1]),
-        t.scale,
-        0,
-        interpolation=v2.InterpolationMode.BILINEAR,
-        center=(0, 0),
-    )
-    crop_image = v2.functional.crop(crop_image, 0, 0, input_size[1], input_size[0])
+    M_tensor = torch.from_numpy(affine_matrix).float().unsqueeze(0).to(img.device)
+    img_b = img.unsqueeze(0) if img.dim() == 3 else img
 
+    crop_image = (
+        kgm.warp_affine(
+            img_b.float(),
+            M_tensor,
+            dsize=(input_size[1], input_size[0]),
+            mode="bilinear",
+            align_corners=True,
+        )
+        .squeeze(0)
+        .to(img.dtype)
+    )
+
+    # Post-processing (CLAHE on CPU if too dark, kept as original as it's a rare fallback)
     if torch.mean(crop_image.to(dtype=torch.float32)[0, :, :]) < 30:
-        crop_image = cv2.cvtColor(
+        lab = cv2.cvtColor(
             crop_image.permute(1, 2, 0).to("cpu").numpy(), cv2.COLOR_RGB2Lab
         )
-        crop_image[:, :, 0] = cv2.createCLAHE(clipLimit=2).apply(crop_image[:, :, 0])
+        # F-06: CLAHE requires uint8; convert L channel from float Lab range to uint8 and back
+        clahe = cv2.createCLAHE(clipLimit=2)
+        L_u8 = (lab[:, :, 0] * 2.55).clip(0, 255).astype(np.uint8)
+        L_eq = clahe.apply(L_u8)
+        lab[:, :, 0] = L_eq.astype(np.float32) / 2.55
         crop_image = (
-            torch.from_numpy(cv2.cvtColor(crop_image, cv2.COLOR_Lab2RGB))
+            torch.from_numpy(cv2.cvtColor(lab, cv2.COLOR_Lab2RGB))
             .to(img.device)
             .permute(2, 0, 1)
         )
@@ -666,7 +753,8 @@ def warp_face_by_bounding_box_for_landmark_98(img, bbox_org, input_size):
 def create_bounding_box_from_face_landmark_106_98_68(face_landmark_106_98_68):
     min_x, min_y = np.min(face_landmark_106_98_68, axis=0)
     max_x, max_y = np.max(face_landmark_106_98_68, axis=0)
-    bounding_box = np.array([min_x, min_y, max_x, max_y]).astype(np.int16)
+    # F-16: use int32 to avoid overflow for coordinates > 32767
+    bounding_box = np.array([min_x, min_y, max_x, max_y]).astype(np.int32)
     return bounding_box
 
 
@@ -903,10 +991,15 @@ def detect_img_color(img):
 
 def get_face_orientation(face_size, lmk):
     assert lmk.shape == (5, 2)
-    tform = trans.SimilarityTransform()
     src = np.squeeze(arcface_src, axis=0)
     src = float(face_size) / 112.0 * src
-    tform.estimate(lmk, src)
+
+    # Use instance-based estimate for compatibility
+    if hasattr(trans.SimilarityTransform, "from_estimate"):
+        tform = trans.SimilarityTransform.from_estimate(lmk, src)
+    else:
+        tform = trans.SimilarityTransform()
+        tform.estimate(lmk, src)
 
     angle_deg_to_front = np.rad2deg(tform.rotation)
 
@@ -925,16 +1018,8 @@ def rgb_to_yuv(image, normalize=False):
         # Ensure the image is in the range [0, 1]
         image = torch.div(image, 255.0)
 
-    # Define the conversion matrix from RGB to YUV
-    conversion_matrix = torch.tensor(
-        [
-            [0.299, 0.587, 0.114],
-            [-0.14713, -0.28886, 0.436],
-            [0.615, -0.51499, -0.10001],
-        ],
-        device=image.device,
-        dtype=image.dtype,
-    )
+    # F-09: use module-level constant matrix, moved to device on demand
+    conversion_matrix = _RGB_TO_YUV.to(device=image.device, dtype=image.dtype)
 
     # Apply the conversion matrix
     yuv_image = torch.tensordot(
@@ -952,12 +1037,8 @@ def yuv_to_rgb(image, normalize=False):
     Returns:
         torch.Tensor: The image tensor in RGB format (C, H, W).
     """
-    # Define the conversion matrix from YUV to RGB
-    conversion_matrix = torch.tensor(
-        [[1, 0, 1.13983], [1, -0.39465, -0.58060], [1, 2.03211, 0]],
-        device=image.device,
-        dtype=image.dtype,
-    )
+    # F-09: use module-level constant matrix, moved to device on demand
+    conversion_matrix = _YUV_TO_RGB.to(device=image.device, dtype=image.dtype)
 
     # Apply the conversion matrix
     rgb_image = torch.tensordot(
@@ -987,22 +1068,14 @@ def rgb_to_lab(rgb, normalize=False):
 
     # Conversion from RGB to XYZ
     rgb_linear = rgb_linear.view(-1, 3)
-    matrix_rgb_to_xyz = torch.tensor(
-        [
-            [0.4124564, 0.3575761, 0.1804375],
-            [0.2126729, 0.7151522, 0.0721750],
-            [0.0193339, 0.1191920, 0.9503041],
-        ],
-        dtype=rgb.dtype,
-        device=rgb.device,
-    )
+    # F-09: use module-level constant, moved to device on demand
+    matrix_rgb_to_xyz = _RGB_TO_XYZ.to(dtype=rgb.dtype, device=rgb.device)
 
     xyz = torch.matmul(rgb_linear, matrix_rgb_to_xyz.T)
 
     # Normalize by D65 white point
-    white_point = torch.tensor(
-        [0.95047, 1.00000, 1.08883], dtype=xyz.dtype, device=xyz.device
-    )
+    # F-09: use module-level constant, moved to device on demand
+    white_point = _XYZ_WHITE_D65.to(dtype=xyz.dtype, device=xyz.device)
     xyz = xyz / white_point
 
     # Conversion from XYZ to LAB
@@ -1051,22 +1124,14 @@ def lab_to_rgb(lab, normalize=False):
     z = torch.where(fz3 > epsilon, fz3, (116 * fz - 16) / kappa)
 
     # Denormalize by D65 white point
-    white_point = torch.tensor(
-        [0.95047, 1.00000, 1.08883], dtype=lab.dtype, device=lab.device
-    )
+    # F-09: use module-level constant, moved to device on demand
+    white_point = _XYZ_WHITE_D65.to(dtype=lab.dtype, device=lab.device)
     xyz = torch.stack([x, y, z], dim=2) * white_point
 
     # Conversion from XYZ to RGB
     xyz = xyz.view(-1, 3)
-    matrix_xyz_to_rgb = torch.tensor(
-        [
-            [3.2404542, -1.5371385, -0.4985314],
-            [-0.9692660, 1.8760108, 0.0415560],
-            [0.0556434, -0.2040259, 1.0572252],
-        ],
-        dtype=lab.dtype,
-        device=lab.device,
-    )
+    # F-09: use module-level constant, moved to device on demand
+    matrix_xyz_to_rgb = _XYZ_TO_RGB.to(dtype=lab.dtype, device=lab.device)
 
     rgb_linear = torch.matmul(xyz, matrix_xyz_to_rgb.T)
 
@@ -1203,7 +1268,8 @@ def sharpen(img):
     img = img.float() / 255.0
 
     # Gaussian smoothing using PyTorch's functional API (approximation of Gaussian blur)
-    gauss_kernel = get_gaussian_kernel(5).to(
+    # F-07: pass sigma as keyword arg; the first positional param is sigma, second is kernel_size
+    gauss_kernel = get_gaussian_kernel(sigma=1.5, kernel_size=5).to(
         device
     )  # Create a Gaussian kernel for blurring
     img = img.unsqueeze(0)  # Add batch dimension for convolution
@@ -1415,19 +1481,10 @@ def parse_pt2_from_pt9(pt9, use_lip=True):
     ['right eye right', 'right eye left', 'left eye right', 'left eye left', 'nose tip', 'lip right', 'lip left', 'upper lip', 'lower lip']
     """
     if use_lip:
-        pt9 = np.stack(
-            [
-                (pt9[2] + pt9[3]) / 2,  # left eye
-                (pt9[0] + pt9[1]) / 2,  # right eye
-                pt9[4],
-                (pt9[5] + pt9[6]) / 2,  # lip
-            ],
-            axis=0,
-        )
         pt2 = np.stack(
             [
-                (pt9[0] + pt9[1]) / 2,  # eye
-                pt9[3],  # lip
+                (pt9[2] + pt9[3]) / 2,  # eye center (left+right eye avg)
+                (pt9[5] + pt9[6]) / 2,  # lip center
             ],
             axis=0,
         )
@@ -1509,7 +1566,8 @@ def parse_rect_from_landmark(
     # the rotation degree of the x-axis, the clockwise is positive, the counterclockwise is negative (image coordinate system)
     # print(uy)
     # print(ux)
-    angle = acos(ux[0])
+    # F-15: clamp acos argument to [-1, 1] to prevent domain errors from floating-point drift
+    angle = acos(max(-1.0, min(1.0, ux[0])))
     if ux[1] < 0:
         angle = -angle
 
@@ -1635,17 +1693,18 @@ def _estimate_similar_transform_from_pts(
 
 
 def warp_face_by_face_landmark_x(img, pts, **kwargs):
-    dsize = kwargs.get("dsize", 224)  # 512
-    scale = kwargs.get("scale", 1.5)  # 1.5 | 1.6 | 2.5
-    vy_ratio = kwargs.get("vy_ratio", -0.1)  # -0.0625 | -0.1 | -0.125
-    interpolation = kwargs.get("interpolation", v2.InterpolationMode.BILINEAR)
+    """
+    OPTIMIZED: Uses Kornia (GPU) instead of torchvision+scikit-image for affine transformation.
+    Eliminates CPU-bound trigonometry and matrix decomposition bottlenecks.
+    """
+    dsize = kwargs.get("dsize", 224)  # Default LivePortrait size
+    scale = kwargs.get("scale", 1.5)
+    vy_ratio = kwargs.get("vy_ratio", -0.1)
 
-    # pad image by image size
+    # Pad image if necessary
     img = pad_image_by_size(img, dsize)
-    # if pts.shape[0] == 5:
-    #    scale *= 2.20
-    #    vy_ratio += (-vy_ratio / 2.20)
 
+    # Calculate matrix from landmarks (Fast CPU operation, no bottleneck here)
     M_o2c, M_c2o = _estimate_similar_transform_from_pts(
         pts,
         dsize=dsize,
@@ -1654,20 +1713,14 @@ def warp_face_by_face_landmark_x(img, pts, **kwargs):
         flag_do_rot=kwargs.get("flag_do_rot", True),
     )
 
-    t = trans.SimilarityTransform()
-    t.params[0:2] = M_o2c
-    img = v2.functional.affine(
-        img,
-        t.rotation * 57.2958,
-        translate=(t.translation[0], t.translation[1]),
-        scale=t.scale,
-        shear=(0.0, 0.0),
-        interpolation=interpolation,
-        center=(0, 0),
-    )
-    img = v2.functional.crop(img, 0, 0, dsize, dsize)
+    # 100% GPU Warping using Kornia
+    # Bypasses the slow t = trans.SimilarityTransform() completely
+    warped_img = transform_img_kgm(img.float(), M_o2c, dsize=dsize)
 
-    return img, M_o2c, M_c2o
+    # Ensure we return the original dtype (usually uint8 or float32 depending on pipeline)
+    warped_img = warped_img.to(img.dtype)
+
+    return warped_img, M_o2c, M_c2o
 
 
 def create_faded_inner_mask(
@@ -1738,23 +1791,14 @@ def create_faded_inner_mask(
 def prepare_paste_back(
     mask_crop, crop_M_c2o, dsize, interpolation=v2.InterpolationMode.BILINEAR
 ):
-    """prepare mask for later image paste back"""
-    t = trans.SimilarityTransform()
-    t.params[0:2] = crop_M_c2o
-
+    """
+    OPTIMIZED: prepare mask for later image paste back using direct GPU warping (Kornia).
+    """
     # pad image by image size
     mask_crop = pad_image_by_size(mask_crop, (dsize[0], dsize[1]))
 
-    mask_ori = v2.functional.affine(
-        mask_crop,
-        t.rotation * 57.2958,
-        translate=(t.translation[0], t.translation[1]),
-        scale=t.scale,
-        shear=(0.0, 0.0),
-        interpolation=interpolation,
-        center=(0, 0),
-    )
-    mask_ori = v2.functional.crop(mask_ori, 0, 0, dsize[0], dsize[1])  # cols, rows
+    # Use Kornia to warp the mask back to original space in one GPU pass
+    mask_ori = transform_img_kgm(mask_crop.float(), crop_M_c2o, dsize=dsize)
 
     return mask_ori
 
@@ -1763,36 +1807,30 @@ def prepare_paste_back(
 def paste_back(
     img_crop, M_c2o, img_ori, mask_ori, interpolation=v2.InterpolationMode.BILINEAR
 ):
-    """paste back the image"""
+    """
+    OPTIMIZED: paste back the image using Kornia for Affine Transform
+    and PyTorch in-place operations for blending to save VRAM and latency.
+    """
     dsize = (img_ori.shape[1], img_ori.shape[2])
-    t = trans.SimilarityTransform()
-    t.params[0:2] = M_c2o
 
     # pad image by image size
     img_crop = pad_image_by_size(img_crop, dsize)
 
-    output = v2.functional.affine(
-        img_crop,
-        t.rotation * 57.2958,
-        translate=(t.translation[0], t.translation[1]),
-        scale=t.scale,
-        shear=(0.0, 0.0),
-        interpolation=interpolation,
-        center=(0, 0),
-    )
-    output = v2.functional.crop(output, 0, 0, dsize[0], dsize[1])  # cols, rows
+    # Transform the crop back to the original image space using Kornia
+    output = transform_img_kgm(img_crop.float(), M_c2o, dsize=dsize)
 
-    # Converti i tensor al tipo appropriato prima delle operazioni in-place
-    output = output.float()  # Converte output in torch.float32
-    img_ori = img_ori.float()  # Assicura che img_ori sia float
+    # F-03: clone before in-place ops to avoid mutating the caller's tensor
+    img_ori_float = img_ori.clone().float()
 
-    # Ottimizzazione con operazioni in-place
-    output.mul_(mask_ori)  # In-place multiplication
-    output.add_(img_ori.mul_(1 - mask_ori))  # In-place addition and multiplication
-    output.clamp_(0, 255)  # In-place clamping
-    output = output.to(torch.uint8)
+    # Highly optimized in-place blending to avoid memory fragmentation
+    # output = mask_ori * output + (1 - mask_ori) * img_ori
+    output.mul_(mask_ori)
+    output.add_(img_ori_float.mul_(1.0 - mask_ori))
 
-    return output
+    # Clamp and convert back to uint8
+    output.clamp_(0, 255)
+
+    return output.to(torch.uint8)
 
 
 def paste_back_adv(
@@ -1814,7 +1852,11 @@ def paste_back_adv(
 
     tform = trans.SimilarityTransform()
     tform.params[0:2] = M_c2o
-    corners = np.array([[0, 0], [0, 511], [511, 0], [511, 511]])
+    # F-04: use actual img_crop dimensions instead of hardcoded 512
+    crop_h, crop_w = img_crop.shape[1], img_crop.shape[2]
+    corners = np.array(
+        [[0, 0], [0, crop_h - 1], [crop_w - 1, 0], [crop_w - 1, crop_h - 1]]
+    )
 
     # Calcola i nuovi limiti
     x = M_c2o[0][0] * corners[:, 0] + M_c2o[0][1] * corners[:, 1] + M_c2o[0][2]
@@ -1829,8 +1871,10 @@ def paste_back_adv(
     img = torch.clamp(img.float() / 255.0, 0, 1)
 
     # Trasforma img_crop senza inverso
+    # F-04: use actual img_crop dimensions instead of hardcoded 512
     img_crop = v2.functional.pad(
-        img_crop, (0, 0, img.shape[2] - 512, img.shape[1] - 512)
+        img_crop,
+        (0, 0, img.shape[2] - img_crop.shape[2], img.shape[1] - img_crop.shape[1]),
     )
     img_crop = v2.functional.affine(
         img_crop,
@@ -1844,8 +1888,10 @@ def paste_back_adv(
     img_crop = img_crop[:, top:bottom, left:right]  # Ritaglia l'area trasformata
 
     # Trasforma mask_crop nello stesso modo di img_crop
+    # F-04: use actual mask_crop dimensions instead of hardcoded 512
     mask_crop = v2.functional.pad(
-        mask_crop, (0, 0, img.shape[2] - 512, img.shape[1] - 512)
+        mask_crop,
+        (0, 0, img.shape[2] - mask_crop.shape[2], img.shape[1] - mask_crop.shape[1]),
     )
     mask_crop = v2.functional.affine(
         mask_crop,
@@ -2708,140 +2754,212 @@ def interp1d_inverse(y, fp, xp, device="cpu"):
 
 
 def histogram_matching_DFL_test(source_image, target_image, diffslider):
-    # Converti i tensori Torch in array di tipo float32 e normalizza le immagini [0, 1]
-    source_image = source_image.type(torch.float32) / 255.0  # Forma (C, H, W)
-    target_image = target_image.type(torch.float32) / 255.0  # Forma (C, H, W)
+    """
+    IMPROVED 'Smart Context' Color Transfer.
+    Captures the global atmosphere (Skin + Background/Hair) like original DFL_Test,
+    BUT excludes pure black padding (0,0,0) to prevent artificial darkening/greying.
+    This gives better contrast/blending on edges than DFL_Orig.
+    """
 
-    # Converti da RGB a LAB (le funzioni dovrebbero supportare direttamente (C, H, W))
-    source = rgb_to_lab(
-        source_image, False
-    )  # Converti in LAB direttamente su (C, H, W)
-    target = rgb_to_lab(
-        target_image, False
-    )  # Converti in LAB direttamente su (C, H, W)
+    # 1. Prepare Data
+    s_img = source_image.float() / 255.0
+    t_img = target_image.float() / 255.0
 
-    # Calcola media e deviazione standard per canali L, a, b direttamente su (C, H, W)
-    target_l_mean, target_l_std = target[0].mean(), target[0].std()
-    target_a_mean, target_a_std = target[1].mean(), target[1].std()
-    target_b_mean, target_b_std = target[2].mean(), target[2].std()
+    # 2. Smart Context Mask: Select pixels that are NOT pure black (padding)
+    # We sum the channels: if R+G+B > 0, it's a valid pixel.
+    s_mask = s_img.sum(dim=0) > 0.0  # [H, W]
+    t_mask = t_img.sum(dim=0) > 0.0
 
-    source_l_mean, source_l_std = source[0].mean(), source[0].std()
-    source_a_mean, source_a_std = source[1].mean(), source[1].std()
-    source_b_mean, source_b_std = source[2].mean(), source[2].std()
+    # Fallback: if image is fully black (rare error), use whole image
+    if s_mask.sum() == 0:
+        s_mask = torch.ones_like(s_mask)
+    if t_mask.sum() == 0:
+        t_mask = torch.ones_like(t_mask)
 
-    # Scala con le deviazioni standard reciproche del fattore proposto dal paper
-    target_l = (target[0] - target_l_mean) * (
-        source_l_std / target_l_std
-    ) + source_l_mean
-    target_a = (target[1] - target_a_mean) * (
-        source_a_std / target_a_std
-    ) + source_a_mean
-    target_b = (target[2] - target_b_mean) * (
-        source_b_std / target_b_std
-    ) + source_b_mean
+    # 3. Convert to LAB
+    s_lab = rgb_to_lab(s_img, normalize=False)
+    t_lab = rgb_to_lab(t_img, normalize=False)
 
-    # Clamping dei valori
-    target_l = torch.clamp(target_l, 0, 100)
-    target_a = torch.clamp(target_a, -127, 127)
-    target_b = torch.clamp(target_b, -127, 127)
+    # 4. Calculate Stats on NON-PADDING pixels only
+    # Flatten spatial dims and mask
+    s_vals = s_lab[:, s_mask]  # [3, N_pixels]
+    t_vals = t_lab[:, t_mask]
 
-    matched_target_image = torch.stack(
-        [target_l, target_a, target_b], 0
-    )  # Forma (C, H, W)
+    s_mean = s_vals.mean(dim=1).view(3, 1, 1)
+    s_std = s_vals.std(dim=1).view(3, 1, 1)
 
-    # Converti da LAB a RGB direttamente su (C, H, W)
-    matched_target_image = lab_to_rgb(
-        matched_target_image, False
-    )  # Converti in RGB direttamente
+    t_mean = t_vals.mean(dim=1).view(3, 1, 1)
+    t_std = t_vals.std(dim=1).view(3, 1, 1)
 
-    # Calcolo dell'immagine finale
-    final_image = (1 - diffslider / 100) * target_image + (
-        diffslider / 100
-    ) * matched_target_image
-    final_image = torch.clamp(
-        final_image * 255, 0, 255
-    )  # Converti in intervallo [0, 255]
+    t_std += 1e-6
 
-    return final_image
+    # 5. Apply Reinhard Transfer
+    t_lab_trans = (t_lab - t_mean) * (s_std / t_std) + s_mean
+
+    # 6. Clamp
+    t_lab_trans[0] = torch.clamp(t_lab_trans[0], 0, 100)
+    t_lab_trans[1] = torch.clamp(t_lab_trans[1], -127, 127)
+    t_lab_trans[2] = torch.clamp(t_lab_trans[2], -127, 127)
+
+    # 7. Convert back
+    result = lab_to_rgb(t_lab_trans, normalize=False)
+    result = torch.clamp(result, 0, 1)
+
+    # 8. Blend
+    alpha = diffslider / 100.0
+    final = (1 - alpha) * t_img + alpha * result
+
+    return torch.clamp(final * 255.0, 0, 255)
 
 
 def histogram_matching_DFL_Orig(source_image, target_image, mask, diffslider):
-    # Converti i tensori Torch in array di tipo float32
-    source_image = source_image.type(torch.float32) / 255.0  # Forma (C, H, W)
-    target_image = target_image.type(torch.float32) / 255.0  # Forma (C, H, W)
-    mask = mask.type(
-        torch.float32
-    ).squeeze()  # Rimuove dimensioni inutili, Forma (H, W)
-    mask_cutoff = 0.2
+    """
+    OPTIMIZED Statistical Color Transfer (Reinhard) using Mask.
+    CRITICAL FIX: Calculates Mean and Std ONLY on valid pixels (mask > 0).
+    This prevents black background pixels from skewing the color statistics.
+    """
 
-    # Aggiungi una dimensione per i canali
-    mask = mask.unsqueeze(0)  # Forma (1, H, W)
+    # 1. Prepare Data
+    s_img = source_image.float() / 255.0
+    t_img = target_image.float() / 255.0
 
-    # Espandi la maschera per coprire tutti i canali
-    source_mask = mask.expand(source_image.shape[0], -1, -1)  # Espande a (C, H, W)
-    target_mask = mask.expand(target_image.shape[0], -1, -1)  # Espande a (C, H, W)
+    # Ensure mask is binary and right shape
+    if mask.dim() == 3 and mask.shape[0] == 1:
+        mask = mask.squeeze(0)  # [H, W]
+    valid_mask = mask > 0.05  # Threshold to exclude soft edges/noise
 
-    # Converti da RGB a LAB (richiede un formato specifico)
-    source = rgb_to_lab(
-        source_image, False
-    )  # Converti in LAB direttamente su (C, H, W)
-    target = rgb_to_lab(
-        target_image, False
-    )  # Converti in LAB direttamente su (C, H, W)
+    # If mask is empty, return original
+    if valid_mask.sum() == 0:
+        return target_image
 
-    # Applica la maschera
-    source_input = source.clone()
-    if source_mask is not None:
-        # Usa la maschera espansa per coprire tutte le dimensioni
-        source_input[source_mask < mask_cutoff] = 0.0
+    # 2. Convert to LAB
+    s_lab = rgb_to_lab(s_img, normalize=False)
+    t_lab = rgb_to_lab(t_img, normalize=False)
 
-    target_input = target.clone()
-    if target_mask is not None:
-        target_input[target_mask < mask_cutoff] = 0.0
+    # 3. Calculate Stats on VALID PIXELS ONLY
+    # We flatten the spatial dimensions and select only masked pixels
+    # Shape becomes [3, N_Valid_Pixels]
+    s_masked = s_lab[:, valid_mask]
+    t_masked = t_lab[:, valid_mask]
 
-    # Calcola media e deviazione standard per canali L, a, b direttamente su (C, H, W)
-    target_l_mean, target_l_std = target_input[0].mean(), target_input[0].std()
-    target_a_mean, target_a_std = target_input[1].mean(), target_input[1].std()
-    target_b_mean, target_b_std = target_input[2].mean(), target_input[2].std()
+    # Calculate Mean and Std along the pixel dimension (dim=1)
+    # Reshape to [3, 1, 1] for broadcasting back to image
+    s_mean = s_masked.mean(dim=1).view(3, 1, 1)
+    s_std = s_masked.std(dim=1).view(3, 1, 1)
 
-    source_l_mean, source_l_std = source_input[0].mean(), source_input[0].std()
-    source_a_mean, source_a_std = source_input[1].mean(), source_input[1].std()
-    source_b_mean, source_b_std = source_input[2].mean(), source_input[2].std()
+    t_mean = t_masked.mean(dim=1).view(3, 1, 1)
+    t_std = t_masked.std(dim=1).view(3, 1, 1)
 
-    # Scala con le deviazioni standard reciproche del fattore proposto dal paper
-    target_l = (target[0] - target_l_mean) * (
-        source_l_std / target_l_std
-    ) + source_l_mean
-    target_a = (target[1] - target_a_mean) * (
-        source_a_std / target_a_std
-    ) + source_a_mean
-    target_b = (target[2] - target_b_mean) * (
-        source_b_std / target_b_std
-    ) + source_b_mean
+    t_std += 1e-6  # Safety
 
-    # Clamping dei valori
-    target_l = torch.clamp(target_l, 0, 100)
-    target_a = torch.clamp(target_a, -127, 127)
-    target_b = torch.clamp(target_b, -127, 127)
+    # 4. Apply Transfer globally
+    # Ideally we apply it only to masked area, but blending handles the rest.
+    # Applying globally ensures smooth transition at edges.
+    t_lab_trans = (t_lab - t_mean) * (s_std / t_std) + s_mean
 
-    matched_target_image = torch.stack(
-        [target_l, target_a, target_b], 0
-    )  # Forma (C, H, W)
+    # 5. Clamp LAB values
+    t_lab_trans[0] = torch.clamp(t_lab_trans[0], 0, 100)
+    t_lab_trans[1] = torch.clamp(t_lab_trans[1], -127, 127)
+    t_lab_trans[2] = torch.clamp(t_lab_trans[2], -127, 127)
 
-    # Converti da LAB a RGB direttamente su (C, H, W)
-    matched_target_image = lab_to_rgb(
-        matched_target_image, False
-    )  # Converti in RGB direttamente
+    # 6. Convert back
+    result = lab_to_rgb(t_lab_trans, normalize=False)
+    result = torch.clamp(result, 0, 1)
 
-    # Calcolo dell'immagine finale
-    final_image = (1 - diffslider / 100) * target_image + (
-        diffslider / 100
-    ) * matched_target_image
-    final_image = torch.clamp(
-        final_image * 255, 0, 255
-    )  # Converti in intervallo [0, 255]
+    # 7. Blend
+    alpha = diffslider / 100.0
+    final = (1 - alpha) * t_img + alpha * result
 
-    return final_image
+    return torch.clamp(final * 255.0, 0, 255)
+
+
+def apply_adain_color_transfer(
+    source: torch.Tensor,
+    target: torch.Tensor,
+    mask: torch.Tensor,
+    blend_amount: float = 100.0,
+    calc_mask: torch.Tensor = None,
+) -> torch.Tensor:
+    """
+    Applies statistical color transfer (AdaIN) from the target to the source,
+    using a restricted core mask for calculating statistics, and the full soft mask
+    for the final blending. Prevents color banding, edge pollution, and teeth coloration.
+
+    Args:
+        source: Tensor [C, H, W] in Float (0.0 - 255.0).
+        target: Tensor [C, H, W] in Float (0.0 - 255.0).
+        mask: Tensor [1, H, W] boolean or float (Used for BLENDING).
+        blend_amount: Float 0.0 to 100.0.
+        calc_mask: Optional Tensor [1, H, W]. If None, auto-generates an eroded core mask.
+    """
+    import torch.nn.functional as F
+
+    eps = 1e-6
+
+    # Ensure tensors are float
+    src_f = source.float()
+    tgt_f = target.float()
+
+    # Format blending mask
+    if mask.dtype == torch.bool:
+        mask = mask.float()
+    if mask.dim() == 2:
+        mask = mask.unsqueeze(0)
+
+    # 1. PREPARE THE CALCULATION MASK (Statistics Core)
+    if calc_mask is None:
+        # Auto-generate a safe core mask by heavily eroding the soft mask.
+        # Negative max_pool2d is a highly optimized mathematical erosion trick.
+        # Kernel 31 erodes ~15 pixels inward, completely removing blurry edges.
+        core_mask = -F.max_pool2d(
+            -mask.unsqueeze(0), kernel_size=31, stride=1, padding=15
+        ).squeeze(0)
+
+        # Binarize to ensure no semi-transparent background pixels corrupt the math
+        calc_mask_ready = (core_mask > 0.8).float()
+
+        # Failsafe: If the face is so small that erosion destroyed the mask, revert to original
+        if torch.sum(calc_mask_ready) < 100:
+            calc_mask_ready = mask
+    else:
+        if calc_mask.dtype == torch.bool:
+            calc_mask = calc_mask.float()
+        if calc_mask.dim() == 2:
+            calc_mask = calc_mask.unsqueeze(0)
+        calc_mask_ready = calc_mask
+
+    calc_mask_sum = torch.sum(calc_mask_ready, dim=(1, 2), keepdim=True) + eps
+
+    # 2. Compute Means (Color/Brightness) strictly on the Core Mask
+    src_mean = (
+        torch.sum(src_f * calc_mask_ready, dim=(1, 2), keepdim=True) / calc_mask_sum
+    )
+    tgt_mean = (
+        torch.sum(tgt_f * calc_mask_ready, dim=(1, 2), keepdim=True) / calc_mask_sum
+    )
+
+    # 3. Compute Variances (Contrast) strictly on the Core Mask
+    src_var = (
+        torch.sum(calc_mask_ready * (src_f - src_mean) ** 2, dim=(1, 2), keepdim=True)
+        / calc_mask_sum
+    )
+    tgt_var = (
+        torch.sum(calc_mask_ready * (tgt_f - tgt_mean) ** 2, dim=(1, 2), keepdim=True)
+        / calc_mask_sum
+    )
+
+    src_std = torch.sqrt(src_var + eps)
+    tgt_std = torch.sqrt(tgt_var + eps)
+
+    # 4. Apply AdaIN transformation to the ENTIRE source image
+    src_normalized = (src_f - src_mean) / src_std
+    src_matched = (src_normalized * tgt_std) + tgt_mean
+
+    # 5. Blend based on user amount and the SOFT APPLICATION MASK
+    alpha = blend_amount / 100.0
+    result = (src_matched * mask * alpha) + (src_f * (1.0 - (mask * alpha)))
+
+    return torch.clamp(result, 0.0, 255.0)
 
 
 def transform_t(img, center, output_size, scale, rotation):
@@ -3019,3 +3137,51 @@ def get_matrix_lmk_rotation_translation(R, t):
     M = t.params[0:2]
 
     return M
+
+
+def calc_face_yaw_pitch(kps):
+    """
+    Estimates the Yaw (Left/Right) and Pitch (Up/Down) angles based on 5 landmarks.
+    Returns values roughly in degrees.
+    """
+    # kps order: 0:Left Eye, 1:Right Eye, 2:Nose, 3:Left Mouth, 4:Right Mouth
+    le = kps[0]
+    re = kps[1]
+    n = kps[2]
+    lm = kps[3]
+    rm = kps[4]
+
+    # --- YAW CALCULATION (Left - Right) ---
+    # Compare distance from Nose to Left Eye vs Nose to Right Eye
+    # We use horizontal distances (x-coordinates)
+    dist_n_le = n[0] - le[0]
+    dist_re_n = re[0] - n[0]
+
+    # Avoid division by zero
+    diff = dist_n_le - dist_re_n
+    sum_dist = dist_n_le + dist_re_n + 1e-6
+
+    # Ratio roughly between -1 and 1. Scaled to approx degrees.
+    # Positive = Looking Right (User's Right, Image Left)
+    # Negative = Looking Left
+    yaw = (diff / sum_dist) * 90.0
+
+    # --- PITCH CALCULATION (Up - Down) ---
+    # Compare center of eyes to nose vs nose to center of mouth
+    eye_center_y = (le[1] + re[1]) / 2
+    mouth_center_y = (lm[1] + rm[1]) / 2
+
+    dist_eye_nose = n[1] - eye_center_y
+    dist_nose_mouth = mouth_center_y - n[1]
+
+    # Typical ratio is around 0.8 to 1.0 for frontal
+    # If eye-nose distance decreases -> Looking Up
+    # If eye-nose distance increases -> Looking Down
+
+    ratio = dist_eye_nose / (dist_nose_mouth + 1e-6)
+
+    # Heuristic adjustment to center around 0 degrees
+    # This is a rough approximation suitable for masking triggers
+    pitch = (1.0 - ratio) * 90.0
+
+    return yaw, pitch

@@ -196,7 +196,7 @@ class TargetMediaCardButton(CardButton):
         main_window.video_processor.current_frame_number = 0
         main_window.video_processor.media_path = self.media_path
         main_window.parameters = {}
-        main_window.selected_target_face_id = False
+        main_window.selected_target_face_id = None
         main_window.video_processor.current_frame = []
 
         # Release the previous media_capture if it exists
@@ -208,10 +208,15 @@ class TargetMediaCardButton(CardButton):
         rotation_angle = 0  # MODIFICATION: Added rotation variable
 
         if self.file_type == "video":
-            # MODIFICATION: Get video rotation metadata before loading
+            # Get video rotation metadata before loading
             rotation_angle = get_video_rotation(self.media_path)
+            # Check for Variable Frame Rate (VFR) and warn the user
+            misc_helpers.check_and_warn_vfr(self.media_path)
             main_window.video_processor.media_rotation = rotation_angle
             media_capture = cv2.VideoCapture(self.media_path)
+            # Explicitly enable OpenCV's auto-rotation to let it handle metadata natively
+            if hasattr(cv2, "CAP_PROP_ORIENTATION_AUTO"):
+                media_capture.set(cv2.CAP_PROP_ORIENTATION_AUTO, 1)
             if not media_capture.isOpened():
                 print(f"[ERROR] Error opening video {self.media_path}")
                 return  # If the video cannot be opened, exit the function
@@ -223,6 +228,8 @@ class TargetMediaCardButton(CardButton):
             self.media_capture = media_capture
             main_window.video_processor.fps = media_capture.get(cv2.CAP_PROP_FPS)
             main_window.video_processor.max_frame_number = max_frames_number
+            main_window.video_processor.current_frame_number = 0
+            main_window.video_processor.next_frame_to_display = 0
 
         elif self.file_type == "image":
             frame = misc_helpers.read_image_file(self.media_path)
@@ -277,7 +284,7 @@ class TargetMediaCardButton(CardButton):
 
         # Set Parameter widget values to default
         common_widget_actions.set_widgets_values_using_face_id_parameters(
-            main_window=main_window, face_id=False
+            main_window=main_window, face_id=None
         )
 
         main_window.loading_new_media = True
@@ -312,7 +319,7 @@ class TargetMediaCardButton(CardButton):
             main_window.video_processor.current_frame_number = 0
             main_window.video_processor.media_path = False
             main_window.parameters = {}
-            main_window.selected_target_face_id = False
+            main_window.selected_target_face_id = None
 
             main_window.video_processor.media_capture = False
             main_window.video_processor.current_frame = []
@@ -380,11 +387,11 @@ class TargetMediaCardButton(CardButton):
                 # Windows - use full path to explorer.exe to avoid PATH issues
                 try:
                     # Method 1: Using subprocess without shell (more secure and reliable)
-                    subprocess.Popen(["explorer", "/select,", normalized_path])
+                    subprocess.Popen(["explorer", f"/select,{normalized_path}"])
                 except FileNotFoundError:
                     # Fallback: Use full path to explorer.exe
                     subprocess.Popen(
-                        [r"C:\Windows\explorer.exe", "/select,", normalized_path]
+                        [r"C:\Windows\explorer.exe", f"/select,{normalized_path}"]
                     )
             elif sys.platform == "darwin":
                 # macOS
@@ -446,6 +453,15 @@ class TargetFaceCardButton(CardButton):
             str, np.ndarray
         ] = {}  # Key: embedding_swap_model, Value: np.ndarray
         self.assigned_kv_map: Dict | None = None
+
+        # Face re-aging: aged versions of embedding/KV map (populated by Apply button)
+        self.aged_input_embedding: Dict[str, np.ndarray] = {}
+        self.aged_kv_map: Dict | None = None
+
+        # Auto-mouth expression: per-face EMA state
+        from app.processors.mouth_openness import MouthOpennessState
+
+        self.mouth_openness_state: MouthOpennessState = MouthOpennessState()
 
         self.setCheckable(True)
         self.clicked.connect(self.load_target_face)
@@ -627,6 +643,8 @@ class TargetFaceCardButton(CardButton):
 
         main_window.selected_target_face_id = self.face_id
         main_window.current_kv_tensors_map = self.assigned_kv_map
+        video_control_actions.refresh_issue_frames_for_selected_face(main_window)
+        video_control_actions.update_scan_review_button_states(main_window)
 
         common_widget_actions.set_widgets_values_using_face_id_parameters(
             main_window=main_window, face_id=self.face_id
@@ -697,26 +715,26 @@ class TargetFaceCardButton(CardButton):
         self.kv_data_color_transferred = False
 
         if denoiser_on and self.assigned_input_faces:
-            first_input_face_id = list(self.assigned_input_faces.keys())[0]
-            input_face_button = main_window.input_faces.get(first_input_face_id)
+            all_kv_maps = []
 
-            if input_face_button:
-                # This lock ensures that only one thread (either the main thread
-                # during job loading, or a FrameWorker) can
-                # check the cache and generate the K/V map at a time.
+            # 1. Iterate through ALL selected faces instead of just the first one
+            for input_face_id in self.assigned_input_faces.keys():
+                input_face_button = main_window.input_faces.get(input_face_id)
+                if not input_face_button:
+                    continue
+
+                # This lock ensures that only one thread can check the cache and generate the K/V map at a time.
                 with main_window.models_processor.kv_extraction_lock:
-                    # 1. Check the cache *inside* the lock.
-                    # If another thread generated it while we were waiting,
-                    # we can use it directly.
+                    # Check the cache *inside* the lock.
                     if (
                         hasattr(input_face_button, "kv_map")
                         and input_face_button.kv_map is not None
+                        and len(input_face_button.kv_map) > 0
                     ):
-                        # Cache found! Assign and exit the lock.
-                        self.assigned_kv_map = input_face_button.kv_map
+                        # Cache found!
+                        all_kv_maps.append(input_face_button.kv_map)
                     else:
-                        # Cache missing. We are the first thread.
-                        # Generate, cache, and assign the map.
+                        # Cache missing. Generate, cache, and assign the map.
                         print(
                             f"[INFO] Generating K/V map for input face: {input_face_button.media_path}"
                         )
@@ -743,15 +761,56 @@ class TargetFaceCardButton(CardButton):
                             kv_map = models_processor.get_kv_map_for_face(pil_img)
 
                             # Cache and assign
-                            input_face_button.kv_map = kv_map
-                            self.assigned_kv_map = kv_map
-                            print("[INFO] Generated and cached K/V map.")
+                            if kv_map:
+                                input_face_button.kv_map = kv_map
+                                all_kv_maps.append(kv_map)
+                                print("[INFO] Generated and cached K/V map.")
+                            else:
+                                input_face_button.kv_map = {}
 
                         except Exception as e:
                             print(f"[ERROR] Error generating K/V map: {e}")
                             traceback.print_exc()
                             input_face_button.kv_map = {}  # Empty cache in case of error
-                            self.assigned_kv_map = {}
+
+            # 2. Merge all collected KV Maps
+            if all_kv_maps:
+                if len(all_kv_maps) == 1:
+                    self.assigned_kv_map = all_kv_maps[0]
+                else:
+                    print(
+                        f"[INFO] Merging K/V maps across {len(all_kv_maps)} input faces..."
+                    )
+                    merged_kv_map = {}
+                    first_map = all_kv_maps[0]
+
+                    # KV Maps are dictionaries of dictionaries containing PyTorch Tensors
+                    for layer_key, layer_dict in first_map.items():
+                        merged_kv_map[layer_key] = {}
+                        for kv_key in layer_dict.keys():
+                            tensors_to_merge = []
+                            for m in all_kv_maps:
+                                if layer_key in m and kv_key in m[layer_key]:
+                                    tensors_to_merge.append(m[layer_key][kv_key])
+
+                            if tensors_to_merge:
+                                # Stack all tensors along a new dimension (dim=0)
+                                stacked = torch.stack(tensors_to_merge, dim=0)
+
+                                # Use the same merging method as for embeddings (Mean or Median)
+                                if (
+                                    control.get("EmbMergeMethodSelection", "Mean")
+                                    == "Median"
+                                ):
+                                    merged_tensor = torch.median(stacked, dim=0).values
+                                else:
+                                    merged_tensor = torch.mean(stacked, dim=0)
+
+                                merged_kv_map[layer_key][kv_key] = merged_tensor
+
+                    self.assigned_kv_map = merged_kv_map
+            else:
+                self.assigned_kv_map = None
 
         if main_window.selected_target_face_id == self.face_id:
             main_window.current_kv_tensors_map = self.assigned_kv_map
@@ -816,6 +875,8 @@ class TargetFaceCardButton(CardButton):
         main_window.target_faces.pop(self.face_id)
         # Pop parameters using the target's face_id
         main_window.parameters.pop(self.face_id)
+        if hasattr(main_window, "issue_frames_by_face"):
+            main_window.issue_frames_by_face.pop(str(self.face_id), None)
         # Click and Select the first target face if target_faces are not empty
         if main_window.target_faces:
             list(main_window.target_faces.values())[0].click()
@@ -823,14 +884,29 @@ class TargetFaceCardButton(CardButton):
         # Otherwise reset parameter widgets value to the default
         else:
             common_widget_actions.set_widgets_values_using_face_id_parameters(
-                main_window, face_id=False
+                main_window, face_id=None
             )
-            main_window.selected_target_face_id = False
+            main_window.selected_target_face_id = None
+            video_control_actions.refresh_issue_frames_for_selected_face(main_window)
+        video_control_actions.update_scan_review_button_states(main_window)
 
         video_control_actions.remove_face_parameters_and_control_from_markers(
             main_window, self.face_id
         )  # Remove parameters for the face from all markers
         common_widget_actions.refresh_frame(self.main_window)
+
+        # Explicitly release large data before Qt schedules widget destruction.
+        # KV maps can be 10–100 MB; embeddings are smaller but numpy arrays that
+        # benefit from prompt deallocation.  deleteLater() only schedules the C++
+        # widget object; Python-side attributes survive until GC runs otherwise.
+        self.assigned_kv_map = None
+        self.aged_kv_map = None
+        self.assigned_input_embedding.clear()
+        self.aged_input_embedding.clear()
+        self.embedding_store.clear()
+        self.assigned_input_faces.clear()
+        self.assigned_merged_embeddings.clear()
+
         self.deleteLater()
 
     def remove_assigned_input_face(self, input_face_id):
@@ -1085,11 +1161,11 @@ class InputFaceCardButton(CardButton):
                 # Windows - use full path to explorer.exe to avoid PATH issues
                 try:
                     # Method 1: Using subprocess without shell (more secure and reliable)
-                    subprocess.Popen(["explorer", "/select,", normalized_path])
+                    subprocess.Popen(["explorer", f"/select,{normalized_path}"])
                 except FileNotFoundError:
                     # Fallback: Use full path to explorer.exe
                     subprocess.Popen(
-                        [r"C:\Windows\explorer.exe", "/select,", normalized_path]
+                        [r"C:\Windows\explorer.exe", f"/select,{normalized_path}"]
                     )
             elif sys.platform == "darwin":
                 # macOS
@@ -1377,7 +1453,110 @@ class LoadingDialog(QtWidgets.QDialog):
 
 # Custom progress dialog
 class ProgressDialog(QtWidgets.QProgressDialog):
-    pass
+    """
+    QProgressDialog with confirmation-before-cancel behavior that works with PySide6.
+
+    IMPORTANT:
+    - Do NOT rely on overriding cancel()/wasCanceled(); QProgressDialog's cancel is not virtual.
+    - Use the `canceled` signal to intercept cancellation.
+    - Batch code must check confirmedCanceled() instead of wasCanceled().
+    """
+
+    def __init__(self, *args, **kwargs):
+        super().__init__(*args, **kwargs)
+
+        self._confirmed_cancelled = False
+        self._confirm_dialog_open = False
+
+        # Prevent Qt from auto-closing/resetting the dialog unexpectedly
+        try:
+            self.setAutoClose(False)
+        except Exception:
+            pass
+        try:
+            self.setAutoReset(False)
+        except Exception:
+            pass
+
+        # Ensure cancel text exists
+        try:
+            self.setCancelButtonText("Cancel")
+        except Exception:
+            pass
+
+        # Intercept Qt's cancel flow via signal (this is reliable in PySide6)
+        self.canceled.connect(self._on_canceled)
+
+    def confirmedCanceled(self) -> bool:
+        """Return True only if the user confirmed stopping."""
+        return self._confirmed_cancelled
+
+    def _on_canceled(self):
+        """
+        Qt has already marked the dialog as canceled and may hide it.
+        We show confirmation ASAP (queued to the event loop) and then either:
+        - confirm: keep _confirmed_cancelled=True (batch loop will stop)
+        - decline: reset & re-show dialog, and keep _confirmed_cancelled=False (batch continues)
+        """
+        if self._confirmed_cancelled:
+            return
+        if self._confirm_dialog_open:
+            return
+
+        # Defer confirmation to next event loop turn to avoid showing behind/after close
+        QtCore.QTimer.singleShot(0, self._show_confirm_and_apply)
+
+    def _show_confirm_and_apply(self):
+        if self._confirmed_cancelled:
+            return
+        if self._confirm_dialog_open:
+            return
+
+        self._confirm_dialog_open = True
+        try:
+            parent = self.parent() or self
+
+            box = QtWidgets.QMessageBox(parent)
+            box.setIcon(QtWidgets.QMessageBox.Warning)
+            box.setWindowTitle("Confirm stop")
+            box.setText("Stop the current task?")
+            box.setInformativeText(
+                "Processing will stop immediately.\nOutputs may be incomplete."
+            )
+            box.setStandardButtons(QtWidgets.QMessageBox.Yes | QtWidgets.QMessageBox.No)
+            box.setDefaultButton(QtWidgets.QMessageBox.No)
+
+            # Force on-top to avoid “dialog appears only after main window closes”
+            try:
+                box.setWindowFlag(QtCore.Qt.WindowStaysOnTopHint, True)
+            except Exception:
+                pass
+
+            ret = box.exec()
+
+            if ret == QtWidgets.QMessageBox.Yes:
+                self._confirmed_cancelled = True
+                # leave as-is; batch loop will see confirmedCanceled()==True and stop
+                return
+
+            # User declined: undo the cancel state and re-show progress dialog
+            self._confirmed_cancelled = False
+
+            # reset() clears internal canceled/hidden state; safe even if already hidden
+            try:
+                self.reset()
+            except Exception:
+                pass
+
+            try:
+                self.show()
+                self.raise_()
+                self.activateWindow()
+            except Exception:
+                pass
+
+        finally:
+            self._confirm_dialog_open = False
 
 
 class LoadLastWorkspaceDialog(QtWidgets.QDialog):
@@ -1441,7 +1620,7 @@ class JobLoadingDialog(QtWidgets.QDialog):
 
 
 class SaveJobDialog(QtWidgets.QDialog):
-    def __init__(self, parent=None):
+    def __init__(self, parent=None, input_filename=""):
         super().__init__(parent)
         self.setWindowTitle("Save Job")
         self.setWindowIcon(QtGui.QIcon(":/media/media/visomaster_small.png"))
@@ -1449,7 +1628,8 @@ class SaveJobDialog(QtWidgets.QDialog):
         # Widgets
         self.job_name_label = QtWidgets.QLabel("Job Name:")
         self.job_name_edit = QtWidgets.QLineEdit(self)
-        self.job_name_edit.setPlaceholderText("Enter job name")
+        # self.job_name_edit.setPlaceholderText("Enter job name")
+        self.job_name_edit.setText(input_filename)
 
         self.set_output_name_checkbox = QtWidgets.QCheckBox(
             "Use job name for output file name", self
@@ -1458,7 +1638,8 @@ class SaveJobDialog(QtWidgets.QDialog):
 
         self.output_name_label = QtWidgets.QLabel("Output File Name:")
         self.output_name_edit = QtWidgets.QLineEdit(self)
-        self.output_name_edit.setPlaceholderText("Leave blank for default")
+        # self.output_name_edit.setPlaceholderText("Leave blank for default")
+        self.output_name_edit.setText(input_filename)
 
         # Button box
         QBtn = QtWidgets.QDialogButtonBox.Ok | QtWidgets.QDialogButtonBox.Cancel
@@ -1767,9 +1948,7 @@ class ParameterSlider(QtWidgets.QSlider, ParametersWidget):
 
     def mousePressEvent(self, event):
         """Handle the mouse press event to update the slider value immediately."""
-        if (
-            event.button() == QtCore.Qt.LeftButton
-        ):  # Verifica che sia il pulsante sinistro del mouse
+        if event.button() == QtCore.Qt.MouseButton.LeftButton:
             self.setValue(self.pos_to_value(event.pos().x()))
 
         # Chiama il metodo della classe base per gestire il resto dell'evento
@@ -1933,10 +2112,7 @@ class ParameterDecimalSlider(QtWidgets.QSlider, ParametersWidget):
 
     def mousePressEvent(self, event):
         """Handle the mouse press event to update the slider value immediately."""
-        if (
-            event.button() == QtCore.Qt.LeftButton
-        ):  # Verifica che sia il pulsante sinistro del mouse
-            # Aggiorna immediatamente il valore dello slider
+        if event.button() == QtCore.Qt.MouseButton.LeftButton:
             self.setValue(self.pos_to_value(event.pos().x()))
 
         # Chiama il metodo della classe base per gestire il resto dell'evento

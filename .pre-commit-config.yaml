@@ -43,7 +43,7 @@ repos:
         args: ['--maxkb=4096']
 
 -   repo: https://github.com/astral-sh/ruff-pre-commit
-    rev: 'v0.14.0'
+    rev: 'v0.15.4'
     hooks:
     -   id: ruff
         args: [--fix, --exit-non-zero-on-fix]
@@ -51,19 +51,24 @@ repos:
             (?x)^(
                 app/ui/core/main_window\.py|
                 app/ui/core/media_rc\.py|
-                app/processors/external/.*
+                app/processors/external/.*|
+                custom_kernels/.*
             )$
     -   id: ruff-format
         exclude: *exclude_files
 
 -   repo: https://github.com/pre-commit/mirrors-mypy
-    rev: 'v1.18.2'
+    rev: 'v1.19.1'
     hooks:
     -   id: mypy
         additional_dependencies:
           - types-Pillow
           - types-requests
           - types-PyYAML
+        args:
+          # Suppress the "bodies of untyped functions are not checked" note.
+          # This is informational-only (exit code 0) but clutters commit output.
+          - --disable-error-code=annotation-unchecked
         exclude: *exclude_files
 
 # ===================================================================
@@ -75,7 +80,7 @@ repos:
     -   id: python-no-log-warn
 
 #-   repo: https://github.com/asottile/pyupgrade
-#    rev: v3.21.0
+#    rev: v3.21.2
 #    hooks:
 #    -   id: pyupgrade
 #        args: [--py311-plus]

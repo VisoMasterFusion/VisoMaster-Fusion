@@ -1,0 +1,10 @@
+# Build artifacts — only the compiled .pyd is tracked
+*.lib
+*.exp
+*.o
+*.obj
+build.ninja
+.ninja_deps
+.ninja_log
+*.cu
+*.cpp
