@@ -1145,7 +1145,9 @@ def prompt_job_name(main_window: "MainWindow"):
             return
 
     output_folder = str(main_window.control.get("OutputMediaFolder", "")).strip()
-    if not output_folder:
+    if not output_folder and not main_window.control.get(
+        "OutputToTargetLocationToggle", False
+    ):
         QMessageBox.warning(
             main_window,
             "Workspace Not Ready",

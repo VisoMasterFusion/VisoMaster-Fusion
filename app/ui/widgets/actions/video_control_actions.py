@@ -671,7 +671,9 @@ def record_video(main_window: "MainWindow", checked: bool):
             main_window.buttonMediaRecord.blockSignals(False)
             set_record_button_icon_to_stop(main_window)
             return
-        if not str(main_window.control.get("OutputMediaFolder", "")).strip():
+        if not str(main_window.control.get("OutputMediaFolder", "")).strip() and not main_window.control.get(
+            "OutputToTargetLocationToggle", False
+        ):
             common_widget_actions.create_and_show_messagebox(
                 main_window,
                 "No Output Folder Selected",
@@ -1068,7 +1070,9 @@ def process_compare_checkboxes(main_window: "MainWindow"):
 
 
 def save_current_frame_to_file(main_window: "MainWindow"):
-    if not main_window.outputFolderLineEdit.text():
+    if not main_window.outputFolderLineEdit.text() and not main_window.control.get(
+        "OutputToTargetLocationToggle", False
+    ):
         common_widget_actions.create_and_show_messagebox(
             main_window,
             "No Output Folder Selected",
@@ -1076,15 +1080,39 @@ def save_current_frame_to_file(main_window: "MainWindow"):
             main_window,
         )
         return
+    output_folder = str(main_window.control.get("OutputMediaFolder", "")).strip()
+    if main_window.control.get("OutputToTargetLocationToggle", False):
+        output_folder = os.path.dirname(str(main_window.video_processor.media_path))
+    if main_window.control.get("ClusterOutputBySourceToggle", False):
+        target_face_button = getattr(main_window, "cur_selected_target_face_button", None)
+        assigned_embeddings = (
+            getattr(target_face_button, "assigned_merged_embeddings", None)
+            if target_face_button
+            else None
+        )
+        embedding_id = next(iter(assigned_embeddings), None) if assigned_embeddings else None
+        embedding_button = (
+            main_window.merged_embeddings.get(embedding_id)
+            if embedding_id is not None
+            else None
+        )
+        embedding_name = (
+            str(getattr(embedding_button, "embedding_name", "")).strip()
+            if embedding_button is not None
+            else ""
+        )
+        if embedding_name:
+            output_folder = os.path.join(output_folder, embedding_name)
     frame = main_window.video_processor.current_frame.copy()
     image_format = "image"
     if main_window.control["ImageFormatToggle"]:
         image_format = "jpegimage"
 
     if isinstance(frame, numpy.ndarray):
+        os.makedirs(output_folder, exist_ok=True)
         save_filename = misc_helpers.get_output_file_path(
             main_window.video_processor.media_path,
-            str(main_window.control["OutputMediaFolder"]),
+            output_folder,
             media_type=image_format,
         )
         if save_filename:
@@ -1102,6 +1130,7 @@ def save_current_frame_to_file(main_window: "MainWindow"):
                 "Image Saved",
                 f"Saved Current Image to file: {save_filename}",
             )
+            main_window.video_processor.last_output_folder = output_folder
 
     else:
         common_widget_actions.create_and_show_messagebox(
@@ -1125,17 +1154,7 @@ def process_batch_images(main_window: "MainWindow", process_all_faces: bool):
     - Images: Applies current UI settings (target faces, inputs) to the image.
     - Videos: Applies current UI settings (markers, inputs, etc.) by running a full 'record' operation.
     """
-    # 1. Check if output folder is set
-    if not main_window.outputFolderLineEdit.text():
-        common_widget_actions.create_and_show_messagebox(
-            main_window,
-            "No Output Folder Selected",
-            "Please select an Output folder to save the Images/Videos before Saving/Recording!",
-            main_window,
-        )
-        return
-
-    # 2. Collect all media paths from the target list
+    # 1. Collect all media paths from the target list
     media_files_to_process = []  # List of tuples: (media_path, file_type)
     num_images = 0
     num_videos = 0
@@ -1164,12 +1183,23 @@ def process_batch_images(main_window: "MainWindow", process_all_faces: bool):
                 media_files_to_process.append((media_path, file_type))
                 num_videos += 1
 
-    # 3. Check if any media files were found
+    # 2. Check if any media files were found
     if not media_files_to_process:
         common_widget_actions.create_and_show_messagebox(
             main_window,
             "No Media Found",
             "No compatible images (or videos) found in the target list to process.",
+            main_window,
+        )
+        return
+
+    if not main_window.outputFolderLineEdit.text() and not main_window.control.get(
+        "OutputToTargetLocationToggle", False
+    ):
+        common_widget_actions.create_and_show_messagebox(
+            main_window,
+            "No Output Folder Selected",
+            "Please select an Output folder to save the Images/Videos before Saving/Recording!",
             main_window,
         )
         return
@@ -1376,9 +1406,39 @@ def process_batch_images(main_window: "MainWindow", process_all_faces: bool):
                     image_format = "image"
                     if main_window.control["ImageFormatToggle"]:
                         image_format = "jpegimage"
+                    output_folder = str(main_window.control.get("OutputMediaFolder", "")).strip()
+                    if main_window.control.get("OutputToTargetLocationToggle", False):
+                        output_folder = os.path.dirname(str(media_path))
+                    if main_window.control.get("ClusterOutputBySourceToggle", False):
+                        target_face_button = getattr(
+                            main_window, "cur_selected_target_face_button", None
+                        )
+                        assigned_embeddings = (
+                            getattr(target_face_button, "assigned_merged_embeddings", None)
+                            if target_face_button
+                            else None
+                        )
+                        embedding_id = (
+                            next(iter(assigned_embeddings), None)
+                            if assigned_embeddings
+                            else None
+                        )
+                        embedding_button = (
+                            main_window.merged_embeddings.get(embedding_id)
+                            if embedding_id is not None
+                            else None
+                        )
+                        embedding_name = (
+                            str(getattr(embedding_button, "embedding_name", "")).strip()
+                            if embedding_button is not None
+                            else ""
+                        )
+                        if embedding_name:
+                            output_folder = os.path.join(output_folder, embedding_name)
+                    os.makedirs(output_folder, exist_ok=True)
                     save_filename = misc_helpers.get_output_file_path(
                         media_path,
-                        str(main_window.control["OutputMediaFolder"]),
+                        output_folder,
                         media_type=image_format,
                     )
 
@@ -1393,6 +1453,7 @@ def process_batch_images(main_window: "MainWindow", process_all_faces: bool):
                         else:
                             pil_image.save(save_filename, "PNG")
                         processed_count += 1
+                        main_window.video_processor.last_output_folder = output_folder
                     else:
                         raise Exception("Could not generate output filename.")
 

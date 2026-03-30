@@ -58,6 +58,26 @@ SETTINGS_LAYOUT_DATA: Any = {  # noqa: F811
             "help": "Update parameters and controls when seeking the video to reflect the options status for it's position.",
         },
     },
+    "Output Settings": {
+        "OpenOutputToggle": {
+            "level": 1,
+            "label": "Open Output Folder After Recording",
+            "default": False,
+            "help": "Opens the output folder after recording ends.",
+        },
+        "OutputToTargetLocationToggle": {
+            "level": 1,
+            "label": "Output to Target Location",
+            "default": False,
+            "help": "Save processed output next to the current target media instead of the global output folder.",
+        },
+        "ClusterOutputBySourceToggle": {
+            "level": 1,
+            "label": "Cluster Output by Source Name",
+            "default": False,
+            "help": "Save processed output into a subfolder named after the selected merged embedding.",
+        },
+    },
     "Video Playback Settings": {
         "VideoPlaybackCustomFpsToggle": {
             "level": 1,
@@ -132,12 +152,6 @@ SETTINGS_LAYOUT_DATA: Any = {  # noqa: F811
             "label": "Frame resize to 1920*1080",
             "default": False,
             "help": "Select to resize the video to 1920*1080 (only on 16/9 format)",
-        },
-        "OpenOutputToggle": {
-            "level": 1,
-            "label": "Open Output Folder After Recording",
-            "default": False,
-            "help": "Opens the output folder after recording ends.",
         },
         "HDREncodeToggle": {
             "level": 1,
