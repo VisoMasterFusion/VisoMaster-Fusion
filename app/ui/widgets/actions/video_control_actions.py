@@ -561,14 +561,17 @@ def add_scan_review_controls(main_window: "MainWindow"):
         lambda checked: set_scan_tools_expanded(main_window, checked)
     )
     main_window.scanToolsToggleButton = toggle_button
-    media_layout = getattr(
-        main_window,
-        "mediaControlsTransportLayout",
-        main_window.horizontalLayoutMediaButtons,
-    )
-    media_layout.addWidget(toggle_button)
-    if hasattr(main_window, "_sync_media_controls_balance"):
-        main_window._sync_media_controls_balance()
+    if hasattr(main_window, "_reposition_scan_tools_toggle_button"):
+        main_window._reposition_scan_tools_toggle_button()
+    else:
+        media_layout = getattr(
+            main_window,
+            "mediaControlsTransportLayout",
+            main_window.horizontalLayoutMediaButtons,
+        )
+        media_layout.addWidget(toggle_button)
+        if hasattr(main_window, "_sync_media_controls_balance"):
+            main_window._sync_media_controls_balance()
 
     section = QtWidgets.QWidget(main_window)
     section_layout = QtWidgets.QVBoxLayout(section)
@@ -716,6 +719,8 @@ def set_scan_tools_expanded(main_window: "MainWindow", expanded: bool):
         toggle_button.blockSignals(True)
         toggle_button.setChecked(expanded)
         toggle_button.blockSignals(False)
+    if hasattr(main_window, "_reposition_scan_tools_toggle_button"):
+        main_window._reposition_scan_tools_toggle_button()
     if container is not None:
         container.setVisible(expanded)
 
@@ -1312,15 +1317,23 @@ def delete_all_markers(main_window: "MainWindow"):
 
 
 def view_fullscreen(main_window: "MainWindow"):
-    """Toggles the main window between full-screen and normal mode, hiding/showing the menu bar."""
-    if main_window.is_full_screen:
-        main_window.showNormal()  # Exit full-screen mode
-        main_window.menuBar().show()
-    else:
-        main_window.showFullScreen()  # Enter full-screen mode
-        main_window.menuBar().hide()
+    """Toggle fullscreen and restore the previous maximized/normal state on exit."""
+    currently_fullscreen = main_window.isFullScreen() or getattr(
+        main_window, "is_full_screen", False
+    )
 
-    main_window.is_full_screen = not main_window.is_full_screen
+    if currently_fullscreen:
+        if getattr(main_window, "_was_maximized_before_fullscreen", False):
+            main_window.showMaximized()
+        else:
+            main_window.showNormal()
+        main_window.menuBar().show()
+        main_window.is_full_screen = False
+    else:
+        main_window._was_maximized_before_fullscreen = main_window.isMaximized()
+        main_window.showFullScreen()
+        main_window.menuBar().hide()
+        main_window.is_full_screen = True
 
 
 def fit_view_to_current_image(main_window: "MainWindow"):

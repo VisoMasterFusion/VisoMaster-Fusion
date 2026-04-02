@@ -827,14 +827,17 @@ class MainWindow(QtWidgets.QMainWindow, Ui_MainWindow):
             self._move_faces_strip_to_right()
 
     def _normalize_media_control_button_sizes(self):
-        """Match all player control buttons to double the play button width."""
+        """Match media control button widths to a compact transport layout."""
         play_size = self.buttonMediaPlay.sizeHint()
         if not play_size.isValid():
             return
 
-        target_size = QtCore.QSize(play_size.width() * 2, play_size.height())
+        target_size = QtCore.QSize(
+            max(1, int(round(play_size.width() * 1.2))), 
+            play_size.height()
+        )
         marker_size = QtCore.QSize(
-            max(1, int(round(target_size.width() * 0.7))),
+            max(1, int(round(target_size.width() * 0.8))),
             target_size.height(),
         )
         utility_size = QtCore.QSize(
@@ -986,10 +989,7 @@ class MainWindow(QtWidgets.QMainWindow, Ui_MainWindow):
             button.show()
             self.mediaControlsTransportLayout.addWidget(button)
 
-        scan_tools_button = getattr(self, "scanToolsToggleButton", None)
-        if scan_tools_button is not None:
-            scan_tools_button.show()
-            self.mediaControlsTransportLayout.addWidget(scan_tools_button)
+        self._reposition_scan_tools_toggle_button()
 
         self._media_controls_layout_installed = True
         QtCore.QTimer.singleShot(0, self._sync_media_controls_balance)
@@ -1158,6 +1158,53 @@ class MainWindow(QtWidgets.QMainWindow, Ui_MainWindow):
         self._compare_mask_toggle_buttons_installed = True
         self._sync_media_controls_balance()
 
+    def _reposition_scan_tools_toggle_button(self):
+        """Place the Scan Tools toggle in the top-right row or right side of scan row."""
+        button = getattr(self, "scanToolsToggleButton", None)
+        if button is None:
+            return
+
+        cleanup_group = getattr(self, "scanControlsCleanupGroup", None)
+        cleanup_group_layout = cleanup_group.layout() if cleanup_group is not None else None
+        expanded_spacer = getattr(self, "scanToolsExpandedSpacer", None)
+        if expanded_spacer is None:
+            expanded_spacer = QtWidgets.QWidget(self)
+            expanded_spacer.setObjectName("scanToolsExpandedSpacer")
+            expanded_spacer.setFixedWidth(24)
+            expanded_spacer.hide()
+            self.scanToolsExpandedSpacer = expanded_spacer
+
+        candidate_layouts = [
+            getattr(self, "horizontalLayoutMediaButtons", None),
+            getattr(self, "mediaControlsTransportLayout", None),
+            getattr(self, "mediaControlsUtilityLayout", None),
+            getattr(self, "scanControlsLayout", None),
+            cleanup_group_layout,
+        ]
+
+        for layout in candidate_layouts:
+            if layout is not None:
+                layout.removeWidget(button)
+                layout.removeWidget(expanded_spacer)
+
+        if getattr(self, "scan_tools_expanded", False) and cleanup_group_layout is not None:
+            expanded_spacer.show()
+            cleanup_group_layout.addWidget(expanded_spacer)
+            cleanup_group_layout.addWidget(button)
+        else:
+            expanded_spacer.hide()
+            utility_layout = getattr(self, "mediaControlsUtilityLayout", None)
+            if utility_layout is not None:
+                utility_layout.addWidget(button)
+            else:
+                fallback_layout = getattr(self, "mediaControlsTransportLayout", None)
+                if fallback_layout is None:
+                    fallback_layout = self.horizontalLayoutMediaButtons
+                fallback_layout.addWidget(button)
+
+        button.show()
+        self._sync_media_controls_balance()
+
     def _set_panel_visibility(self, panel_key: str, checked: bool):
         """Apply panel visibility from the visible View menu actions."""
         self.panel_visibility_state[panel_key] = checked
@@ -1288,23 +1335,18 @@ class MainWindow(QtWidgets.QMainWindow, Ui_MainWindow):
         self._sync_media_controls_balance()
 
     def _sync_media_controls_balance(self):
-        """Keep left and right side zones equal so the center band stays centered."""
+        """Collapse the unused left-side placeholder and preserve right-side width."""
         left_widget = getattr(self, "mediaControlsLeftWidget", None)
         right_widget = getattr(self, "mediaControlsRightWidget", None)
         if left_widget is None or right_widget is None:
             return
 
-        left_width = max(
-            left_widget.layout().sizeHint().width() if left_widget.layout() else 0,
-            left_widget.minimumSizeHint().width(),
-        )
         right_width = max(
             right_widget.layout().sizeHint().width() if right_widget.layout() else 0,
             right_widget.minimumSizeHint().width(),
         )
-        side_width = max(left_width, right_width)
-        left_widget.setFixedWidth(side_width)
-        right_widget.setFixedWidth(side_width)
+        left_widget.setFixedWidth(0)
+        right_widget.setFixedWidth(right_width)
 
     def _configure_faces_panel_button_column(self):
         """Keep the left-side face buttons matched to the visible target-faces box height."""
