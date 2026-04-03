@@ -698,13 +698,9 @@ def save_current_workspace(
     saved_geometry = main_window.geometry()
     dock_state_source = None
     if is_theatre_mode:
-        saved_is_fullscreen = bool(
-            getattr(main_window, "_was_custom_fullscreen", False)
-        )
+        saved_is_fullscreen = bool(main_window.is_full_screen)
         saved_is_maximized = (
-            bool(getattr(main_window, "_was_maximized", False))
-            if not saved_is_fullscreen
-            else False
+            bool(main_window.isMaximized()) if not saved_is_fullscreen else False
         )
         saved_geometry = getattr(main_window, "_was_normal_geometry", saved_geometry)
         dock_state_source = getattr(main_window, "_saved_window_state", None)

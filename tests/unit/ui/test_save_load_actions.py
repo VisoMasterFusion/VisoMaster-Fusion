@@ -430,7 +430,7 @@ def test_save_workspace_non_theatre_uses_live_window_state(tmp_path):
     assert (saved["x"], saved["y"], saved["width"], saved["height"]) == (5, 6, 700, 500)
 
 
-def test_save_workspace_theatre_from_fullscreen_uses_base_snapshot(tmp_path):
+def test_save_workspace_theatre_from_fullscreen_uses_live_window_state(tmp_path):
     save_path = tmp_path / "workspace.json"
     base_geometry = _FakeGeometry(100, 200, 900, 600)
     main_window = _make_workspace_main_window(
@@ -459,14 +459,14 @@ def test_save_workspace_theatre_from_fullscreen_uses_base_snapshot(tmp_path):
     )
 
 
-def test_save_workspace_theatre_from_maximized_uses_base_snapshot(tmp_path):
+def test_save_workspace_theatre_from_maximized_uses_live_window_state(tmp_path):
     save_path = tmp_path / "workspace.json"
     base_geometry = _FakeGeometry(111, 222, 1000, 700)
     main_window = _make_workspace_main_window(
         tmp_path,
         is_theatre_mode=True,
-        is_full_screen=True,
-        is_maximized=False,
+        is_full_screen=False,
+        is_maximized=True,
         geometry=_FakeGeometry(0, 0, 1920, 1080),
         normal_geometry=base_geometry,
         saved_window_state="pre-theatre-layout",
@@ -488,13 +488,13 @@ def test_save_workspace_theatre_from_maximized_uses_base_snapshot(tmp_path):
     )
 
 
-def test_save_workspace_theatre_from_normal_uses_base_snapshot(tmp_path):
+def test_save_workspace_theatre_from_normal_uses_live_window_state(tmp_path):
     save_path = tmp_path / "workspace.json"
     base_geometry = _FakeGeometry(123, 234, 1010, 710)
     main_window = _make_workspace_main_window(
         tmp_path,
         is_theatre_mode=True,
-        is_full_screen=True,
+        is_full_screen=False,
         is_maximized=False,
         geometry=_FakeGeometry(0, 0, 1920, 1080),
         normal_geometry=base_geometry,
@@ -531,11 +531,30 @@ def test_save_workspace_theatre_uses_latest_fullscreen_base_toggle(tmp_path):
 
     save_current_workspace(main_window, str(save_path))
     saved = _read_saved_workspace(save_path)["window_state_data"]
-    assert saved["isFullScreen"] is False
-    assert saved["isMaximized"] is True
+    assert saved["isFullScreen"] is True
+    assert saved["isMaximized"] is False
 
+    main_window.is_full_screen = False
+    main_window.isMaximized = lambda: True
     main_window._was_custom_fullscreen = True
     save_current_workspace(main_window, str(save_path))
     saved = _read_saved_workspace(save_path)["window_state_data"]
-    assert saved["isFullScreen"] is True
-    assert saved["isMaximized"] is False
+    assert saved["isFullScreen"] is False
+    assert saved["isMaximized"] is True
+
+
+def test_save_workspace_theatre_does_not_serialize_theatre_active_flag(tmp_path):
+    save_path = tmp_path / "workspace.json"
+    main_window = _make_workspace_main_window(
+        tmp_path,
+        is_theatre_mode=True,
+        is_full_screen=False,
+        is_maximized=False,
+        saved_window_state="pre-theatre-layout",
+    )
+
+    save_current_workspace(main_window, str(save_path))
+
+    saved = _read_saved_workspace(save_path)
+    assert "is_theatre_mode" not in saved
+    assert "is_theatre_mode" not in saved["window_state_data"]
