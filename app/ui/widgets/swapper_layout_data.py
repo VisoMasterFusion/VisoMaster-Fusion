@@ -121,7 +121,7 @@ SWAPPER_LAYOUT_DATA: Any = {  # noqa: F811
             "help": 'Sharpens the original face befor swapping. can sometimes be usefull. care it can tamper with "Auto Face Restorer"!',
         },
     },
-    "Swap strenght and likeness": {
+    "Swap strength and likeness": {
         "StrengthEnableToggle": {
             "level": 1,
             "label": "Strength",

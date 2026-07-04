@@ -409,12 +409,26 @@ def add_video_slider_marker(main_window: "MainWindow"):
             main_window.videoSeekSlider,
         )
     else:
-        # FIX: Deepcopy both parameters and control to guarantee total memory
+        # Deepcopy both parameters and control to guarantee total memory
         # isolation and prevent state bleeding across timeline boundaries.
+        control_snapshot = copy.deepcopy(main_window.control)
+
+        # Remove environment/output specific keys from the snapshot.
+        # These settings dictate global I/O state for the batch/render session
+        # and must never be tied to specific timeline frames.
+        keys_to_exclude = [
+            "OutputMediaFolder",
+            "OutputToTargetLocationToggle",
+            "PreserveOutputDirectoryStructureToggle",
+            "ClusterOutputBySourceToggle",
+        ]
+        for key in keys_to_exclude:
+            control_snapshot.pop(key, None)
+
         add_marker(
             main_window,
             copy.deepcopy(main_window.parameters),
-            copy.deepcopy(main_window.control),
+            control_snapshot,
             current_position,
         )
 
@@ -2378,8 +2392,22 @@ def update_parameters_and_control_from_marker(
     """
     # Find marker only at the *exact* new position
     marker_data = _get_marker_data_for_position(main_window, new_position)
-    # Save the Global Marker Track toggle
-    current_track_markers_value = main_window.control.get("TrackMarkersToggle", False)
+
+    # Protect global environment variables from being overwritten by older markers.
+    # This acts as a shield against previously saved project files that might still
+    # contain these keys, preventing silent directory swaps mid-render.
+    protected_keys = [
+        "TrackMarkersToggle",
+        "OutputMediaFolder",
+        "OutputToTargetLocationToggle",
+        "PreserveOutputDirectoryStructureToggle",
+        "ClusterOutputBySourceToggle",
+    ]
+    saved_protected_state = {
+        key: main_window.control[key]
+        for key in protected_keys
+        if key in main_window.control
+    }
 
     if marker_data:
         # --- A marker was found, load its parameters AND controls ---
@@ -2413,8 +2441,10 @@ def update_parameters_and_control_from_marker(
 
     # If no marker_data is found, DO NOTHING.
     # This preserves the user's current settings (manual or from a previous marker).
-    # Re-apply the saved Global Marker Track toggle
-    main_window.control["TrackMarkersToggle"] = current_track_markers_value
+
+    # Re-apply the protected global keys so they remain untouched during playback/recording
+    for key, value in saved_protected_state.items():
+        main_window.control[key] = value
 
 
 def update_widget_values_from_markers(main_window: "MainWindow", new_position: int):
