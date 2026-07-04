@@ -55,16 +55,6 @@ fp16_safe_models_list = [
     "LivePortraitStitchingLip",
     "LivePortraitStitching",
     "LivePortraitWarpingSpade",
-    # --- PerformRecast ---
-    # Only F/M are fp16-safe. We tried building W (warping_module) and G
-    # (spade_generator) as mixed-precision fp16 TensorRT engines from the fp32
-    # ONNX, but in practice fp16 makes the generator emit degenerate / black
-    # faces on many ordinary frames (the 5-D grid_sample / SPADE paths overflow
-    # in fp16) — so at the natural ~2.3 crop scale far too many frames had to be
-    # skipped. This is exactly the caveat documented upstream, so W/G are kept
-    # fp32 (intentionally absent from this list). Do NOT add them back.
-    "PerformRecastAppearanceFeatureExtractor",
-    "PerformRecastMotionExtractor",
     # --- Detectors ---
     "RetinaFace",
     "SCRFD2.5g",
