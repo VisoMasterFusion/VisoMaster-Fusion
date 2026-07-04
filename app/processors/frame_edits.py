@@ -86,7 +86,6 @@ class FrameEdits:
         # for the RAM-to-VRAM transfer to complete via the PCIe bus.
         M_c2o_tensor = (
             torch.from_numpy(M_c2o)
-            .pin_memory()
             .float()
             .unsqueeze(0)
             .to(out.device, non_blocking=True)
@@ -1023,6 +1022,9 @@ class FrameEdits:
             feather_amount = float(
                 parameters.get("RecastPasteBackFeatherDecimalSlider", 0.0)
             )
+            structural_blend = float(
+                parameters.get("RecastRelativeStructuralBlendDecimalSlider", 0.50)
+            )
 
             # Dedicated Recast crop scale, independent of the shared expression
             # crop used by the Simple/Advanced (LivePortrait) modes. Tighter
@@ -1130,6 +1132,7 @@ class FrameEdits:
                 region=region,
                 eye_driving_weight=eye_weight,
                 lip_driving_weight=lip_weight,
+                structural_blend=structural_blend,
             )
             out = recast.warp_decode(f_s, source_info["x_s"], x_d_i)
             out = torch.squeeze(out)

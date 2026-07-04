@@ -268,7 +268,7 @@ COMMON_LAYOUT_DATA: Any = {
         "RecastModeSelection": {
             "level": 3,
             "label": "Recast Mode",
-            "options": ["Enhancement", "Replacement"],
+            "options": ["Enhancement", "Replacement", "Relative"],
             "default": "Enhancement",
             "parentToggle": "FaceExpressionEnableBothToggle",
             "requiredToggleValue": True,
@@ -277,6 +277,20 @@ COMMON_LAYOUT_DATA: Any = {
             "help": "Enhancement adds the driving expression on top of the swapped face's "
             "expression. Replacement starts from the driving expression and blends back "
             "the swapped face's eye/lip/jaw identity cues.",
+        },
+        "RecastRelativeStructuralBlendDecimalSlider": {
+            "level": 4,
+            "label": "Structural Flexibility",
+            "min_value": "0.00",
+            "max_value": "1.00",
+            "default": "0.50",
+            "decimals": 2,
+            "step": 0.05,
+            "parentToggle": "FaceExpressionEnableBothToggle",
+            "requiredToggleValue": True,
+            "parentSelection": "RecastModeSelection",
+            "requiredSelectionValue": "Relative",
+            "help": "Relative Mode Only: Controls how much the face structure can warp. 0.0 = no expression transfer.",
         },
         "RecastExpressionFactorDecimalSlider": {
             "level": 3,
