@@ -146,35 +146,28 @@ class PerformRecast:
                 buffer_ptr=t.data_ptr(),
             )
 
+        # Bind Outputs (Strictly requested only)
+        # We loop over output_specs directly. We do NOT bind unread outputs.
+        # This prevents ONNX Runtime from allocating hidden VRAM blocks and forces
+        # all memory management through PyTorch's optimized Caching Allocator.
         out_buffers: Dict[str, "torch.Tensor"] = {}
-        for o in session.get_outputs():
-            name = o.name
-            if name in output_specs:
-                buf = torch.empty(
-                    output_specs[name], dtype=torch.float32, device=mp.device
-                ).contiguous()
-                out_buffers[name] = buf
-                io_binding.bind_output(
-                    name=name,
-                    device_type=mp.device_type,
-                    device_id=mp.binding_device_id,
-                    element_type=np.float32,
-                    shape=tuple(buf.shape),
-                    buffer_ptr=buf.data_ptr(),
-                )
-            else:
-                # Output we never read — let ORT allocate it on the device.
-                io_binding.bind_output(
-                    name=name,
-                    device_type=mp.device_type,
-                    device_id=mp.binding_device_id,
-                )
+        for name, shape in output_specs.items():
+            buf = torch.empty(shape, dtype=torch.float32, device=mp.device).contiguous()
+            out_buffers[name] = buf
+            io_binding.bind_output(
+                name=name,
+                device_type=mp.device_type,
+                device_id=mp.binding_device_id,
+                element_type=np.float32,
+                shape=tuple(buf.shape),
+                buffer_ptr=buf.data_ptr(),
+            )
 
-        # Ensure PyTorch has finished writing the input buffers before ORT reads
-        # from the bound pointers.
+        # 3. Synchronize and Execute
         if mp.device_type == "cuda":
             torch.cuda.current_stream().synchronize()
         session.run_with_iobinding(io_binding)
+
         return out_buffers
 
     def _infer_numpy(
@@ -428,28 +421,19 @@ class PerformRecast:
             modulated[:, self.JAW_INDICES, 2] = exp_s[:, self.JAW_INDICES, 2]
             modulated[:, self.JAW_INDICES, 0] = exp_s[:, self.JAW_INDICES, 0]
 
-            modulated[:, self.JAW_INDICES, 1] = (
-                exp_s[:, self.JAW_INDICES, 1] * (1.0 - jaw_weight)
-                + exp_d[:, self.JAW_INDICES, 1] * jaw_weight
+            modulated[:, self.JAW_INDICES, 1] = torch.lerp(
+                exp_s[:, self.JAW_INDICES, 1], exp_d[:, self.JAW_INDICES, 1], jaw_weight
             )
-            modulated[:, self.CHEEKS_INDICES, :2] = (
-                exp_s[:, self.CHEEKS_INDICES, :2] * (1.0 - cheeks_weight)
-                + exp_d[:, self.CHEEKS_INDICES, :2] * cheeks_weight
+            modulated[:, self.CHEEKS_INDICES, :2] = torch.lerp(
+                exp_s[:, self.CHEEKS_INDICES, :2],
+                exp_d[:, self.CHEEKS_INDICES, :2],
+                cheeks_weight,
             )
 
-            new_exp = exp_s + factor * (modulated - exp_s)
+            new_exp = torch.lerp(exp_s, modulated, factor)
 
         elif mode == "Advanced":
-            eyes_weight = float(eye_driving_weight)
-            lips_weight = float(lip_driving_weight)
-            brows_weight = float(brows_driving_weight)
-            cheeks_weight = float(cheeks_driving_weight)
-            jaw_weight = float(jaw_driving_weight)
-
-            new_exp = exp_s.clone()
-
-            # We create a PURE structural list by excluding ALL 5 active/semi-active regions.
-            # This isolates the rigid points (nose, forehead) to act as the perfect anchor.
+            # --- 1. GLOBAL ANCHORING ---
             pure_struct_idx = [
                 i
                 for i in range(49)
@@ -463,8 +447,6 @@ class PerformRecast:
                 )
             ]
 
-            # --- 1. GLOBAL ANCHORING (OPTIMIZED) ---
-            # By using `pure_struct_idx`, we anchor the face ONLY using the rigid points.
             s_struct_center = exp_s[:, pure_struct_idx, :].mean(dim=1, keepdim=True)
             d_struct_center = exp_d[:, pure_struct_idx, :].mean(dim=1, keepdim=True)
             global_offset = s_struct_center - d_struct_center
@@ -472,70 +454,28 @@ class PerformRecast:
             aligned_exp_d = exp_d + global_offset
             global_delta = aligned_exp_d - exp_s
 
-            # --- 2. USER'S MULTIPLIER UI LOGIC ---
-            # Baseline structure strength (Forehead/Nose)
-            base_struct_strength = structural_blend * factor
+            # --- 2. VECTORIZED WEIGHT MAP ---
+            # Create a single weight tensor [1, 49, 1] to fuse all regional math into one CUDA kernel.
+            device = exp_s.device
+            weights = torch.zeros((1, 49, 1), dtype=exp_s.dtype, device=device)
 
-            # Regional strengths mapped as direct percentage multipliers (0.0 to 2.0 = 0% to 200%)
-            # They are scaled smoothly by the global `factor` slider.
-            eye_strength = eyes_weight * factor
-            lip_strength = lips_weight * factor
-            brows_strength = brows_weight * factor
-            cheek_strength = cheeks_weight * factor
-            jaw_strength = jaw_weight * factor
+            # Apply UI multipliers
+            weights[:, pure_struct_idx, 0] = structural_blend * factor
+            weights[:, self.MOUTH_INDICES, 0] = float(lip_driving_weight) * factor
+            weights[:, self.EYE_INDICES, 0] = float(eye_driving_weight) * factor
+            weights[:, self.BROWS_INDICES, 0] = float(brows_driving_weight) * factor
+            weights[:, self.CHEEKS_INDICES, 0] = float(cheeks_driving_weight) * factor
+            weights[:, self.JAW_INDICES, 0] = float(jaw_driving_weight) * factor
 
-            # --- 3. APPLY REGIONAL STRENGTHS ---
-            # Pure Structure (Forehead, Nose)
-            new_exp[:, pure_struct_idx, 0] = exp_s[:, pure_struct_idx, 0] + (
-                global_delta[:, pure_struct_idx, 0] * base_struct_strength
-            )
-            new_exp[:, pure_struct_idx, 1] = exp_s[:, pure_struct_idx, 1] + (
-                global_delta[:, pure_struct_idx, 1] * base_struct_strength
+            # Expand weights to 3D [1, 49, 3].
+            # X and Y receive the UI weights. Z (Depth) receives exactly 0.0 to safely lock to source.
+            weights_3d = torch.cat(
+                [weights, weights, torch.zeros_like(weights)], dim=-1
             )
 
-            # Custom Mouth
-            new_exp[:, self.MOUTH_INDICES, 0] = exp_s[:, self.MOUTH_INDICES, 0] + (
-                global_delta[:, self.MOUTH_INDICES, 0] * lip_strength
-            )
-            new_exp[:, self.MOUTH_INDICES, 1] = exp_s[:, self.MOUTH_INDICES, 1] + (
-                global_delta[:, self.MOUTH_INDICES, 1] * lip_strength
-            )
-
-            # Custom Eyes
-            new_exp[:, self.EYE_INDICES, 0] = exp_s[:, self.EYE_INDICES, 0] + (
-                global_delta[:, self.EYE_INDICES, 0] * eye_strength
-            )
-            new_exp[:, self.EYE_INDICES, 1] = exp_s[:, self.EYE_INDICES, 1] + (
-                global_delta[:, self.EYE_INDICES, 1] * eye_strength
-            )
-
-            # Custom Brows
-            new_exp[:, self.BROWS_INDICES, 0] = exp_s[:, self.BROWS_INDICES, 0] + (
-                global_delta[:, self.BROWS_INDICES, 0] * brows_strength
-            )
-            new_exp[:, self.BROWS_INDICES, 1] = exp_s[:, self.BROWS_INDICES, 1] + (
-                global_delta[:, self.BROWS_INDICES, 1] * brows_strength
-            )
-
-            # Custom Cheeks
-            new_exp[:, self.CHEEKS_INDICES, 0] = exp_s[:, self.CHEEKS_INDICES, 0] + (
-                global_delta[:, self.CHEEKS_INDICES, 0] * cheek_strength
-            )
-            new_exp[:, self.CHEEKS_INDICES, 1] = exp_s[:, self.CHEEKS_INDICES, 1] + (
-                global_delta[:, self.CHEEKS_INDICES, 1] * cheek_strength
-            )
-
-            # Custom Jaw
-            new_exp[:, self.JAW_INDICES, 0] = exp_s[:, self.JAW_INDICES, 0] + (
-                global_delta[:, self.JAW_INDICES, 0] * jaw_strength
-            )
-            new_exp[:, self.JAW_INDICES, 1] = exp_s[:, self.JAW_INDICES, 1] + (
-                global_delta[:, self.JAW_INDICES, 1] * jaw_strength
-            )
-
-            # --- 4. SAFETY LOCK ---
-            # Universally lock the Z-axis (Depth) to the source face to prevent the 3D mesh from caving in.
-            new_exp[..., 2] = exp_s[..., 2]
+            # --- 3. FUSED MATH ---
+            # A single Multiply-Add operation replaces the entire 13-line slice block and clone()
+            new_exp = exp_s + (global_delta * weights_3d)
 
         elif mode == MODE_ENHANCEMENT:
             # ENHANCEMENT = keep the swapped face's own expression and ADD the

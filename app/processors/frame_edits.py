@@ -44,6 +44,8 @@ class FrameEdits:
         # so multiple faces in a frame are smoothed independently. Stateless
         # frame processing otherwise has no driving-frame history.
         self._recast_exp_state: dict = {}
+        # Persistent VRAM cache for Recast feather masks to avoid per-frame allocation
+        self._recast_feather_masks: dict = {}
 
     def set_transforms(self, t256_face, interpolation_expression_faceeditor_back):
         """
@@ -893,8 +895,22 @@ class FrameEdits:
 
             # --- PASTE BACK ---
             dsize = (target.shape[1], target.shape[2])
+
+            # 1. Create a tracking mask, shaving 2 pixels off the outer edge to
+            # prevent Kornia's bilinear boundary interpolation from creating a seam.
+            warp_mask = torch.zeros(
+                (1, out.shape[1], out.shape[2]), dtype=out.dtype, device=out.device
+            )
+            warp_mask[:, 2:-2, 2:-2] = 1.0
+            warp_mask = self._apply_kornia_warp(warp_mask, M_c2o, dsize)
+
+            # 2. Warp the edited face back to the target's coordinate space
             out = self._apply_kornia_warp(out, M_c2o, dsize)
             out = out.mul_(255.0).clamp_(0, 255)
+
+            # 3. Composite over the original target to preserve the outer background pixels!
+            target_float = target.type(torch.float32)
+            out = out * warp_mask + target_float * (1.0 - warp_mask)
 
         return out.type(torch.float32)
 
@@ -1111,7 +1127,7 @@ class FrameEdits:
                 scale=crop_scale,
                 vy_ratio=vy_ratio,
                 interpolation=interp_mode,
-                padding_mode="border",
+                padding_mode="zeros",
             )
             target_face_256 = self.t256_face(target_face_512)
 
@@ -1158,19 +1174,42 @@ class FrameEdits:
             # so this only affects the edge transition, never identity.
             if feather_amount > 0.0:
                 fade = max(1, int(round(feather_amount * 256)))
-                paste_mask = faceutil.create_faded_inner_mask(
-                    (out.shape[1], out.shape[2]),
-                    border_thickness=0,
-                    fade_thickness=fade,
-                    blur_radius=3,
-                    device=out.device,
-                ).unsqueeze(0)
-                tgt01 = (target_face_512.to(out.dtype) / 255.0).clamp_(0, 1)
-                out = out * paste_mask + tgt01 * (1.0 - paste_mask)
 
+                # 1. Fetch or Create Cached Mask
+                if fade not in self._recast_feather_masks:
+                    # The SPADE generator output is always strictly 512x512
+                    self._recast_feather_masks[fade] = faceutil.create_faded_inner_mask(
+                        (512, 512),
+                        border_thickness=0,
+                        fade_thickness=fade,
+                        blur_radius=3,
+                        device=out.device,
+                    ).unsqueeze(0)
+
+                paste_mask = self._recast_feather_masks[fade]
+                tgt01 = (target_face_512.to(out.dtype) / 255.0).clamp_(0, 1)
+
+                # 2. Fused Hardware Lerp (Eliminates intermediate temporary tensors)
+                out = torch.lerp(tgt01, out, paste_mask)
+
+            # --- PASTE BACK ---
             dsize = (target.shape[1], target.shape[2])
+
+            # 1. Create a tracking mask, shaving 2 pixels off the outer edge to
+            # prevent Kornia's bilinear boundary interpolation from creating a seam.
+            warp_mask = torch.zeros(
+                (1, out.shape[1], out.shape[2]), dtype=out.dtype, device=out.device
+            )
+            warp_mask[:, 2:-2, 2:-2] = 1.0
+            warp_mask = self._apply_kornia_warp(warp_mask, M_c2o, dsize)
+
+            # 2. Warp the edited face back to the target's coordinate space
             out = self._apply_kornia_warp(out, M_c2o, dsize)
             out = out.mul_(255.0).clamp_(0, 255)
+
+            # 3. Composite over the original target to preserve the outer background pixels!
+            target_float = target.type(torch.float32)
+            out = out * warp_mask + target_float * (1.0 - warp_mask)
 
         return out.type(torch.float32)
 
@@ -1431,10 +1470,22 @@ class FrameEdits:
 
                 # --- POST-PROCESSING (Paste Back) ---
                 dsize = (img.shape[1], img.shape[2])
-                out = self._apply_kornia_warp(out, M_c2o, dsize)
 
-                img = out
-                img = img.mul_(255.0).clamp_(0, 255).type(torch.float32)
+                # 1. Create a tracking mask, shaving 2 pixels off the outer edge to
+                # prevent Kornia's bilinear boundary interpolation from creating a seam.
+                warp_mask = torch.zeros(
+                    (1, out.shape[1], out.shape[2]), dtype=out.dtype, device=out.device
+                )
+                warp_mask[:, 2:-2, 2:-2] = 1.0
+                warp_mask = self._apply_kornia_warp(warp_mask, M_c2o, dsize)
+
+                # 2. Warp the manipulated face back to the original frame dimensions
+                out = self._apply_kornia_warp(out, M_c2o, dsize)
+                out = out.mul_(255.0).clamp_(0, 255)
+
+                # 3. Composite over the original img to preserve the background
+                img_float = img.type(torch.float32)
+                img = out * warp_mask + img_float * (1.0 - warp_mask)
 
         return img
 
