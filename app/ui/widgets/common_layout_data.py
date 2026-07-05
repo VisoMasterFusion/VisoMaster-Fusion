@@ -243,14 +243,14 @@ COMMON_LAYOUT_DATA: Any = {
         "FaceExpressionCropScaleBothDecimalSlider": {
             "level": 2,
             "label": "Crop Scale",
-            "min_value": "1.7",
+            "min_value": "1.5",
             "max_value": "3.0",
             "default": "2.3",
             "step": 0.1,
             "decimals": 1,
             "parentToggle": "FaceExpressionEnableBothToggle",
             "requiredToggleValue": True,
-            "help": "Changes swap crop scale. Increase the value to capture the face more distantly.",
+            "help": "Changes swap crop scale. Increase the value to capture the face more distantly. For Recast, best used around 1.5.",
         },
         "FaceExpressionVYRatioBothDecimalSlider": {
             "level": 2,
@@ -266,31 +266,30 @@ COMMON_LAYOUT_DATA: Any = {
         },
         # --- RECAST MODE WIDGETS (PerformRecast model) ---
         "RecastModeSelection": {
-            "level": 3,
+            "level": 2,
             "label": "Recast Mode",
-            "options": ["Enhancement", "Replacement", "Relative"],
+            "options": ["Enhancement", "Replacement", "Advanced"],
             "default": "Enhancement",
             "parentToggle": "FaceExpressionEnableBothToggle",
             "requiredToggleValue": True,
             "parentSelection": "FaceExpressionModeSelection",
             "requiredSelectionValue": "Recast",
-            "help": "Enhancement adds the driving expression on top of the swapped face's "
-            "expression. Replacement starts from the driving expression and blends back "
-            "the swapped face's eye/lip/jaw identity cues.",
+            "help": "Enhancement overlays the driving expression onto the swapped face. "
+            "Replacement prioritizes the driving expression while preserving the swapped "
+            "face's identity cues. Advanced unlocks granular control over individual "
+            "facial regions using independent percentage multipliers.",
         },
-        "RecastRelativeStructuralBlendDecimalSlider": {
-            "level": 4,
-            "label": "Structural Flexibility",
-            "min_value": "0.00",
-            "max_value": "1.00",
-            "default": "0.50",
-            "decimals": 2,
-            "step": 0.05,
+        "RecastAnimationRegionSelection": {
+            "level": 2,
+            "label": "Animation Region",
+            "options": ["all", "eyes", "lips"],
+            "default": "all",
             "parentToggle": "FaceExpressionEnableBothToggle",
             "requiredToggleValue": True,
-            "parentSelection": "RecastModeSelection",
-            "requiredSelectionValue": "Relative",
-            "help": "Relative Mode Only: Controls how much the face structure can warp. 0.0 = no expression transfer.",
+            "parentSelection": "FaceExpressionModeSelection",
+            "requiredSelectionValue": "Recast",
+            "help": "Restricts expression transfer to a specific facial region (Eyes or Lips/Jaw). "
+            "The unselected regions retain the swapped face's original baseline expression. ",
         },
         "RecastExpressionFactorDecimalSlider": {
             "level": 3,
@@ -304,75 +303,105 @@ COMMON_LAYOUT_DATA: Any = {
             "requiredToggleValue": True,
             "parentSelection": "FaceExpressionModeSelection",
             "requiredSelectionValue": "Recast",
-            "help": "Strength / exaggeration of the transferred expression. 0.0 keeps "
-            "the swapped face's expression, 1.0 applies the full driving expression, "
-            ">1.0 exaggerates it (up to 3.0 for stylization).",
+            "help": "Globally scales the intensity of the transferred expression. 0.0 retains the "
+            "original expression, 1.0 applies the exact driving expression, and values >1.0 "
+            "exaggerate the overall movement.",
         },
-        "RecastCropScaleDecimalSlider": {
+        "RecastRelativeStructuralBlendDecimalSlider": {
             "level": 3,
-            "label": "Recast Crop Scale",
-            "min_value": "1.5",
-            "max_value": "3.0",
-            "default": "2.3",
-            "step": 0.1,
-            "decimals": 1,
+            "label": "Structural Flexibility",
+            "min_value": "0.00",
+            "max_value": "1.00",
+            "default": "0.00",
+            "decimals": 2,
+            "step": 0.05,
             "parentToggle": "FaceExpressionEnableBothToggle",
             "requiredToggleValue": True,
-            "parentSelection": "FaceExpressionModeSelection",
-            "requiredSelectionValue": "Recast",
-            "help": "Face crop framing fed to the PerformRecast models, independent of "
-            "the shared 'Crop Scale' used by the Simple/Advanced (LivePortrait) modes. "
-            "LOWER = tighter face = more identity detail / better similarity, but too "
-            "tight for a given pose makes the generator emit a black frame (which is "
-            "skipped, keeping the plain swap). RAISE it if you see black/missing faces — "
-            "VR180 framing usually needs ~2.8-3.0. fp16 widens the black-prone range, so "
-            "if you want to go tighter for similarity and see flicker, either raise this "
-            "slightly or tune similarity via Mode / Expression Strength / Eye-Lip weights.",
-        },
-        "RecastAnimationRegionSelection": {
-            "level": 3,
-            "label": "Animation Region",
-            "options": ["all", "eyes", "lips"],
-            "default": "all",
-            "parentToggle": "FaceExpressionEnableBothToggle",
-            "requiredToggleValue": True,
-            "parentSelection": "FaceExpressionModeSelection",
-            "requiredSelectionValue": "Recast",
-            "help": "Restrict the transferred expression to a facial region. The swapped "
-            "face's own expression is kept outside the selected region. Index groups: "
-            "eyes = keypoints 31-38, lips/jaw = keypoints 44-46.",
+            "parentSelection": ["FaceExpressionModeSelection", "RecastModeSelection"],
+            "requiredSelectionValue": ["Recast", "Advanced"],
+            "help": "Advanced Mode Only: Independent multiplier for the rigid structural points (forehead, nose). "
+            "0.0 completely freezes the core face shape to preserve identity, while still allowing "
+            "the other regional sliders (Lips, Eyes) to move freely.",
         },
         "RecastEyeDrivingWeightDecimalSlider": {
-            "level": 4,
+            "level": 3,
             "label": "Eye Driving Weight",
             "min_value": "0.0",
-            "max_value": "1.0",
-            "default": "0.7",
+            "max_value": "2.0",
+            "default": "1.0",
             "step": 0.05,
             "decimals": 2,
             "parentToggle": "FaceExpressionEnableBothToggle",
             "requiredToggleValue": True,
-            "parentSelection": "FaceExpressionModeSelection",
-            "requiredSelectionValue": "Recast",
-            "help": "Replacement mode only: how strongly the driver overrides the swapped "
-            "face's eye-channel identity. 0.0 keeps the swapped face's eyes, 1.0 fully "
-            "follows the driver. Default 0.7 matches the upstream PerformRecast blend.",
+            "parentSelection": ["FaceExpressionModeSelection", "RecastModeSelection"],
+            "requiredSelectionValue": ["Recast", "Advanced"],
+            "help": "Advanced Mode Only: Independent multiplier for eye movement (blinks/squints/width). "
+            "0.0 freezes the eyes to the target's original state; 1.0 applies the exact driving motion; "
+            ">1.0 exaggerates it. This value is scaled by the global Expression Strength.",
+        },
+        "RecastBrowsDrivingWeightDecimalSlider": {
+            "level": 3,
+            "label": "Brows Driving Weight",
+            "min_value": "0.0",
+            "max_value": "2.0",
+            "default": "1.0",
+            "step": 0.05,
+            "decimals": 2,
+            "parentToggle": "FaceExpressionEnableBothToggle",
+            "requiredToggleValue": True,
+            "parentSelection": ["FaceExpressionModeSelection", "RecastModeSelection"],
+            "requiredSelectionValue": ["Recast", "Advanced"],
+            "help": "Advanced Mode Only: Independent multiplier for eyebrow movement. "
+            "0.0 freezes the brows; 1.0 applies the driving motion. "
+            "This value is scaled by the global Expression Strength.",
+        },
+        "RecastCheeksDrivingWeightDecimalSlider": {
+            "level": 3,
+            "label": "Cheeks Driving Weight",
+            "min_value": "0.0",
+            "max_value": "2.0",
+            "default": "0.20",
+            "step": 0.05,
+            "decimals": 2,
+            "parentToggle": "FaceExpressionEnableBothToggle",
+            "requiredToggleValue": True,
+            "parentSelection": ["FaceExpressionModeSelection", "RecastModeSelection"],
+            "requiredSelectionValue": ["Recast", "Advanced"],
+            "help": "Advanced Mode Only: Independent multiplier for cheek dynamics (puffing, smile folds). "
+            "0.0 freezes the cheeks; 1.0 applies the driving motion. "
+            "This value is scaled by the global Expression Strength.",
         },
         "RecastLipDrivingWeightDecimalSlider": {
-            "level": 4,
+            "level": 3,
             "label": "Lip Driving Weight",
             "min_value": "0.0",
-            "max_value": "1.0",
-            "default": "0.8",
+            "max_value": "2.0",
+            "default": "1.0",
             "step": 0.05,
             "decimals": 2,
             "parentToggle": "FaceExpressionEnableBothToggle",
             "requiredToggleValue": True,
-            "parentSelection": "FaceExpressionModeSelection",
-            "requiredSelectionValue": "Recast",
-            "help": "Replacement mode only: how strongly the driver overrides the swapped "
-            "face's lip/jaw identity. 0.0 keeps the swapped face's lips, 1.0 fully follows "
-            "the driver. Default 0.8 matches the upstream PerformRecast blend.",
+            "parentSelection": ["FaceExpressionModeSelection", "RecastModeSelection"],
+            "requiredSelectionValue": ["Recast", "Advanced"],
+            "help": "Advanced Mode Only: Independent multiplier for lip movement, mouth opening, and smile width. "
+            "0.0 freezes the mouth; 1.0 forces the exact driving lip expression. "
+            "This value is scaled by the global Expression Strength.",
+        },
+        "RecastJawDrivingWeightDecimalSlider": {
+            "level": 3,
+            "label": "Jaw Driving Weight",
+            "min_value": "0.0",
+            "max_value": "2.0",
+            "default": "0.15",
+            "step": 0.05,
+            "decimals": 2,
+            "parentToggle": "FaceExpressionEnableBothToggle",
+            "requiredToggleValue": True,
+            "parentSelection": ["FaceExpressionModeSelection", "RecastModeSelection"],
+            "requiredSelectionValue": ["Recast", "Advanced"],
+            "help": "Advanced Mode Only: Independent multiplier for jaw movement (talking, chin drops). "
+            "0.0 freezes the jaw to preserve the target's face shape; 1.0 applies the exact driving jaw articulation. "
+            "This value is scaled by the global Expression Strength.",
         },
         "RecastExpressionSmoothToggle": {
             "level": 3,
