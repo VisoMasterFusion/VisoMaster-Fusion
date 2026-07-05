@@ -269,7 +269,7 @@ COMMON_LAYOUT_DATA: Any = {
             "level": 2,
             "label": "Recast Mode",
             "options": ["Enhancement", "Replacement", "Advanced"],
-            "default": "Replacement",
+            "default": "Enhancement",
             "parentToggle": "FaceExpressionEnableBothToggle",
             "requiredToggleValue": True,
             "parentSelection": "FaceExpressionModeSelection",

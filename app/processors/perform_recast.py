@@ -404,7 +404,32 @@ class PerformRecast:
         jaw_driving_weight: float = 0.15,
         structural_blend: float = 0.0,
     ) -> torch.Tensor:
-        """Build the driven keypoints ``x_d_i`` fed to the warping module."""
+        """Build the driven keypoints ``x_d_i`` fed to the warping module.
+        Args:
+            source_info: output of :meth:`build_source_info` (the swapped face).
+            exp_d: driving expression (1,N,3) from the original face's motion.
+            mode: ``"Replacement"`` (upstream mode 1) or ``"Enhancement"`` (mode 2) or ``"Relative"`` (mode 3).
+            factor: expression strength. 0 keeps the source expression, 1 applies
+                the full transfer; values >1 exaggerate it.
+            region: ``"all"`` | ``"eyes"`` | ``"lips"`` — restrict where the
+                driving expression is applied (source expression kept elsewhere).
+            eye_driving_weight: in Replacement mode, how strongly the driver
+                overrides the source eye-channel identity (0 keeps source eyes,
+                1 fully follows the driver). Upstream default 0.7.
+            lip_driving_weight: same, for the lip/jaw channels. Upstream
+                default 0.8.
+        Mode semantics:
+          * Replacement — ``factor=1`` yields the driver's expression with the
+            swapped face's eye/lip identity blended back (``eye/lip_driving_weight``).
+            ``factor`` interpolates source -> that target.
+          * Enhancement — adds the driver's expression on top of the swapped
+            face's own expression (``exp_s + factor*exp_d``); ``factor=0`` keeps
+            the source, higher values stack/boost the driver's expression.
+        The upstream video pipeline uses the driving video's first frame as a
+        neutral reference; VisoMaster is stateless per frame, so Enhancement
+        treats the implicit keypoint ``exp_d`` (already a delta from the
+        canonical keypoints) as the additive delta directly.
+        """
         x_s_c = source_info["kp"]
         exp_s = source_info["exp"]
         R = source_info["R"]

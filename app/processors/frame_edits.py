@@ -1020,7 +1020,7 @@ class FrameEdits:
         with stream_context, torch.inference_mode():
             use_mean_eyes = parameters.get("LandmarkMeanEyesToggle", False)
 
-            mode = parameters.get("RecastModeSelection", "Replacement")
+            mode = parameters.get("RecastModeSelection", "Enhancement")
             if isinstance(mode, str):
                 mode = mode.strip()
             factor = float(parameters.get("RecastExpressionFactorDecimalSlider", 1.0))
