@@ -1004,16 +1004,25 @@ class FrameEdits:
         with stream_context, torch.inference_mode():
             use_mean_eyes = parameters.get("LandmarkMeanEyesToggle", False)
 
-            mode = parameters.get("RecastModeSelection", "Enhancement")
+            mode = parameters.get("RecastModeSelection", "Replacement")
             if isinstance(mode, str):
                 mode = mode.strip()
             factor = float(parameters.get("RecastExpressionFactorDecimalSlider", 1.0))
             region = parameters.get("RecastAnimationRegionSelection", "all")
             eye_weight = float(
-                parameters.get("RecastEyeDrivingWeightDecimalSlider", 0.7)
+                parameters.get("RecastEyeDrivingWeightDecimalSlider", 1.0)
             )
             lip_weight = float(
-                parameters.get("RecastLipDrivingWeightDecimalSlider", 0.8)
+                parameters.get("RecastLipDrivingWeightDecimalSlider", 1.0)
+            )
+            brows_weight = float(
+                parameters.get("RecastBrowsDrivingWeightDecimalSlider", 1.0)
+            )
+            cheeks_weight = float(
+                parameters.get("RecastCheeksDrivingWeightDecimalSlider", 0.20)
+            )
+            jaw_weight = float(
+                parameters.get("RecastJawDrivingWeightDecimalSlider", 0.15)
             )
             smooth_on = parameters.get("RecastExpressionSmoothToggle", False)
             smooth_strength = float(
@@ -1025,20 +1034,12 @@ class FrameEdits:
             structural_blend = float(
                 parameters.get("RecastRelativeStructuralBlendDecimalSlider", 0.50)
             )
-
-            # Dedicated Recast crop scale, independent of the shared expression
-            # crop used by the Simple/Advanced (LivePortrait) modes. Tighter
-            # crops give better identity detail but, if too tight for a pose,
-            # drive the generator out of distribution into black frames (caught
-            # by the degenerate-output guard below; fp16 widens that range).
-            # Default matches the proven 2.3 framing; raise for VR180.
-            crop_scale = parameters.get("RecastCropScaleDecimalSlider", None)
-            if crop_scale is None:
-                crop_scale = parameters.get(
-                    "FaceExpressionCropScaleBothDecimalSlider", 2.3
-                )
-            crop_scale = float(crop_scale)
-            vy_ratio = parameters.get("FaceExpressionVYRatioBothDecimalSlider", -0.125)
+            crop_scale = float(
+                parameters.get("FaceExpressionCropScaleBothDecimalSlider", 1.5)
+            )
+            vy_ratio = float(
+                parameters.get("FaceExpressionVYRatioBothDecimalSlider", -0.125)
+            )
             interp_mode = (
                 self.interpolation_expression_faceeditor_back
                 if self.interpolation_expression_faceeditor_back is not None
@@ -1132,6 +1133,9 @@ class FrameEdits:
                 region=region,
                 eye_driving_weight=eye_weight,
                 lip_driving_weight=lip_weight,
+                brows_driving_weight=brows_weight,
+                cheeks_driving_weight=cheeks_weight,
+                jaw_driving_weight=jaw_weight,
                 structural_blend=structural_blend,
             )
             out = recast.warp_decode(f_s, source_info["x_s"], x_d_i)
