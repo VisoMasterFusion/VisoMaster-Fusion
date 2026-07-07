@@ -39,11 +39,6 @@ class FrameEdits:
         )
         self.interpolation_expression_faceeditor_back = None
 
-        # Per-face EMA state for the optional Recast expression smoothing
-        # (``RecastExpressionSmoothToggle``). Keyed by a quantized face centroid
-        # so multiple faces in a frame are smoothed independently. Stateless
-        # frame processing otherwise has no driving-frame history.
-        self._recast_exp_state: dict = {}
         # Persistent VRAM cache for Recast feather masks to avoid per-frame allocation
         self._recast_feather_masks: dict = {}
 
@@ -914,63 +909,6 @@ class FrameEdits:
 
         return out.type(torch.float32)
 
-    def _recast_smooth_exp(
-        self, exp_d: torch.Tensor, source_lmk, strength: float
-    ) -> torch.Tensor:
-        """Temporally smooth the driving expression with a per-face EMA.
-
-        VisoMaster processes frames independently (no driving-frame history),
-        so the upstream Kalman ``flag_smooth`` is approximated here with a
-        simple exponential moving average kept on the FrameEdits instance.
-        State is matched to the *nearest previous face centroid* within a
-        tolerance (not an exact grid bucket), so a moving face keeps tracking
-        its own EMA frame-to-frame instead of losing it whenever it drifts
-        across a grid boundary (which made smoothing a no-op before).
-        ``strength`` in [0,1] is the weight given to the previous estimate
-        (0 = no smoothing, higher = smoother/more lag).
-        """
-        strength = max(0.0, min(1.0, float(strength)))
-        if strength <= 0.0:
-            return exp_d
-
-        try:
-            centroid = np.asarray(source_lmk, dtype=np.float32).reshape(-1, 2).mean(0)
-            cx, cy = float(centroid[0]), float(centroid[1])
-        except Exception:
-            cx, cy = 0.0, 0.0
-
-        # Find the closest tracked face within tolerance (face size ~ hundreds
-        # of px, so 120px comfortably covers normal frame-to-frame motion).
-        tol = 120.0
-        best_key = None
-        best_dist = tol
-        for k, (pcx, pcy, _exp) in self._recast_exp_state.items():
-            dist = ((pcx - cx) ** 2 + (pcy - cy) ** 2) ** 0.5
-            if dist <= best_dist:
-                best_dist = dist
-                best_key = k
-
-        if best_key is not None:
-            _pcx, _pcy, prev = self._recast_exp_state[best_key]
-            if prev.shape == exp_d.shape:
-                smoothed = prev.to(exp_d.device) * strength + exp_d * (1.0 - strength)
-            else:
-                smoothed = exp_d
-            key = best_key
-        else:
-            smoothed = exp_d
-            # New face slot keyed by an incrementing id.
-            key = max(self._recast_exp_state.keys(), default=-1) + 1
-
-        self._recast_exp_state[key] = (cx, cy, smoothed.detach().clone())
-
-        # Bound the state dict so long multi-face sessions can't grow unbounded.
-        if len(self._recast_exp_state) > 16:
-            self._recast_exp_state.clear()
-            self._recast_exp_state[0] = (cx, cy, smoothed.detach().clone())
-
-        return smoothed
-
     def apply_perform_recast(
         self,
         driving: torch.Tensor,
@@ -1039,10 +977,6 @@ class FrameEdits:
             )
             jaw_weight = float(
                 parameters.get("RecastJawDrivingWeightDecimalSlider", 0.15)
-            )
-            smooth_on = parameters.get("RecastExpressionSmoothToggle", False)
-            smooth_strength = float(
-                parameters.get("RecastSmoothStrengthDecimalSlider", 0.5)
             )
             feather_amount = float(
                 parameters.get("RecastPasteBackFeatherDecimalSlider", 0.0)
@@ -1135,10 +1069,6 @@ class FrameEdits:
             x_s_info = recast.motion(target_face_256)
             source_info = recast.build_source_info(x_s_info)
             f_s = recast.extract_appearance(target_face_512)
-
-            # Optional temporal smoothing of the driving expression.
-            if smooth_on:
-                exp_d = self._recast_smooth_exp(exp_d, source_lmk, smooth_strength)
 
             # --- COMPOSE + GENERATE ---
             x_d_i = recast.compose_driven_keypoints(
