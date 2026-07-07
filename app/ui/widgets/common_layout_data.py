@@ -403,34 +403,8 @@ COMMON_LAYOUT_DATA: Any = {
             "0.0 freezes the jaw to preserve the target's face shape; 1.0 applies the exact driving jaw articulation. "
             "This value is scaled by the global Expression Strength.",
         },
-        "RecastExpressionSmoothToggle": {
-            "level": 3,
-            "label": "Smooth Expression",
-            "default": False,
-            "parentToggle": "FaceExpressionEnableBothToggle",
-            "requiredToggleValue": True,
-            "parentSelection": "FaceExpressionModeSelection",
-            "requiredSelectionValue": "Recast",
-            "help": "Temporally smooth the driving expression with a per-face exponential "
-            "moving average to reduce micro-jitter / flicker between frames.",
-        },
-        "RecastSmoothStrengthDecimalSlider": {
-            "level": 4,
-            "label": "Smooth Strength",
-            "min_value": "0.0",
-            "max_value": "0.95",
-            "default": "0.5",
-            "step": 0.05,
-            "decimals": 2,
-            "parentToggle": "FaceExpressionEnableBothToggle & RecastExpressionSmoothToggle",
-            "requiredToggleValue": True,
-            "parentSelection": "FaceExpressionModeSelection",
-            "requiredSelectionValue": "Recast",
-            "help": "Weight given to the previous frame's expression. 0.0 = no smoothing, "
-            "higher = smoother but more lag.",
-        },
         "RecastPasteBackFeatherDecimalSlider": {
-            "level": 3,
+            "level": 2,
             "label": "Paste-back Feather",
             "min_value": "0.0",
             "max_value": "0.3",
