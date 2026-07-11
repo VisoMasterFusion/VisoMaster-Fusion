@@ -314,10 +314,10 @@ class FaceRestorers:
         ort_session = self.models_processor.models.get(model_name)
         if ort_session is None:
             # Lazy reload in case clear_gpu_memory() cleared the session after a provider switch.
-            self.models_processor.ensure_denoiser_models_loaded()
+            self.models_processor.face_denoiser.ensure_denoiser_models_loaded()
             ort_session = self.models_processor.models.get(model_name)
         if ort_session is None:
-            error_msg = f"[ERROR] VAE Encoder model '{model_name}' not loaded when run_vae_encoder was called. This model should be loaded by ModelsProcessor.ensure_denoiser_models_loaded()."
+            error_msg = f"[ERROR] VAE Encoder model '{model_name}' not loaded when run_vae_encoder was called. This model should be loaded by ModelsProcessor.face_denoiser.ensure_denoiser_models_loaded()."
             print(error_msg)
             raise RuntimeError(error_msg)
 
@@ -366,10 +366,10 @@ class FaceRestorers:
         ort_session = self.models_processor.models.get(model_name)
         if ort_session is None:
             # Lazy reload in case clear_gpu_memory() cleared the session after a provider switch.
-            self.models_processor.ensure_denoiser_models_loaded()
+            self.models_processor.face_denoiser.ensure_denoiser_models_loaded()
             ort_session = self.models_processor.models.get(model_name)
         if ort_session is None:
-            error_msg = f"[ERROR] VAE Decoder model '{model_name}' not loaded when run_vae_decoder was called. This model should be loaded by ModelsProcessor.ensure_denoiser_models_loaded()."
+            error_msg = f"[ERROR] VAE Decoder model '{model_name}' not loaded when run_vae_decoder was called. This model should be loaded by ModelsProcessor.face_denoiser.ensure_denoiser_models_loaded()."
             print(error_msg)
             raise RuntimeError(error_msg)
 
@@ -424,7 +424,7 @@ class FaceRestorers:
             # Enhanced error reporting
             error_messages = [
                 f"[ERROR] UNet model '{model_name}' not loaded when run_ref_ldm_unet was called.",
-                "  This model should be loaded by ModelsProcessor.apply_denoiser_unet or a similar setup routine.",
+                "  This model should be loaded by ModelsProcessor.face_denoiser.apply_denoiser_unet or a similar setup routine.",
             ]
             print("\n".join(error_messages))
             return

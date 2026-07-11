@@ -137,9 +137,9 @@ def handle_denoiser_state_change(
     control_name_that_changed: str,
 ):
     """
-    Manages loading/unloading of denoiser models (UNet, VAEs, KV Extractor) based on the
-    overall state of all denoiser UI toggles. Models are loaded once if ANY denoiser pass
-    is active and unloaded only when ALL passes are disabled.
+    Manages unloading of denoiser models (UNet, VAEs, KV Extractor) based on the
+    overall state of all denoiser UI toggles. Models are lazy-loaded by the inference
+    pipeline and unloaded here when ALL passes are disabled.
     """
 
     # 1. Get the current state of all relevant toggles from the UI's control dictionary.
@@ -183,31 +183,28 @@ def handle_denoiser_state_change(
         is_now_before_enabled or is_now_after_first_enabled or is_now_after_enabled
     )
 
-    # 4. Load or Unload models based on the correct final state.
+    # 4. Handle Unloads based on the correct final state.
     if any_denoiser_will_be_active:
         print(
-            "[INFO] At least one denoiser pass is active. Ensuring UNet/VAEs are loaded."
+            "[INFO] At least one denoiser pass is active. Models will be lazy-loaded on demand."
         )
-        main_window.models_processor.ensure_denoiser_models_loaded()
+        # ARCHITECTURE FIX: We do NOT eagerly load the UNet/VAEs here.
+        # FaceDenoiser.apply_denoiser_unet() handles JIT loading securely.
 
-        # The KV Extractor is ONLY needed if a pass is active AND the exclusive path is enabled.
-        if is_now_exclusive_path_enabled:
-            print("[INFO] Exclusive path is active. Ensuring KV Extractor is loaded.")
-            main_window.models_processor.ensure_kv_extractor_loaded()
-        else:
-            # If the exclusive path is off, but a denoiser is still on, unload ONLY the KV Extractor.
-            print("[INFO] Exclusive path is inactive. Unloading KV Extractor.")
-            main_window.models_processor.unload_kv_extractor()
+        if not is_now_exclusive_path_enabled:
+            print(
+                "[INFO] Exclusive path is inactive. Ensuring KV Extractor is unloaded."
+            )
+            main_window.models_processor.face_denoiser.unload_kv_extractor()
     else:
-        # If NO denoiser pass will be active, unload everything.
+        # If NO denoiser pass will be active, aggressively free VRAM.
         print(
             "[INFO] All denoiser passes are inactive. Unloading all denoiser-related models."
         )
-        main_window.models_processor.unload_denoiser_models()
-        main_window.models_processor.unload_kv_extractor()
+        main_window.models_processor.face_denoiser.unload_models()
+        main_window.models_processor.face_denoiser.unload_kv_extractor()
 
     # 5. Update UI visibility for the specific pass that was just toggled.
-    # This part remains correct as it handles UI updates based on the specific toggle changed.
     pass_suffix_to_update = None
     if control_name_that_changed == "DenoiserUNetEnableBeforeRestorersToggle":
         pass_suffix_to_update = "Before"
@@ -741,8 +738,8 @@ def apply_face_reaging(main_window: "MainWindow", *_args) -> None:
             try:
                 aged_hwc = aged_chw.permute(1, 2, 0).cpu().numpy()
                 pil_img = Image.fromarray(aged_hwc)
-                with models_processor.kv_extraction_lock:
-                    kv_map = models_processor.get_kv_map_for_face(pil_img)
+                with models_processor.face_denoiser.kv_extraction_lock:
+                    kv_map = models_processor.face_denoiser.get_kv_map_for_face(pil_img)
                 target_face.aged_kv_map = kv_map
             except Exception as e_kv:
                 print(f"[ERROR] apply_face_reaging: KV map extraction failed: {e_kv}")

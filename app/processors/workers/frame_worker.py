@@ -520,6 +520,7 @@ class FrameWorker(threading.Thread):
         pass_suffix: str,
         kv_map: Dict | None,
         color_mask: torch.Tensor | None = None,
+        blend_mask: torch.Tensor | None = None,
     ) -> torch.Tensor:
         """Helper to run the diffusion-based denoiser (Ref-LDM).
 
@@ -547,7 +548,7 @@ class FrameWorker(threading.Thread):
         if not kv_map and use_exclusive_path:
             return image_tensor_cxhxw_uint8
 
-        denoised_image = self.models_processor.apply_denoiser_unet(
+        denoised_image = self.models_processor.face_denoiser.apply_denoiser_unet(
             image_tensor_cxhxw_uint8,
             reference_kv_map=kv_map,
             use_reference_exclusive_path=use_exclusive_path,
@@ -560,7 +561,26 @@ class FrameWorker(threading.Thread):
             color_mask=color_mask,
         )
 
-        return torch.clamp(denoised_image, 0, 255)
+        denoised_image = torch.clamp(denoised_image, 0, 255)
+
+        # Restrict Denoiser to the active Swap Mask.
+        # Diffusion models completely regenerate the 512x512 canvas, altering the background
+        # and occlusions. If we don't mask the output here, the feathered edges of the final
+        # paste operation will blend the denoised background with the real background, causing a halo.
+        if blend_mask is not None:
+            if (
+                blend_mask.shape[-1] != denoised_image.shape[-1]
+                or blend_mask.shape[-2] != denoised_image.shape[-2]
+            ):
+                blend_mask = v2.Resize(
+                    (denoised_image.shape[-2], denoised_image.shape[-1]), antialias=True
+                )(blend_mask)
+
+            denoised_image = torch.lerp(
+                image_tensor_cxhxw_uint8.float(), denoised_image.float(), blend_mask
+            ).to(image_tensor_cxhxw_uint8.dtype)
+
+        return denoised_image
 
     def _find_best_target_match(
         self,
@@ -4617,7 +4637,12 @@ class FrameWorker(threading.Thread):
         # First Denoiser pass - Before Restorers
         if control.get("DenoiserUNetEnableBeforeRestorersToggle", False):
             swap = self._apply_denoiser_pass(
-                swap, control, "Before", kv_map, color_mask=mask_forcalc_512
+                swap,
+                control,
+                "Before",
+                kv_map,
+                color_mask=mask_forcalc_512,
+                blend_mask=swap_mask,
             )
 
         # --- MOUTH ENHANCEMENT & ALIGNMENT (PRE-RESTORER) ---
@@ -4911,7 +4936,7 @@ class FrameWorker(threading.Thread):
 
         # Initialize AutoColor mask based on the pure calculation mask
         mask_autocolor = calc_mask.clone()
-        mask_autocolor = mask_autocolor > 0.05
+        mask_autocolor = (mask_autocolor > 0.5).float()
 
         # Auto Restore (First Pass)
         if (
@@ -5035,7 +5060,12 @@ class FrameWorker(threading.Thread):
         # Second Denoiser pass - After First Restorer
         if control.get("DenoiserAfterFirstRestorerToggle", False):
             swap = self._apply_denoiser_pass(
-                swap, control, "AfterFirst", kv_map, color_mask=mask_forcalc_512
+                swap,
+                control,
+                "AfterFirst",
+                kv_map,
+                color_mask=mask_forcalc_512,
+                blend_mask=swap_mask,
             )
 
         # --- RESTORATION 2 ---
@@ -5670,7 +5700,12 @@ class FrameWorker(threading.Thread):
         if control.get("DenoiserAfterRestorersToggle", False):
             # We use mask_autocolor_end here because it is the most strict mask available at the end of the pipeline
             swap = self._apply_denoiser_pass(
-                swap, control, "After", kv_map, color_mask=mask_autocolor_end
+                swap,
+                control,
+                "After",
+                kv_map,
+                color_mask=mask_autocolor_end,
+                blend_mask=swap_mask,
             )
 
         # Final blending
