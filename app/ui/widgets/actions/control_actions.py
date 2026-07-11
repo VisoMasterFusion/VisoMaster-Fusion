@@ -188,7 +188,7 @@ def handle_denoiser_state_change(
         print(
             "[INFO] At least one denoiser pass is active. Models will be lazy-loaded on demand."
         )
-        # ARCHITECTURE FIX: We do NOT eagerly load the UNet/VAEs here.
+        # We do NOT eagerly load the UNet/VAEs here.
         # FaceDenoiser.apply_denoiser_unet() handles JIT loading securely.
 
         if not is_now_exclusive_path_enabled:

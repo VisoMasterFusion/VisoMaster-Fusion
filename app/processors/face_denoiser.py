@@ -12,7 +12,7 @@ from torchvision.transforms import v2
 if TYPE_CHECKING:
     from app.processors.models_processor import ModelsProcessor
     from PIL import Image
-    
+
 from app.processors.utils import faceutil
 from app.helpers.miscellaneous import is_file_exists
 from app.helpers.downloader import download_file
@@ -27,11 +27,11 @@ class FaceDenoiser:
 
     def __init__(self, models_processor: "ModelsProcessor"):
         self.models_processor = models_processor
-        
+
         # --- KV Extractor State ---
         self.kv_extractor: Optional[KVExtractor] = None
         self.kv_extraction_lock = threading.Lock()
-        
+
         # Denoiser specific initializations (VR180 feature compatible)
         num_ddpm_timesteps = 1000
         linear_start_val = 0.0015
@@ -44,14 +44,16 @@ class FaceDenoiser:
         )
         self.alphas_np = 1.0 - self.betas_np
         self.alphas_cumprod_np = np.cumprod(self.alphas_np, axis=0)
-        
-        # We store the base tensor here. Note: If the device changes, 
+
+        # We store the base tensor here. Note: If the device changes,
         # ModelsProcessor's switch_providers_priority will need to update this,
         # or we dynamically cast it during inference.
         self.alphas_cumprod_torch = (
-            torch.from_numpy(self.alphas_cumprod_np).float().to(self.models_processor.device)
+            torch.from_numpy(self.alphas_cumprod_np)
+            .float()
+            .to(self.models_processor.device)
         )
-        
+
         # NOTE: vae_scale_factor=1.0 is intentional for this model's specific VAE configuration
         self.vae_scale_factor = 1.0
 
@@ -189,19 +191,27 @@ class FaceDenoiser:
             vae_decoder_name = "RefLDMVAEDecoder"
 
             if not self.models_processor.models.get(unet_model_name):
-                self.models_processor.models[unet_model_name] = self.models_processor.load_model(unet_model_name)
+                self.models_processor.models[unet_model_name] = (
+                    self.models_processor.load_model(unet_model_name)
+                )
 
             if not self.models_processor.models.get(vae_encoder_name):
-                self.models_processor.models[vae_encoder_name] = self.models_processor.load_model(vae_encoder_name)
+                self.models_processor.models[vae_encoder_name] = (
+                    self.models_processor.load_model(vae_encoder_name)
+                )
 
             if not self.models_processor.models.get(vae_decoder_name):
-                self.models_processor.models[vae_decoder_name] = self.models_processor.load_model(vae_decoder_name)
+                self.models_processor.models[vae_decoder_name] = (
+                    self.models_processor.load_model(vae_decoder_name)
+                )
 
     def unload_models(self):
         """Unloads the UNet and VAE models."""
         with self.models_processor.model_lock:
             print("[INFO] Unloading denoiser models (UNet, VAEs)...")
-            self.models_processor.unload_model(self.models_processor.main_window.fixed_unet_model_name)
+            self.models_processor.unload_model(
+                self.models_processor.main_window.fixed_unet_model_name
+            )
             self.models_processor.unload_model("RefLDMVAEEncoder")
             self.models_processor.unload_model("RefLDMVAEDecoder")
 
@@ -223,7 +233,9 @@ class FaceDenoiser:
             # 2. Perform the extraction
             print("[INFO] Extracting K/V from reference image...")
             kv_map = self.kv_extractor.extract_kv(input_face_image_pil)
-            print(f"[INFO] Successfully extracted K/V for {len(kv_map)} attention layers.")
+            print(
+                f"[INFO] Successfully extracted K/V for {len(kv_map)} attention layers."
+            )
 
         except Exception as e:
             print(f"[ERROR] Failed the K/V extraction: {e}")
@@ -259,7 +271,9 @@ class FaceDenoiser:
         for rel_path, url in ref_ldm_files.items():
             full_path = os.path.join(base_path, rel_path)
             if not is_file_exists(full_path):
-                print(f"[INFO] Downloading ReF-LDM file: {os.path.basename(full_path)}...")
+                print(
+                    f"[INFO] Downloading ReF-LDM file: {os.path.basename(full_path)}..."
+                )
                 download_file(os.path.basename(full_path), full_path, None, url)
 
         config_path = os.path.join(configs_path, "refldm.yaml")
@@ -267,7 +281,9 @@ class FaceDenoiser:
         vae_path = os.path.join(ckpts_path, "vqgan.ckpt")
 
         if not all(os.path.exists(p) for p in [config_path, model_path, vae_path]):
-            print("[ERROR] ReF-LDM model files not found even after download attempt. Cannot load KV Extractor.")
+            print(
+                "[ERROR] ReF-LDM model files not found even after download attempt. Cannot load KV Extractor."
+            )
             return
 
         with self.models_processor.model_lock:
@@ -291,7 +307,9 @@ class FaceDenoiser:
     def unload_kv_extractor(self, force_immediate=False):
         """Unloads the KVExtractor model and clears associated memory."""
         if not self.models_processor.force_unload_in_progress:
-            if self.models_processor.main_window.control.get("KeepModelsAliveToggle", False):
+            if self.models_processor.main_window.control.get(
+                "KeepModelsAliveToggle", False
+            ):
                 return
 
         if not force_immediate and not self.models_processor.force_unload_in_progress:
@@ -303,7 +321,9 @@ class FaceDenoiser:
                         "type": "kv",
                         "target_frame": target_frame,
                     }
-                print(f"[INFO] Smart Unload: Deferring KV Extractor unload after frame {target_frame}")
+                print(
+                    f"[INFO] Smart Unload: Deferring KV Extractor unload after frame {target_frame}"
+                )
                 return
 
         with self.models_processor.model_lock:
@@ -314,7 +334,7 @@ class FaceDenoiser:
                 gc.collect()
                 if torch.cuda.is_available():
                     torch.cuda.empty_cache()
-    
+
     def apply_denoiser_unet(
         self,
         image_cxhxw_uint8: torch.Tensor,
@@ -420,7 +440,9 @@ class FaceDenoiser:
 
         latent_h, latent_w = h_proc // 8, w_proc // 8
         encoded_latent_direct_vae_out_bchw = torch.empty(
-            (1, 8, latent_h, latent_w), dtype=torch.float32, device=self.models_processor.device
+            (1, 8, latent_h, latent_w),
+            dtype=torch.float32,
+            device=self.models_processor.device,
         ).contiguous()
 
         self.models_processor.face_restorers.run_vae_encoder(
@@ -444,7 +466,9 @@ class FaceDenoiser:
             )
 
         actual_use_exclusive_path_tensor_for_unet = is_ref_flag_tensor_for_unet
-        false_tensor_for_unet = torch.zeros(1, dtype=torch.bool, device=self.models_processor.device)
+        false_tensor_for_unet = torch.zeros(
+            1, dtype=torch.bool, device=self.models_processor.device
+        )
 
         rng = torch.Generator(device=self.models_processor.device)
         rng.manual_seed(base_seed)
@@ -466,13 +490,19 @@ class FaceDenoiser:
 
             sqrt_alpha_bar_t_torch = torch.sqrt(
                 torch.full(
-                    (1,), alpha_t_bar_val, dtype=torch.float32, device=self.models_processor.device
+                    (1,),
+                    alpha_t_bar_val,
+                    dtype=torch.float32,
+                    device=self.models_processor.device,
                 )
             )
             sqrt_one_minus_alpha_bar_t_torch = torch.sqrt(
                 1.0
                 - torch.full(
-                    (1,), alpha_t_bar_val, dtype=torch.float32, device=self.models_processor.device
+                    (1,),
+                    alpha_t_bar_val,
+                    dtype=torch.float32,
+                    device=self.models_processor.device,
                 )
             )
 
@@ -485,11 +515,16 @@ class FaceDenoiser:
             )
 
             timesteps_tensor_unet = torch.full(
-                (1,), current_t_idx, dtype=torch.int64, device=self.models_processor.device
+                (1,),
+                current_t_idx,
+                dtype=torch.int64,
+                device=self.models_processor.device,
             )
 
             predicted_noise_from_unet = torch.empty(
-                (1, 8, latent_h, latent_w), dtype=torch.float32, device=self.models_processor.device
+                (1, 8, latent_h, latent_w),
+                dtype=torch.float32,
+                device=self.models_processor.device,
             ).contiguous()
 
             if torch.cuda.is_available():
@@ -558,7 +593,9 @@ class FaceDenoiser:
 
             pred_x0_scaled_current_step = torch.empty_like(lq_latent_x0_scaled_for_unet)
 
-            ts_unet = torch.empty((1,), dtype=torch.int64, device=self.models_processor.device)
+            ts_unet = torch.empty(
+                (1,), dtype=torch.int64, device=self.models_processor.device
+            )
             schedule_idx_tensor = torch.empty(
                 (1,), dtype=torch.long, device=self.models_processor.device
             )
@@ -658,7 +695,9 @@ class FaceDenoiser:
         latent_for_vae_decoder = final_denoised_latent_x0_scaled / self.vae_scale_factor
         del final_denoised_latent_x0_scaled
         decoded_image_normalized_bchw = torch.empty(
-            (1, 3, h_proc, w_proc), dtype=torch.float32, device=self.models_processor.device
+            (1, 3, h_proc, w_proc),
+            dtype=torch.float32,
+            device=self.models_processor.device,
         ).contiguous()
 
         self.models_processor.face_restorers.run_vae_decoder(
@@ -699,7 +738,7 @@ class FaceDenoiser:
                     ref_tensor,
                     res_tensor,
                     mask,
-                    100, 
+                    100,
                 )
                 image_after_postproc_float_0_1 = matched_result / 255.0
             except Exception as e:
