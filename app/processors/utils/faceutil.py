@@ -1,10 +1,12 @@
 import math
-from math import sin, cos, acos, degrees, floor, ceil
+from math import sin, cos, acos, degrees
 
 import numpy as np
 import cv2
 from skimage import transform as trans
 import torch
+import torch.nn.functional as F
+import threading
 
 import torchvision
 from torchvision.transforms import v2
@@ -73,8 +75,7 @@ src5 = np.array(
     dtype=np.float32,
 )
 
-# ^^^ Pitch Up (Tête en arrière)
-# Les yeux descendent légèrement, le nez remonte (plus proche des yeux), la bouche remonte
+# Pitch Up
 src6 = np.array(
     [
         [39.730, 55.000],  # LE (Shifted Down)
@@ -86,8 +87,7 @@ src6 = np.array(
     dtype=np.float32,
 )
 
-# vvv Pitch Down (Tête en avant)
-# Les yeux remontent, le nez descend (s'éloigne des yeux), la bouche descend
+# Pitch Down
 src7 = np.array(
     [
         [39.730, 45.000],  # LE (Shifted Up)
@@ -99,7 +99,6 @@ src7 = np.array(
     dtype=np.float32,
 )
 
-# Ajout des nouveaux gabarits src6 et src7 à la liste
 src = np.array([src1, src2, src3, src4, src5, src6, src7])
 src_map = {112: src, 224: src * 2}
 
@@ -162,6 +161,16 @@ _XYZ_TO_RGB = torch.tensor(
     ],
     dtype=torch.float32,
 )
+
+# --- Thread-safe caches for deterministic geometric masks & kernels ---
+_faded_mask_cache: dict[tuple, torch.Tensor] = {}
+_faded_mask_lock = threading.Lock()
+
+_gaussian_kernel_cache: dict[tuple, torch.Tensor] = {}
+_gaussian_kernel_lock = threading.Lock()
+
+_laplace_kernel_cache: dict[str, torch.Tensor] = {}
+_laplace_kernel_lock = threading.Lock()
 
 
 def pad_image_by_size(img, image_size):
@@ -1285,8 +1294,18 @@ def sharpen(img):
     return img_out.to(torch.uint8)
 
 
-def get_gaussian_kernel(sigma, kernel_size=5):
-    """Create a 2D Gaussian kernel for convolution."""
+def get_gaussian_kernel(sigma: float, kernel_size: int = 5) -> torch.Tensor:
+    """
+    Create a 2D Gaussian kernel for convolution.
+    OPTIMIZED: Thread-safe caching added to prevent re-allocating
+    the mathematical kernel tensor on every sharpen pass.
+    """
+    cache_key = (float(sigma), int(kernel_size))
+
+    with _gaussian_kernel_lock:
+        if cache_key in _gaussian_kernel_cache:
+            return _gaussian_kernel_cache[cache_key]
+
     coords = torch.arange(kernel_size, dtype=torch.float32)
     coords -= (kernel_size - 1) / 2.0
 
@@ -1295,7 +1314,14 @@ def get_gaussian_kernel(sigma, kernel_size=5):
 
     g_kernel = torch.outer(g, g)
     g_kernel = g_kernel.unsqueeze(0).unsqueeze(0)  # Make it 4D for convolution
-    return g_kernel.expand(3, 1, kernel_size, kernel_size)  # Apply to each channels
+    final_kernel = g_kernel.expand(
+        3, 1, kernel_size, kernel_size
+    )  # Apply to each channels
+
+    with _gaussian_kernel_lock:
+        _gaussian_kernel_cache[cache_key] = final_kernel
+
+    return final_kernel
 
 
 # Live Portrait
@@ -1730,12 +1756,19 @@ def warp_face_by_face_landmark_x(img, pts, **kwargs):
 
 
 def create_faded_inner_mask(
-    size, border_thickness, fade_thickness, blur_radius=3, device="cuda"
-):
+    size: tuple[int, int],
+    border_thickness: int,
+    fade_thickness: int,
+    blur_radius: int = 3,
+    device: str = "cuda",
+) -> torch.Tensor:
     """
-    Create a mask with a thick black border and a faded white center towards the border (optimized version).
+    Create a mask with a thick black border and a faded white center towards the border.
     The white edges are smoothed using Gaussian blur.
 
+    OPTIMIZED: Added thread-safe caching. Generating 512x512 meshgrids and running
+    Gaussian blurs dynamically 60 times a second severely fragments VRAM.
+    This caches the final tensor based on its deterministic parameters.
     Parameters:
     - size: Tuple (height, width) for the mask size.
     - border_thickness: The thickness of the outer black border.
@@ -1746,6 +1779,19 @@ def create_faded_inner_mask(
     Returns:
     - mask: A PyTorch tensor containing the mask.
     """
+    cache_key = (
+        size[0],
+        size[1],
+        border_thickness,
+        fade_thickness,
+        blur_radius,
+        str(device),
+    )
+
+    with _faded_mask_lock:
+        if cache_key in _faded_mask_cache:
+            return _faded_mask_cache[cache_key]
+
     height, width = size
     mask = torch.zeros(
         (height, width), dtype=torch.float32, device=device
@@ -1789,6 +1835,9 @@ def create_faded_inner_mask(
         mask, kernel_size=(blur_radius, blur_radius), sigma=(blur_radius / 2)
     )
     mask = mask[0, 0, :, :]  # Rimuovi batch e channel
+
+    with _faded_mask_lock:
+        _faded_mask_cache[cache_key] = mask
 
     return mask
 
@@ -1839,98 +1888,96 @@ def paste_back(
     return output.to(torch.uint8)
 
 
+@torch.no_grad()
 def paste_back_adv(
-    img_crop, M_c2o, img, mask_crop, interpolation=v2.InterpolationMode.BILINEAR
-):
+    img_crop: torch.Tensor,
+    M_c2o: np.ndarray,
+    img: torch.Tensor,
+    mask_crop: torch.Tensor,
+    interpolation=None,
+) -> torch.Tensor:
     """
     Paste back the transformed cropped image onto the original image with a mask.
-
-    Parameters:
-    - img_crop (torch.Tensor: float32): Cropped image tensor (C x H x W).
-    - M_c2o (numpy array): Rotation/Translation matrix.
-    - img (torch.Tensor: uint8): Original image tensor (C x H x W).
-    - mask_crop (torch.Tensor: float32): Mask image tensor (1 x H x W) con bordi sfumati.
-    - interpolation: InterpolationMode.
-
-    Returns:
-    - img (torch.Tensor: uint8): Modified image tensor.
+    OPTIMIZED: Eliminates full-frame padding. Calculates the bounding box of the
+    transformed face, warps locally via Kornia, and blends in-place.
+    Saves massive VRAM and compute time on high-resolution (HD/4K) footage.
     """
+    device = img.device
 
-    tform = trans.SimilarityTransform()
-    tform.params[0:2] = M_c2o
-    # F-04: use actual img_crop dimensions instead of hardcoded 512
+    # 1. Calculate the bounding box of the transformed crop in the original image space
     crop_h, crop_w = img_crop.shape[1], img_crop.shape[2]
     corners = np.array(
-        [[0, 0], [0, crop_h - 1], [crop_w - 1, 0], [crop_w - 1, crop_h - 1]]
+        [[0, 0], [0, crop_h - 1], [crop_w - 1, 0], [crop_w - 1, crop_h - 1]],
+        dtype=np.float32,
     )
 
-    # Calcola i nuovi limiti
-    x = M_c2o[0][0] * corners[:, 0] + M_c2o[0][1] * corners[:, 1] + M_c2o[0][2]
-    y = M_c2o[1][0] * corners[:, 0] + M_c2o[1][1] * corners[:, 1] + M_c2o[1][2]
+    x = M_c2o[0, 0] * corners[:, 0] + M_c2o[0, 1] * corners[:, 1] + M_c2o[0, 2]
+    y = M_c2o[1, 0] * corners[:, 0] + M_c2o[1, 1] * corners[:, 1] + M_c2o[1, 2]
 
-    left = max(floor(np.min(x)), 0)
-    top = max(floor(np.min(y)), 0)
-    right = min(ceil(np.max(x)), img.shape[2])
-    bottom = min(ceil(np.max(y)), img.shape[1])
+    # Constrain the bounding box to the actual dimensions of the original image
+    left = max(math.floor(np.min(x)), 0)
+    top = max(math.floor(np.min(y)), 0)
+    right = min(math.ceil(np.max(x)), img.shape[2])
+    bottom = min(math.ceil(np.max(y)), img.shape[1])
 
-    # Converti img in float32 [0, 1]
-    img = torch.clamp(img.float() / 255.0, 0, 1)
+    bw = right - left
+    bh = bottom - top
 
-    # Trasforma img_crop senza inverso
-    # F-04: use actual img_crop dimensions instead of hardcoded 512
-    img_crop = v2.functional.pad(
-        img_crop,
-        (0, 0, img.shape[2] - img_crop.shape[2], img.shape[1] - img_crop.shape[1]),
+    # Failsafe: if the bounding box is completely off-screen, return the original image
+    if bw <= 0 or bh <= 0:
+        return img
+
+    # 2. Adjust transformation matrix for the localized bounding box
+    M_local = M_c2o.copy()
+    M_local[0, 2] -= left
+    M_local[1, 2] -= top
+
+    M_tensor = torch.from_numpy(M_local).float().to(device)
+
+    # 3. Ensure input crops are float32 [0, 1] for precise Kornia warping
+    img_crop_f = img_crop.float() / 255.0 if img_crop.dtype == torch.uint8 else img_crop
+    mask_crop_f = (
+        mask_crop.float() / 255.0 if mask_crop.dtype == torch.uint8 else mask_crop
     )
-    img_crop = v2.functional.affine(
-        img_crop,
-        tform.rotation * 57.2958,
-        (tform.translation[0], tform.translation[1]),
-        tform.scale,
-        0,
-        interpolation=interpolation,
-        center=(0, 0),
-    )
-    img_crop = img_crop[:, top:bottom, left:right]  # Ritaglia l'area trasformata
 
-    # Trasforma mask_crop nello stesso modo di img_crop
-    # F-04: use actual mask_crop dimensions instead of hardcoded 512
-    mask_crop = v2.functional.pad(
-        mask_crop,
-        (0, 0, img.shape[2] - mask_crop.shape[2], img.shape[1] - mask_crop.shape[1]),
-    )
-    mask_crop = v2.functional.affine(
-        mask_crop,
-        tform.rotation * 57.2958,
-        (tform.translation[0], tform.translation[1]),
-        tform.scale,
-        0,
-        interpolation=interpolation,
-        center=(0, 0),
-    )
-    mask_crop = mask_crop[:, top:bottom, left:right]
+    # 4. Warp img_crop and mask_crop LOCALLY using Kornia (100% GPU, zero padding overhead)
+    img_warped = kgm.warp_affine(
+        img_crop_f.unsqueeze(0),
+        M_tensor.unsqueeze(0),
+        dsize=(bh, bw),
+        mode="bilinear",
+        padding_mode="zeros",
+        align_corners=True,
+    ).squeeze(0)
 
-    # Clampa la maschera tra 0 e 1
-    mask_crop = torch.clamp(mask_crop, 0, 1)
+    mask_warped = kgm.warp_affine(
+        mask_crop_f.unsqueeze(0),
+        M_tensor.unsqueeze(0),
+        dsize=(bh, bw),
+        mode="bilinear",
+        padding_mode="zeros",
+        align_corners=True,
+    ).squeeze(0)
 
-    # Crea il complemento della maschera per l'area dell'immagine originale
-    mask_inv = 1 - mask_crop
+    mask_warped.clamp_(0.0, 1.0)
 
-    # Applica mask_crop a img_crop e mask_inv a img_diff
-    img_diff = img[:, top:bottom, left:right]
-    img_crop = torch.mul(mask_crop, img_crop)  # Applica la maschera sfumata al ritaglio
-    img_diff = torch.mul(
-        mask_inv, img_diff
-    )  # Applica il complemento all'area originale
+    # 5. Extract original region, blend in-place, and insert back
+    img_is_uint8 = img.dtype == torch.uint8
+    img_float = img.float() / 255.0 if img_is_uint8 else img
 
-    # Somma img_crop (trasformato) all'area ritagliata dell'immagine originale
-    img_crop = torch.add(img_crop, img_diff)
+    target_roi = img_float[:, top:bottom, left:right]
 
-    # Inserisci l'area modificata nell'immagine originale (ancora in float)
-    img[:, top:bottom, left:right] = img_crop
+    # In-place blending logic
+    blended_roi = (img_warped * mask_warped) + (target_roi * (1.0 - mask_warped))
 
-    # Alla fine converti tutto in uint8
-    img = torch.clamp(img * 255.0, 0, 255).to(torch.uint8)
+    # Cast back to the original image tensor
+    if img_is_uint8:
+        img[:, top:bottom, left:right] = torch.clamp(blended_roi * 255.0, 0, 255).to(
+            torch.uint8
+        )
+    else:
+        # If the original image was already float, assign directly
+        img[:, top:bottom, left:right] = blended_roi
 
     return img
 
@@ -2153,26 +2200,31 @@ def headpose_pred_to_degree(pred):
 
 
 # imported from https://github.com/KwaiVGI/LivePortrait/blob/main/src/utils/camera.py
-def get_rotation_matrix(pitch_, yaw_, roll_):
-    """The input angles are in degrees"""
+def get_rotation_matrix(pitch_, yaw_, roll_) -> torch.Tensor:
+    """
+    Calculates the 3D rotation matrix from Euler angles (in degrees).
+    OPTIMIZED: Direct device allocation eliminates CPU-to-GPU PCIe transfer overhead.
+    """
 
-    # If the inputs are scalar or lists, convert them to tensors
-    if not isinstance(pitch_, torch.Tensor):
-        pitch_ = torch.tensor(pitch_)
-    if not isinstance(yaw_, torch.Tensor):
-        yaw_ = torch.tensor(yaw_)
-    if not isinstance(roll_, torch.Tensor):
-        roll_ = torch.tensor(roll_)
+    # Helper to securely cast to tensor on the right device if needed
+    def _to_tensor(val):
+        if isinstance(val, torch.Tensor):
+            return val
+        return torch.tensor(val, dtype=torch.float32)
+
+    pitch = _to_tensor(pitch_)
+    yaw = _to_tensor(yaw_)
+    roll = _to_tensor(roll_)
 
     # Convert degrees to radians
-    pitch = pitch_ / 180 * torch.pi
-    yaw = yaw_ / 180 * torch.pi
-    roll = roll_ / 180 * torch.pi
+    pitch = pitch / 180.0 * torch.pi
+    yaw = yaw / 180.0 * torch.pi
+    roll = roll / 180.0 * torch.pi
 
-    # Get the device (either CPU or GPU)
     device = pitch.device
+    dtype = pitch.dtype
 
-    # If the tensors are one-dimensional, add an extra dimension
+    # Ensure 2D shape (bs, 1)
     if pitch.ndim == 1:
         pitch = pitch.unsqueeze(1)
     if yaw.ndim == 1:
@@ -2180,10 +2232,11 @@ def get_rotation_matrix(pitch_, yaw_, roll_):
     if roll.ndim == 1:
         roll = roll.unsqueeze(1)
 
-    # Calculate rotation matrices for pitch, yaw, and roll
-    bs = pitch.shape[0]  # Batch size
-    ones = torch.ones([bs, 1]).to(device)
-    zeros = torch.zeros([bs, 1]).to(device)
+    bs = pitch.shape[0]
+
+    # FIXED: Allocate directly on VRAM. No .to(device) chaining.
+    ones = torch.ones([bs, 1], device=device, dtype=dtype)
+    zeros = torch.zeros([bs, 1], device=device, dtype=dtype)
 
     # Rotation matrix around x-axis (pitch)
     rot_x = torch.cat(
@@ -2237,7 +2290,7 @@ def get_rotation_matrix(pitch_, yaw_, roll_):
     rot = rot_z @ rot_y @ rot_x
 
     # Return the transposed rotation matrix
-    return rot.permute(0, 2, 1)  # transpose
+    return rot.permute(0, 2, 1)
 
 
 # imported from https://github.com/KwaiVGI/LivePortrait/blob/main/src/utils/live_portrait_wrapper.py
@@ -2499,20 +2552,33 @@ def concat_feat(kp_source: torch.Tensor, kp_driving: torch.Tensor) -> torch.Tens
     return feat
 
 
-def apply_laplace_filter(img):
-    # Definiere den Laplace-Kernel
-    laplace_kernel = (
-        torch.tensor(
-            [[0, 1, 0], [1, -4, 1], [0, 1, 0]], dtype=torch.float32, device=img.device
-        )
-        .unsqueeze(0)
-        .unsqueeze(0)
-    )
+def apply_laplace_filter(img: torch.Tensor) -> torch.Tensor:
+    """
+    Applies a Laplacian edge-detection filter to a grayscale image tensor.
+    OPTIMIZED: Caches the Laplace tensor strictly per-device to prevent allocating
+    a new 3x3 matrix in VRAM on every single frame.
+    """
+    device_str = str(img.device)
+
+    with _laplace_kernel_lock:
+        laplace_kernel = _laplace_kernel_cache.get(device_str)
+        if laplace_kernel is None:
+            laplace_kernel = (
+                torch.tensor(
+                    [[0.0, 1.0, 0.0], [1.0, -4.0, 1.0], [0.0, 1.0, 0.0]],
+                    dtype=torch.float32,
+                    device=img.device,
+                )
+                .unsqueeze(0)
+                .unsqueeze(0)
+            )
+            _laplace_kernel_cache[device_str] = laplace_kernel
 
     # Erweitere den Graustufen-Bild-Tensor für Faltung (Batches und Kanäle hinzufügen)
-    img = img.unsqueeze(0).unsqueeze(0)  # (1, 1, H, W) für die Faltung
+    img_expanded = img.unsqueeze(0).unsqueeze(0)  # (1, 1, H, W) für die Faltung
+
     # Faltung mit dem Laplace-Kernel durchführen
-    laplacian = torch.nn.functional.conv2d(img, laplace_kernel, padding=1)
+    laplacian = torch.nn.functional.conv2d(img_expanded, laplace_kernel, padding=1)
 
     return laplacian.squeeze(0).squeeze(0)  # (H, W)
 
@@ -2579,387 +2645,188 @@ def jpegBlur(img: torch.Tensor, q: int) -> torch.Tensor:
     return out_chw.to(device=device, dtype=torch.float32)
 
 
-def histogram_matching(source_image, target_image, diffslider):
-    # Determine the device (CPU or GPU)
+def histogram_matching(
+    source_image: torch.Tensor, target_image: torch.Tensor, diffslider: float
+) -> torch.Tensor:
+    """
+    Exact Histogram Matching using a GPU-accelerated Look-Up Table (LUT).
+    OPTIMIZED: Eliminates per-pixel searchsorted interpolation. Builds a 256-bin
+    mapping table and applies it directly, massively reducing VRAM and execution time.
+    """
     device = source_image.device
+    dtype = source_image.dtype
 
-    # Convert images to float tensors in range [0, 1], shape (C, H, W)
-    source_image_t = source_image.float().to(device) / 255.0
-    target_image_t = target_image.float().to(device) / 255.0
+    # Ensure inputs are float and normalized [0, 1]
+    source_image_t = source_image.to(device, dtype=torch.float32) / 255.0
+    target_image_t = target_image.to(device, dtype=torch.float32) / 255.0
 
-    matched_target_image_t = target_image_t.clone()
-    # Create bin edges for histograms
-    bin_edges = torch.linspace(
-        0.0, 1.0, steps=257, device=device
-    )  # 257 edges for 256 bins
+    matched_target_image_t = torch.empty_like(target_image_t)
 
     for channel in range(3):
-        source_channel = source_image_t[channel, :, :]
-        target_channel = target_image_t[channel, :, :]
+        source_channel = source_image_t[channel]
+        target_channel = target_image_t[channel]
 
-        # Flatten values
-        source_values = source_channel.flatten()
-        target_values = target_channel.flatten()
+        # Clamp and scale to 0-255 integers for binning
+        src_bins = torch.clamp(source_channel * 255.0, 0, 255).to(torch.int64)
+        tgt_bins = torch.clamp(target_channel * 255.0, 0, 255).to(torch.int64)
 
-        # Remove NaNs and Infs
-        source_values = source_values[~torch.isnan(source_values)]
-        source_values = source_values[~torch.isinf(source_values)]
-        target_values = target_values[~torch.isnan(target_values)]
-        target_values = target_values[~torch.isinf(target_values)]
+        # Compute histograms (256 bins)
+        src_hist = torch.bincount(src_bins.flatten(), minlength=256).float()
+        tgt_hist = torch.bincount(tgt_bins.flatten(), minlength=256).float()
 
-        # Check if values are empty
-        if source_values.numel() == 0 or target_values.numel() == 0:
-            print(
-                f"[WARN] No valid pixels for channel {channel}. Skipping histogram matching for this channel."
-            )
-            continue
-
-        # Clamp values to [0, 1]
-        source_values = torch.clamp(source_values, 0.0, 1.0)
-        target_values = torch.clamp(target_values, 0.0, 1.0)
-
-        # Compute histograms
-        source_hist = torch.histc(source_values, bins=256, min=0.0, max=1.0)
-        target_hist = torch.histc(target_values, bins=256, min=0.0, max=1.0)
-
-        # Add epsilon to prevent zero division
-        source_hist += 1e-6
-        target_hist += 1e-6
-
-        # Compute PMFs
-        source_pmf = source_hist / source_hist.sum()
-        target_pmf = target_hist / target_hist.sum()
-
-        # Smooth PMFs slightly
-        kernel = torch.tensor([0.0, 1.0, 0.0], device=device)
-        source_pmf = torch.nn.functional.conv1d(
-            source_pmf[None, None], kernel[None, None], padding=1
-        ).squeeze()
-        target_pmf = torch.nn.functional.conv1d(
-            target_pmf[None, None], kernel[None, None], padding=1
-        ).squeeze()
+        # Add epsilon to prevent division by zero
+        src_hist += 1e-6
+        tgt_hist += 1e-6
 
         # Compute CDFs
-        source_cdf = torch.cumsum(source_pmf, dim=0)
-        target_cdf = torch.cumsum(target_pmf, dim=0)
+        src_cdf = torch.cumsum(src_hist, dim=0)
+        src_cdf = src_cdf / src_cdf[-1]
 
-        # Flatten the target channel for interpolation
-        source_cdf = torch.maximum(source_cdf, torch.cummax(source_cdf, dim=0)[0])
-        target_cdf = torch.maximum(target_cdf, torch.cummax(target_cdf, dim=0)[0])
+        tgt_cdf = torch.cumsum(tgt_hist, dim=0)
+        tgt_cdf = tgt_cdf / tgt_cdf[-1]
 
-        # 🔁 OPTIONAL: Additional light smoothing on CDFs
-        kernel_cdf = torch.tensor([0.5, 0.0, 0.5], device=device)
-        source_cdf = torch.nn.functional.conv1d(
-            source_cdf[None, None], kernel_cdf[None, None], padding=1
-        ).squeeze()
-        target_cdf = torch.nn.functional.conv1d(
-            target_cdf[None, None], kernel_cdf[None, None], padding=1
-        ).squeeze()
+        # We can use searchsorted efficiently here because it's only operating on 256 elements,
+        # not the millions of pixels in the image.
+        indices = torch.searchsorted(src_cdf, tgt_cdf, right=False)
+        indices = torch.clamp(indices, 0, 255)
 
-        # Re-enforce monotonicity again just in case
-        source_cdf = torch.maximum(source_cdf, torch.cummax(source_cdf, dim=0)[0])
-        target_cdf = torch.maximum(target_cdf, torch.cummax(target_cdf, dim=0)[0])
+        # The LUT stores the matched values normalized back to [0, 1]
+        lut = indices.float() / 255.0
 
-        # Interpolate target pixel values to get their CDF values
-        target_channel_flat = target_channel.flatten()
-        interp_t_values = interp1d(
-            target_channel_flat, bin_edges[:-1], target_cdf, device=device
-        )
+        # Apply the LUT to the entire channel simultaneously
+        matched_target_image_t[channel] = lut[tgt_bins]
 
-        # Invert the source CDF to get matched pixel values
-        matched_channel_flat = interp1d_inverse(
-            interp_t_values, source_cdf, bin_edges[:-1], device=device
-        )
-
-        # Reshape back and clamp
-        matched_channel = matched_channel_flat.reshape(target_channel.shape)
-        matched_channel = torch.clamp(matched_channel, 0.0, 1.0)
-
-        # Replace in matched image
-        matched_target_image_t[channel, :, :] = matched_channel
-
-    # Blend result
+    # Blend result based on the diffslider [0, 100]
     alpha = diffslider / 100.0
-    final_image_t = (1 - alpha) * target_image_t + alpha * matched_target_image_t
+    final_image_t = (1.0 - alpha) * target_image_t + alpha * matched_target_image_t
 
+    # Scale back to [0, 255], clamp, and match the original tensor dtype (usually float or uint8)
     final_image_t = torch.clamp(final_image_t * 255.0, 0.0, 255.0)
-    final_image_tensor = final_image_t.to(device).float()
 
-    return final_image_tensor
+    return final_image_t.to(dtype=dtype)
 
 
-def histogram_matching_withmask(source_image, target_image, mask, diffslider):
-    # Determine the device (CPU or GPU)
+def histogram_matching_withmask(
+    source_image: torch.Tensor,
+    target_image: torch.Tensor,
+    mask: torch.Tensor,
+    diffslider: float,
+) -> torch.Tensor:
+    """
+    Exact Histogram Matching using a GPU-accelerated LUT, restricted to a mask.
+    OPTIMIZED: Builds the CDF strictly from masked areas and applies the LUT
+    mapping ONLY to valid pixels, bypassing redundant calculations on the background.
+    """
     device = source_image.device
+    dtype = source_image.dtype
 
-    # Convert the mask explicitly to boolean for PyTorch indexing.
-    # Float tensors cannot be used to slice/index other tensors.
-    valid_mask = mask.bool()
-
-    # Remove channel dimension from mask if present so shape becomes (H, W)
+    # 1. Format mask safely for boolean indexing
+    valid_mask = mask.to(device=device, dtype=torch.bool)
     if valid_mask.dim() == 3 and valid_mask.size(0) == 1:
         valid_mask = valid_mask.squeeze(0)
 
-    # Convert images to float tensors in range [0, 1], shape (C, H, W)
-    source_image_t = source_image.float().to(device) / 255.0  # (C, H, W)
-    target_image_t = target_image.float().to(device) / 255.0  # (C, H, W)
+    # Early exit to prevent NaN division and save VRAM if no face is detected
+    if not valid_mask.any():
+        return target_image.to(dtype=dtype)
 
-    # Apply histogram matching only to the masked areas
+    # 2. Convert inputs to float [0, 1]
+    source_image_t = source_image.to(device, dtype=torch.float32) / 255.0
+    target_image_t = target_image.to(device, dtype=torch.float32) / 255.0
+
+    # Clone target to preserve unmasked background areas perfectly
     matched_target_image_t = target_image_t.clone()
 
-    # Create bin edges for histograms
-    bin_edges = torch.linspace(
-        0.0, 1.0, steps=257, device=device
-    )  # 257 edges for 256 bins
-
     for channel in range(3):
-        source_channel = source_image_t[channel, :, :]  # Shape: (H, W)
-        target_channel = target_image_t[channel, :, :]
+        source_channel = source_image_t[channel]
+        target_channel = target_image_t[channel]
 
-        # Extract masked values
-        masked_source_values = source_channel[valid_mask]
-        masked_target_values = target_channel[valid_mask]
+        # Extract ONLY masked pixels for statistical calculation
+        src_masked_vals = source_channel[valid_mask]
+        tgt_masked_vals = target_channel[valid_mask]
 
-        # Remove NaNs and Infs
-        masked_source_values = masked_source_values[~torch.isnan(masked_source_values)]
-        masked_source_values = masked_source_values[~torch.isinf(masked_source_values)]
-        masked_target_values = masked_target_values[~torch.isnan(masked_target_values)]
-        masked_target_values = masked_target_values[~torch.isinf(masked_target_values)]
+        # Scale to 0-255 integer bins for bincount
+        src_bins = torch.clamp(src_masked_vals * 255.0, 0, 255).to(torch.int64)
+        tgt_bins = torch.clamp(tgt_masked_vals * 255.0, 0, 255).to(torch.int64)
 
-        # Ensure values are within [0.0, 1.0]
-        masked_source_values = torch.clamp(masked_source_values, 0.0, 1.0)
-        masked_target_values = torch.clamp(masked_target_values, 0.0, 1.0)
+        # Compute histograms (256 bins)
+        src_hist = torch.bincount(src_bins, minlength=256).float()
+        tgt_hist = torch.bincount(tgt_bins, minlength=256).float()
 
-        # Compute histograms
-        # for i in range(5):
-        source_hist = torch.histc(masked_source_values, bins=256, min=0.0, max=1.0)
-        target_hist = torch.histc(masked_target_values, bins=256, min=0.0, max=1.0)
+        # Add epsilon to prevent division by zero in CDF
+        src_hist += 1e-6
+        tgt_hist += 1e-6
 
-        # Add epsilon to histogram counts to prevent zeros
-        source_hist += 1e-6
-        target_hist += 1e-6
+        # Compute CDFs and normalize to [0, 1]
+        src_cdf = torch.cumsum(src_hist, dim=0)
+        src_cdf = src_cdf / src_cdf[-1]
 
-        # Compute probability mass functions (PMFs)
-        source_hist_sum = source_hist.sum()
-        target_hist_sum = target_hist.sum()
+        tgt_cdf = torch.cumsum(tgt_hist, dim=0)
+        tgt_cdf = tgt_cdf / tgt_cdf[-1]
 
-        source_pmf = source_hist / source_hist_sum
-        target_pmf = target_hist / target_hist_sum
+        # Build the Look-Up Table (LUT) using searchsorted on the 256 bins
+        indices = torch.searchsorted(src_cdf, tgt_cdf, right=False)
+        indices = torch.clamp(indices, 0, 255)
+        lut = indices.float() / 255.0
 
-        # if smooth_strength1 != 0.5:
-        # 🔁 Smooth PMFs before computing CDFs
-        # Berechne Kernel-Werte dynamisch
-        # center_weight = 1.0 - smooth_strength1
-        # side_weight = smooth_strength1 / 2.0
+        # APPLY LUT ONLY TO MASKED PIXELS
+        # tgt_bins holds the bin indices for the masked pixels.
+        # We index the lut directly and map it back into the cloned target image.
+        matched_target_image_t[channel][valid_mask] = lut[tgt_bins]
 
-        # 🔁 OPTIONAL: Additional light smoothing on CDFs
-        kernel = torch.tensor([0.0, 1.0, 0.0], device=device)
-        source_pmf = torch.nn.functional.conv1d(
-            source_pmf[None, None], kernel[None, None], padding=1
-        ).squeeze()
-        target_pmf = torch.nn.functional.conv1d(
-            target_pmf[None, None], kernel[None, None], padding=1
-        ).squeeze()
-
-        # Compute CDFs from smoothed PMFs
-        source_cdf = torch.cumsum(source_pmf, dim=0)
-        target_cdf = torch.cumsum(target_pmf, dim=0)
-
-        # Make sure CDFs are strictly increasing
-        source_cdf = torch.maximum(source_cdf, torch.cummax(source_cdf, dim=0)[0])
-        target_cdf = torch.maximum(target_cdf, torch.cummax(target_cdf, dim=0)[0])
-
-        # if smooth_strength2 != 0.5:
-        # Berechne Kernel-Werte dynamisch
-        # center_weight = 1.0 - smooth_strength2
-        # side_weight = smooth_strength2 / 2.0
-
-        # 🔁 OPTIONAL: Additional light smoothing on CDFs
-        kernel_cdf = torch.tensor([0.5, 0.0, 0.5], device=device)
-        source_cdf = torch.nn.functional.conv1d(
-            source_cdf[None, None], kernel_cdf[None, None], padding=1
-        ).squeeze()
-        target_cdf = torch.nn.functional.conv1d(
-            target_cdf[None, None], kernel_cdf[None, None], padding=1
-        ).squeeze()
-
-        # Re-enforce monotonicity again just in case
-        source_cdf = torch.maximum(source_cdf, torch.cummax(source_cdf, dim=0)[0])
-        target_cdf = torch.maximum(target_cdf, torch.cummax(target_cdf, dim=0)[0])
-
-        # Flatten the target channel for interpolation
-        target_channel_flat = target_channel.flatten()
-
-        # Interpolate target pixel values to get their CDF values
-        interp_t_values = interp1d(
-            target_channel_flat, bin_edges[:-1], target_cdf, device=device
-        )
-
-        # Invert the source CDF to get matched pixel values
-        matched_channel_flat = interp1d_inverse(
-            interp_t_values, source_cdf, bin_edges[:-1], device=device
-        )
-
-        # Reshape back to original image shape
-        matched_channel = matched_channel_flat.reshape(target_channel.shape)
-
-        # Apply the mapping only to the valid areas
-        matched_target_image_t[channel, :, :][valid_mask] = matched_channel[valid_mask]
-
-    # Blend the images according to diffslider
+    # Blend result based on the diffslider [0, 100]
     alpha = diffslider / 100.0
-    final_image_t = (1 - alpha) * target_image_t + alpha * matched_target_image_t
+    final_image_t = (1.0 - alpha) * target_image_t + alpha * matched_target_image_t
 
-    # Scale back to [0, 255] and clip
+    # Scale back to [0, 255], clamp, and cast to original dtype
     final_image_t = torch.clamp(final_image_t * 255.0, 0.0, 255.0)
 
-    # Ensure it's on the original device and has type float
-    final_image_tensor = final_image_t.to(device).float()
-
-    return final_image_tensor
+    return final_image_t.to(dtype=dtype)
 
 
-def interp1d(x, xp, fp, device="cpu"):
-    assert torch.all(xp[1:] >= xp[:-1]), "xp must be increasing"
-
-    x = torch.clamp(x.to(device), xp[0], xp[-1])  # Clamp statt späterem torch.where
-    xp = xp.to(device)
-    fp = fp.to(device)
-
-    indices = torch.searchsorted(xp, x, right=True) - 1
-    indices = indices.clamp(0, len(xp) - 2)
-
-    x0 = xp[indices]
-    x1 = xp[indices + 1]
-    y0 = fp[indices]
-    y1 = fp[indices + 1]
-
-    denom = x1 - x0
-    denom[denom == 0] = 1e-6  # robuster gegen flache Bereiche
-
-    slope = (y1 - y0) / denom
-    y = y0 + slope * (x - x0)
-    y = torch.clamp(y, 0.0, 1.0)
-
-    return y
-
-
-def interp1d_inverse(y, fp, xp, device="cpu"):
-    assert torch.all(fp[1:] >= fp[:-1]), "fp must be increasing"
-
-    y = torch.clamp(y.to(device), fp[0], fp[-1])
-    fp = fp.to(device)
-    xp = xp.to(device)
-
-    indices = torch.searchsorted(fp, y, right=True) - 1
-    indices = indices.clamp(0, len(fp) - 2)
-
-    y0 = fp[indices]
-    y1 = fp[indices + 1]
-    x0 = xp[indices]
-    x1 = xp[indices + 1]
-
-    denom = y1 - y0
-    denom[denom == 0] = 1e-6  # gegen flache Stellen in CDF
-
-    slope = (x1 - x0) / denom
-    x = x0 + slope * (y - y0)
-    x = torch.clamp(x, 0.0, 1.0)
-
-    return x
-
-
-def histogram_matching_DFL_test(source_image, target_image, diffslider):
+def apply_reinhard_color_transfer(
+    source_image: torch.Tensor,
+    target_image: torch.Tensor,
+    diffslider: float,
+    mask: torch.Tensor | None = None,
+) -> torch.Tensor:
     """
-    IMPROVED 'Smart Context' Color Transfer.
-    Captures the global atmosphere (Skin + Background/Hair) like original DFL_Test,
-    BUT excludes pure black padding (0,0,0) to prevent artificial darkening/greying.
-    This gives better contrast/blending on edges than DFL_Orig.
+    Unified Reinhard Statistical Color Transfer in LAB Space.
+    OPTIMIZED: Consolidates global and masked transfers into a single function.
+    Safely ignores padding (black pixels) and optionally applies a facial mask.
     """
+    device = source_image.device
+    dtype = source_image.dtype
 
-    # 1. Prepare Data
-    s_img = source_image.float() / 255.0
-    t_img = target_image.float() / 255.0
+    # 1. Prepare Data & Normalize
+    s_img = source_image.to(device, dtype=torch.float32) / 255.0
+    t_img = target_image.to(device, dtype=torch.float32) / 255.0
 
-    # 2. Smart Context Mask: Select pixels that are NOT pure black (padding)
-    # We sum the channels: if R+G+B > 0, it's a valid pixel.
-    s_mask = s_img.sum(dim=0) > 0.0  # [H, W]
-    t_mask = t_img.sum(dim=0) > 0.0
-
-    # Fallback: if image is fully black (rare error), use whole image
-    if s_mask.sum() == 0:
-        s_mask = torch.ones_like(s_mask)
-    if t_mask.sum() == 0:
-        t_mask = torch.ones_like(t_mask)
-
-    # 3. Convert to LAB
-    s_lab = rgb_to_lab(s_img, normalize=False)
-    t_lab = rgb_to_lab(t_img, normalize=False)
-
-    # 4. Calculate Stats on NON-PADDING pixels only
-    # Flatten spatial dims and mask
-    s_vals = s_lab[:, s_mask]  # [3, N_pixels]
-    t_vals = t_lab[:, t_mask]
-
-    s_mean = s_vals.mean(dim=1).view(3, 1, 1)
-    s_std = s_vals.std(dim=1).view(3, 1, 1)
-
-    t_mean = t_vals.mean(dim=1).view(3, 1, 1)
-    t_std = t_vals.std(dim=1).view(3, 1, 1)
-
-    t_std += 1e-6
-
-    # 5. Apply Reinhard Transfer
-    t_lab_trans = (t_lab - t_mean) * (s_std / t_std) + s_mean
-
-    # 6. Clamp
-    t_lab_trans[0] = torch.clamp(t_lab_trans[0], 0, 100)
-    t_lab_trans[1] = torch.clamp(t_lab_trans[1], -127, 127)
-    t_lab_trans[2] = torch.clamp(t_lab_trans[2], -127, 127)
-
-    # 7. Convert back
-    result = lab_to_rgb(t_lab_trans, normalize=False)
-    result = torch.clamp(result, 0, 1)
-
-    # 8. Blend
-    alpha = diffslider / 100.0
-    final = (1 - alpha) * t_img + alpha * result
-
-    return torch.clamp(final * 255.0, 0, 255)
-
-
-def histogram_matching_DFL_Orig(source_image, target_image, mask, diffslider):
-    """
-    OPTIMIZED Statistical Color Transfer (Reinhard) using Mask.
-    """
-
-    # 1. Prepare Data
-    s_img = source_image.float() / 255.0
-    t_img = target_image.float() / 255.0
-
-    # Ensure mask is binary and right shape
-    if mask.dim() == 3 and mask.shape[0] == 1:
-        mask = mask.squeeze(0)  # [H, W]
-
-    # Exclude black background pixels from statistical calculations.
+    # 2. Base validity: Exclude pure black padding pixels from statistical calculations
     s_valid = s_img.sum(dim=0) > 0.01
     t_valid = t_img.sum(dim=0) > 0.01
-    valid_mask = (mask > 0.05) & s_valid & t_valid
 
-    # If mask is empty after filtering, return original
+    # 3. Handle Optional Mask
+    if mask is not None:
+        if mask.dim() == 3 and mask.shape[0] == 1:
+            mask = mask.squeeze(0)  # [H, W]
+        # Combine user mask with the valid non-black pixels
+        valid_mask = (mask > 0.05) & s_valid & t_valid
+    else:
+        # Global mode: just use all non-black pixels
+        valid_mask = s_valid & t_valid
+
+    # Fallback: if mask is empty after filtering (e.g., missed detection), return original target
     if valid_mask.sum() < 100:
-        return target_image
+        return target_image.to(dtype=dtype)
 
-    # 2. Convert to LAB
+    # 4. Convert to LAB Space
     s_lab = rgb_to_lab(s_img, normalize=False)
     t_lab = rgb_to_lab(t_img, normalize=False)
 
-    # 3. Calculate Stats on VALID PIXELS ONLY
-    # Shape becomes [3, N_Valid_Pixels]
+    # 5. Calculate Stats on VALID PIXELS ONLY
     s_masked = s_lab[:, valid_mask]
     t_masked = t_lab[:, valid_mask]
 
-    # Calculate Mean and Std
     s_mean = s_masked.mean(dim=1).view(3, 1, 1)
     s_std = s_masked.std(dim=1).view(3, 1, 1)
 
@@ -2968,71 +2835,68 @@ def histogram_matching_DFL_Orig(source_image, target_image, mask, diffslider):
 
     t_std += 1e-6  # Safety against division by zero
 
-    # 4. Apply Transfer globally
+    # 6. Apply Transfer globally
     t_lab_trans = (t_lab - t_mean) * (s_std / t_std) + s_mean
 
-    # 5. Clamp LAB values
-    t_lab_trans[0] = torch.clamp(t_lab_trans[0], 0, 100)
-    t_lab_trans[1] = torch.clamp(t_lab_trans[1], -127, 127)
-    t_lab_trans[2] = torch.clamp(t_lab_trans[2], -127, 127)
+    # 7. Clamp LAB values to biological/visual limits to prevent artifacts
+    # FIXED: Using in-place .clamp_() to prevent PyTorch memory overlap exceptions
+    t_lab_trans[0].clamp_(0.0, 100.0)  # L (Lightness)
+    t_lab_trans[1].clamp_(-127.0, 127.0)  # A (Green-Red)
+    t_lab_trans[2].clamp_(-127.0, 127.0)  # B (Blue-Yellow)
 
-    # 6. Convert back
+    # 8. Convert back to RGB and clamp
     result = lab_to_rgb(t_lab_trans, normalize=False)
-    result = torch.clamp(result, 0, 1)
+    result = torch.clamp(result, 0.0, 1.0)
 
-    # 7. Blend
+    # 9. Blend based on diffslider
     alpha = diffslider / 100.0
-    final = (1 - alpha) * t_img + alpha * result
+    final = (1.0 - alpha) * t_img + alpha * result
 
-    return torch.clamp(final * 255.0, 0, 255)
+    return torch.clamp(final * 255.0, 0.0, 255.0).to(dtype=dtype)
 
 
+@torch.no_grad()
 def apply_adain_color_transfer(
     source: torch.Tensor,
     target: torch.Tensor,
     mask: torch.Tensor,
     blend_amount: float = 100.0,
-    calc_mask: torch.Tensor = None,
+    calc_mask: torch.Tensor | None = None,
 ) -> torch.Tensor:
     """
-    Applies statistical color transfer (AdaIN) from the target to the source.
-    Now operates in LAB Color Space instead of RGB.
-    RGB matching crushes contrast. LAB safely separates Lightness (L) from Color (A/B).
+    Applies statistical color transfer (AdaIN) from the target to the source in LAB space.
+    OPTIMIZED: Enforces strict no_grad() to prevent VRAM graph leaks during max_pool erosion.
+    Ensures device safety, explicit type casting, and returns the original tensor dtype.
     """
-    import torch.nn.functional as F
-
+    device = source.device
+    dtype = source.dtype
     eps = 1e-6
 
-    # Convert to float and normalize to [0, 1] for LAB conversion
-    src_norm = source.float() / 255.0
-    tgt_norm = target.float() / 255.0
+    # 1. Normalize inputs to [0, 1] as float32 for precision math
+    src_norm = source.to(device=device, dtype=torch.float32) / 255.0
+    tgt_norm = target.to(device=device, dtype=torch.float32) / 255.0
 
-    # Format blending mask
-    if mask.dtype == torch.bool:
-        mask = mask.float()
-    if mask.dim() == 2:
-        mask = mask.unsqueeze(0)
+    # Format blending mask securely
+    mask_f32 = mask.to(device=device, dtype=torch.float32)
+    if mask_f32.dim() == 2:
+        mask_f32 = mask_f32.unsqueeze(0)
 
-    # 1. PREPARE THE CALCULATION MASK (Statistics Core)
+    # 2. Prepare the Calculation Mask (Statistics Core)
     if calc_mask is None:
-        # Auto-generate a safe core mask by heavily eroding the soft mask
         core_mask = -F.max_pool2d(
-            -mask.unsqueeze(0), kernel_size=31, stride=1, padding=15
+            -mask_f32.unsqueeze(0), kernel_size=31, stride=1, padding=15
         ).squeeze(0)
 
         calc_mask_ready = (core_mask > 0.8).float()
 
-        # Failsafe if erosion destroyed the mask
         if torch.sum(calc_mask_ready) < 100:
-            calc_mask_ready = mask
+            calc_mask_ready = mask_f32.clone()
     else:
-        calc_mask_ready = (
-            calc_mask.float() if calc_mask.dtype == torch.bool else calc_mask
-        )
+        calc_mask_ready = calc_mask.to(device=device, dtype=torch.float32)
         if calc_mask_ready.dim() == 2:
             calc_mask_ready = calc_mask_ready.unsqueeze(0)
 
-    # Filter out black padding pixels from the calculation
+    # Filter out pure black padding pixels from statistical calculation
     non_black = (src_norm.sum(dim=0, keepdim=True) > 0.01) & (
         tgt_norm.sum(dim=0, keepdim=True) > 0.01
     )
@@ -3040,11 +2904,11 @@ def apply_adain_color_transfer(
 
     calc_mask_sum = torch.sum(calc_mask_ready, dim=(1, 2), keepdim=True) + eps
 
-    # 2. CONVERT TO LAB SPACE
+    # 3. Convert to LAB Space
     src_lab = rgb_to_lab(src_norm, normalize=False)
     tgt_lab = rgb_to_lab(tgt_norm, normalize=False)
 
-    # 3. Compute Means and Variances on LAB channels strictly inside the core mask
+    # 4. Compute Means and Variances strictly inside the core mask
     src_mean = (
         torch.sum(src_lab * calc_mask_ready, dim=(1, 2), keepdim=True) / calc_mask_sum
     )
@@ -3064,25 +2928,28 @@ def apply_adain_color_transfer(
     src_std = torch.sqrt(src_var + eps)
     tgt_std = torch.sqrt(tgt_var + eps)
 
-    # 4. Apply AdaIN transformation globally in LAB space
+    # 5. Apply AdaIN transformation globally in LAB space
     src_matched_lab = ((src_lab - src_mean) / src_std) * tgt_std + tgt_mean
 
-    # Clamp LAB values to valid biological/visual ranges to prevent artifacts
-    src_matched_lab[0] = torch.clamp(src_matched_lab[0], 0, 100)  # L (Lightness)
-    src_matched_lab[1] = torch.clamp(src_matched_lab[1], -127, 127)  # A (Red/Green)
-    src_matched_lab[2] = torch.clamp(src_matched_lab[2], -127, 127)  # B (Blue/Yellow)
+    # 6. Clamp LAB values to valid biological/visual ranges to prevent artifacts
+    # FIXED: Using in-place .clamp_() to prevent PyTorch memory overlap exceptions
+    src_matched_lab[0].clamp_(0.0, 100.0)  # L (Lightness)
+    src_matched_lab[1].clamp_(-127.0, 127.0)  # A (Red/Green)
+    src_matched_lab[2].clamp_(-127.0, 127.0)  # B (Blue/Yellow)
 
-    # 5. Convert back to RGB and scale back to [0, 255]
+    # 7. Convert back to RGB
     src_matched_rgb = lab_to_rgb(src_matched_lab, normalize=False) * 255.0
     src_matched_rgb = torch.clamp(src_matched_rgb, 0.0, 255.0)
 
-    # 6. Blend based on user amount and the SOFT APPLICATION MASK
+    # 8. Blend based on user amount and the SOFT APPLICATION MASK
     alpha = blend_amount / 100.0
-    result = (src_matched_rgb * mask * alpha) + (
-        source.float() * (1.0 - (mask * alpha))
+    source_f32 = source.to(device=device, dtype=torch.float32)
+
+    result = (src_matched_rgb * mask_f32 * alpha) + (
+        source_f32 * (1.0 - (mask_f32 * alpha))
     )
 
-    return torch.clamp(result, 0.0, 255.0)
+    return torch.clamp(result, 0.0, 255.0).to(dtype=dtype)
 
 
 def transform_t(img, center, output_size, scale, rotation):
@@ -3146,49 +3013,51 @@ def invertAffineTransform_t(M):
     return IM
 
 
-def get_face_orientation_t(face_size, lmk):
+def get_face_orientation_t(face_size: float, lmk: torch.Tensor) -> torch.Tensor:
     global arcface_src_cuda
     assert lmk.shape == (5, 2), "lmk deve essere un tensore di forma (5, 2)"
     device = lmk.device
 
-    # Aggiungiamo un controllo per portare arcface_src_cuda su CUDA se necessario
+    # Ensure reference template is on the correct device
     if device != arcface_src_cuda.device:
         arcface_src_cuda = arcface_src_cuda.to(device)
 
-    # Non è necessario ripetere per batch perché `lmk` ha già forma (5, 2)
     src_scaled = (face_size / 112.0) * arcface_src_cuda  # Shape: (5, 2)
 
-    # Calcolo del centro dei landmark
+    # Compute centroids
     centroid_lmk = lmk.mean(dim=0, keepdim=True)  # Shape: (1, 2)
     centroid_src = src_scaled.mean(dim=0, keepdim=True)  # Shape: (1, 2)
 
-    # Landmark centrati
+    # Center landmarks
     lmk_centered = lmk - centroid_lmk  # Shape: (5, 2)
     src_centered = src_scaled - centroid_src  # Shape: (5, 2)
 
-    # Norme
-    norm_lmk = torch.norm(lmk_centered, dim=1).pow(2).sum().unsqueeze(0)  # Shape: (1,)
-    norm_src = torch.norm(src_centered, dim=1).pow(2).sum().unsqueeze(0)  # Shape: (1,)
-    scale = torch.sqrt(norm_src / norm_lmk)  # Shape: (1,)
+    # Calculate scaling factor securely
+    norm_lmk = torch.norm(lmk_centered, dim=1).pow(2).sum().unsqueeze(0)
+    norm_src = torch.norm(src_centered, dim=1).pow(2).sum().unsqueeze(0)
 
-    # Scaling dei landmark
-    lmk_scaled = lmk_centered * scale  # Shape: (5, 2)
+    # Avoid zero division risk
+    scale = torch.sqrt(norm_src / (norm_lmk + 1e-8))
 
-    # Calcolo della matrice di covarianza
+    lmk_scaled = lmk_centered * scale
+
+    # Calculate covariance matrix
     covariance = torch.mm(src_centered.t(), lmk_scaled)  # Shape: (2, 2)
-    U, S, V = torch.svd(covariance)
 
-    # Calcolo della matrice di rotazione
-    R = torch.mm(U, V.t())  # Shape: (2, 2)
+    # FIXED: Use modern torch.linalg.svd. Note that Vh is returned already transposed.
+    U, S, Vh = torch.linalg.svd(covariance)
 
-    # Controllo del determinante per garantire una rotazione valida
-    det = torch.det(R)
+    # Calculate rotation matrix
+    R = torch.mm(U, Vh)  # Shape: (2, 2)
+
+    # Check determinant to ensure a valid rotation (no reflections)
+    det = torch.linalg.det(R)
     if det < 0:
-        U[:, -1] *= -1
-        R = torch.mm(U, V.t())
+        U[:, -1] *= -1.0
+        R = torch.mm(U, Vh)
 
-    # Calcolo dell'angolo in radianti e conversione in gradi
-    angle_rad = torch.atan2(R[1, 0], R[0, 0])  # Forma (1,)
+    # Calculate angle in radians and convert to degrees
+    angle_rad = torch.atan2(R[1, 0], R[0, 0])  # Shape (1,)
     angle_deg = torch.rad2deg(angle_rad)
 
     return angle_deg
