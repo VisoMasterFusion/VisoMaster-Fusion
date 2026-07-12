@@ -347,7 +347,10 @@ class FaceDenoiser:
         denoiser_ddim_eta: float = 0.0,
         base_seed: int = 220,
         latent_sharpening_strength: float = 0.0,
+        color_transfer: int = 100,
+        color_transfer_mode: str = "Reinhard Transfer (Masked)",
         color_mask: torch.Tensor | None = None,
+        blend_mask: torch.Tensor | None = None,
     ) -> torch.Tensor:
         """
         Runs the Diffusion-based Denoiser/Restorer (ReF-LDM).
@@ -358,7 +361,8 @@ class FaceDenoiser:
         ENABLE_PIXEL_SHARPENING = latent_sharpening_strength > 0.0
         PIXEL_SHARPEN_STRENGTH = latent_sharpening_strength
 
-        ENABLE_COLOR_MATCH = True
+        ENABLE_COLOR_MATCH = color_transfer > 0
+        COLOR_STRENGTH = color_transfer
 
         # P2-04: enable debug output via env var: set VISOMASTER_DEBUG_DENOISER=1
         DEBUG_DENOISER = os.environ.get("VISOMASTER_DEBUG_DENOISER", "0") == "1"
@@ -607,46 +611,61 @@ class FaceDenoiser:
             )
             noise_ddim_buffer = torch.empty_like(lq_latent_x0_scaled_for_unet)
 
+            # Pre-allocate the 16-channel UNet input buffer once.
+            unet_input_16_channel = torch.empty(
+                (1, 16, latent_h, latent_w),
+                dtype=torch.float32,
+                device=self.models_processor.device,
+            ).contiguous()
+
+            # The condition (LQ image) remains static. Write it to channels 8-15 once.
+            unet_input_16_channel[:, 8:16] = lq_latent_x0_scaled_for_unet
+
             for i, step_ddpm_idx in enumerate(time_range_ddpm_indices):
                 index_for_schedules = total_steps - 1 - i
 
                 ts_unet.fill_(step_ddpm_idx)
                 schedule_idx_tensor.fill_(index_for_schedules)
 
-                unet_input_cond = torch.cat(
-                    [current_latent_xt_scaled, lq_latent_x0_scaled_for_unet], dim=1
-                )
+                # Update only the dynamic noisy channels (0-7) in-place.
+                # No more torch.cat memory fragmentation inside the loop.
+                unet_input_16_channel[:, :8] = current_latent_xt_scaled
 
                 if torch.cuda.is_available():
                     torch.cuda.current_stream().synchronize()
 
                 self.models_processor.face_restorers.run_ref_ldm_unet(
-                    x_noisy_plus_lq_latent=unet_input_cond,
+                    x_noisy_plus_lq_latent=unet_input_16_channel,
                     timesteps_tensor=ts_unet,
                     is_ref_flag_tensor=is_ref_flag_tensor_for_unet,
                     use_reference_exclusive_path_globally_tensor=actual_use_exclusive_path_tensor_for_unet,
                     kv_tensor_map=kv_tensor_map_for_this_run,
                     output_unet_tensor=e_t_cond,
                 )
-                e_t = e_t_cond
 
                 if denoiser_cfg_scale != 1.0:
-                    unet_input_uncond = torch.cat(
-                        [current_latent_xt_scaled, lq_latent_x0_scaled_for_unet], dim=1
-                    )
-
                     if torch.cuda.is_available():
                         torch.cuda.current_stream().synchronize()
 
+                    # We re-use unet_input_16_channel directly.
+                    # It contains the exact same data needed for the uncond pass.
                     self.models_processor.face_restorers.run_ref_ldm_unet(
-                        x_noisy_plus_lq_latent=unet_input_uncond,
+                        x_noisy_plus_lq_latent=unet_input_16_channel,
                         timesteps_tensor=ts_unet,
                         is_ref_flag_tensor=is_ref_flag_tensor_for_unet,
                         use_reference_exclusive_path_globally_tensor=false_tensor_for_unet,
                         kv_tensor_map=None,
                         output_unet_tensor=e_t_uncond,
                     )
-                    e_t = e_t_uncond + denoiser_cfg_scale * (e_t_cond - e_t_uncond)
+                    # In-place CFG math to save memory overhead
+                    # Formula: e_t = e_t_uncond + denoiser_cfg_scale * (e_t_cond - e_t_uncond)
+                    e_t = (
+                        e_t_cond.sub_(e_t_uncond)
+                        .mul_(denoiser_cfg_scale)
+                        .add_(e_t_uncond)
+                    )
+                else:
+                    e_t = e_t_cond
 
                 a_t = self.extract_into_tensor_torch(
                     ddim_alphas, schedule_idx_tensor, current_latent_xt_scaled.shape
@@ -714,10 +733,13 @@ class FaceDenoiser:
             image_after_postproc_float_0_1, 0.0, 1.0
         )
 
+        # --- COLOR MATCHING BLOCK ---
         if ENABLE_COLOR_MATCH:
+            # We scale res_tensor to [0, 255] float32 as expected by faceutil modules
             ref_tensor = image_to_process_cxhxw_uint8
             res_tensor = image_after_postproc_float_0_1 * 255.0
 
+            # Secure mask formatting and scaling alignment
             if color_mask is not None:
                 mask = color_mask.clone()
                 if mask.dim() == 2:
@@ -734,15 +756,39 @@ class FaceDenoiser:
                 mask = (ref_tensor.sum(dim=0) > 0).float()
 
             try:
-                matched_result = faceutil.histogram_matching_DFL_Orig(
-                    ref_tensor,
-                    res_tensor,
-                    mask,
-                    100,
-                )
+                if color_transfer_mode == "CDF Histogram":
+                    matched_result = faceutil.histogram_matching(
+                        ref_tensor, res_tensor, float(COLOR_STRENGTH)
+                    )
+                elif color_transfer_mode == "CDF Histogram (Masked)":
+                    matched_result = faceutil.histogram_matching_withmask(
+                        ref_tensor, res_tensor, mask, float(COLOR_STRENGTH)
+                    )
+                elif color_transfer_mode == "Reinhard Transfer":
+                    matched_result = faceutil.apply_reinhard_color_transfer(
+                        ref_tensor, res_tensor, float(COLOR_STRENGTH), mask=None
+                    )
+                elif color_transfer_mode == "Reinhard Transfer (Masked)":
+                    matched_result = faceutil.apply_reinhard_color_transfer(
+                        ref_tensor, res_tensor, float(COLOR_STRENGTH), mask
+                    )
+                elif color_transfer_mode == "AdaIN (Core Masked)":
+                    # For AdaIN: source and target are swapped so the generated face (res_tensor)
+                    # matches the statistics of the raw input face (ref_tensor)
+                    matched_result = faceutil.apply_adain_color_transfer(
+                        res_tensor,
+                        ref_tensor,
+                        mask if blend_mask is None else blend_mask,
+                        blend_amount=float(COLOR_STRENGTH),
+                        calc_mask=mask,
+                    )
+                else:
+                    matched_result = res_tensor
+
                 image_after_postproc_float_0_1 = matched_result / 255.0
+
             except Exception as e:
-                print(f"[WARN] Color matching failed: {e}")
+                print(f"[WARN] Denoiser Color matching execution failed: {e}")
 
         if ENABLE_PIXEL_SHARPENING:
             blurred = v2.functional.gaussian_blur(

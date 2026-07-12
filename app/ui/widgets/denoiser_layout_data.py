@@ -24,6 +24,39 @@ DENOISER_LAYOUT_DATA: Any = {
             "step": 1,
             "help": "Set a fixed base seed for the denoiser. This seed will be used for all frames and both denoiser passes (if applicable) to ensure consistent noise patterns.",
         },
+        "DenoiserColorTransferTypeSelection": {
+            "level": 1,
+            "widget_type": "SelectionBox",
+            "label": "Denoiser Color Transfer Type",
+            "control_name": "DenoiserColorTransferTypeSelection",
+            "options": [
+                "CDF Histogram",
+                "CDF Histogram (Masked)",
+                "Reinhard Transfer",
+                "Reinhard Transfer (Masked)",
+                "AdaIN (Core Masked)",
+            ],
+            "default": "Reinhard Transfer (Masked)",
+            "help": (
+                "Select the AutoColor transfer method type for the Denoiser Color Correction :\n"
+                "Test →	CDF Histogram = Exact Cumulative Distribution Function matching in RGB space.\n"
+                "Test_Mask → CDF Histogram (Masked) = Exact CDF matching, bounded by the face mask.\n"
+                "DFL_Test → Reinhard Transfer = Mean/Variance statistical transfer in LAB color space.\n"
+                "DFL_Orig →	Reinhard Transfer (Masked) = Mean/Variance transfer in LAB space, ignoring padding.\n"
+                "AdaIN_Statistical → AdaIN (Core Masked) = Adaptive Instance Normalization with soft-mask erosion."
+            ),
+        },
+        "DenoiserColorSlider": {
+            "level": 2,
+            "widget_type": "ParameterSlider",
+            "label": "Color Strength",
+            "control_name": "DenoiserColorSlider",
+            "min_value": "0",  # 0 is a valide value for the denoiser
+            "max_value": "100",
+            "default": "100",
+            "step": 1,
+            "help": "Color Correction strength for the denoiser.",
+        },
         "DenoiserUNetEnableBeforeRestorersToggle": {
             "level": 1,
             "widget_type": "ToggleButton",

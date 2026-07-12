@@ -259,11 +259,13 @@ class FrameWorker(threading.Thread):
         )
 
         # FW-PERF-5: initialize promoted inline transforms once here
+        # Removed antialias=True from mask transforms to prevent ringing artifacts
+        # and sub-pixel haloing when multiplied against the swapped face.
         self.t512_mask = v2.Resize(
-            (512, 512), interpolation=v2.InterpolationMode.BILINEAR, antialias=True
+            (512, 512), interpolation=v2.InterpolationMode.BILINEAR, antialias=False
         )
         self.t128_mask = v2.Resize(
-            (128, 128), interpolation=v2.InterpolationMode.BILINEAR, antialias=True
+            (128, 128), interpolation=v2.InterpolationMode.BILINEAR, antialias=False
         )
         self.t256_near = v2.Resize(
             (256, 256), interpolation=v2.InterpolationMode.NEAREST, antialias=False
@@ -544,6 +546,11 @@ class FrameWorker(threading.Thread):
         sharpen_val = float(
             control.get(f"DenoiserLatentSharpeningDecimalSlider{pass_suffix}", 0.0)
         )
+        color_val = int(control.get("DenoiserColorSlider", 100))
+        color_mode_val = control.get(
+            f"DenoiserColorTransferTypeSelection{pass_suffix}",
+            "Reinhard Transfer (Masked)",
+        )
 
         if not kv_map and use_exclusive_path:
             return image_tensor_cxhxw_uint8
@@ -558,23 +565,26 @@ class FrameWorker(threading.Thread):
             denoiser_ddim_steps=ddim_steps_val,
             denoiser_cfg_scale=cfg_scale_val,
             latent_sharpening_strength=sharpen_val,
+            color_transfer=color_val,
+            color_transfer_mode=color_mode_val,
             color_mask=color_mask,
+            blend_mask=blend_mask,
         )
 
         denoised_image = torch.clamp(denoised_image, 0, 255)
 
         # Restrict Denoiser to the active Swap Mask.
-        # Diffusion models completely regenerate the 512x512 canvas, altering the background
-        # and occlusions. If we don't mask the output here, the feathered edges of the final
-        # paste operation will blend the denoised background with the real background, causing a halo.
         if blend_mask is not None:
             if (
                 blend_mask.shape[-1] != denoised_image.shape[-1]
                 or blend_mask.shape[-2] != denoised_image.shape[-2]
             ):
-                blend_mask = v2.Resize(
-                    (denoised_image.shape[-2], denoised_image.shape[-1]), antialias=True
-                )(blend_mask)
+                blend_mask = v2.functional.resize(
+                    blend_mask,
+                    [denoised_image.shape[-2], denoised_image.shape[-1]],
+                    interpolation=v2.InterpolationMode.BILINEAR,
+                    antialias=False,
+                )
 
             denoised_image = torch.lerp(
                 image_tensor_cxhxw_uint8.float(), denoised_image.float(), blend_mask
@@ -4374,9 +4384,17 @@ class FrameWorker(threading.Thread):
         swapper_model = parameters["SwapModelSelection"]
         itex = 1  # FW-BUG-10: default before any branching to prevent NameError
 
-        # FW-PERF-4: set_scaling_transforms is already called in process_frame;
-        # calling it again here per-face-per-frame rebuilds 12 transform objects
-        # unnecessarily. Removed.
+        # OPTIMIZED: Lightweight functional resize wrapper to prevent VRAM fragmentation
+        # and GC stutters caused by inline v2.Resize class instantiation.
+        def _resize_func(
+            tensor: torch.Tensor, target_shape: tuple[int, int], is_mask: bool = True
+        ) -> torch.Tensor:
+            return v2.functional.resize(
+                tensor,
+                [target_shape[0], target_shape[1]],
+                interpolation=v2.InterpolationMode.BILINEAR,
+                antialias=not is_mask,
+            )
 
         debug = False
         debug_info: dict[str, str] = {}
@@ -4502,9 +4520,10 @@ class FrameWorker(threading.Thread):
                 prev_face = prev_face.permute(2, 0, 1)
 
                 if prev_face.shape[-1] != swap.shape[-1]:
-                    prev_face = v2.Resize(
-                        (swap.shape[-2], swap.shape[-1]), antialias=True
-                    )(prev_face)
+                    # Using functional resize for RGB buffer (antialias=True is fine here)
+                    prev_face = _resize_func(
+                        prev_face, (swap.shape[-2], swap.shape[-1]), is_mask=False
+                    )
 
                 swap = (
                     torch.lerp(prev_face.float(), swap.float(), alpha)
@@ -4534,9 +4553,12 @@ class FrameWorker(threading.Thread):
                 border_mask.shape[1] != current_swap_h
                 or border_mask.shape[2] != current_swap_w
             ):
-                resizer = v2.Resize((current_swap_h, current_swap_w), antialias=True)
-                border_mask = resizer(border_mask)
-                border_mask_calc = resizer(border_mask_calc)
+                border_mask = _resize_func(
+                    border_mask, (current_swap_h, current_swap_w), is_mask=True
+                )
+                border_mask_calc = _resize_func(
+                    border_mask_calc, (current_swap_h, current_swap_w), is_mask=True
+                )
             border_mask = border_mask * side_mask
             border_mask_calc = border_mask_calc * side_mask
         else:
@@ -4616,9 +4638,7 @@ class FrameWorker(threading.Thread):
         # Face editor beginning
         if (
             parameters["FaceEditorEnableToggle"]
-            and self.local_control_state_from_feeder.get(
-                "edit_enabled", True
-            )  # FW-RACE-02
+            and self.local_control_state_from_feeder.get("edit_enabled", True)
             and parameters["FaceEditorBeforeTypeSelection"] == "Beginning"
         ):
             editor_mask = swap_mask.clone()
@@ -4659,12 +4679,14 @@ class FrameWorker(threading.Thread):
                 overlay_rgb, overlay_mask = mouth_overlay_pkg
                 if overlay_rgb is not None and overlay_mask is not None:
                     if overlay_rgb.shape[-1] != swap.shape[-1]:
-                        overlay_rgb = v2.Resize(
-                            (swap.shape[-2], swap.shape[-1]), antialias=True
-                        )(overlay_rgb)
-                        overlay_mask = v2.Resize(
-                            (swap.shape[-2], swap.shape[-1]), antialias=True
-                        )(overlay_mask.unsqueeze(0)).squeeze(0)
+                        overlay_rgb = _resize_func(
+                            overlay_rgb, (swap.shape[-2], swap.shape[-1]), is_mask=False
+                        )
+                        overlay_mask = _resize_func(
+                            overlay_mask.unsqueeze(0),
+                            (swap.shape[-2], swap.shape[-1]),
+                            is_mask=True,
+                        ).squeeze(0)
 
                     swap = swap * (1.0 - overlay_mask) + overlay_rgb * overlay_mask
 
@@ -4697,9 +4719,9 @@ class FrameWorker(threading.Thread):
                 original_face_512=swap_restorecalc,
             )
             if mask.shape[-1] != swap_mask.shape[-1]:
-                mask = v2.Resize(
-                    (swap_mask.shape[-2], swap_mask.shape[-1]), antialias=True
-                )(mask)
+                mask = _resize_func(
+                    mask, (swap_mask.shape[-2], swap_mask.shape[-1]), is_mask=True
+                )
             swap_mask.mul_(mask)
 
             gauss = v2.GaussianBlur(
@@ -4709,9 +4731,11 @@ class FrameWorker(threading.Thread):
             swap_mask = gauss(swap_mask)
 
             if swap_mask_noFP.shape[-1] != swap_mask.shape[-1]:
-                swap_mask_noFP = v2.Resize(
-                    (swap_mask.shape[-2], swap_mask.shape[-1]), antialias=True
-                )(swap_mask_noFP)
+                swap_mask_noFP = _resize_func(
+                    swap_mask_noFP,
+                    (swap_mask.shape[-2], swap_mask.shape[-1]),
+                    is_mask=True,
+                )
             swap_mask_noFP.mul_(swap_mask)
 
         # --- MASKS (Parser / CLIPs / Restore) ---
@@ -4759,9 +4783,11 @@ class FrameWorker(threading.Thread):
 
         if FaceParser_mask is not None:
             if FaceParser_mask.shape[-1] != swap_mask.shape[-1]:
-                FaceParser_mask = v2.Resize(
-                    (swap_mask.shape[-2], swap_mask.shape[-1]), antialias=True
-                )(FaceParser_mask)
+                FaceParser_mask = _resize_func(
+                    FaceParser_mask,
+                    (swap_mask.shape[-2], swap_mask.shape[-1]),
+                    is_mask=True,
+                )
             swap_mask.mul_(FaceParser_mask)
 
         # CLIPs
@@ -4772,14 +4798,16 @@ class FrameWorker(threading.Thread):
                 parameters["ClipAmountSlider"],
             )
             if mask_clip.shape[-1] != swap_mask.shape[-1]:
-                mask_clip = v2.Resize(
-                    (swap_mask.shape[-2], swap_mask.shape[-1]), antialias=True
-                )(mask_clip)
+                mask_clip = _resize_func(
+                    mask_clip, (swap_mask.shape[-2], swap_mask.shape[-1]), is_mask=True
+                )
             swap_mask.mul_(mask_clip)
             if swap_mask_noFP.shape[-1] != mask_clip.shape[-1]:
-                swap_mask_noFP = v2.Resize(
-                    (mask_clip.shape[-2], mask_clip.shape[-1]), antialias=True
-                )(swap_mask_noFP)
+                swap_mask_noFP = _resize_func(
+                    swap_mask_noFP,
+                    (mask_clip.shape[-2], mask_clip.shape[-1]),
+                    is_mask=True,
+                )
             swap_mask_noFP.mul_(mask_clip)
 
         # Restore Eyes/Mouth
@@ -4832,9 +4860,11 @@ class FrameWorker(threading.Thread):
                 img_swap_mask = gauss(img_swap_mask)
 
             if img_swap_mask.shape[-1] != swap_mask.shape[-1]:
-                mask_resized = v2.Resize(
-                    (swap_mask.shape[-2], swap_mask.shape[-1]), antialias=True
-                )(img_swap_mask)
+                mask_resized = _resize_func(
+                    img_swap_mask,
+                    (swap_mask.shape[-2], swap_mask.shape[-1]),
+                    is_mask=True,
+                )
             else:
                 mask_resized = img_swap_mask
             swap_mask = swap_mask * mask_resized
@@ -4878,23 +4908,27 @@ class FrameWorker(threading.Thread):
 
             # 1. Update Blend Masks (swap_mask)
             if img_mask_256.shape[-1] != swap_mask.shape[-1]:
-                img_mask_res = v2.Resize(
-                    (swap_mask.shape[-2], swap_mask.shape[-1]), antialias=True
-                )(img_mask_256)
-                outpred_noFP_res = v2.Resize(
-                    (swap_mask.shape[-2], swap_mask.shape[-1]), antialias=True
-                )(outpred_noFP_256)
+                img_mask_res = _resize_func(
+                    img_mask_256,
+                    (swap_mask.shape[-2], swap_mask.shape[-1]),
+                    is_mask=True,
+                )
+                outpred_noFP_res = _resize_func(
+                    outpred_noFP_256,
+                    (swap_mask.shape[-2], swap_mask.shape[-1]),
+                    is_mask=True,
+                )
             else:
                 img_mask_res = img_mask_256
                 outpred_noFP_res = outpred_noFP_256
 
             if swap_mask_noFP.shape[-1] != outpred_noFP_res.shape[-1]:
-                swap_mask_noFP = v2.Resize(
+                swap_mask_noFP = _resize_func(
+                    swap_mask_noFP,
                     (outpred_noFP_res.shape[-2], outpred_noFP_res.shape[-1]),
-                    antialias=True,
-                )(swap_mask_noFP)
+                    is_mask=True,
+                )
 
-            # --- START FIX: BORDER BLUR ALIGNMENT ---
             # The standard Occluder blurs the global swap_mask, softening the harsh
             # border_mask edges. DFLXSeg blurs its mask internally, leaving the base
             # swap_mask edges razor-sharp. We apply the blur here to soften the boundaries
@@ -4907,7 +4941,7 @@ class FrameWorker(threading.Thread):
                     gauss_op = v2.GaussianBlur(kernel_size, sigma)
                     swap_mask = gauss_op(swap_mask)
                     swap_mask_noFP = gauss_op(swap_mask_noFP)
-            # --- END FIX ---
+
             # apply_dfl_xseg returns inverted masks (0=Face, 1=BG).
             # We multiply by (1 - mask) to carve out the background.
             swap_mask_noFP.mul_(1.0 - outpred_noFP_res)
@@ -5032,9 +5066,7 @@ class FrameWorker(threading.Thread):
         # Face Editor (After First)
         if (
             parameters["FaceEditorEnableToggle"]
-            and self.local_control_state_from_feeder.get(
-                "edit_enabled", True
-            )  # FW-RACE-02
+            and self.local_control_state_from_feeder.get("edit_enabled", True)
             and parameters["FaceEditorBeforeTypeSelection"] == "After First Restorer"
         ):
             editor_mask = swap_mask.clone()
@@ -5051,8 +5083,8 @@ class FrameWorker(threading.Thread):
             )
 
             if swap_mask_noFP.shape[-1] != swap.shape[-1]:
-                swap_mask = v2.Resize((swap.shape[-2], swap.shape[-1]), antialias=True)(
-                    swap_mask_noFP
+                swap_mask = _resize_func(
+                    swap_mask_noFP, (swap.shape[-2], swap.shape[-1]), is_mask=True
                 )
             else:
                 swap_mask = swap_mask_noFP
@@ -5132,9 +5164,7 @@ class FrameWorker(threading.Thread):
         # Editor (After Second)
         if (
             parameters["FaceEditorEnableToggle"]
-            and self.local_control_state_from_feeder.get(
-                "edit_enabled", True
-            )  # FW-RACE-02
+            and self.local_control_state_from_feeder.get("edit_enabled", True)
             and parameters["FaceEditorBeforeTypeSelection"] == "After Second Restorer"
         ):
             editor_mask = t512_mask(swap_mask).clone()
@@ -5151,8 +5181,8 @@ class FrameWorker(threading.Thread):
             )
 
             if swap_mask_noFP.shape[-1] != swap.shape[-1]:
-                swap_mask = v2.Resize((swap.shape[-2], swap.shape[-1]), antialias=True)(
-                    swap_mask_noFP
+                swap_mask = _resize_func(
+                    swap_mask_noFP, (swap.shape[-2], swap.shape[-1]), is_mask=True
                 )
             else:
                 swap_mask = swap_mask_noFP
@@ -5199,33 +5229,38 @@ class FrameWorker(threading.Thread):
             )
 
         if parameters.get("AutoColorEnableToggle", False):
-            if parameters["AutoColorTransferTypeSelection"] == "Test":
+            if parameters["AutoColorTransferTypeSelection"] == "CDF Histogram":
                 swap = faceutil.histogram_matching(
                     original_face_for_color,
                     swap,
                     parameters["AutoColorBlendAmountSlider"],
                 )
-            elif parameters["AutoColorTransferTypeSelection"] == "Test_Mask":
+            elif (
+                parameters["AutoColorTransferTypeSelection"] == "CDF Histogram (Masked)"
+            ):
                 swap = faceutil.histogram_matching_withmask(
                     original_face_for_color,
                     swap,
                     mask_autocolor,
                     parameters["AutoColorBlendAmountSlider"],
                 )
-            elif parameters["AutoColorTransferTypeSelection"] == "DFL_Test":
-                swap = faceutil.histogram_matching_DFL_test(
+            elif parameters["AutoColorTransferTypeSelection"] == "Reinhard Transfer":
+                swap = faceutil.apply_reinhard_color_transfer(
                     original_face_for_color,
                     swap,
                     parameters["AutoColorBlendAmountSlider"],
                 )
-            elif parameters["AutoColorTransferTypeSelection"] == "DFL_Orig":
-                swap = faceutil.histogram_matching_DFL_Orig(
+            elif (
+                parameters["AutoColorTransferTypeSelection"]
+                == "Reinhard Transfer (Masked)"
+            ):
+                swap = faceutil.apply_reinhard_color_transfer(
                     original_face_for_color,
                     swap,
+                    parameters["AutoColorBlendAmountSlider"],
                     mask_autocolor,
-                    parameters["AutoColorBlendAmountSlider"],
                 )
-            elif parameters["AutoColorTransferTypeSelection"] == "AdaIN_Statistical":
+            elif parameters["AutoColorTransferTypeSelection"] == "AdaIN (Core Masked)":
                 swap = faceutil.apply_adain_color_transfer(
                     swap,
                     original_face_for_color,
@@ -5341,8 +5376,8 @@ class FrameWorker(threading.Thread):
             if parameters.get("AutoColorEnableToggle", False):
                 swap_texture_backup = swap.clone()
             else:
-                swap_texture_backup = faceutil.histogram_matching_DFL_Orig(
-                    original_face_512, swap.clone(), mask_autocolor, 100
+                swap_texture_backup = faceutil.apply_reinhard_color_transfer(
+                    original_face_512, swap.clone(), 100, mask_autocolor
                 )
 
             # 5. Gradient / Texture Generation Settings
@@ -5386,8 +5421,8 @@ class FrameWorker(threading.Thread):
                 global_contrast,
             )
 
-            gradient_texture = faceutil.histogram_matching_DFL_Orig(
-                original_face_512, gradient_texture, mask_autocolor, 100
+            gradient_texture = faceutil.apply_reinhard_color_transfer(
+                original_face_512, gradient_texture, 100, mask_autocolor
             )
 
             if parameters["FaceParserBlurTextureSlider"] > 0:
@@ -5480,9 +5515,7 @@ class FrameWorker(threading.Thread):
         # Face Editor (After Texture Transfer)
         if (
             parameters["FaceEditorEnableToggle"]
-            and self.local_control_state_from_feeder.get(
-                "edit_enabled", True
-            )  # FW-RACE-02
+            and self.local_control_state_from_feeder.get("edit_enabled", True)
             and parameters["FaceEditorBeforeTypeSelection"] == "After Texture Transfer"
         ):
             editor_mask = t512_mask(swap_mask).clone()
@@ -5502,8 +5535,8 @@ class FrameWorker(threading.Thread):
             )
 
             if swap_mask_noFP.shape[-1] != swap.shape[-1]:
-                swap_mask = v2.Resize((swap.shape[-2], swap.shape[-1]), antialias=True)(
-                    swap_mask_noFP
+                swap_mask = _resize_func(
+                    swap_mask_noFP, (swap.shape[-2], swap.shape[-1]), is_mask=True
                 )
             else:
                 swap_mask = swap_mask_noFP
@@ -5608,12 +5641,14 @@ class FrameWorker(threading.Thread):
                 overlay_rgb, overlay_mask = mouth_overlay_pkg
                 if overlay_rgb is not None and overlay_mask is not None:
                     if overlay_rgb.shape[-1] != swap.shape[-1]:
-                        overlay_rgb = v2.Resize(
-                            (swap.shape[-2], swap.shape[-1]), antialias=True
-                        )(overlay_rgb)
-                        overlay_mask = v2.Resize(
-                            (swap.shape[-2], swap.shape[-1]), antialias=True
-                        )(overlay_mask.unsqueeze(0)).squeeze(0)
+                        overlay_rgb = _resize_func(
+                            overlay_rgb, (swap.shape[-2], swap.shape[-1]), is_mask=False
+                        )
+                        overlay_mask = _resize_func(
+                            overlay_mask.unsqueeze(0),
+                            (swap.shape[-2], swap.shape[-1]),
+                            is_mask=True,
+                        ).squeeze(0)
 
                     swap = swap * (1.0 - overlay_mask) + overlay_rgb * overlay_mask
 
@@ -5634,9 +5669,9 @@ class FrameWorker(threading.Thread):
 
             if FaceParser_mask is not None:
                 if FaceParser_mask.shape[-1] != swap_mask.shape[-1]:
-                    FaceParser_mask = v2.Resize(
-                        (swap.shape[-2], swap.shape[-1]), antialias=True
-                    )(FaceParser_mask)
+                    FaceParser_mask = _resize_func(
+                        FaceParser_mask, (swap.shape[-2], swap.shape[-1]), is_mask=True
+                    )
 
                 swap_mask.mul_(FaceParser_mask)
 
@@ -5654,10 +5689,11 @@ class FrameWorker(threading.Thread):
             # Create a hard binary mask from the soft parser mask to protect stats
             fp_core = (FaceParser_mask > 0.5).float()
             if fp_core.shape[-1] != mask_autocolor_end.shape[-1]:
-                fp_core = v2.Resize(
+                fp_core = _resize_func(
+                    fp_core,
                     (mask_autocolor_end.shape[-2], mask_autocolor_end.shape[-1]),
-                    antialias=True,
-                )(fp_core)
+                    is_mask=True,
+                )
             mask_autocolor_end = mask_autocolor_end * fp_core
 
         # Ensure it is strictly binary
@@ -5665,29 +5701,37 @@ class FrameWorker(threading.Thread):
 
         # AutoColor End (EndingColorTransfer)
         if parameters.get("EndingColorTransferEnableToggle", False):
-            if parameters["EndingColorTransferTypeSelection"] == "Test":
+            if parameters["EndingColorTransferTypeSelection"] == "CDF Histogram":
                 swap = faceutil.histogram_matching(
                     original_face_512, swap, parameters["EndingColorBlendAmountSlider"]
                 )
-            elif parameters["EndingColorTransferTypeSelection"] == "Test_Mask":
+            elif (
+                parameters["EndingColorTransferTypeSelection"]
+                == "CDF Histogram (Masked)"
+            ):
                 swap = faceutil.histogram_matching_withmask(
                     original_face_512,
                     swap,
                     mask_autocolor_end,
                     parameters["EndingColorBlendAmountSlider"],
                 )
-            elif parameters["EndingColorTransferTypeSelection"] == "DFL_Test":
-                swap = faceutil.histogram_matching_DFL_test(
+            elif parameters["EndingColorTransferTypeSelection"] == "Reinhard Transfer":
+                swap = faceutil.apply_reinhard_color_transfer(
                     original_face_512, swap, parameters["EndingColorBlendAmountSlider"]
                 )
-            elif parameters["EndingColorTransferTypeSelection"] == "DFL_Orig":
-                swap = faceutil.histogram_matching_DFL_Orig(
+            elif (
+                parameters["EndingColorTransferTypeSelection"]
+                == "Reinhard Transfer (Masked)"
+            ):
+                swap = faceutil.apply_reinhard_color_transfer(
                     original_face_512,
                     swap,
-                    mask_autocolor_end,
                     parameters["EndingColorBlendAmountSlider"],
+                    mask_autocolor_end,
                 )
-            elif parameters["EndingColorTransferTypeSelection"] == "AdaIN_Statistical":
+            elif (
+                parameters["EndingColorTransferTypeSelection"] == "AdaIN (Core Masked)"
+            ):
                 swap = faceutil.apply_adain_color_transfer(
                     swap,
                     original_face_512,
@@ -5789,9 +5833,9 @@ class FrameWorker(threading.Thread):
         swap_mask = gauss(swap_mask)
 
         if border_mask.shape[-1] != swap_mask.shape[-1]:
-            border_mask = v2.Resize(
-                (swap_mask.shape[-2], swap_mask.shape[-1]), antialias=True
-            )(border_mask)
+            border_mask = _resize_func(
+                border_mask, (swap_mask.shape[-2], swap_mask.shape[-1]), is_mask=True
+            )
 
         swap_mask = torch.mul(swap_mask, border_mask)
 
@@ -5812,12 +5856,9 @@ class FrameWorker(threading.Thread):
         if self.is_view_face_mask:
             mask_show_type = parameters.get("MaskShowSelection", "swap_mask")
             if mask_show_type == "swap_mask":
-                if (
-                    parameters["FaceEditorEnableToggle"]
-                    and self.local_control_state_from_feeder.get(
-                        "edit_enabled", True
-                    )  # FW-RACE-02
-                ):
+                if parameters[
+                    "FaceEditorEnableToggle"
+                ] and self.local_control_state_from_feeder.get("edit_enabled", True):
                     swap_mask_clone = torch.ones_like(swap_mask)
                 else:
                     swap_mask_clone = swap_mask.clone()
