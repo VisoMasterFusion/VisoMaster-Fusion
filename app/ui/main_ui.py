@@ -262,7 +262,10 @@ class MainWindow(QtWidgets.QMainWindow, Ui_MainWindow):
         self.videoSeekSlider.sliderReleased.connect(
             partial(video_control_actions.on_slider_released, self)
         )
+
         video_control_actions.set_up_video_seek_slider(self)
+        video_control_actions.set_up_timeline_zoom(self)
+
         self.frameAdvanceButton.clicked.connect(
             partial(video_control_actions.advance_video_slider_by_n_frames, self)
         )
@@ -298,7 +301,7 @@ class MainWindow(QtWidgets.QMainWindow, Ui_MainWindow):
         self.videoTimeLineEdit.setAlignment(QtCore.Qt.AlignmentFlag.AlignCenter)
         self.videoTimeLineEdit.setMaximumSize(QtCore.QSize(55, 16777215))
         self.videoTimeLineEdit.setToolTip("Current Time (mm:ss)")
-        self.horizontalLayoutMediaSlider.addWidget(self.videoTimeLineEdit)
+        self.horizontalLayoutMediaSlider.insertWidget(2, self.videoTimeLineEdit)
         video_control_actions.update_video_time_line_edit(self, 0)
         video_seek_line_edit_event_filter = videoSeekSliderLineEditEventFilter(
             self, self.videoSeekLineEdit
