@@ -368,16 +368,24 @@ def show_hide_related_widgets(
                 current_widget = main_window.parameter_widgets.get(widget_name)
                 layout_info = group_layout_data[widget_name]
 
+                # Normalize parent selections and required values into lists
+                parent_selections = layout_info.get("parentSelection", [])
+                if isinstance(parent_selections, str):
+                    parent_selections = [parent_selections]
+
+                required_values = layout_info.get("requiredSelectionValue", [])
+                if isinstance(required_values, str):
+                    required_values = [required_values]
+
                 # Only process widgets that depend on THIS selection box
-                if (
-                    layout_info.get("parentSelection", "") == parent_widget_name
-                    and current_widget
-                ):
-                    # 1. Check Selection Condition
-                    selection_condition_met = (
-                        layout_info.get("requiredSelectionValue")
-                        == parent_widget.currentText()
-                    )
+                if parent_widget_name in parent_selections and current_widget:
+                    # 1. Check Selection Condition (ALL parent selections must be met)
+                    selection_condition_met = True
+                    for p_sel, req_val in zip(parent_selections, required_values):
+                        sel_widget = main_window.parameter_widgets.get(p_sel)
+                        if not sel_widget or sel_widget.currentText() != req_val:
+                            selection_condition_met = False
+                            break
 
                     # 2. Check Toggle Condition (Cross-Check)
                     # Even if selection matches, we must check if the parent toggles are ON
@@ -426,15 +434,24 @@ def show_hide_related_widgets(
                 # Only process widgets that depend on THIS toggle (or have it in their chain)
                 if parent_widget_name in parentToggles:
                     # 1. Check Selection Condition (Cross-Check)
-                    # Before evaluating toggles, check if the parent Selection is valid
+                    # Before evaluating toggles, check if ALL parent Selections are valid
                     selection_condition_met = True
-                    parentSelection = layout_info.get("parentSelection", "")
-                    if parentSelection:
-                        sel_widget = main_window.parameter_widgets.get(parentSelection)
-                        if sel_widget and sel_widget.currentText() != layout_info.get(
-                            "requiredSelectionValue"
-                        ):
-                            selection_condition_met = False
+
+                    # Normalize to handle multi-selections
+                    parent_selections = layout_info.get("parentSelection", [])
+                    if isinstance(parent_selections, str):
+                        parent_selections = [parent_selections]
+
+                    required_values = layout_info.get("requiredSelectionValue", [])
+                    if isinstance(required_values, str):
+                        required_values = [required_values]
+
+                    if parent_selections:
+                        for p_sel, req_val in zip(parent_selections, required_values):
+                            sel_widget = main_window.parameter_widgets.get(p_sel)
+                            if sel_widget and sel_widget.currentText() != req_val:
+                                selection_condition_met = False
+                                break
 
                     # 2. Check Toggle Condition
                     toggle_condition_met = False

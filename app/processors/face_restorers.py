@@ -92,15 +92,15 @@ class FaceRestorers:
 
     def apply_facerestorer(
         self,
-        swapped_face_upscaled,
-        restorer_det_type,
-        restorer_type,
-        restorer_blend,
-        fidelity_weight,
-        detect_score,
-        target_kps=None,
+        swapped_face_upscaled: torch.Tensor,
+        restorer_det_type: str,
+        restorer_type: str,
+        restorer_blend: float,
+        fidelity_weight: float,
+        detect_score: float,
+        target_kps: Optional[np.ndarray] = None,
         slot_id: int = 1,
-    ):
+    ) -> torch.Tensor:
         model_name_to_load = self.model_map.get(restorer_type)
         if not model_name_to_load:
             return swapped_face_upscaled
@@ -163,18 +163,41 @@ class FaceRestorers:
             # memory for other threads (Race Condition).
             temp = swapped_face_upscaled.clone().float() / 255.0
 
-        # Now safe to use inplace normalization as we definitely own the 'temp' memory footprint
+        # High-Fidelity Scaling BEFORE Normalization
+        # Use Bicubic to preserve eyelashes/pores, and clamp to prevent GAN ringing artifacts.
+        if restorer_type == "GPEN-1024":
+            temp = v2.functional.resize(
+                temp,
+                [1024, 1024],
+                interpolation=v2.InterpolationMode.BICUBIC,
+                antialias=False,
+            )
+            temp.clamp_(0.0, 1.0)  # Kill bicubic overshoot
+        elif restorer_type == "GPEN-2048":
+            temp = v2.functional.resize(
+                temp,
+                [2048, 2048],
+                interpolation=v2.InterpolationMode.BICUBIC,
+                antialias=False,
+            )
+            temp.clamp_(0.0, 1.0)
+        elif restorer_type == "GPEN-256":
+            temp = v2.functional.resize(
+                temp,
+                [256, 256],
+                interpolation=v2.InterpolationMode.BICUBIC,
+                antialias=False,
+            )
+            temp.clamp_(0.0, 1.0)
+
+        # Now safe to use inplace normalization since scaling math is clean
         temp = v2.functional.normalize(
             temp, (0.5, 0.5, 0.5), (0.5, 0.5, 0.5), inplace=True
         )
 
-        if restorer_type == "GPEN-256":
-            temp = v2.functional.resize(temp, [256, 256], antialias=False)
-
         temp = torch.unsqueeze(temp, 0).contiguous()
 
         # Bindings
-        # FR-ROBUST-04: removed default 512x512 pre-allocation; each branch allocates at correct size
         outpred = None
 
         if restorer_type == "GFPGAN-v1.4":
@@ -218,7 +241,6 @@ class FaceRestorers:
             self.run_GPEN_512(temp, outpred)
 
         elif restorer_type == "GPEN-1024":
-            temp = v2.functional.resize(temp, [1024, 1024], antialias=False)
             outpred = torch.empty(
                 (1, 3, 1024, 1024),
                 dtype=torch.float32,
@@ -227,7 +249,6 @@ class FaceRestorers:
             self.run_GPEN_1024(temp, outpred)
 
         elif restorer_type == "GPEN-2048":
-            temp = v2.functional.resize(temp, [2048, 2048], antialias=False)
             outpred = torch.empty(
                 (1, 3, 2048, 2048),
                 dtype=torch.float32,
@@ -258,8 +279,15 @@ class FaceRestorers:
         # Math: ((x clamped [-1, 1]) + 1.0) * 127.5 is equivalent to /2 * 255.
         outpred = outpred.squeeze(0).clamp_(-1.0, 1.0).add_(1.0).mul_(127.5)
 
+        # High-Fidelity Downscaling
         if restorer_type in ["GPEN-256", "GPEN-1024", "GPEN-2048", "GFPGAN-1024"]:
-            outpred = v2.functional.resize(outpred, [512, 512], antialias=True)
+            outpred = v2.functional.resize(
+                outpred,
+                [512, 512],
+                interpolation=v2.InterpolationMode.BICUBIC,
+                antialias=True,
+            )
+            outpred.clamp_(0.0, 255.0)  # Suppress ringing artifacts after downscale
 
         # Invert Transform
         if restorer_det_type in ["Blend", "Reference"]:
@@ -314,10 +342,10 @@ class FaceRestorers:
         ort_session = self.models_processor.models.get(model_name)
         if ort_session is None:
             # Lazy reload in case clear_gpu_memory() cleared the session after a provider switch.
-            self.models_processor.ensure_denoiser_models_loaded()
+            self.models_processor.face_denoiser.ensure_denoiser_models_loaded()
             ort_session = self.models_processor.models.get(model_name)
         if ort_session is None:
-            error_msg = f"[ERROR] VAE Encoder model '{model_name}' not loaded when run_vae_encoder was called. This model should be loaded by ModelsProcessor.ensure_denoiser_models_loaded()."
+            error_msg = f"[ERROR] VAE Encoder model '{model_name}' not loaded when run_vae_encoder was called. This model should be loaded by ModelsProcessor.face_denoiser.ensure_denoiser_models_loaded()."
             print(error_msg)
             raise RuntimeError(error_msg)
 
@@ -366,10 +394,10 @@ class FaceRestorers:
         ort_session = self.models_processor.models.get(model_name)
         if ort_session is None:
             # Lazy reload in case clear_gpu_memory() cleared the session after a provider switch.
-            self.models_processor.ensure_denoiser_models_loaded()
+            self.models_processor.face_denoiser.ensure_denoiser_models_loaded()
             ort_session = self.models_processor.models.get(model_name)
         if ort_session is None:
-            error_msg = f"[ERROR] VAE Decoder model '{model_name}' not loaded when run_vae_decoder was called. This model should be loaded by ModelsProcessor.ensure_denoiser_models_loaded()."
+            error_msg = f"[ERROR] VAE Decoder model '{model_name}' not loaded when run_vae_decoder was called. This model should be loaded by ModelsProcessor.face_denoiser.ensure_denoiser_models_loaded()."
             print(error_msg)
             raise RuntimeError(error_msg)
 
@@ -424,7 +452,7 @@ class FaceRestorers:
             # Enhanced error reporting
             error_messages = [
                 f"[ERROR] UNet model '{model_name}' not loaded when run_ref_ldm_unet was called.",
-                "  This model should be loaded by ModelsProcessor.apply_denoiser_unet or a similar setup routine.",
+                "  This model should be loaded by ModelsProcessor.face_denoiser.apply_denoiser_unet or a similar setup routine.",
             ]
             print("\n".join(error_messages))
             return

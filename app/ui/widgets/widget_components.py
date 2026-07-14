@@ -310,6 +310,27 @@ class TargetMediaCardButton(CardButton):
         # Reset buttons and slider
         video_control_actions.reset_media_buttons(main_window)
 
+    def _toggle_timeline_visibility(
+        self, main_window: "MainWindow", is_visible: bool
+    ) -> None:
+        """Helper to show/hide timeline specific controls based on media type."""
+        if (
+            hasattr(main_window, "timelineScrollArea")
+            and main_window.timelineScrollArea
+        ):
+            main_window.timelineScrollArea.setVisible(is_visible)
+        if hasattr(main_window, "videoSeekLineEdit") and main_window.videoSeekLineEdit:
+            main_window.videoSeekLineEdit.setVisible(is_visible)
+        if hasattr(main_window, "videoTimeLineEdit") and main_window.videoTimeLineEdit:
+            main_window.videoTimeLineEdit.setVisible(is_visible)
+        if hasattr(main_window, "zoomLabel") and main_window.zoomLabel:
+            main_window.zoomLabel.setVisible(is_visible)
+        if (
+            hasattr(main_window, "timelineZoomSlider")
+            and main_window.timelineZoomSlider
+        ):
+            main_window.timelineZoomSlider.setVisible(is_visible)
+
     def load_media(self):
         main_window = self.main_window
         if video_control_actions.block_if_issue_scan_active(
@@ -420,8 +441,12 @@ class TargetMediaCardButton(CardButton):
         )  # Block signals to prevent unnecessary updates
         main_window.videoSeekSlider.setMaximum(max_frames_number)
         main_window.videoSeekSlider.setValue(0)  # Set the slider to 0 for the new video
-
         main_window.videoSeekSlider.blockSignals(False)  # Unblock signals
+
+        # Toggle UI elements visibility based on file type
+        self._toggle_timeline_visibility(
+            main_window, self.file_type in ["video", "webcam"]
+        )
 
         # Append the selected video button to the list
         main_window.selected_video_button = self
@@ -490,6 +515,10 @@ class TargetMediaCardButton(CardButton):
                 0
             )  # Set the slider to 0 for the new video
             main_window.videoSeekSlider.blockSignals(False)  # Unblock signals
+
+            # Hide timeline UI elements when no media is selected
+            self._toggle_timeline_visibility(main_window, False)
+
             # Append the selected video button to the list
             main_window.selected_video_button = False
 
@@ -920,12 +949,13 @@ class TargetFaceCardButton(CardButton):
 
             # 2. Fallback to Input Faces
             if len(all_kv_maps) == 0:
+                extracted_new_kv = False
                 for input_face_id in self.assigned_input_faces.keys():
                     input_face_button = main_window.input_faces.get(input_face_id)
                     if not input_face_button:
                         continue
 
-                    with main_window.models_processor.kv_extraction_lock:
+                    with main_window.models_processor.face_denoiser.kv_extraction_lock:
                         if (
                             hasattr(input_face_button, "kv_map")
                             and input_face_button.kv_map is not None
@@ -948,11 +978,17 @@ class TargetFaceCardButton(CardButton):
                                         (512, 512), Image.Resampling.LANCZOS
                                     )
 
-                                kv_map = models_processor.get_kv_map_for_face(pil_img)
+                                # Batch processing: Keep the extractor loaded for the duration of the loop
+                                kv_map = (
+                                    models_processor.face_denoiser.get_kv_map_for_face(
+                                        pil_img, unload_after=False
+                                    )
+                                )
 
                                 if kv_map:
                                     input_face_button.kv_map = kv_map
                                     all_kv_maps.append(kv_map)
+                                    extracted_new_kv = True
                                     print("[INFO] Generated and cached K/V map.")
                                 else:
                                     input_face_button.kv_map = {}
@@ -963,10 +999,21 @@ class TargetFaceCardButton(CardButton):
                                 traceback.print_exc()
                                 input_face_button.kv_map = {}
 
-            # 3. Merge all collected KV Maps
+                # Cleanup: Unload the extractor once the batch is fully processed
+                if extracted_new_kv:
+                    main_window.models_processor.face_denoiser.unload_kv_extractor()
+
+            # 3. Merge all collected KV Maps and strictly enforce VRAM localization
             if all_kv_maps:
+                target_device = main_window.models_processor.device
+
                 if len(all_kv_maps) == 1:
-                    self.assigned_kv_map = all_kv_maps[0]
+                    # Make sure even single cached maps are pushed to the GPU
+                    self.assigned_kv_map = {}
+                    for layer_key, layer_dict in all_kv_maps[0].items():
+                        self.assigned_kv_map[layer_key] = {
+                            k: v.to(target_device) for k, v in layer_dict.items()
+                        }
                 else:
                     print(
                         f"[INFO] Merging K/V maps across {len(all_kv_maps)} prioritized sources..."
@@ -983,6 +1030,10 @@ class TargetFaceCardButton(CardButton):
                                     tensors_to_merge.append(m[layer_key][kv_key])
 
                             if tensors_to_merge:
+                                # Force all tensors onto the target VRAM device before operations
+                                tensors_to_merge = [
+                                    t.to(target_device) for t in tensors_to_merge
+                                ]
                                 stacked = torch.stack(tensors_to_merge, dim=0)
                                 merged_tensor = torch.mean(stacked, dim=0)
                                 merged_kv_map[layer_key][kv_key] = merged_tensor
@@ -1828,8 +1879,9 @@ class CreateEmbeddingDialog(QtWidgets.QDialog):
             QtWidgets.QApplication.setOverrideCursor(QtCore.Qt.WaitCursor)
 
             try:
+                extracted_new_kv = False
                 for input_face in self.selected_faces:
-                    with self.main_window.models_processor.kv_extraction_lock:
+                    with self.main_window.models_processor.face_denoiser.kv_extraction_lock:
                         # Check Cache first
                         if (
                             hasattr(input_face, "kv_map")
@@ -1850,20 +1902,32 @@ class CreateEmbeddingDialog(QtWidgets.QDialog):
                                         (512, 512), Image.Resampling.LANCZOS
                                     )
 
-                                kv_map = self.main_window.models_processor.get_kv_map_for_face(
-                                    pil_img
+                                # Batch processing: Keep the extractor loaded for the duration of the loop
+                                kv_map = self.main_window.models_processor.face_denoiser.get_kv_map_for_face(
+                                    pil_img, unload_after=False
                                 )
 
                                 if kv_map:
                                     input_face.kv_map = kv_map
                                     all_kv_maps.append(kv_map)
+                                    extracted_new_kv = True
                             except Exception as e:
                                 print(f"[ERROR] Error generating K/V map: {e}")
                                 traceback.print_exc()
 
+                # Cleanup: Unload the extractor once the batch is fully processed
+                if extracted_new_kv:
+                    self.main_window.models_processor.face_denoiser.unload_kv_extractor()
+
+                # Enforce VRAM localization for created embeddings
                 if all_kv_maps:
+                    target_device = self.main_window.models_processor.device
                     if len(all_kv_maps) == 1:
-                        final_kv_map = all_kv_maps[0]
+                        final_kv_map = {}
+                        for layer_key, layer_dict in all_kv_maps[0].items():
+                            final_kv_map[layer_key] = {
+                                k: v.to(target_device) for k, v in layer_dict.items()
+                            }
                     else:
                         print(
                             f"[INFO] Dialog: Merging K/V maps across {len(all_kv_maps)} faces..."
@@ -1882,6 +1946,10 @@ class CreateEmbeddingDialog(QtWidgets.QDialog):
                                 if tensors_to_merge:
                                     import torch
 
+                                    # Force all tensors onto the target VRAM device before operations
+                                    tensors_to_merge = [
+                                        t.to(target_device) for t in tensors_to_merge
+                                    ]
                                     stacked = torch.stack(tensors_to_merge, dim=0)
                                     # Never use Median on spacial k/v -> always mean
                                     merged_tensor = torch.mean(stacked, dim=0)

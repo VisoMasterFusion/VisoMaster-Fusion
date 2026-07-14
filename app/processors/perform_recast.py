@@ -44,6 +44,7 @@ SPADE_MODEL = "PerformRecastSpadeGenerator"
 # Mapping of the user-facing mode label -> upstream inference_mode integer.
 MODE_REPLACEMENT = "Replacement"  # inference_mode 1
 MODE_ENHANCEMENT = "Enhancement"  # inference_mode 2
+MODE_ADVANCED = "Advanced"  # Relative mode
 
 
 class PerformRecast:
@@ -145,35 +146,28 @@ class PerformRecast:
                 buffer_ptr=t.data_ptr(),
             )
 
+        # Bind Outputs (Strictly requested only)
+        # We loop over output_specs directly. We do NOT bind unread outputs.
+        # This prevents ONNX Runtime from allocating hidden VRAM blocks and forces
+        # all memory management through PyTorch's optimized Caching Allocator.
         out_buffers: Dict[str, "torch.Tensor"] = {}
-        for o in session.get_outputs():
-            name = o.name
-            if name in output_specs:
-                buf = torch.empty(
-                    output_specs[name], dtype=torch.float32, device=mp.device
-                ).contiguous()
-                out_buffers[name] = buf
-                io_binding.bind_output(
-                    name=name,
-                    device_type=mp.device_type,
-                    device_id=mp.binding_device_id,
-                    element_type=np.float32,
-                    shape=tuple(buf.shape),
-                    buffer_ptr=buf.data_ptr(),
-                )
-            else:
-                # Output we never read — let ORT allocate it on the device.
-                io_binding.bind_output(
-                    name=name,
-                    device_type=mp.device_type,
-                    device_id=mp.binding_device_id,
-                )
+        for name, shape in output_specs.items():
+            buf = torch.empty(shape, dtype=torch.float32, device=mp.device).contiguous()
+            out_buffers[name] = buf
+            io_binding.bind_output(
+                name=name,
+                device_type=mp.device_type,
+                device_id=mp.binding_device_id,
+                element_type=np.float32,
+                shape=tuple(buf.shape),
+                buffer_ptr=buf.data_ptr(),
+            )
 
-        # Ensure PyTorch has finished writing the input buffers before ORT reads
-        # from the bound pointers.
+        # 3. Synchronize and Execute
         if mp.device_type == "cuda":
             torch.cuda.current_stream().synchronize()
         session.run_with_iobinding(io_binding)
+
         return out_buffers
 
     def _infer_numpy(
@@ -389,27 +383,32 @@ class PerformRecast:
     # ------------------------------------------------------------------ #
     # Expression composition — ported from src/pipeline.py animate loop
     # ------------------------------------------------------------------ #
-    # Implicit-keypoint channel groups referenced by the upstream
-    # "Replacement" modulation. Used here for optional region gating.
-    EYE_INDICES = list(range(31, 39))  # 31..38 (eye channels)
-    MOUTH_INDICES = list(range(44, 47))  # 44..46 (jaw / lip-contour channels)
+    # Implicit-keypoint channel groups
+    CHEEKS_INDICES = [31, 32, 33, 36, 37, 38]
+    JAW_INDICES = [44, 45, 46]
+    MOUTH_INDICES = [0, 1, 2, 3, 4, 5, 6, 7]
+    EYE_INDICES = [27, 28, 29, 30, 34, 35, 47, 48]
+    BROWS_INDICES = [15, 16, 17, 18, 19, 21, 22, 23, 24, 25]
 
     def compose_driven_keypoints(
         self,
         source_info: Dict[str, torch.Tensor],
         exp_d: torch.Tensor,
-        mode: str = MODE_ENHANCEMENT,
+        mode: str = "Enhancement",
         factor: float = 1.0,
         region: str = "all",
-        eye_driving_weight: float = 0.7,
-        lip_driving_weight: float = 0.8,
+        eye_driving_weight: float = 1.0,
+        lip_driving_weight: float = 1.0,
+        brows_driving_weight: float = 1.0,
+        cheeks_driving_weight: float = 0.20,
+        jaw_driving_weight: float = 0.15,
+        structural_blend: float = 0.0,
     ) -> torch.Tensor:
         """Build the driven keypoints ``x_d_i`` fed to the warping module.
-
         Args:
             source_info: output of :meth:`build_source_info` (the swapped face).
             exp_d: driving expression (1,N,3) from the original face's motion.
-            mode: ``"Replacement"`` (upstream mode 1) or ``"Enhancement"`` (mode 2).
+            mode: ``"Replacement"`` (upstream mode 1) or ``"Enhancement"`` (mode 2) or ``"Relative"`` (mode 3).
             factor: expression strength. 0 keeps the source expression, 1 applies
                 the full transfer; values >1 exaggerate it.
             region: ``"all"`` | ``"eyes"`` | ``"lips"`` — restrict where the
@@ -419,7 +418,6 @@ class PerformRecast:
                 1 fully follows the driver). Upstream default 0.7.
             lip_driving_weight: same, for the lip/jaw channels. Upstream
                 default 0.8.
-
         Mode semantics:
           * Replacement — ``factor=1`` yields the driver's expression with the
             swapped face's eye/lip identity blended back (``eye/lip_driving_weight``).
@@ -427,7 +425,6 @@ class PerformRecast:
           * Enhancement — adds the driver's expression on top of the swapped
             face's own expression (``exp_s + factor*exp_d``); ``factor=0`` keeps
             the source, higher values stack/boost the driver's expression.
-
         The upstream video pipeline uses the driving video's first frame as a
         neutral reference; VisoMaster is stateless per frame, so Enhancement
         treats the implicit keypoint ``exp_d`` (already a delta from the
@@ -439,30 +436,72 @@ class PerformRecast:
         scale = source_info["scale"]
         t = source_info["t"]
 
-        if mode == MODE_REPLACEMENT:
-            # Start from the absolute driving expression and blend back
-            # source-side eye / lip / jaw channels (identity micro-cues). The
-            # blend weights default to the upstream 0.7 (eyes) / 0.8 (lips), but
-            # are exposed so users can dial how strongly the driver overrides
-            # the swapped face's own eye/lip identity (similarity preservation).
-            ew = float(eye_driving_weight)
-            lw = float(lip_driving_weight)
+        if mode == "Replacement":
+            # Original Authors' logic
+            cheeks_weight = 0.7
+            jaw_weight = 0.8
             modulated = exp_d.clone()
-            modulated[:, 31:34, 2] = exp_s[:, 31:34, 2]
-            modulated[:, 36:39, 2] = exp_s[:, 36:39, 2]
-            modulated[:, 44:47, 2] = exp_s[:, 44:47, 2]
-            modulated[:, 44:47, 0] = exp_s[:, 44:47, 0]
-            modulated[:, 44:47, 1] = (
-                exp_s[:, 44:47, 1] * (1.0 - lw) + exp_d[:, 44:47, 1] * lw
+
+            modulated[:, self.CHEEKS_INDICES, 2] = exp_s[:, self.CHEEKS_INDICES, 2]
+            modulated[:, self.JAW_INDICES, 2] = exp_s[:, self.JAW_INDICES, 2]
+            modulated[:, self.JAW_INDICES, 0] = exp_s[:, self.JAW_INDICES, 0]
+
+            modulated[:, self.JAW_INDICES, 1] = torch.lerp(
+                exp_s[:, self.JAW_INDICES, 1], exp_d[:, self.JAW_INDICES, 1], jaw_weight
             )
-            modulated[:, 31:34, :2] = (
-                exp_s[:, 31:34, :2] * (1.0 - ew) + exp_d[:, 31:34, :2] * ew
+            modulated[:, self.CHEEKS_INDICES, :2] = torch.lerp(
+                exp_s[:, self.CHEEKS_INDICES, :2],
+                exp_d[:, self.CHEEKS_INDICES, :2],
+                cheeks_weight,
             )
-            modulated[:, 36:39, :2] = (
-                exp_s[:, 36:39, :2] * (1.0 - ew) + exp_d[:, 36:39, :2] * ew
+
+            new_exp = torch.lerp(exp_s, modulated, factor)
+
+        elif mode == "Advanced":
+            # --- 1. GLOBAL ANCHORING ---
+            pure_struct_idx = [
+                i
+                for i in range(49)
+                if i
+                not in (
+                    self.MOUTH_INDICES
+                    + self.EYE_INDICES
+                    + self.CHEEKS_INDICES
+                    + self.JAW_INDICES
+                    + self.BROWS_INDICES
+                )
+            ]
+
+            s_struct_center = exp_s[:, pure_struct_idx, :].mean(dim=1, keepdim=True)
+            d_struct_center = exp_d[:, pure_struct_idx, :].mean(dim=1, keepdim=True)
+            global_offset = s_struct_center - d_struct_center
+
+            aligned_exp_d = exp_d + global_offset
+            global_delta = aligned_exp_d - exp_s
+
+            # --- 2. VECTORIZED WEIGHT MAP ---
+            # Create a single weight tensor [1, 49, 1] to fuse all regional math into one CUDA kernel.
+            device = exp_s.device
+            weights = torch.zeros((1, 49, 1), dtype=exp_s.dtype, device=device)
+
+            # Apply UI multipliers
+            weights[:, pure_struct_idx, 0] = structural_blend * factor
+            weights[:, self.MOUTH_INDICES, 0] = float(lip_driving_weight) * factor
+            weights[:, self.EYE_INDICES, 0] = float(eye_driving_weight) * factor
+            weights[:, self.BROWS_INDICES, 0] = float(brows_driving_weight) * factor
+            weights[:, self.CHEEKS_INDICES, 0] = float(cheeks_driving_weight) * factor
+            weights[:, self.JAW_INDICES, 0] = float(jaw_driving_weight) * factor
+
+            # Expand weights to 3D [1, 49, 3].
+            # X and Y receive the UI weights. Z (Depth) receives exactly 0.0 to safely lock to source.
+            weights_3d = torch.cat(
+                [weights, weights, torch.zeros_like(weights)], dim=-1
             )
-            # Interpolate from source toward the modulated target by `factor`.
-            new_exp = exp_s + factor * (modulated - exp_s)
+
+            # --- 3. FUSED MATH ---
+            # A single Multiply-Add operation replaces the entire 13-line slice block and clone()
+            new_exp = exp_s + (global_delta * weights_3d)
+
         elif mode == MODE_ENHANCEMENT:
             # ENHANCEMENT = keep the swapped face's own expression and ADD the
             # driving expression on top of it (scaled by `factor`). This is
@@ -492,4 +531,5 @@ class PerformRecast:
         kp_rotated = torch.einsum("bmp,bkp->bkm", R, kp_e)
         kp_rotated = kp_rotated * scale.unsqueeze(1)
         x_d_i = kp_rotated + t.unsqueeze(1)
+
         return x_d_i

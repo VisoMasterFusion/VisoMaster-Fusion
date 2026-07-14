@@ -434,8 +434,14 @@ class FaceMasks:
         blurred_swap_norm = blurred_swap / 255.0
         dark_cavity = torch.pow(blurred_swap_norm, cavity_gamma) * 255.0
 
+        # --- Original Cavity Blending ---
+        # Allow the user to inject the aligned original mouth back into the cavity void
+        # 0.0 = Pure artificial darkness | 1.0 = Pure original aligned background
+        cavity_blend = parameters.get("MouthOriginalCavityBlendingDecimalSlider", 0.0)
+        cavity_background = dark_cavity * (1.0 - cavity_blend) + overlay * cavity_blend
+
         # 3. Composite the overlay
-        cavity_layer = overlay * content_mask_blurred + dark_cavity * (
+        cavity_layer = overlay * content_mask_blurred + cavity_background * (
             1.0 - content_mask_blurred
         )
 
@@ -695,13 +701,18 @@ class FaceMasks:
 
         target_h, target_w = swap_restorecalc.shape[1], swap_restorecalc.shape[2]
 
-        # OPTIMIZED: Replaced expensive class instantiation with a lightweight functional wrapper
-        def resize_to_target(tensor):
+        # OPTIMIZED: Replaced expensive class instantiation with a lightweight functional wrapper.
+        # Removed antialias=True to prevent ringing artifacts (values shooting below 0.0 or above 1.0)
+        # on hard edges, which caused VRAM fragmentation and unpredictable alpha blending.
+        def resize_to_target(
+            tensor: torch.Tensor,
+            interp_mode: v2.InterpolationMode = v2.InterpolationMode.BILINEAR,
+        ) -> torch.Tensor:
             return v2.functional.resize(
                 tensor,
                 [target_h, target_w],
-                interpolation=v2.InterpolationMode.BILINEAR,
-                antialias=True,
+                interpolation=interp_mode,
+                antialias=False,
             )
 
         # --- Check Requirements ---

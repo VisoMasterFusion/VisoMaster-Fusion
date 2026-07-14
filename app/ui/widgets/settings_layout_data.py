@@ -658,6 +658,7 @@ SETTINGS_LAYOUT_DATA: Any = {  # noqa: F811
                 "480x360",
                 "640x480",
                 "1280x720",
+                "1366x768",
                 "1920x1080",
                 "2560x1440",
                 "3840x2160",
@@ -734,6 +735,15 @@ SETTINGS_LAYOUT_DATA: Any = {  # noqa: F811
             "label": "Enable Mouse Wheel on Parameter Controls",
             "default": False,
             "help": "When enabled, the mouse wheel adjusts parameter sliders and dropdowns on hover.\nWhen disabled, the mouse wheel scrolls the parameter panel instead.\nHold Ctrl to temporarily adjust a hovered slider or dropdown while this is disabled.",
+        },
+        "VideoSeekMaxFrameSlider": {
+            "level": 1,
+            "label": "Max Visible Frames",
+            "min_value": "10",
+            "max_value": "100",
+            "default": "20",
+            "step": 1,
+            "help": "Maximum number of frames visible in the timeline at Max Zoom level.",
         },
     },
 }

@@ -163,6 +163,105 @@ def set_up_video_seek_slider(main_window: "MainWindow"):
         QtWidgets.QSlider.TickPosition.TicksBelow
     )
 
+    # --- Provisional State Tracking ---
+    main_window.videoSeekSlider._last_provisional_state = False
+    main_window.videoSeekSlider._last_polled_position = -1
+    main_window.videoSeekSlider._cached_baseline_params = {}
+    main_window.videoSeekSlider._cached_baseline_ctrl = {}
+
+    def is_state_provisional(slider: QtWidgets.QSlider) -> bool:
+        current_position = slider.value()
+
+        # 1. Grey Area Check (Instant Math Check)
+        if not slider.markers_sorted or current_position < slider.markers_sorted[0]:
+            return True
+
+        # 2. Cache Marker Lookups
+        if current_position != getattr(slider, "_last_polled_position", -1):
+            slider._last_polled_position = current_position
+            marker_data = _get_marker_data_for_position(main_window, current_position)
+
+            if not marker_data:
+                return True
+
+            slider._cached_baseline_params = marker_data.get("parameters", {})
+            slider._cached_baseline_ctrl = marker_data.get("control", {})
+
+        baseline_params = slider._cached_baseline_params
+        baseline_ctrl = slider._cached_baseline_ctrl
+
+        # Fast dictionary comparison for parameters
+        if main_window.parameters != baseline_params:
+            return True
+
+        # Zero-allocation loop comparison for controls
+        protected_keys = {
+            "TrackMarkersToggle",
+            "OutputMediaFolder",
+            "OutputToTargetLocationToggle",
+            "PreserveOutputDirectoryStructureToggle",
+            "ClusterOutputBySourceToggle",
+        }
+
+        curr_ctrl = main_window.control
+        for k, v in curr_ctrl.items():
+            if k in protected_keys:
+                continue
+            if k not in baseline_ctrl or baseline_ctrl[k] != v:
+                return True
+
+        for k in baseline_ctrl:
+            if k in protected_keys:
+                continue
+            if k not in curr_ctrl:
+                return True
+
+        return False
+
+    def check_provisional_changes():
+        current_state = is_state_provisional(main_window.videoSeekSlider)
+        if current_state != getattr(
+            main_window.videoSeekSlider, "_last_provisional_state", False
+        ):
+            main_window.videoSeekSlider._last_provisional_state = current_state
+            main_window.videoSeekSlider.update()  # Force repaint instantly
+
+    def trigger_check(*args, **kwargs):
+        # We defer the state check by 150ms to allow custom widgets
+        # (like ParameterSlider's 300ms debounce) time to write to the dictionary.
+        QtCore.QTimer.singleShot(150, check_provisional_changes)
+
+    # --- Event-Driven Observer Hooking (DEFERRED BINDING) ---
+    def bind_provisional_events():
+        # Ensure the attribute exists
+        if not hasattr(main_window.videoSeekSlider, "_connected_widgets"):
+            main_window.videoSeekSlider._connected_widgets = set()
+
+        if hasattr(main_window, "parameter_widgets"):
+            for name, widget in main_window.parameter_widgets.items():
+                if name in main_window.videoSeekSlider._connected_widgets:
+                    continue
+                try:
+                    if isinstance(widget, QtWidgets.QSlider):
+                        widget.valueChanged.connect(trigger_check)
+                    elif isinstance(widget, QtWidgets.QComboBox):
+                        widget.currentIndexChanged.connect(trigger_check)
+                    elif isinstance(widget, QtWidgets.QAbstractButton):
+                        widget.toggled.connect(trigger_check)
+                    elif isinstance(widget, QtWidgets.QLineEdit):
+                        widget.textChanged.connect(trigger_check)
+                    main_window.videoSeekSlider._connected_widgets.add(name)
+                except Exception:
+                    pass
+
+    # Schedule the binding
+    QtCore.QTimer.singleShot(500, bind_provisional_events)
+    # Simple connect for the slider itself
+    try:
+        main_window.videoSeekSlider.valueChanged.connect(trigger_check)
+    except Exception:
+        pass
+
     def add_marker_and_paint(self: QtWidgets.QSlider, value=None):
         """Add a tick mark at a specific slider value."""
         if value is None or isinstance(value, bool):  # Default to current slider value
@@ -172,7 +271,9 @@ def set_up_video_seek_slider(main_window: "MainWindow"):
             if value not in self.markers_sorted:
                 self.markers_sorted.append(value)
                 self.markers_sorted.sort()
+            self._last_polled_position = -1
             self.update()
+            trigger_check()  # Instantly remove yellow line when saved
 
     def remove_marker_and_paint(self: QtWidgets.QSlider, value=None):
         """Remove a tick mark."""
@@ -182,7 +283,9 @@ def set_up_video_seek_slider(main_window: "MainWindow"):
             self.markers.remove(value)
             if value in self.markers_sorted:
                 self.markers_sorted.remove(value)
+            self._last_polled_position = -1
             self.update()
+            trigger_check()
 
     def _add_sorted_marker(
         marker_set: set[int], marker_list: list[int], value: int
@@ -235,7 +338,7 @@ def set_up_video_seek_slider(main_window: "MainWindow"):
             self.update()
 
     def paintEvent(self: QtWidgets.QSlider, event: QtGui.QPaintEvent):
-        """Custom paint: draws the groove, a thin white handle, coloured marker ticks, and job-bracket characters."""
+        """Custom paint: draws the groove with colored marker segments, provisional overlay, a thin handle, coloured ticks, and brackets."""
         if self.maximum() == self.minimum():
             return super(QtWidgets.QSlider, self).paintEvent(event)
         # Do not draw the slider if the current media is a single image
@@ -260,16 +363,22 @@ def set_up_video_seek_slider(main_window: "MainWindow"):
         groove_end = groove_rect.right()
         groove_width = groove_end - groove_start
 
+        def marker_x_for_value(value: int) -> float:
+            marker_normalized_value = (value - self.minimum()) / max(
+                1, (self.maximum() - self.minimum())
+            )
+            return groove_start + marker_normalized_value * groove_width
+
         # Calculate handle position based on the current slider value
-        normalized_value = (self.value() - self.minimum()) / (
-            self.maximum() - self.minimum()
+        normalized_value = (self.value() - self.minimum()) / max(
+            1, (self.maximum() - self.minimum())
         )
         handle_center_x = groove_start + normalized_value * groove_width
 
         # Make the handle thinner
         handle_width = 5  # Fixed width for thin handle
         handle_height = groove_rect.height()  # Slightly shorter than groove height
-        handle_left_x = handle_center_x - (handle_width // 2)
+        handle_left_x = int(handle_center_x - (handle_width // 2))
         handle_top_y = groove_y - (handle_height // 2)
 
         # Define the handle rectangle
@@ -277,24 +386,55 @@ def set_up_video_seek_slider(main_window: "MainWindow"):
             handle_left_x, handle_top_y, handle_width, handle_height
         )
 
-        # Draw the groove
-        painter.setPen(
-            QtGui.QPen(QtGui.QColor("gray"), 3)
-        )  # Groove color and thickness
-        painter.drawLine(groove_start, groove_y, groove_end, groove_y)
+        has_provisional_changes = getattr(self, "_last_provisional_state", False)
 
-        # Draw the thin handle
-        painter.setPen(QtGui.QPen(QtGui.QColor("white"), 1))  # Handle border color
-        painter.setBrush(QtGui.QBrush(QtGui.QColor("white")))  # Handle fill color
-        painter.drawRect(handle_rect)
+        # 1. Base Alternating Segments
+        painter.setPen(QtGui.QPen(QtGui.QColor("gray"), 3))
+        if not self.markers_sorted:
+            painter.drawLine(groove_start, groove_y, groove_end, groove_y)
+        else:
+            first_marker_x = marker_x_for_value(self.markers_sorted[0])
+            painter.drawLine(groove_start, groove_y, int(first_marker_x), groove_y)
 
-        def marker_x_for_value(value: int) -> float:
-            marker_normalized_value = (value - self.minimum()) / (
-                self.maximum() - self.minimum()
-            )
-            return groove_start + marker_normalized_value * groove_width
+            color_a = QtGui.QColor("#7e57c2")  # Deep Purple
+            color_b = QtGui.QColor("#42a5f5")  # Bright Blue
 
-        # Draw issue markers underneath saved markers.
+            for i in range(len(self.markers_sorted)):
+                start_val = self.markers_sorted[i]
+                end_val = (
+                    self.markers_sorted[i + 1]
+                    if i + 1 < len(self.markers_sorted)
+                    else self.maximum()
+                )
+
+                start_x = marker_x_for_value(start_val)
+                end_x = marker_x_for_value(end_val)
+
+                current_color = color_a if i % 2 == 0 else color_b
+                painter.setPen(QtGui.QPen(current_color, 3))
+
+                painter.drawLine(int(start_x), groove_y, int(end_x), groove_y)
+                painter.drawLine(
+                    int(start_x), groove_rect.top(), int(start_x), groove_rect.bottom()
+                )
+
+        # 2. Provisional Changes Overlay (Soft Yellow)
+        if has_provisional_changes:
+            provisional_start_val = self.value()
+            provisional_end_val = self.maximum()
+
+            for m in self.markers_sorted:
+                if m > provisional_start_val:
+                    provisional_end_val = m
+                    break
+
+            start_x = marker_x_for_value(provisional_start_val)
+            end_x = marker_x_for_value(provisional_end_val)
+
+            painter.setPen(QtGui.QPen(QtGui.QColor("#e5c07b"), 3))  # Soft Yellow
+            painter.drawLine(int(start_x), groove_y, int(end_x), groove_y)
+
+        # 3. Issue markers
         if self.issue_markers:
             issue_pen = QtGui.QPen(QtGui.QColor("#ff9800"), 3)
             issue_pen.setCapStyle(QtCore.Qt.PenCapStyle.SquareCap)
@@ -305,29 +445,31 @@ def set_up_video_seek_slider(main_window: "MainWindow"):
                 if value in self.dropped_markers:
                     continue
                 marker_x = marker_x_for_value(value)
-                painter.drawLine(marker_x, issue_top, marker_x, issue_bottom)
+                painter.drawLine(int(marker_x), issue_top, int(marker_x), issue_bottom)
 
-        # Draw standard markers (if any)
-        if self.markers:
-            painter.setPen(
-                QtGui.QPen(QtGui.QColor("#4090a3"), 3)
-            )  # Marker color and thickness
-            for value in self.markers_sorted:
-                marker_x = marker_x_for_value(value)
-                painter.drawLine(
-                    marker_x, groove_rect.top(), marker_x, groove_rect.bottom()
-                )
-
-        # Draw dropped markers above all frame markers.
+        # 4. Dropped markers
         if self.dropped_markers:
             painter.setPen(QtGui.QPen(QtGui.QColor("#e8483c"), 3))
             for value in self.dropped_markers_sorted:
                 marker_x = marker_x_for_value(value)
                 painter.drawLine(
-                    marker_x, groove_rect.top(), marker_x, groove_rect.bottom()
+                    int(marker_x),
+                    groove_rect.top(),
+                    int(marker_x),
+                    groove_rect.bottom(),
                 )
 
-        # Draw Job Start/End Brackets on the groove line
+        # 5. Playhead Handle (Turns Yellow if state is provisional)
+        handle_color = (
+            QtGui.QColor("#e5c07b")
+            if has_provisional_changes
+            else QtGui.QColor("white")
+        )
+        painter.setPen(QtGui.QPen(handle_color, 1))
+        painter.setBrush(QtGui.QBrush(handle_color))
+        painter.drawRect(handle_rect)
+
+        # 6. Job Start/End Brackets
         painter.setFont(QtGui.QFont("Arial", 16, QtGui.QFont.Bold))
         font_metrics = painter.fontMetrics()
         bracket_height = font_metrics.height()
@@ -365,6 +507,150 @@ def set_up_video_seek_slider(main_window: "MainWindow"):
     main_window.videoSeekSlider.paintEvent = partial(
         paintEvent, main_window.videoSeekSlider
     )
+
+
+def set_up_timeline_zoom(main_window: "MainWindow"):
+    """
+    Configures the timeline zoom slider and dynamically adjusts the video seek slider's physical width.
+    Uses an exponential mapping formula for fine-grained control.
+    Uses a deferred connection to ensure the dynamically generated settings slider exists before binding.
+    """
+    from PySide6 import QtCore
+
+    zoom_slider = getattr(main_window, "timelineZoomSlider", None)
+    scroll_area = getattr(main_window, "timelineScrollArea", None)
+    zoom_label = getattr(main_window, "zoomLabel", None)
+
+    if not zoom_slider or not scroll_area:
+        print("[WARN] Timeline zoom widgets not found in UI. Skipping setup.")
+        return
+
+    SLIDER_RESOLUTION = 1000  # Abstract linear steps for the physical QSlider
+    zoom_slider.calculated_max_zoom = 100.0
+
+    def get_target_frames() -> int:
+        """Safely fetches the current target frames from the control dict."""
+        target = int(main_window.control.get("VideoSeekMaxFrameSlider", 20))
+        return max(1, target)
+
+    def recalculate_max_zoom(max_frames: int) -> float:
+        """Calculates the absolute maximum zoom percentage based on video length and user settings."""
+        target_frames = get_target_frames()
+        if max_frames <= target_frames:
+            return 100.0
+        return (max_frames / target_frames) * 100.0
+
+    def on_video_duration_changed(max_frames: int) -> None:
+        """Triggered when a new video loads. Resets the zoom state to x1.0."""
+        zoom_slider.calculated_max_zoom = recalculate_max_zoom(max_frames)
+
+        zoom_slider.blockSignals(True)
+        zoom_slider.setRange(0, SLIDER_RESOLUTION)
+        zoom_slider.setValue(0)
+        zoom_slider.blockSignals(False)
+
+        if zoom_label:
+            zoom_label.setText("Zoom - x1.0")
+
+        main_window.videoSeekSlider.setMinimumWidth(0)
+
+    def on_settings_changed(*args) -> None:
+        """Triggered instantly when the user adjusts the Max Frames setting slider."""
+        # Force an update of the control dictionary directly from the widget to ensure perfection
+        settings_slider = getattr(main_window, "parameter_widgets", {}).get(
+            "VideoSeekMaxFrameSlider"
+        )
+        if settings_slider:
+            main_window.control["VideoSeekMaxFrameSlider"] = settings_slider.value()
+        elif args and isinstance(args[0], int):
+            main_window.control["VideoSeekMaxFrameSlider"] = args[0]
+
+        max_frames = main_window.videoSeekSlider.maximum()
+        zoom_slider.calculated_max_zoom = recalculate_max_zoom(max_frames)
+
+        # Force the timeline to visually update its width immediately
+        on_zoom_changed(zoom_slider.value())
+
+    # Because parameter_widgets are generated dynamically after core UI initialization,
+    # we must wait a fraction of a second for the Settings tab to finish building itself.
+    def connect_dynamic_settings():
+        settings_slider = getattr(main_window, "parameter_widgets", {}).get(
+            "VideoSeekMaxFrameSlider"
+        )
+        if settings_slider and hasattr(settings_slider, "valueChanged"):
+            settings_slider.valueChanged.connect(on_settings_changed)
+            # print("[SUCCESS] Successfully hooked VideoSeekMaxFrameSlider into the timeline zoom engine.")
+        else:
+            print(
+                "[WARN] VideoSeekMaxFrameSlider still not found. Real-time timeline sync disabled."
+            )
+
+    # Wait 500ms after startup to connect the signal
+    QtCore.QTimer.singleShot(500, connect_dynamic_settings)
+
+    # Expose the manual refresh hook just in case
+    main_window.refresh_timeline_zoom = on_settings_changed
+
+    # --- PATCH TO BYPASS blockSignals(True) ---
+    original_set_maximum = main_window.videoSeekSlider.setMaximum
+
+    def custom_set_maximum(max_val: int) -> None:
+        original_set_maximum(max_val)
+        on_video_duration_changed(max_val)
+
+    main_window.videoSeekSlider.setMaximum = custom_set_maximum
+
+    original_set_range = main_window.videoSeekSlider.setRange
+
+    def custom_set_range(min_val: int, max_val: int) -> None:
+        original_set_range(min_val, max_val)
+        on_video_duration_changed(max_val)
+
+    main_window.videoSeekSlider.setRange = custom_set_range
+
+    # Initialize bounds for the currently loaded video
+    on_video_duration_changed(main_window.videoSeekSlider.maximum())
+
+    def on_zoom_changed(slider_val: int) -> None:
+        video_processor = getattr(main_window, "video_processor", None)
+        if not video_processor or video_processor.max_frame_number <= 0:
+            return
+
+        # --- EXPONENTIAL MATH MAPPING ---
+        min_z = 100.0
+        max_z = getattr(zoom_slider, "calculated_max_zoom", 100.0)
+
+        if max_z <= min_z:
+            actual_zoom = min_z
+        else:
+            exponent = slider_val / float(SLIDER_RESOLUTION)
+            actual_zoom = min_z * ((max_z / min_z) ** exponent)
+
+        multiplier = actual_zoom / 100.0
+
+        if zoom_label:
+            zoom_label.setText(f"Zoom - x{multiplier:.1f}")
+
+        # 1. Store the relative mathematical position of the current frame
+        current_val = main_window.videoSeekSlider.value()
+        max_val = main_window.videoSeekSlider.maximum()
+        relative_pos = current_val / max(1, max_val)
+
+        # 2. Calculate base width from the scroll area viewport
+        viewport_width = scroll_area.viewport().width()
+        if viewport_width < 100:
+            viewport_width = 800
+
+        # 3. Apply new physical width using the EXPONENTIAL zoom value
+        new_width = int(viewport_width * (actual_zoom / 100.0))
+        main_window.videoSeekSlider.setMinimumWidth(new_width)
+
+        # 4. Adjust the horizontal scrollbar to stay centered on the playhead
+        scrollbar = scroll_area.horizontalScrollBar()
+        target_scroll_pos = int((new_width * relative_pos) - (viewport_width / 2))
+        scrollbar.setValue(max(0, target_scroll_pos))
+
+    zoom_slider.valueChanged.connect(on_zoom_changed)
 
 
 def add_video_slider_marker(main_window: "MainWindow"):
@@ -409,12 +695,26 @@ def add_video_slider_marker(main_window: "MainWindow"):
             main_window.videoSeekSlider,
         )
     else:
-        # FIX: Deepcopy both parameters and control to guarantee total memory
+        # Deepcopy both parameters and control to guarantee total memory
         # isolation and prevent state bleeding across timeline boundaries.
+        control_snapshot = copy.deepcopy(main_window.control)
+
+        # Remove environment/output specific keys from the snapshot.
+        # These settings dictate global I/O state for the batch/render session
+        # and must never be tied to specific timeline frames.
+        keys_to_exclude = [
+            "OutputMediaFolder",
+            "OutputToTargetLocationToggle",
+            "PreserveOutputDirectoryStructureToggle",
+            "ClusterOutputBySourceToggle",
+        ]
+        for key in keys_to_exclude:
+            control_snapshot.pop(key, None)
+
         add_marker(
             main_window,
             copy.deepcopy(main_window.parameters),
-            copy.deepcopy(main_window.control),
+            control_snapshot,
             current_position,
         )
 
@@ -2378,8 +2678,22 @@ def update_parameters_and_control_from_marker(
     """
     # Find marker only at the *exact* new position
     marker_data = _get_marker_data_for_position(main_window, new_position)
-    # Save the Global Marker Track toggle
-    current_track_markers_value = main_window.control.get("TrackMarkersToggle", False)
+
+    # Protect global environment variables from being overwritten by older markers.
+    # This acts as a shield against previously saved project files that might still
+    # contain these keys, preventing silent directory swaps mid-render.
+    protected_keys = [
+        "TrackMarkersToggle",
+        "OutputMediaFolder",
+        "OutputToTargetLocationToggle",
+        "PreserveOutputDirectoryStructureToggle",
+        "ClusterOutputBySourceToggle",
+    ]
+    saved_protected_state = {
+        key: main_window.control[key]
+        for key in protected_keys
+        if key in main_window.control
+    }
 
     if marker_data:
         # --- A marker was found, load its parameters AND controls ---
@@ -2413,8 +2727,10 @@ def update_parameters_and_control_from_marker(
 
     # If no marker_data is found, DO NOTHING.
     # This preserves the user's current settings (manual or from a previous marker).
-    # Re-apply the saved Global Marker Track toggle
-    main_window.control["TrackMarkersToggle"] = current_track_markers_value
+
+    # Re-apply the protected global keys so they remain untouched during playback/recording
+    for key, value in saved_protected_state.items():
+        main_window.control[key] = value
 
 
 def update_widget_values_from_markers(main_window: "MainWindow", new_position: int):
@@ -3056,7 +3372,9 @@ def _set_media_controls_visible(main_window: "MainWindow", visible: bool):
     """
     Role: Recursively shows/hides media control widgets and safely manages layout spacers.
     Impact: Avoids blank spaces (cadres) by cleanly detaching spacers using takeAt()
-            instead of forcing their sizes to 0.
+            instead of forcing their sizes to 0. Also preserves the original visibility
+            state of widgets to ensure media-specific elements (like timelines for images)
+            remain hidden when restored.
     """
     if not hasattr(main_window, "_media_controls_currently_visible"):
         main_window._media_controls_currently_visible = True
@@ -3068,12 +3386,16 @@ def _set_media_controls_visible(main_window: "MainWindow", visible: bool):
 
     if not visible:
         main_window._media_spacers_storage = []
+        main_window._media_widgets_state = {}
 
         def hide_and_remove(layout):
             # Iterate backwards to safely use takeAt() without breaking layout indices
             for i in reversed(range(layout.count())):
                 item = layout.itemAt(i)
                 if item.widget():
+                    main_window._media_widgets_state[item.widget()] = (
+                        item.widget().isVisible()
+                    )
                     item.widget().hide()
                 elif item.spacerItem():
                     spacer = layout.takeAt(i)
@@ -3093,7 +3415,10 @@ def _set_media_controls_visible(main_window: "MainWindow", visible: bool):
             for i in range(layout.count()):
                 item = layout.itemAt(i)
                 if item.widget():
-                    item.widget().show()
+                    was_visible = getattr(main_window, "_media_widgets_state", {}).get(
+                        item.widget(), True
+                    )
+                    item.widget().setVisible(was_visible)
                 elif item.layout():
                     show_widgets(item.layout())
 
