@@ -215,16 +215,23 @@ class PerformRecast:
     @staticmethod
     def _to_input(img: torch.Tensor) -> np.ndarray:
         """(C,H,W) uint8/float [0,255] -> (1,3,H,W) float32 [0,1] numpy."""
-        x = img.detach().to(torch.float32) / 255.0
-        x = torch.clamp(x, 0.0, 1.0)
+        # OPTIMIZED: Force a copy to safely detach from the source tensor,
+        # then apply hardware-level in-place math to avoid intermediate allocations.
+        x = img.detach().to(torch.float32, copy=True)
+        x.mul_(1.0 / 255.0).clamp_(0.0, 1.0)
+
         if x.dim() == 3:
             x = x.unsqueeze(0)
+
+        # Pinned transfer to host memory
         return x.contiguous().cpu().numpy()
 
     def _to_input_t(self, img: torch.Tensor) -> torch.Tensor:
         """(C,H,W) uint8/float [0,255] -> (1,3,H,W) float32 [0,1] on device."""
-        x = img.detach().to(self.models_processor.device, torch.float32) / 255.0
-        x = torch.clamp(x, 0.0, 1.0)
+        # OPTIMIZED: Use non_blocking transfer and in-place math to prevent intermediate allocations.
+        x = img.to(self.models_processor.device, dtype=torch.float32, non_blocking=True)
+        x.mul_(1.0 / 255.0).clamp_(0.0, 1.0)
+
         if x.dim() == 3:
             x = x.unsqueeze(0)
         return x.contiguous()
@@ -289,12 +296,21 @@ class PerformRecast:
     # ------------------------------------------------------------------ #
     # Geometry — ported verbatim from src/pipeline.py (HopeNet -99 binning)
     # ------------------------------------------------------------------ #
-    @staticmethod
-    def _headpose_to_degree(pred: torch.Tensor) -> torch.Tensor:
+
+    # Static cache to prevent allocating arange(66) three times per frame
+    _headpose_idx_cache: Dict["torch.device", "torch.Tensor"] = {}
+
+    @classmethod
+    def _headpose_to_degree(cls, pred: torch.Tensor) -> torch.Tensor:
         """(bs,66) pose logits -> (bs,) degrees. PerformRecast uses *3 - 99."""
-        idx = torch.arange(66, dtype=torch.float32, device=pred.device)
+        device = pred.device
+        if device not in cls._headpose_idx_cache:
+            cls._headpose_idx_cache[device] = torch.arange(
+                66, dtype=torch.float32, device=device
+            )
+
         pred = F.softmax(pred, dim=1)
-        return torch.sum(pred * idx, dim=1) * 3 - 99
+        return torch.sum(pred * cls._headpose_idx_cache[device], dim=1) * 3 - 99
 
     @staticmethod
     def _rotation_matrix(
@@ -374,7 +390,8 @@ class PerformRecast:
         t[..., 2] = 0  # zero tz
 
         kp_e = kp + exp
-        kp_rotated = torch.einsum("bmp,bkp->bkm", R, kp_e)
+        # OPTIMIZED: Direct Matmul is faster than Einsum string parsing
+        kp_rotated = kp_e @ R.transpose(1, 2)
         kp_rotated = kp_rotated * scale.unsqueeze(1)
         x_s = kp_rotated + t.unsqueeze(1)
 
@@ -389,6 +406,14 @@ class PerformRecast:
     MOUTH_INDICES = [0, 1, 2, 3, 4, 5, 6, 7]
     EYE_INDICES = [27, 28, 29, 30, 34, 35, 47, 48]
     BROWS_INDICES = [15, 16, 17, 18, 19, 21, 22, 23, 24, 25]
+
+    # OPTIMIZED & SAFE: Use set subtraction to bypass class-scope comprehension quirks
+    PURE_STRUCT_INDICES = list(
+        set(range(49))
+        - set(
+            MOUTH_INDICES + EYE_INDICES + CHEEKS_INDICES + JAW_INDICES + BROWS_INDICES
+        )
+    )
 
     def compose_driven_keypoints(
         self,
@@ -459,21 +484,12 @@ class PerformRecast:
 
         elif mode == "Advanced":
             # --- 1. GLOBAL ANCHORING ---
-            pure_struct_idx = [
-                i
-                for i in range(49)
-                if i
-                not in (
-                    self.MOUTH_INDICES
-                    + self.EYE_INDICES
-                    + self.CHEEKS_INDICES
-                    + self.JAW_INDICES
-                    + self.BROWS_INDICES
-                )
-            ]
-
-            s_struct_center = exp_s[:, pure_struct_idx, :].mean(dim=1, keepdim=True)
-            d_struct_center = exp_d[:, pure_struct_idx, :].mean(dim=1, keepdim=True)
+            s_struct_center = exp_s[:, self.PURE_STRUCT_INDICES, :].mean(
+                dim=1, keepdim=True
+            )
+            d_struct_center = exp_d[:, self.PURE_STRUCT_INDICES, :].mean(
+                dim=1, keepdim=True
+            )
             global_offset = s_struct_center - d_struct_center
 
             aligned_exp_d = exp_d + global_offset
@@ -485,7 +501,7 @@ class PerformRecast:
             weights = torch.zeros((1, 49, 1), dtype=exp_s.dtype, device=device)
 
             # Apply UI multipliers
-            weights[:, pure_struct_idx, 0] = structural_blend * factor
+            weights[:, self.PURE_STRUCT_INDICES, 0] = structural_blend * factor
             weights[:, self.MOUTH_INDICES, 0] = float(lip_driving_weight) * factor
             weights[:, self.EYE_INDICES, 0] = float(eye_driving_weight) * factor
             weights[:, self.BROWS_INDICES, 0] = float(brows_driving_weight) * factor
@@ -528,7 +544,8 @@ class PerformRecast:
             new_exp = gated
 
         kp_e = x_s_c + new_exp
-        kp_rotated = torch.einsum("bmp,bkp->bkm", R, kp_e)
+        # OPTIMIZED: Direct Matmul is faster than Einsum string parsing
+        kp_rotated = kp_e @ R.transpose(1, 2)
         kp_rotated = kp_rotated * scale.unsqueeze(1)
         x_d_i = kp_rotated + t.unsqueeze(1)
 

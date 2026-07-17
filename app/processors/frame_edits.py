@@ -1125,23 +1125,30 @@ class FrameEdits:
             # --- PASTE BACK ---
             dsize = (target.shape[1], target.shape[2])
 
-            # 1. Create a tracking mask, shaving 2 pixels off the outer edge to
-            # prevent Kornia's bilinear boundary interpolation from creating a seam.
-            warp_mask = torch.zeros(
-                (1, out.shape[1], out.shape[2]), dtype=out.dtype, device=out.device
+            # 1. OPTIMIZED: Cache the base 512x512 tracking mask.
+            # Avoids running torch.zeros() and slicing every single frame.
+            if getattr(self, "_recast_base_warp_mask", None) is None:
+                base_mask = torch.zeros(
+                    (1, 512, 512), dtype=torch.float32, device=out.device
+                )
+                base_mask[:, 2:-2, 2:-2] = 1.0
+                self._recast_base_warp_mask = base_mask
+
+            warp_mask = self._apply_kornia_warp(
+                self._recast_base_warp_mask, M_c2o, dsize
             )
-            warp_mask[:, 2:-2, 2:-2] = 1.0
-            warp_mask = self._apply_kornia_warp(warp_mask, M_c2o, dsize)
 
             # 2. Warp the edited face back to the target's coordinate space
             out = self._apply_kornia_warp(out, M_c2o, dsize)
             out = out.mul_(255.0).clamp_(0, 255)
 
-            # 3. Composite over the original target to preserve the outer background pixels!
-            target_float = target.type(torch.float32)
-            out = out * warp_mask + target_float * (1.0 - warp_mask)
+            # 3. OPTIMIZED: Hardware-Fused Lerp Compositing
+            # Eliminates 3 full-frame tensor allocations (no `1.0 - mask`, no multiple math tensors).
+            # This directly frees up the CUDA memory bus for the worker threads.
+            target_float = target.to(dtype=torch.float32, non_blocking=True)
+            out = torch.lerp(target_float, out, warp_mask)
 
-        return out.type(torch.float32)
+        return out
 
     def swap_edit_face_core(
         self,

@@ -225,6 +225,44 @@ def handle_denoiser_state_change(
     # Frame refresh is handled by common_actions.update_control after this function returns.
 
 
+def handle_average_kv_toggle_change(
+    main_window: "MainWindow", new_value: bool, control_name: str
+) -> None:
+    """
+    Dynamically handles the Average K/V toggle state change.
+
+    Why: Synchronizes the main UI control dictionary before triggering VRAM tensor recalculations.
+    If we do not explicitly set the control value here, the downstream `calculate_assigned_input_embedding`
+    will read the out-of-sync previous state, causing inverted logic (ON triggers Concatenation, OFF triggers Averaging).
+    """
+    # 1. FORCE UI STATE SYNCHRONIZATION
+    # Ensure the control dictionary knows the new value before calculation methods read it.
+    main_window.control[control_name] = new_value
+
+    # 2. RECALCULATE TENSOR MERGING FOR ALL TARGET FACES
+    if hasattr(main_window, "target_faces") and main_window.target_faces:
+        for target_face in main_window.target_faces.values():
+            # Clear the downstream combined VRAM maps
+            if hasattr(target_face, "assigned_kv_map"):
+                target_face.assigned_kv_map = None
+            if hasattr(target_face, "aged_kv_map"):
+                target_face.aged_kv_map = None
+
+            # Re-run the lightweight tensor merge (mean/cat) using the fresh toggle state
+            if hasattr(target_face, "calculate_assigned_input_embedding"):
+                target_face.calculate_assigned_input_embedding()
+
+    # 3. UPDATE ACTIVE CONTEXT POINTER
+    selected_id = getattr(main_window, "selected_target_face_id", None)
+    if selected_id and hasattr(main_window, "target_faces"):
+        active_face = main_window.target_faces.get(selected_id)
+        if active_face and hasattr(active_face, "assigned_kv_map"):
+            main_window.current_kv_tensors_map = active_face.assigned_kv_map
+
+    # 4. DISPATCH UI THREAD RENDER
+    common_widget_actions.refresh_frame(main_window)
+
+
 def handle_face_mask_state_change(
     main_window: "MainWindow", new_value: bool, control_name: str
 ):
@@ -734,6 +772,7 @@ def apply_face_reaging(main_window: "MainWindow", *_args) -> None:
             or control.get("DenoiserAfterFirstRestorerToggle", False)
             or control.get("DenoiserAfterRestorersToggle", False)
         )
+
         if denoiser_on:
             try:
                 aged_hwc = aged_chw.permute(1, 2, 0).cpu().numpy()

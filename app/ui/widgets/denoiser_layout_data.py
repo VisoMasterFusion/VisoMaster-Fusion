@@ -13,6 +13,16 @@ DENOISER_LAYOUT_DATA: Any = {
             "exec_function": control_actions.handle_denoiser_state_change,
             "exec_function_args": ["UseReferenceExclusivePathToggle"],
         },
+        "AverageKVToggle": {
+            "level": 1,
+            "widget_type": "ToggleButton",
+            "label": "Average K/V",
+            "control_name": "AverageKVToggle",
+            "default": True,
+            "help": "Uses an Average of K/V maps or the Full concatenated K/V maps.",
+            "exec_function": control_actions.handle_average_kv_toggle_change,
+            "exec_function_args": ["AverageKVToggle"],
+        },
         "DenoiserBaseSeedSlider": {
             "level": 1,
             "widget_type": "ParameterSlider",

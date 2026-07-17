@@ -133,12 +133,15 @@ class FaceRestorers:
             except Exception:
                 return swapped_face_upscaled
 
-            # OPTIMIZED: Direct GPU Affine Warp with Kornia, skipping torchvision crop/affine
+            # Push matrix to device with non_blocking=True to hide PCIe transfer latency
             M_tensor = (
                 torch.from_numpy(tform.params[0:2])
-                .float()
+                .to(
+                    device=swapped_face_upscaled.device,
+                    dtype=torch.float32,
+                    non_blocking=True,
+                )
                 .unsqueeze(0)
-                .to(swapped_face_upscaled.device)
             )
             img_b = (
                 swapped_face_upscaled.unsqueeze(0)
@@ -148,20 +151,22 @@ class FaceRestorers:
 
             # Kornia allocates a new tensor here, so we own this memory space.
             temp = kgm.warp_affine(
-                img_b.float(),
+                img_b.to(dtype=torch.float32, non_blocking=True),
                 M_tensor,
                 dsize=(512, 512),
                 mode="bilinear",
                 align_corners=True,
             ).squeeze(0)
-            # Safe to perform math operations since 'temp' is a brand new tensor
-            temp = temp.float() / 255.0
+
+            # Safe to perform in-place math since 'temp' is a brand new tensor from Kornia
+            temp.mul_(1.0 / 255.0)
 
         else:
             # If we did not warp the image, we MUST clone the original tensor
-            # before applying division. Using .div_(255.0) on the original reference corrupts
-            # memory for other threads (Race Condition).
-            temp = swapped_face_upscaled.clone().float() / 255.0
+            # copy=True safely detaches it for this thread; in-place math saves a VRAM allocation.
+            temp = swapped_face_upscaled.to(
+                dtype=torch.float32, copy=True, non_blocking=True
+            ).mul_(1.0 / 255.0)
 
         # High-Fidelity Scaling BEFORE Normalization
         # Use Bicubic to preserve eyelashes/pores, and clamp to prevent GAN ringing artifacts.
@@ -291,12 +296,11 @@ class FaceRestorers:
 
         # Invert Transform
         if restorer_det_type in ["Blend", "Reference"]:
-            # OPTIMIZED: Direct Inverse GPU Affine Warp with Kornia
+            # OPTIMIZED: Direct Inverse GPU Affine Warp with non_blocking=True
             M_inv_tensor = (
                 torch.from_numpy(tform.inverse.params[0:2])
-                .float()
+                .to(device=outpred.device, dtype=torch.float32, non_blocking=True)
                 .unsqueeze(0)
-                .to(outpred.device)
             )
             out_b = outpred.unsqueeze(0) if outpred.dim() == 3 else outpred
             dsize = (swapped_face_upscaled.shape[1], swapped_face_upscaled.shape[2])
@@ -310,23 +314,8 @@ class FaceRestorers:
                 align_corners=True,
             ).squeeze(0)
 
-        # Blend (Disabled by default as in original code)
-        # alpha = float(restorer_blend)/100.0
-        # outpred = torch.add(torch.mul(outpred, alpha), torch.mul(swapped_face_upscaled, 1-alpha))
-
-        # --- EXPLICIT CLEANUP ---
-        # Explicitly delete local intermediate tensors to free VRAM immediately
-        # before returning the final image. This keeps the VRAM peak perfectly flat.
-        try:
-            del temp
-            if restorer_det_type in ["Blend", "Reference"]:
-                del M_tensor
-                del img_b
-                del M_inv_tensor
-                del out_b
-        except Exception:
-            pass
-
+        # Python's GC clears local variables instantaneously on return.
+        # Removing the explicit try/except `del` block saves CPU branching overhead.
         return outpred
 
     def run_vae_encoder(
