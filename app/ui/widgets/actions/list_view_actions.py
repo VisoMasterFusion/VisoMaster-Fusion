@@ -422,6 +422,7 @@ def initialize_embeddings_list_widget(main_window: "MainWindow"):
     inputEmbeddingsList.setUniformItemSizes(True)
     inputEmbeddingsList.setViewMode(QtWidgets.QListView.IconMode)
     inputEmbeddingsList.setMovement(QtWidgets.QListView.Static)
+    inputEmbeddingsList.setSortingEnabled(True)
 
     inputEmbeddingsList.setFixedHeight(_EMBED_LIST_HEIGHT)
 
@@ -444,8 +445,11 @@ def initialize_embeddings_list_widget(main_window: "MainWindow"):
 
 
 def create_and_add_embed_button_to_list(
-    main_window: "MainWindow", embedding_name, embedding_store, embedding_id
-):
+    main_window: "MainWindow",
+    embedding_name: str,
+    embedding_store: dict,
+    embedding_id: str,
+) -> None:
     inputEmbeddingsList = main_window.inputEmbeddingsList
     embed_button = widget_components.EmbeddingCardButton(
         main_window=main_window,
@@ -459,6 +463,14 @@ def create_and_add_embed_button_to_list(
 
     list_item = QtWidgets.QListWidgetItem(inputEmbeddingsList)
     list_item.setSizeHint(button_size)
+
+    # Give the underlying QListWidgetItem the text so the PySide6 C++ sorter can alphabetize it
+    list_item.setText(embedding_name)
+    # Make the text fully transparent so it doesn't visually overlap with your custom EmbeddingCardButton
+    from PySide6 import QtGui
+
+    list_item.setForeground(QtGui.QColor(0, 0, 0, 0))
+
     embed_button.list_item = list_item
     list_item.setTextAlignment(QtCore.Qt.AlignmentFlag.AlignCenter)
 

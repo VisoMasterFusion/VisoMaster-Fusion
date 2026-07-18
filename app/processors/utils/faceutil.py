@@ -2650,8 +2650,8 @@ def histogram_matching(
 ) -> torch.Tensor:
     """
     Exact Histogram Matching using a GPU-accelerated Look-Up Table (LUT).
-    OPTIMIZED: Eliminates per-pixel searchsorted interpolation. Builds a 256-bin
-    mapping table and applies it directly, massively reducing VRAM and execution time.
+    OPTIMIZED: Filters out pure black padding pixels to prevent CDF skewing
+    and preserves padding bounds independently.
     """
     device = source_image.device
     dtype = source_image.dtype
@@ -2660,19 +2660,33 @@ def histogram_matching(
     source_image_t = source_image.to(device, dtype=torch.float32) / 255.0
     target_image_t = target_image.to(device, dtype=torch.float32) / 255.0
 
+    # Create validity masks to exclude padding (pure black) independently
+    s_valid = source_image_t.sum(dim=0) > 0.01
+    t_valid = target_image_t.sum(dim=0) > 0.01
+
     matched_target_image_t = torch.empty_like(target_image_t)
 
     for channel in range(3):
         source_channel = source_image_t[channel]
         target_channel = target_image_t[channel]
 
-        # Clamp and scale to 0-255 integers for binning
-        src_bins = torch.clamp(source_channel * 255.0, 0, 255).to(torch.int64)
-        tgt_bins = torch.clamp(target_channel * 255.0, 0, 255).to(torch.int64)
+        # Extract ONLY valid pixels for accurate statistics
+        src_valid_vals = source_channel[s_valid]
+        tgt_valid_vals = target_channel[t_valid]
 
-        # Compute histograms (256 bins)
-        src_hist = torch.bincount(src_bins.flatten(), minlength=256).float()
-        tgt_hist = torch.bincount(tgt_bins.flatten(), minlength=256).float()
+        # Failsafe if image is entirely black (rare detection failure)
+        if src_valid_vals.numel() == 0:
+            src_valid_vals = torch.tensor([0.0], device=device)
+        if tgt_valid_vals.numel() == 0:
+            tgt_valid_vals = torch.tensor([0.0], device=device)
+
+        # Clamp and scale to 0-255 integers for binning
+        src_bins = torch.clamp(src_valid_vals * 255.0, 0, 255).to(torch.int64)
+        tgt_bins = torch.clamp(tgt_valid_vals * 255.0, 0, 255).to(torch.int64)
+
+        # Compute histograms (256 bins) safely ignoring the background
+        src_hist = torch.bincount(src_bins, minlength=256).float()
+        tgt_hist = torch.bincount(tgt_bins, minlength=256).float()
 
         # Add epsilon to prevent division by zero
         src_hist += 1e-6
@@ -2685,22 +2699,23 @@ def histogram_matching(
         tgt_cdf = torch.cumsum(tgt_hist, dim=0)
         tgt_cdf = tgt_cdf / tgt_cdf[-1]
 
-        # We can use searchsorted efficiently here because it's only operating on 256 elements,
-        # not the millions of pixels in the image.
+        # Build the Look-Up Table (LUT) using searchsorted on the 256 bins
         indices = torch.searchsorted(src_cdf, tgt_cdf, right=False)
         indices = torch.clamp(indices, 0, 255)
-
-        # The LUT stores the matched values normalized back to [0, 1]
         lut = indices.float() / 255.0
 
-        # Apply the LUT to the entire channel simultaneously
-        matched_target_image_t[channel] = lut[tgt_bins]
+        # Apply the LUT mapping to the entire target channel
+        tgt_all_bins = torch.clamp(target_channel * 255.0, 0, 255).to(torch.int64)
+        matched_target_image_t[channel] = lut[tgt_all_bins]
+
+        # Restore pure black padding safely to prevent grey halos at warp edges
+        matched_target_image_t[channel][~t_valid] = target_channel[~t_valid]
 
     # Blend result based on the diffslider [0, 100]
     alpha = diffslider / 100.0
     final_image_t = (1.0 - alpha) * target_image_t + alpha * matched_target_image_t
 
-    # Scale back to [0, 255], clamp, and match the original tensor dtype (usually float or uint8)
+    # Scale back to [0, 255], clamp, and match the original tensor dtype
     final_image_t = torch.clamp(final_image_t * 255.0, 0.0, 255.0)
 
     return final_image_t.to(dtype=dtype)
@@ -2714,24 +2729,32 @@ def histogram_matching_withmask(
 ) -> torch.Tensor:
     """
     Exact Histogram Matching using a GPU-accelerated LUT, restricted to a mask.
-    OPTIMIZED: Builds the CDF strictly from masked areas and applies the LUT
-    mapping ONLY to valid pixels, bypassing redundant calculations on the background.
+    OPTIMIZED: Validates mask against pure black padding to ensure CDFs are
+    calculated strictly on actual facial pixels, preventing zero-bin biases.
     """
     device = source_image.device
     dtype = source_image.dtype
 
-    # 1. Format mask safely for boolean indexing
-    valid_mask = mask.to(device=device, dtype=torch.bool)
-    if valid_mask.dim() == 3 and valid_mask.size(0) == 1:
-        valid_mask = valid_mask.squeeze(0)
-
-    # Early exit to prevent NaN division and save VRAM if no face is detected
-    if not valid_mask.any():
-        return target_image.to(dtype=dtype)
+    # 1. Format user mask safely for boolean indexing
+    base_mask = mask.to(device=device, dtype=torch.bool)
+    if base_mask.dim() == 3 and base_mask.size(0) == 1:
+        base_mask = base_mask.squeeze(0)
 
     # 2. Convert inputs to float [0, 1]
     source_image_t = source_image.to(device, dtype=torch.float32) / 255.0
     target_image_t = target_image.to(device, dtype=torch.float32) / 255.0
+
+    # 3. Exclude pure black padding pixels independently
+    s_valid = source_image_t.sum(dim=0) > 0.01
+    t_valid = target_image_t.sum(dim=0) > 0.01
+
+    # Calculate statistics strictly where mask overlaps with actual image data
+    s_mask_valid = base_mask & s_valid
+    t_mask_valid = base_mask & t_valid
+
+    # Early exit to prevent NaN division and save VRAM if no face is detected
+    if not s_mask_valid.any() or not t_mask_valid.any():
+        return target_image.to(dtype=dtype)
 
     # Clone target to preserve unmasked background areas perfectly
     matched_target_image_t = target_image_t.clone()
@@ -2740,9 +2763,9 @@ def histogram_matching_withmask(
         source_channel = source_image_t[channel]
         target_channel = target_image_t[channel]
 
-        # Extract ONLY masked pixels for statistical calculation
-        src_masked_vals = source_channel[valid_mask]
-        tgt_masked_vals = target_channel[valid_mask]
+        # Extract ONLY strictly valid masked pixels for statistical calculation
+        src_masked_vals = source_channel[s_mask_valid]
+        tgt_masked_vals = target_channel[t_mask_valid]
 
         # Scale to 0-255 integer bins for bincount
         src_bins = torch.clamp(src_masked_vals * 255.0, 0, 255).to(torch.int64)
@@ -2768,10 +2791,11 @@ def histogram_matching_withmask(
         indices = torch.clamp(indices, 0, 255)
         lut = indices.float() / 255.0
 
-        # APPLY LUT ONLY TO MASKED PIXELS
-        # tgt_bins holds the bin indices for the masked pixels.
-        # We index the lut directly and map it back into the cloned target image.
-        matched_target_image_t[channel][valid_mask] = lut[tgt_bins]
+        # APPLY LUT ONLY TO VALID TARGET MASKED PIXELS
+        tgt_apply_bins = torch.clamp(target_channel[t_mask_valid] * 255.0, 0, 255).to(
+            torch.int64
+        )
+        matched_target_image_t[channel][t_mask_valid] = lut[tgt_apply_bins]
 
     # Blend result based on the diffslider [0, 100]
     alpha = diffslider / 100.0
@@ -2791,8 +2815,7 @@ def apply_reinhard_color_transfer(
 ) -> torch.Tensor:
     """
     Unified Reinhard Statistical Color Transfer in LAB Space.
-    OPTIMIZED: Consolidates global and masked transfers into a single function.
-    Safely ignores padding (black pixels) and optionally applies a facial mask.
+    OPTIMIZED: Safely ignores padding independently for source and target to prevent temporal flickering.
     """
     device = source_image.device
     dtype = source_image.dtype
@@ -2801,31 +2824,36 @@ def apply_reinhard_color_transfer(
     s_img = source_image.to(device, dtype=torch.float32) / 255.0
     t_img = target_image.to(device, dtype=torch.float32) / 255.0
 
-    # 2. Base validity: Exclude pure black padding pixels from statistical calculations
+    # 2. Base validity: Exclude pure black padding pixels INDEPENDENTLY
     s_valid = s_img.sum(dim=0) > 0.01
     t_valid = t_img.sum(dim=0) > 0.01
 
-    # 3. Handle Optional Mask
+    # 3. Handle Optional Mask dynamically for both source and target
     if mask is not None:
         if mask.dim() == 3 and mask.shape[0] == 1:
             mask = mask.squeeze(0)  # [H, W]
-        # Combine user mask with the valid non-black pixels
-        valid_mask = (mask > 0.05) & s_valid & t_valid
+        s_mask = (mask > 0.05) & s_valid
+        t_mask = (mask > 0.05) & t_valid
     else:
-        # Global mode: just use all non-black pixels
-        valid_mask = s_valid & t_valid
+        # Global mode: just use all non-black pixels independently
+        s_mask = s_valid
+        t_mask = t_valid
 
-    # Fallback: if mask is empty after filtering (e.g., missed detection), return original target
-    if valid_mask.sum() < 100:
+    # Fallback: if target mask is empty, return original target
+    if t_mask.sum() < 100:
         return target_image.to(dtype=dtype)
+
+    # Failsafe: Prevent division by zero if source is entirely black
+    if s_mask.sum() == 0:
+        s_mask = torch.ones_like(s_mask)
 
     # 4. Convert to LAB Space
     s_lab = rgb_to_lab(s_img, normalize=False)
     t_lab = rgb_to_lab(t_img, normalize=False)
 
-    # 5. Calculate Stats on VALID PIXELS ONLY
-    s_masked = s_lab[:, valid_mask]
-    t_masked = t_lab[:, valid_mask]
+    # 5. Calculate Stats INDEPENDENTLY on Valid Pixels Only
+    s_masked = s_lab[:, s_mask]
+    t_masked = t_lab[:, t_mask]
 
     s_mean = s_masked.mean(dim=1).view(3, 1, 1)
     s_std = s_masked.std(dim=1).view(3, 1, 1)
@@ -2835,11 +2863,10 @@ def apply_reinhard_color_transfer(
 
     t_std += 1e-6  # Safety against division by zero
 
-    # 6. Apply Transfer globally
+    # 6. Apply Transfer globally to the Target
     t_lab_trans = (t_lab - t_mean) * (s_std / t_std) + s_mean
 
     # 7. Clamp LAB values to biological/visual limits to prevent artifacts
-    # FIXED: Using in-place .clamp_() to prevent PyTorch memory overlap exceptions
     t_lab_trans[0].clamp_(0.0, 100.0)  # L (Lightness)
     t_lab_trans[1].clamp_(-127.0, 127.0)  # A (Green-Red)
     t_lab_trans[2].clamp_(-127.0, 127.0)  # B (Blue-Yellow)
@@ -2865,8 +2892,7 @@ def apply_adain_color_transfer(
 ) -> torch.Tensor:
     """
     Applies statistical color transfer (AdaIN) from the target to the source in LAB space.
-    OPTIMIZED: Enforces strict no_grad() to prevent VRAM graph leaks during max_pool erosion.
-    Ensures device safety, explicit type casting, and returns the original tensor dtype.
+    OPTIMIZED: Statistical masks decoupled to prevent VRAM graph leaks and temporal flickering.
     """
     device = source.device
     dtype = source.dtype
@@ -2896,33 +2922,35 @@ def apply_adain_color_transfer(
         if calc_mask_ready.dim() == 2:
             calc_mask_ready = calc_mask_ready.unsqueeze(0)
 
-    # Filter out pure black padding pixels from statistical calculation
-    non_black = (src_norm.sum(dim=0, keepdim=True) > 0.01) & (
-        tgt_norm.sum(dim=0, keepdim=True) > 0.01
-    )
-    calc_mask_ready = calc_mask_ready * non_black.float()
+    # Filter out pure black padding pixels INDEPENDENTLY for Source and Target
+    s_non_black = (src_norm.sum(dim=0, keepdim=True) > 0.01).float()
+    t_non_black = (tgt_norm.sum(dim=0, keepdim=True) > 0.01).float()
 
-    calc_mask_sum = torch.sum(calc_mask_ready, dim=(1, 2), keepdim=True) + eps
+    s_calc_mask = calc_mask_ready * s_non_black
+    t_calc_mask = calc_mask_ready * t_non_black
+
+    s_calc_mask_sum = torch.sum(s_calc_mask, dim=(1, 2), keepdim=True) + eps
+    t_calc_mask_sum = torch.sum(t_calc_mask, dim=(1, 2), keepdim=True) + eps
 
     # 3. Convert to LAB Space
     src_lab = rgb_to_lab(src_norm, normalize=False)
     tgt_lab = rgb_to_lab(tgt_norm, normalize=False)
 
-    # 4. Compute Means and Variances strictly inside the core mask
+    # 4. Compute Means and Variances strictly inside the INDEPENDENT core masks
     src_mean = (
-        torch.sum(src_lab * calc_mask_ready, dim=(1, 2), keepdim=True) / calc_mask_sum
+        torch.sum(src_lab * s_calc_mask, dim=(1, 2), keepdim=True) / s_calc_mask_sum
     )
     tgt_mean = (
-        torch.sum(tgt_lab * calc_mask_ready, dim=(1, 2), keepdim=True) / calc_mask_sum
+        torch.sum(tgt_lab * t_calc_mask, dim=(1, 2), keepdim=True) / t_calc_mask_sum
     )
 
     src_var = (
-        torch.sum(calc_mask_ready * (src_lab - src_mean) ** 2, dim=(1, 2), keepdim=True)
-        / calc_mask_sum
+        torch.sum(s_calc_mask * (src_lab - src_mean) ** 2, dim=(1, 2), keepdim=True)
+        / s_calc_mask_sum
     )
     tgt_var = (
-        torch.sum(calc_mask_ready * (tgt_lab - tgt_mean) ** 2, dim=(1, 2), keepdim=True)
-        / calc_mask_sum
+        torch.sum(t_calc_mask * (tgt_lab - tgt_mean) ** 2, dim=(1, 2), keepdim=True)
+        / t_calc_mask_sum
     )
 
     src_std = torch.sqrt(src_var + eps)
@@ -2932,7 +2960,6 @@ def apply_adain_color_transfer(
     src_matched_lab = ((src_lab - src_mean) / src_std) * tgt_std + tgt_mean
 
     # 6. Clamp LAB values to valid biological/visual ranges to prevent artifacts
-    # FIXED: Using in-place .clamp_() to prevent PyTorch memory overlap exceptions
     src_matched_lab[0].clamp_(0.0, 100.0)  # L (Lightness)
     src_matched_lab[1].clamp_(-127.0, 127.0)  # A (Red/Green)
     src_matched_lab[2].clamp_(-127.0, 127.0)  # B (Blue/Yellow)

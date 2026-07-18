@@ -4465,15 +4465,42 @@ class FrameWorker(threading.Thread):
             else:
                 # Optional Face Scaling adjustment
                 if parameters["FaceAdjEnableToggle"]:
-                    input_face_affined = v2.functional.affine(
-                        input_face_affined,
-                        0,
-                        (0, 0),
-                        1 + parameters["FaceScaleAmountSlider"] / 100,
-                        0,
-                        center=(dim * 128 / 2, dim * 128 / 2),
-                        interpolation=v2.InterpolationMode.BILINEAR,
+                    import torch.nn.functional as F
+
+                    scale_val = 1.0 + (parameters["FaceScaleAmountSlider"] / 100.0)
+                    orig_dtype = input_face_affined.dtype
+
+                    # OPTIMIZED: v2.functional.affine blocks 'bicubic' for tensors.
+                    # We bypass this using the lower-level F.grid_sample API which provides
+                    # hardware-accelerated bicubic interpolation entirely on the GPU.
+                    # We must cast to float32 as grid_sample does not support uint8 bicubic.
+                    affined_float = input_face_affined.unsqueeze(0).to(torch.float32)
+
+                    # In F.affine_grid, coordinate (0,0) represents the exact center of the image.
+                    # Scaling here natively zooms in/out from the center.
+                    theta = torch.tensor(
+                        [[1.0 / scale_val, 0.0, 0.0], [0.0, 1.0 / scale_val, 0.0]],
+                        dtype=torch.float32,
+                        device=self.models_processor.device,
+                    ).unsqueeze(0)
+
+                    grid = F.affine_grid(
+                        theta, affined_float.size(), align_corners=False
                     )
+
+                    scaled_float = F.grid_sample(
+                        affined_float,
+                        grid,
+                        mode="bicubic",
+                        padding_mode="zeros",
+                        align_corners=False,
+                    )
+
+                    # Bicubic interpolation can overshoot (ringing artifacts). Clamp before casting back.
+                    if orig_dtype == torch.uint8:
+                        scaled_float = scaled_float.clamp_(0.0, 255.0).round_()
+
+                    input_face_affined = scaled_float.squeeze(0).to(orig_dtype)
 
                 itex = 1
                 if parameters["StrengthEnableToggle"]:

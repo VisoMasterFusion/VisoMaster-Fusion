@@ -212,11 +212,15 @@ def open_embeddings_from_file(main_window: "MainWindow"):
                         kv_map_path = embed_data.get("kv_map")
                         if kv_map_path and os.path.exists(kv_map_path):
                             try:
-                                import torch
-
                                 payload = torch.load(kv_map_path, map_location="cpu")
                                 if isinstance(payload, dict):
-                                    embed_button.kv_map = payload.get("kv_map")
+                                    # Check for new list format first, fallback to legacy dict format
+                                    if "kv_map_list" in payload:
+                                        embed_button.kv_map_list = payload[
+                                            "kv_map_list"
+                                        ]
+                                    else:
+                                        embed_button.kv_map = payload.get("kv_map")
                                 else:
                                     embed_button.kv_map = payload
                                 print(
@@ -277,15 +281,24 @@ def save_embeddings_to_file(main_window: "MainWindow", save_as=False):
     embeddings_list = []
     for embedding_id, embed_button in main_window.merged_embeddings.items():
         kv_map_path = None
-        # If embedding has KV maps we save on disk
-        if getattr(embed_button, "kv_map", None) is not None:
+        # Check for either the new list format or the legacy map format
+        kv_payload_to_save = getattr(embed_button, "kv_map_list", None) or getattr(
+            embed_button, "kv_map", None
+        )
+
+        if kv_payload_to_save is not None:
             kv_data_dir = (
                 main_window.project_root_path / "model_assets" / "reference_kv_data"
             )
             kv_data_dir.mkdir(parents=True, exist_ok=True)
             kv_map_file = kv_data_dir / f"embedding_standalone_{embedding_id}.pt"
             try:
-                payload = {"kv_map": embed_button.kv_map}
+                # Save whatever payload we found (either a List[Dict] or a Dict)
+                payload = (
+                    {"kv_map_list": kv_payload_to_save}
+                    if getattr(embed_button, "kv_map_list", None)
+                    else {"kv_map": kv_payload_to_save}
+                )
                 torch.save(payload, str(kv_map_file))
                 kv_map_path = str(kv_map_file)
             except Exception as e:
@@ -564,13 +577,22 @@ def load_saved_workspace(
                     kv_map_path = embedding_data.get("kv_map")
                     if kv_map_path and os.path.exists(kv_map_path):
                         try:
+                            # R-03: Safe standard weight loading, mapped to CPU initially to prevent VRAM fragmentation
                             payload = torch.load(kv_map_path, map_location="cpu")
+
                             if isinstance(payload, dict):
-                                embed_button.kv_map = payload.get("kv_map")
+                                # Check for the unbaked tensor list first
+                                if "kv_map_list" in payload:
+                                    embed_button.kv_map_list = payload["kv_map_list"]
+                                else:
+                                    # BACKWARD COMPATIBILITY: Fallback for older projects using a single baked dict
+                                    embed_button.kv_map = payload.get("kv_map")
                             else:
+                                # ANCIENT COMPATIBILITY: Direct payload fallback
                                 embed_button.kv_map = payload
+
                             print(
-                                f"[INFO] Restored K/V map for embedding: {embedding_name}"
+                                f"[INFO] Restored K/V map data for embedding: {embedding_name}"
                             )
                         except Exception as e:
                             print(
@@ -1081,14 +1103,24 @@ def save_current_workspace(
     # --- Serialize Embeddings ---
     for embedding_id, embedding_button in main_window.merged_embeddings.items():
         kv_map_path = None
-        if getattr(embedding_button, "kv_map", None) is not None:
+        # Check for either the new list format or the legacy map format
+        kv_payload_to_save = getattr(embedding_button, "kv_map_list", None) or getattr(
+            embedding_button, "kv_map", None
+        )
+
+        if kv_payload_to_save is not None:
             kv_data_dir = (
                 main_window.project_root_path / "model_assets" / "reference_kv_data"
             )
             kv_data_dir.mkdir(parents=True, exist_ok=True)
             kv_map_file = kv_data_dir / f"embedding_{embedding_id}.pt"
             try:
-                payload = {"kv_map": embedding_button.kv_map}
+                # Save whatever payload we found
+                payload = (
+                    {"kv_map_list": kv_payload_to_save}
+                    if getattr(embedding_button, "kv_map_list", None)
+                    else {"kv_map": kv_payload_to_save}
+                )
                 torch.save(payload, str(kv_map_file))
                 kv_map_path = str(kv_map_file)
             except Exception as e:
@@ -1279,14 +1311,23 @@ def save_current_job(main_window: "MainWindow"):
     embeddings_data = {}
     for eid, emb in main_window.merged_embeddings.items():
         kv_map_path = None
-        if getattr(emb, "kv_map", None) is not None:
+        # Check for either the new list format or the legacy map format
+        kv_payload_to_save = getattr(emb, "kv_map_list", None) or getattr(
+            emb, "kv_map", None
+        )
+
+        if kv_payload_to_save is not None:
             kv_data_dir = (
                 main_window.project_root_path / "model_assets" / "reference_kv_data"
             )
             kv_data_dir.mkdir(parents=True, exist_ok=True)
             kv_map_file = kv_data_dir / f"embedding_{eid}.pt"
             try:
-                payload = {"kv_map": emb.kv_map}
+                payload = (
+                    {"kv_map_list": kv_payload_to_save}
+                    if getattr(emb, "kv_map_list", None)
+                    else {"kv_map": kv_payload_to_save}
+                )
                 torch.save(payload, str(kv_map_file))
                 kv_map_path = str(kv_map_file)
             except Exception as e:
