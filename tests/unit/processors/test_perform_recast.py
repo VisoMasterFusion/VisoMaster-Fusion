@@ -105,7 +105,7 @@ def _make_recast() -> PerformRecast:
         "PerformRecastSpadeGenerator",
         _fake_session({"out": np.full((1, 3, 512, 512), 0.5, dtype=np.float32)}),
     )
-    return PerformRecast(mp)  # type: ignore[arg-type]
+    return PerformRecast(mp, None)  # type: ignore[arg-type]
 
 
 def _torch_motion(seed: int) -> dict:

@@ -11,6 +11,7 @@ from torchvision.transforms import v2
 
 if TYPE_CHECKING:
     from app.processors.models_processor import ModelsProcessor
+    from app.processors.workers.function_worker import FunctionWorker
     from PIL import Image
 
 from app.processors.utils import faceutil
@@ -25,8 +26,13 @@ class FaceDenoiser:
     Manages DDIM/DDPM mathematical schedules and VAE latent processing.
     """
 
-    def __init__(self, models_processor: "ModelsProcessor"):
+    def __init__(
+        self,
+        models_processor: "ModelsProcessor",
+        function_worker: "FunctionWorker",
+    ):
         self.models_processor = models_processor
+        self.function_worker = function_worker
 
         # --- KV Extractor State ---
         self.kv_extractor: Optional[KVExtractor] = None
@@ -462,7 +468,7 @@ class FaceDenoiser:
             device=self.models_processor.device,
         ).contiguous()
 
-        self.models_processor.face_restorers.run_vae_encoder(
+        self.function_worker.run_vae_encoder(
             image_srgb_float_minus1_1_batched, encoded_latent_direct_vae_out_bchw
         )
 
@@ -535,7 +541,7 @@ class FaceDenoiser:
             if torch.cuda.is_available():
                 torch.cuda.current_stream().synchronize()
 
-            self.models_processor.face_restorers.run_ref_ldm_unet(
+            self.function_worker.run_ref_ldm_unet(
                 x_noisy_plus_lq_latent=unet_input_16_channel,
                 timesteps_tensor=timesteps_tensor_unet,
                 is_ref_flag_tensor=is_ref_flag_tensor_for_unet,
@@ -634,7 +640,7 @@ class FaceDenoiser:
                 if torch.cuda.is_available():
                     torch.cuda.current_stream().synchronize()
 
-                self.models_processor.face_restorers.run_ref_ldm_unet(
+                self.function_worker.run_ref_ldm_unet(
                     x_noisy_plus_lq_latent=unet_input_16_channel,
                     timesteps_tensor=ts_unet,
                     is_ref_flag_tensor=is_ref_flag_tensor_for_unet,
@@ -649,7 +655,7 @@ class FaceDenoiser:
 
                     # We re-use unet_input_16_channel directly.
                     # It contains the exact same data needed for the uncond pass.
-                    self.models_processor.face_restorers.run_ref_ldm_unet(
+                    self.function_worker.run_ref_ldm_unet(
                         x_noisy_plus_lq_latent=unet_input_16_channel,
                         timesteps_tensor=ts_unet,
                         is_ref_flag_tensor=is_ref_flag_tensor_for_unet,
@@ -719,7 +725,7 @@ class FaceDenoiser:
             device=self.models_processor.device,
         ).contiguous()
 
-        self.models_processor.face_restorers.run_vae_decoder(
+        self.function_worker.run_vae_decoder(
             latent_for_vae_decoder, decoded_image_normalized_bchw
         )
         del latent_for_vae_decoder

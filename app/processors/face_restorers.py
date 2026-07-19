@@ -8,11 +8,17 @@ import kornia.geometry.transform as kgm
 
 if TYPE_CHECKING:
     from app.processors.models_processor import ModelsProcessor
+    from app.processors.workers.function_worker import FunctionWorker
 
 
 class FaceRestorers:
-    def __init__(self, models_processor: "ModelsProcessor"):
+    def __init__(
+        self,
+        models_processor: "ModelsProcessor",
+        function_worker: "FunctionWorker",
+    ):
         self.models_processor = models_processor
+        self.function_worker = function_worker
         self.active_model_slot1: Optional[str] = None
         self.active_model_slot2: Optional[str] = None
         self._warned_models: set[str] = set()  # To track warnings
@@ -320,7 +326,7 @@ class FaceRestorers:
 
     def run_vae_encoder(
         self, image_input_tensor: torch.Tensor, output_latent_tensor: torch.Tensor
-    ):
+    ) -> None:
         """
         Runs the VAE encoder model.
         image_input_tensor: Batch x 3 x Height x Width, float32, normalized to [-1, 1]
@@ -330,8 +336,8 @@ class FaceRestorers:
         # FR-BUG-04: use .get() to avoid KeyError when model is not yet loaded
         ort_session = self.models_processor.models.get(model_name)
         if ort_session is None:
-            # Lazy reload in case clear_gpu_memory() cleared the session after a provider switch.
-            self.models_processor.face_denoiser.ensure_denoiser_models_loaded()
+            # Lazy reload via unified facade in case clear_gpu_memory() cleared the session
+            self.function_worker.ensure_denoiser_models_loaded()
             ort_session = self.models_processor.models.get(model_name)
         if ort_session is None:
             error_msg = f"[ERROR] VAE Encoder model '{model_name}' not loaded when run_vae_encoder was called. This model should be loaded by ModelsProcessor.face_denoiser.ensure_denoiser_models_loaded()."
@@ -372,7 +378,7 @@ class FaceRestorers:
 
     def run_vae_decoder(
         self, latent_input_tensor: torch.Tensor, output_image_tensor: torch.Tensor
-    ):
+    ) -> None:
         """
         Runs the VAE decoder model.
         latent_input_tensor: Batch x 8 x LatentH x LatentW, float32
@@ -382,8 +388,8 @@ class FaceRestorers:
         # FR-BUG-04: use .get() to avoid KeyError when model is not yet loaded
         ort_session = self.models_processor.models.get(model_name)
         if ort_session is None:
-            # Lazy reload in case clear_gpu_memory() cleared the session after a provider switch.
-            self.models_processor.face_denoiser.ensure_denoiser_models_loaded()
+            # Lazy reload via unified facade in case clear_gpu_memory() cleared the session
+            self.function_worker.ensure_denoiser_models_loaded()
             ort_session = self.models_processor.models.get(model_name)
         if ort_session is None:
             error_msg = f"[ERROR] VAE Decoder model '{model_name}' not loaded when run_vae_decoder was called. This model should be loaded by ModelsProcessor.face_denoiser.ensure_denoiser_models_loaded()."
@@ -430,7 +436,7 @@ class FaceRestorers:
         use_reference_exclusive_path_globally_tensor: torch.Tensor,
         kv_tensor_map: Optional[Dict[str, Dict[str, torch.Tensor]]],
         output_unet_tensor: torch.Tensor,
-    ):
+    ) -> None:
         """
         Runs the UNet denoiser model with external K/V inputs.
         """
@@ -441,7 +447,6 @@ class FaceRestorers:
             # Enhanced error reporting
             error_messages = [
                 f"[ERROR] UNet model '{model_name}' not loaded when run_ref_ldm_unet was called.",
-                "  This model should be loaded by ModelsProcessor.face_denoiser.apply_denoiser_unet or a similar setup routine.",
             ]
             print("\n".join(error_messages))
             return

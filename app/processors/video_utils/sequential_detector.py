@@ -49,10 +49,10 @@ class SequentialDetector:
         else:
             self._temporal_memory = []
 
-        if hasattr(self.main_window, "models_processor") and hasattr(
-            self.main_window.models_processor, "face_detectors"
+        if hasattr(self.main_window, "function_worker") and hasattr(
+            self.main_window.function_worker, "face_detectors"
         ):
-            self.main_window.models_processor.face_detectors.reset_tracker()
+            self.main_window.function_worker.face_detectors.reset_tracker()
 
     def run(
         self,
@@ -149,7 +149,7 @@ class SequentialDetector:
         # --- STEP 1: FAST DETECTION (BBoxes and 5-point landmarks ONLY) ---
         # CRITICAL OPTIMIZATION: Heavy landmark detection (68/203 points) is disabled here
         # to rapidly scan the crowd without burning GPU cycles.
-        bboxes, kpss_5, _ = self.main_window.models_processor.run_detect(
+        bboxes, kpss_5, _ = self.main_window.function_worker.run_detect(
             frame_tensor,
             control.get("DetectorModelSelection", "RetinaFace"),
             max_num=int(control.get("MaxFacesToDetectSlider", 20)),
@@ -191,13 +191,13 @@ class SequentialDetector:
                 current_kps5 = kpss_5[i]
 
                 # 1. Strict Identity Anchor Pass
-                face_emb, _ = self.main_window.models_processor.run_recognize_direct(
+                face_emb, _ = self.main_window.function_worker.run_recognize_direct(
                     frame_tensor, current_kps5, "Auto", rec_model
                 )
 
                 match, _, _ = find_best_target_match(
                     face_emb,
-                    self.main_window.models_processor,
+                    self.main_window.function_worker,
                     target_faces,
                     local_params_for_worker or {},
                     default_params,
@@ -341,7 +341,7 @@ class SequentialDetector:
             # FW-LOGIC-FIX 1: Extract forced 203 landmarks FIRST if required
             if requires_203:
                 lm_203_5, lm_203, _ = (
-                    self.main_window.models_processor.run_detect_landmark(
+                    self.main_window.function_worker.run_detect_landmark(
                         frame_tensor,
                         current_bbox,
                         current_kps5,
@@ -375,7 +375,7 @@ class SequentialDetector:
                     kps_standard = kps_203_local.copy()
                 else:
                     lm_std_5, lm_kpss, _ = (
-                        self.main_window.models_processor.run_detect_landmark(
+                        self.main_window.function_worker.run_detect_landmark(
                             frame_tensor,
                             current_bbox,
                             current_kps5,

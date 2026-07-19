@@ -602,7 +602,7 @@ def set_gpu_memory_progressbar_value(
 
 def clear_gpu_memory(main_window: "MainWindow"):
     main_window.video_processor.stop_processing()
-    main_window.models_processor.clear_gpu_memory()
+    main_window.function_worker.clear_gpu_memory()
     main_window.swapfacesButton.setChecked(False)
     main_window.editFacesButton.setChecked(False)
     update_gpu_memory_progressbar(main_window)

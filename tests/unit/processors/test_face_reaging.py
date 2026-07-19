@@ -69,7 +69,7 @@ def _make_onnx_session(delta_value: float = 0.0) -> MagicMock:
 def _make_reaging(delta: float = 0.0) -> FaceReaging:
     session = _make_onnx_session(delta)
     proc = _FakeModelsProcessor(session)
-    return FaceReaging(proc)  # type: ignore[arg-type]
+    return FaceReaging(proc, None)  # type: ignore[arg-type]
 
 
 # ---------------------------------------------------------------------------

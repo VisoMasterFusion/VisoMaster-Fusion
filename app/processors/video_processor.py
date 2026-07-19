@@ -3354,7 +3354,7 @@ class VideoProcessor(QObject):
         highest_sim = -1.0
 
         for target_face_id, threshold, target_embedding in prepared_targets:
-            sim = self.main_window.models_processor.findCosineDistance(
+            sim = self.main_window.function_worker.findCosineDistance(
                 detected_embedding, target_embedding
             )
             if sim >= threshold and sim > highest_sim:
@@ -3392,7 +3392,7 @@ class VideoProcessor(QObject):
             ],
             dtype=numpy.float32,
         )
-        face_emb, _ = self.main_window.models_processor.run_recognize_direct(
+        face_emb, _ = self.main_window.function_worker.run_recognize_direct(
             image_tensor,
             full_face_kps,
             similarity_type,
@@ -3554,7 +3554,7 @@ class VideoProcessor(QObject):
                 for _start_frame, _end_frame, local_control, _local_params in scan_segments
             )
             if tracking_enabled:
-                self.main_window.models_processor.face_detectors.reset_tracker()
+                self.main_window.function_worker.face_detectors.reset_tracker()
             previous_segment_tracking_enabled: Optional[bool] = None
             previous_segment_bytetrack_config = None
 
@@ -3617,7 +3617,7 @@ class VideoProcessor(QObject):
                     and current_segment_bytetrack_config
                     != previous_segment_bytetrack_config
                 ):
-                    self.main_window.models_processor.face_detectors.reset_tracker()
+                    self.main_window.function_worker.face_detectors.reset_tracker()
                     self._reset_issue_scan_sequential_state()
                 match_context = self._prepare_issue_scan_match_context(
                     local_control, local_params, target_faces_snapshot
@@ -3698,7 +3698,7 @@ class VideoProcessor(QObject):
                             ):
                                 continue
                             face_emb, _ = (
-                                self.main_window.models_processor.run_recognize_direct(
+                                self.main_window.function_worker.run_recognize_direct(
                                     frame_tensor,
                                     face_kps,
                                     similarity_type,
@@ -3741,7 +3741,7 @@ class VideoProcessor(QObject):
             )
 
             if tracking_enabled:
-                self.main_window.models_processor.face_detectors.reset_tracker()
+                self.main_window.function_worker.face_detectors.reset_tracker()
             self.current_frame_number = (
                 reset_frame_number
                 if reset_frame_number is not None

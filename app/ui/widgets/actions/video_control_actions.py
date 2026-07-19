@@ -2777,7 +2777,7 @@ def run_post_seek_actions(main_window: "MainWindow", new_position: int):
 
     # Reset ByteTracker state on every user-initiated seek so stale Kalman predictions
     # from the previous position do not corrupt detection on the new position.
-    main_window.models_processor.face_detectors.reset_tracker()
+    main_window.function_worker.face_detectors.reset_tracker()
 
     # Check if the user wants to update the UI based on markers when seeking
     track_markers_enabled = main_window.control.get("TrackMarkersToggle", False)

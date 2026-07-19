@@ -380,7 +380,7 @@ class InputFacesLoaderWorker(qtc.QThread):
                 )
                 img = img.permute(2, 0, 1)
 
-                _, kpss_5, _ = self.main_window.models_processor.run_detect(
+                _, kpss_5, _ = self.main_window.function_worker.run_detect(
                     img,
                     control.get("DetectorModelSelection", "RetinaFace"),
                     max_num=1,
@@ -408,7 +408,7 @@ class InputFacesLoaderWorker(qtc.QThread):
                     )
                     similarity_type = str("Auto")
                     face_emb, cropped_img = (
-                        self.main_window.models_processor.run_recognize_direct(
+                        self.main_window.function_worker.run_recognize_direct(
                             img,
                             face_kps,
                             similarity_type,

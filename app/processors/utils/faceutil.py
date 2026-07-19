@@ -12,6 +12,7 @@ import torchvision
 from torchvision.transforms import v2
 
 import kornia.geometry.transform as kgm
+import kornia.color as kc
 
 torchvision.disable_beta_transforms_warning()
 
@@ -171,6 +172,24 @@ _gaussian_kernel_lock = threading.Lock()
 
 _laplace_kernel_cache: dict[str, torch.Tensor] = {}
 _laplace_kernel_lock = threading.Lock()
+
+
+def gamma_decode_srgb_to_linear_rgb(srgb: torch.Tensor) -> torch.Tensor:
+    """
+    Converts sRGB [0, 1] to Linear RGB [0, 1].
+    Uses Kornia's optimized CUDA kernels for exact piecewise sRGB decoding.
+    Note: Kornia refers to non-linear sRGB simply as 'rgb'.
+    """
+    return kc.rgb_to_linear_rgb(srgb.clamp(0.0, 1.0))
+
+
+def gamma_encode_linear_rgb_to_srgb(linear_rgb: torch.Tensor) -> torch.Tensor:
+    """
+    Converts Linear RGB [0, 1] to sRGB [0, 1].
+    Uses Kornia's optimized CUDA kernels for exact piecewise sRGB encoding.
+    Note: Kornia refers to non-linear sRGB simply as 'rgb'.
+    """
+    return kc.linear_rgb_to_rgb(linear_rgb.clamp(0.0, 1.0))
 
 
 def pad_image_by_size(img, image_size):
@@ -1061,97 +1080,37 @@ def yuv_to_rgb(image, normalize=False):
     return rgb_image
 
 
-def rgb_to_lab(rgb, normalize=False):
-    # Assume rgb is in (C, H, W) format and values are in [0, 1]
+def rgb_to_lab(rgb: torch.Tensor, normalize: bool = False) -> torch.Tensor:
+    """
+    Converts an RGB image to LAB color space.
+    OPTIMIZED: Replaced manual PyTorch math with Kornia's fused CUDA kernels.
+    Expects (C, H, W) or (B, C, H, W).
+    """
     if normalize:
         rgb = rgb / 255.0
 
-    # Transpose to (H, W, C) for processing
-    rgb = rgb.permute(1, 2, 0).contiguous()
-
-    # Linearization (Gamma Correction)
-    mask = rgb > 0.04045
-    rgb_linear = torch.where(mask, ((rgb + 0.055) / 1.055) ** 2.4, rgb / 12.92)
-
-    # Conversion from RGB to XYZ
-    rgb_linear = rgb_linear.view(-1, 3)
-    # F-09: use module-level constant, moved to device on demand
-    matrix_rgb_to_xyz = _RGB_TO_XYZ.to(dtype=rgb.dtype, device=rgb.device)
-
-    xyz = torch.matmul(rgb_linear, matrix_rgb_to_xyz.T)
-
-    # Normalize by D65 white point
-    # F-09: use module-level constant, moved to device on demand
-    white_point = _XYZ_WHITE_D65.to(dtype=xyz.dtype, device=xyz.device)
-    xyz = xyz / white_point
-
-    # Conversion from XYZ to LAB
-    epsilon = 0.008856
-    kappa = 903.3
-
-    mask = xyz > epsilon
-    f_xyz = torch.where(mask, xyz ** (1 / 3), (kappa * xyz + 16) / 116)
-
-    L = (116 * f_xyz[:, 1]) - 16
-    a = 500 * (f_xyz[:, 0] - f_xyz[:, 1])
-    b = 200 * (f_xyz[:, 1] - f_xyz[:, 2])
-
-    lab = torch.stack([L, a, b], dim=1)
-    lab = lab.view(rgb.shape[0], rgb.shape[1], 3)  # (H, W, 3)
-    lab = lab.permute(2, 0, 1)  # Back to (C, H, W)
+    # Ensure batch dimension exists for Kornia
+    if rgb.dim() == 3:
+        rgb = rgb.unsqueeze(0)
+        lab = kc.rgb_to_lab(rgb).squeeze(0)
+    else:
+        lab = kc.rgb_to_lab(rgb)
 
     return lab
 
 
-def lab_to_rgb(lab, normalize=False):
-    # Assume lab is in (C, H, W) format
-    if lab.dim() != 3 or lab.shape[0] != 3:
-        raise ValueError("LAB tensor must have shape (3, H, W)")
-
-    # Transpose to (H, W, C)
-    lab = lab.permute(1, 2, 0).contiguous()
-
-    L = lab[:, :, 0]
-    a = lab[:, :, 1]
-    b = lab[:, :, 2]
-
-    # Conversion from LAB to XYZ
-    epsilon = 0.008856
-    kappa = 903.3
-
-    fy = (L + 16) / 116
-    fx = fy + (a / 500)
-    fz = fy - (b / 200)
-
-    fx3 = fx**3
-    fz3 = fz**3
-
-    x = torch.where(fx3 > epsilon, fx3, (116 * fx - 16) / kappa)
-    y = torch.where(L > (kappa * epsilon), ((L + 16) / 116) ** 3, L / kappa)
-    z = torch.where(fz3 > epsilon, fz3, (116 * fz - 16) / kappa)
-
-    # Denormalize by D65 white point
-    # F-09: use module-level constant, moved to device on demand
-    white_point = _XYZ_WHITE_D65.to(dtype=lab.dtype, device=lab.device)
-    xyz = torch.stack([x, y, z], dim=2) * white_point
-
-    # Conversion from XYZ to RGB
-    xyz = xyz.view(-1, 3)
-    # F-09: use module-level constant, moved to device on demand
-    matrix_xyz_to_rgb = _XYZ_TO_RGB.to(dtype=lab.dtype, device=lab.device)
-
-    rgb_linear = torch.matmul(xyz, matrix_xyz_to_rgb.T)
-
-    # Apply gamma correction
-    mask = rgb_linear > 0.0031308
-    rgb = torch.where(
-        mask, 1.055 * (rgb_linear ** (1 / 2.4)) - 0.055, 12.92 * rgb_linear
-    )
-
-    # Reshape back to image format
-    rgb = rgb.view(lab.shape[0], lab.shape[1], 3)
-    rgb = torch.clamp(rgb, 0.0, 1.0)
-    rgb = rgb.permute(2, 0, 1)  # Back to (C, H, W)
+def lab_to_rgb(lab: torch.Tensor, normalize: bool = False) -> torch.Tensor:
+    """
+    Converts a LAB image to RGB color space.
+    OPTIMIZED: Replaced manual PyTorch math with Kornia's fused CUDA kernels.
+    Expects (C, H, W) or (B, C, H, W).
+    """
+    # Ensure batch dimension exists for Kornia
+    if lab.dim() == 3:
+        lab = lab.unsqueeze(0)
+        rgb = kc.lab_to_rgb(lab).squeeze(0)
+    else:
+        rgb = kc.lab_to_rgb(lab)
 
     if normalize:
         rgb = rgb * 255.0
@@ -2650,25 +2609,30 @@ def histogram_matching(
 ) -> torch.Tensor:
     """
     Exact Histogram Matching using a GPU-accelerated Look-Up Table (LUT).
-    OPTIMIZED: Filters out pure black padding pixels to prevent CDF skewing
-    and preserves padding bounds independently.
+    OPTIMIZED: Operates in Linear RGB space to prevent unnatural contrast crushing,
+    and uses 1024 bins to preserve shadow details during linear quantization.
     """
     device = source_image.device
     dtype = source_image.dtype
+    NUM_BINS = 1024
 
-    # Ensure inputs are float and normalized [0, 1]
-    source_image_t = source_image.to(device, dtype=torch.float32) / 255.0
-    target_image_t = target_image.to(device, dtype=torch.float32) / 255.0
+    # 1. Normalize [0, 1] and decode to Linear RGB for physically accurate matching
+    s_img_linear = gamma_decode_srgb_to_linear_rgb(
+        source_image.to(device, dtype=torch.float32) / 255.0
+    )
+    t_img_linear = gamma_decode_srgb_to_linear_rgb(
+        target_image.to(device, dtype=torch.float32) / 255.0
+    )
 
-    # Create validity masks to exclude padding (pure black) independently
-    s_valid = source_image_t.sum(dim=0) > 0.01
-    t_valid = target_image_t.sum(dim=0) > 0.01
+    # 2. Create validity masks to exclude padding (pure black) independently
+    s_valid = s_img_linear.sum(dim=0) > 0.01
+    t_valid = t_img_linear.sum(dim=0) > 0.01
 
-    matched_target_image_t = torch.empty_like(target_image_t)
+    matched_target_linear = torch.empty_like(t_img_linear)
 
     for channel in range(3):
-        source_channel = source_image_t[channel]
-        target_channel = target_image_t[channel]
+        source_channel = s_img_linear[channel]
+        target_channel = t_img_linear[channel]
 
         # Extract ONLY valid pixels for accurate statistics
         src_valid_vals = source_channel[s_valid]
@@ -2680,15 +2644,18 @@ def histogram_matching(
         if tgt_valid_vals.numel() == 0:
             tgt_valid_vals = torch.tensor([0.0], device=device)
 
-        # Clamp and scale to 0-255 integers for binning
-        src_bins = torch.clamp(src_valid_vals * 255.0, 0, 255).to(torch.int64)
-        tgt_bins = torch.clamp(tgt_valid_vals * 255.0, 0, 255).to(torch.int64)
+        # Clamp and scale to integer bins
+        src_bins = torch.clamp(src_valid_vals * (NUM_BINS - 1), 0, NUM_BINS - 1).to(
+            torch.int64
+        )
+        tgt_bins = torch.clamp(tgt_valid_vals * (NUM_BINS - 1), 0, NUM_BINS - 1).to(
+            torch.int64
+        )
 
-        # Compute histograms (256 bins) safely ignoring the background
-        src_hist = torch.bincount(src_bins, minlength=256).float()
-        tgt_hist = torch.bincount(tgt_bins, minlength=256).float()
+        # Compute histograms safely ignoring the background
+        src_hist = torch.bincount(src_bins, minlength=NUM_BINS).float()
+        tgt_hist = torch.bincount(tgt_bins, minlength=NUM_BINS).float()
 
-        # Add epsilon to prevent division by zero
         src_hist += 1e-6
         tgt_hist += 1e-6
 
@@ -2699,26 +2666,29 @@ def histogram_matching(
         tgt_cdf = torch.cumsum(tgt_hist, dim=0)
         tgt_cdf = tgt_cdf / tgt_cdf[-1]
 
-        # Build the Look-Up Table (LUT) using searchsorted on the 256 bins
+        # Build the Look-Up Table (LUT)
         indices = torch.searchsorted(src_cdf, tgt_cdf, right=False)
-        indices = torch.clamp(indices, 0, 255)
-        lut = indices.float() / 255.0
+        indices = torch.clamp(indices, 0, NUM_BINS - 1)
+        lut = indices.float() / float(NUM_BINS - 1)
 
         # Apply the LUT mapping to the entire target channel
-        tgt_all_bins = torch.clamp(target_channel * 255.0, 0, 255).to(torch.int64)
-        matched_target_image_t[channel] = lut[tgt_all_bins]
+        tgt_all_bins = torch.clamp(target_channel * (NUM_BINS - 1), 0, NUM_BINS - 1).to(
+            torch.int64
+        )
+        matched_target_linear[channel] = lut[tgt_all_bins]
 
         # Restore pure black padding safely to prevent grey halos at warp edges
-        matched_target_image_t[channel][~t_valid] = target_channel[~t_valid]
+        matched_target_linear[channel][~t_valid] = target_channel[~t_valid]
 
-    # Blend result based on the diffslider [0, 100]
+    # 3. Blend result in Linear space based on the diffslider [0, 100]
     alpha = diffslider / 100.0
-    final_image_t = (1.0 - alpha) * target_image_t + alpha * matched_target_image_t
+    final_image_linear = (1.0 - alpha) * t_img_linear + alpha * matched_target_linear
 
-    # Scale back to [0, 255], clamp, and match the original tensor dtype
-    final_image_t = torch.clamp(final_image_t * 255.0, 0.0, 255.0)
+    # 4. Re-encode to sRGB, scale back to [0, 255], clamp, and match original dtype
+    final_image_srgb = gamma_encode_linear_rgb_to_srgb(final_image_linear)
+    final_image_out = torch.clamp(final_image_srgb * 255.0, 0.0, 255.0)
 
-    return final_image_t.to(dtype=dtype)
+    return final_image_out.to(dtype=dtype)
 
 
 def histogram_matching_withmask(
@@ -2729,24 +2699,29 @@ def histogram_matching_withmask(
 ) -> torch.Tensor:
     """
     Exact Histogram Matching using a GPU-accelerated LUT, restricted to a mask.
-    OPTIMIZED: Validates mask against pure black padding to ensure CDFs are
-    calculated strictly on actual facial pixels, preventing zero-bin biases.
+    OPTIMIZED: Operates in Linear RGB space to prevent contrast crushing, with 1024 bins
+    to maintain shadow precision. Validates against pure black padding.
     """
     device = source_image.device
     dtype = source_image.dtype
+    NUM_BINS = 1024
 
     # 1. Format user mask safely for boolean indexing
     base_mask = mask.to(device=device, dtype=torch.bool)
     if base_mask.dim() == 3 and base_mask.size(0) == 1:
         base_mask = base_mask.squeeze(0)
 
-    # 2. Convert inputs to float [0, 1]
-    source_image_t = source_image.to(device, dtype=torch.float32) / 255.0
-    target_image_t = target_image.to(device, dtype=torch.float32) / 255.0
+    # 2. Normalize [0, 1] and decode to Linear RGB for physically accurate matching
+    s_img_linear = gamma_decode_srgb_to_linear_rgb(
+        source_image.to(device, dtype=torch.float32) / 255.0
+    )
+    t_img_linear = gamma_decode_srgb_to_linear_rgb(
+        target_image.to(device, dtype=torch.float32) / 255.0
+    )
 
     # 3. Exclude pure black padding pixels independently
-    s_valid = source_image_t.sum(dim=0) > 0.01
-    t_valid = target_image_t.sum(dim=0) > 0.01
+    s_valid = s_img_linear.sum(dim=0) > 0.01
+    t_valid = t_img_linear.sum(dim=0) > 0.01
 
     # Calculate statistics strictly where mask overlaps with actual image data
     s_mask_valid = base_mask & s_valid
@@ -2757,54 +2732,58 @@ def histogram_matching_withmask(
         return target_image.to(dtype=dtype)
 
     # Clone target to preserve unmasked background areas perfectly
-    matched_target_image_t = target_image_t.clone()
+    matched_target_linear = t_img_linear.clone()
 
     for channel in range(3):
-        source_channel = source_image_t[channel]
-        target_channel = target_image_t[channel]
+        source_channel = s_img_linear[channel]
+        target_channel = t_img_linear[channel]
 
         # Extract ONLY strictly valid masked pixels for statistical calculation
         src_masked_vals = source_channel[s_mask_valid]
         tgt_masked_vals = target_channel[t_mask_valid]
 
-        # Scale to 0-255 integer bins for bincount
-        src_bins = torch.clamp(src_masked_vals * 255.0, 0, 255).to(torch.int64)
-        tgt_bins = torch.clamp(tgt_masked_vals * 255.0, 0, 255).to(torch.int64)
+        # Scale to integer bins
+        src_bins = torch.clamp(src_masked_vals * (NUM_BINS - 1), 0, NUM_BINS - 1).to(
+            torch.int64
+        )
+        tgt_bins = torch.clamp(tgt_masked_vals * (NUM_BINS - 1), 0, NUM_BINS - 1).to(
+            torch.int64
+        )
 
-        # Compute histograms (256 bins)
-        src_hist = torch.bincount(src_bins, minlength=256).float()
-        tgt_hist = torch.bincount(tgt_bins, minlength=256).float()
+        # Compute histograms safely
+        src_hist = torch.bincount(src_bins, minlength=NUM_BINS).float()
+        tgt_hist = torch.bincount(tgt_bins, minlength=NUM_BINS).float()
 
-        # Add epsilon to prevent division by zero in CDF
         src_hist += 1e-6
         tgt_hist += 1e-6
 
-        # Compute CDFs and normalize to [0, 1]
+        # Compute CDFs
         src_cdf = torch.cumsum(src_hist, dim=0)
         src_cdf = src_cdf / src_cdf[-1]
 
         tgt_cdf = torch.cumsum(tgt_hist, dim=0)
         tgt_cdf = tgt_cdf / tgt_cdf[-1]
 
-        # Build the Look-Up Table (LUT) using searchsorted on the 256 bins
+        # Build the Look-Up Table (LUT)
         indices = torch.searchsorted(src_cdf, tgt_cdf, right=False)
-        indices = torch.clamp(indices, 0, 255)
-        lut = indices.float() / 255.0
+        indices = torch.clamp(indices, 0, NUM_BINS - 1)
+        lut = indices.float() / float(NUM_BINS - 1)
 
         # APPLY LUT ONLY TO VALID TARGET MASKED PIXELS
-        tgt_apply_bins = torch.clamp(target_channel[t_mask_valid] * 255.0, 0, 255).to(
-            torch.int64
-        )
-        matched_target_image_t[channel][t_mask_valid] = lut[tgt_apply_bins]
+        tgt_apply_bins = torch.clamp(
+            target_channel[t_mask_valid] * (NUM_BINS - 1), 0, NUM_BINS - 1
+        ).to(torch.int64)
+        matched_target_linear[channel][t_mask_valid] = lut[tgt_apply_bins]
 
-    # Blend result based on the diffslider [0, 100]
+    # 4. Blend result in Linear space based on the diffslider [0, 100]
     alpha = diffslider / 100.0
-    final_image_t = (1.0 - alpha) * target_image_t + alpha * matched_target_image_t
+    final_image_linear = (1.0 - alpha) * t_img_linear + alpha * matched_target_linear
 
-    # Scale back to [0, 255], clamp, and cast to original dtype
-    final_image_t = torch.clamp(final_image_t * 255.0, 0.0, 255.0)
+    # 5. Re-encode to sRGB, scale back to [0, 255], clamp, and cast to original dtype
+    final_image_srgb = gamma_encode_linear_rgb_to_srgb(final_image_linear)
+    final_image_out = torch.clamp(final_image_srgb * 255.0, 0.0, 255.0)
 
-    return final_image_t.to(dtype=dtype)
+    return final_image_out.to(dtype=dtype)
 
 
 def apply_reinhard_color_transfer(

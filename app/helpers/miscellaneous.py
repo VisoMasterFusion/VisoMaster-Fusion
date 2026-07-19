@@ -280,7 +280,7 @@ def is_detected_face_eligible_for_matching(
 
 def find_best_target_match(
     detected_embedding: np.ndarray,
-    models_processor: Any,
+    function_worker: Any,
     target_faces: Mapping[object, Any],
     face_parameters: Mapping[str, object],
     default_params: Mapping[str, Any],
@@ -305,7 +305,7 @@ def find_best_target_match(
         if not isinstance(target_embedding, np.ndarray) or target_embedding.size == 0:
             continue
 
-        sim = models_processor.findCosineDistance(detected_embedding, target_embedding)
+        sim = function_worker.findCosineDistance(detected_embedding, target_embedding)
         if sim >= current_params_pd["SimilarityThresholdSlider"] and sim > highest_sim:
             highest_sim = sim
             best_target = target_face
