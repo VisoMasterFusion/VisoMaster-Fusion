@@ -19,6 +19,7 @@ from app.helpers.miscellaneous import (
 
 if TYPE_CHECKING:
     from app.ui.widgets import widget_components
+
     # Forward reference to the main FrameWorker orchestrator
     from .frame_worker import FrameWorker
 
@@ -26,30 +27,31 @@ if TYPE_CHECKING:
 class VRProcessor:
     """
     Handles all VR180/360 specific operations.
-    Delegates back to the main FrameWorker for standard pipeline operations 
+    Delegates back to the main FrameWorker for standard pipeline operations
     (swap_core, recognition, UI state) to guarantee thread safety.
     """
+
     def __init__(self, worker: "FrameWorker"):
         self.worker = worker
-        
+
         # VR specific constants
         self.VR_PERSPECTIVE_RENDER_SIZE: int = 512
-        self.VR_FOV_SCALE_FACTOR: float = 1.5 
-        
+        self.VR_FOV_SCALE_FACTOR: float = 1.5
+
         # VR converter caches (VR-08 & Improvement K)
         self._vr_converter: EquirectangularConverter | None = None
         self._vr_frame_size: tuple[int, int] | None = None
-        
+
         self._vr_p2e_converter: PerspectiveConverter | None = None
         self._vr_p2e_frame_size: tuple[int, int] | None = None
-        
+
         # VR tracking state
         self.last_detected_faces_vr: list[dict[str, Any]] = []
         self.last_processed_frame_number_vr: int = -1
-        
+
         # VRAM Management: periodic CUDA allocator flush counter
         self._vr_processed_count: int = 0
-        
+
         # Dirty-check cache for scaling transforms to prevent redundant recreations
         self._last_vr_scaling_control: dict[str, Any] | None = None
 
@@ -397,7 +399,9 @@ class VRProcessor:
             ):
                 # Fallback mask logic
                 persp_final_combined_mask_1x512x512_float_for_paste = (
-                    t512_mask(self.worker.get_border_mask(parameters_for_face.data)[0]).float()
+                    t512_mask(
+                        self.worker.get_border_mask(parameters_for_face.data)[0]
+                    ).float()
                     if swap_button_is_checked_global
                     else torch.zeros(
                         (1, 512, 512),
@@ -418,7 +422,9 @@ class VRProcessor:
                 )
 
                 if parameters_for_face.get("BordermaskEnableToggle", False):
-                    border_mask_128, _ = self.worker.get_border_mask(parameters_for_face.data)
+                    border_mask_128, _ = self.worker.get_border_mask(
+                        parameters_for_face.data
+                    )
                     border_mask_512 = t512_mask(border_mask_128)
                     persp_final_combined_mask_1x512x512_float_for_paste *= (
                         border_mask_512
@@ -444,7 +450,7 @@ class VRProcessor:
                 512,
                 perspective_crop_torch_rgb_uint8.device,
             )
-            
+
             # Bug 5 fix: use align_corners=True to match the E2P/P2E projection convention.
             # Previously align_corners=False introduced a sub-pixel shift (~0.2% for 512px)
             # at the face-paste step, causing slight misalignment at crop boundaries.
@@ -498,7 +504,7 @@ class VRProcessor:
                     and kps_all_for_editor_on_crop.size > 0
                 ):
                     processed_crop_torch_rgb_uint8 = (
-                        self.worker.function_worker.frame_edits.swap_edit_face_core(
+                        self.worker.function_worker.swap_edit_face_core(
                             processed_crop_torch_rgb_uint8,
                             processed_crop_torch_rgb_uint8,
                             parameters_for_face.data,
@@ -518,7 +524,7 @@ class VRProcessor:
                             kps_all_on_crop_param is not None
                         )  # guarded by outer landmark check
                         processed_crop_torch_rgb_uint8 = (
-                            self.worker.function_worker.frame_edits.swap_edit_face_core_makeup(
+                            self.worker.function_worker.swap_edit_face_core_makeup(
                                 processed_crop_torch_rgb_uint8,
                                 kps_all_on_crop_param,
                                 parameters_for_face.data,
@@ -543,8 +549,12 @@ class VRProcessor:
         - Stitching back
         """
         # FW-RACE-02: read from snapshotted feeder state instead of live Qt button
-        swap_button_is_checked_global = self.worker.main_window.swapfacesButton.isChecked()
-        edit_button_is_checked_global = self.worker.main_window.editFacesButton.isChecked()
+        swap_button_is_checked_global = (
+            self.worker.main_window.swapfacesButton.isChecked()
+        )
+        edit_button_is_checked_global = (
+            self.worker.main_window.editFacesButton.isChecked()
+        )
 
         # VR-08: cache the EquirectangularConverter instance at worker level.
         # When the frame size is unchanged (common for video), reuse the cached
@@ -864,7 +874,9 @@ class VRProcessor:
         analyzed_faces_for_vr = []
         # Crops for detected faces that had no matching target — shown as-is in compare/mask mode
         unmatched_compare_crops: list[torch.Tensor] = []
-        compare_mode_vr_early = self.worker.is_view_face_mask or self.worker.is_view_face_compare
+        compare_mode_vr_early = (
+            self.worker.is_view_face_mask or self.worker.is_view_face_compare
+        )
 
         # Phase 1: extract all perspective crops and run landmark detection.
         # Failures are kept (kps_on_crop=None) so Phase 2 can attempt to fill them
@@ -1075,7 +1087,7 @@ class VRProcessor:
                     with self.worker.models_processor.model_lock:
                         if (
                             best_target_button_vr.assigned_kv_map is None
-                        ):  # Double Check inside lock  
+                        ):  # Double Check inside lock
                             best_target_button_vr.calculate_assigned_input_embedding()
 
                 analyzed_faces_for_vr.append(
@@ -1099,7 +1111,9 @@ class VRProcessor:
                     del face_crop_tensor
 
         # Process collected faces
-        compare_mode_active_vr = self.worker.is_view_face_mask or self.worker.is_view_face_compare
+        compare_mode_active_vr = (
+            self.worker.is_view_face_mask or self.worker.is_view_face_compare
+        )
         vr_compare_crops: list[
             tuple[torch.Tensor, torch.Tensor, torch.Tensor | None]
         ] = []
@@ -1178,7 +1192,7 @@ class VRProcessor:
         vr_single_eye_mode = (
             control.get("VR180EyeModeSelection", "Both Eyes") == "Single Eye"
         )
-        
+
         # Improvement K: cache PerspectiveConverter across frames (like E2P converter).
         # PerspectiveConverter only uses img_numpy_rgb_uint8 for its dimensions; the
         # per-frame image content is not stored in the converter itself (stitch_single_perspective

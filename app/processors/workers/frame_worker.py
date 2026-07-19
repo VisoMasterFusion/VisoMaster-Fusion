@@ -201,8 +201,8 @@ class FrameWorker(threading.Thread):
             self.interpolation_block_shift,
         ) = get_scaling_transforms(control_params)
 
-        # Pass relevant transforms to FrameEdits helper
-        self.function_worker.frame_edits.set_transforms(
+        # Pass relevant transforms to FrameEdits helper via the thread-safe facade
+        self.function_worker.set_frame_edits_transforms(
             self.t256_face, self.interpolation_expression_faceeditor_back
         )
 
@@ -593,16 +593,14 @@ class FrameWorker(threading.Thread):
         # --- Common Post-Processing (Enhancers, etc.) ---
         compare_mode_active = self.is_view_face_mask or self.is_view_face_compare
 
-        if control["FrameEnhancerEnableToggle"] and not compare_mode_active:
+        if control.get("FrameEnhancerEnableToggle", False) and not compare_mode_active:
             # Check 5: Before final heavy operation
             if stop_event.is_set():
                 assert img_numpy_rgb_uint8 is not None
                 return img_numpy_rgb_uint8[..., ::-1]
 
-            processed_tensor_rgb_uint8 = (
-                self.function_worker.frame_enhancers.enhance_core(
-                    processed_tensor_rgb_uint8, control=control
-                )
+            processed_tensor_rgb_uint8 = self.function_worker.enhance_core(
+                processed_tensor_rgb_uint8, control=control
             )
 
         final_img_np_rgb_uint8 = (

@@ -33,7 +33,7 @@ class SequentialDetector:
         # Temporal state to bridge ArcFace gaps (profiles, occlusions)
         self._temporal_memory: List[Dict[str, Any]] = []
 
-    def reset_state(self):
+    def reset_state(self) -> None:
         """
         Safely clears all temporal smoothing tracking states and resets the
         underlying ByteTrack tracker. Called when seeking or loading new media.
@@ -50,9 +50,9 @@ class SequentialDetector:
             self._temporal_memory = []
 
         if hasattr(self.main_window, "function_worker") and hasattr(
-            self.main_window.function_worker, "face_detectors"
+            self.main_window.function_worker, "reset_face_tracker"
         ):
-            self.main_window.function_worker.face_detectors.reset_tracker()
+            self.main_window.function_worker.reset_face_tracker()
 
     def run(
         self,

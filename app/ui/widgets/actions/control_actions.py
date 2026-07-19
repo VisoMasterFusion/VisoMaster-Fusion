@@ -22,7 +22,7 @@ from app.ui.widgets.actions import common_actions as common_widget_actions
 
 def handle_face_detector_tracking_reset(main_window: "MainWindow", value: bool) -> None:
     """Resets the tracker instance when tracking is toggled or media changes."""
-    main_window.function_worker.face_detectors.reset_tracker()
+    main_window.function_worker.reset_face_tracker()
     # When ByteTrack is disabled, reset its child toggle so it doesn't stay True
     # while hidden (parentToggle mechanism only hides the widget, it doesn't reset the value).
     if not value:
@@ -195,14 +195,14 @@ def handle_denoiser_state_change(
             print(
                 "[INFO] Exclusive path is inactive. Ensuring KV Extractor is unloaded."
             )
-            main_window.function_worker.face_denoiser.unload_kv_extractor()
+            main_window.function_worker.unload_denoiser_kv_extractor()
     else:
         # If NO denoiser pass will be active, aggressively free VRAM.
         print(
             "[INFO] All denoiser passes are inactive. Unloading all denoiser-related models."
         )
-        main_window.function_worker.face_denoiser.unload_models()
-        main_window.function_worker.face_denoiser.unload_kv_extractor()
+        main_window.function_worker.unload_denoiser_models()
+        main_window.function_worker.unload_denoiser_kv_extractor()
 
     # 5. Update UI visibility for the specific pass that was just toggled.
     pass_suffix_to_update = None
@@ -781,7 +781,7 @@ def apply_face_reaging(main_window: "MainWindow", *_args) -> None:
             try:
                 aged_hwc = aged_chw.permute(1, 2, 0).cpu().numpy()
                 pil_img = Image.fromarray(aged_hwc)
-                with function_worker.face_denoiser.kv_extraction_lock:
+                with function_worker.denoiser_kv_extraction_lock:
                     kv_map = function_worker.get_kv_map_for_face(pil_img)
                 target_face.aged_kv_map = kv_map
             except Exception as e_kv:

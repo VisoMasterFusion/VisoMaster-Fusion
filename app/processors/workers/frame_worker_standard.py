@@ -16,7 +16,6 @@ from app.helpers.miscellaneous import (
 )
 
 if TYPE_CHECKING:
-    from app.ui.widgets import widget_components
     # Forward reference to the main FrameWorker orchestrator
     from .frame_worker import FrameWorker
 
@@ -27,6 +26,7 @@ class StandardProcessor:
     Delegates back to the main FrameWorker for pipeline execution (swap_core),
     matching, and shared VRAM caches to guarantee thread safety.
     """
+
     def __init__(self, worker: "FrameWorker"):
         self.worker = worker
 
@@ -44,8 +44,12 @@ class StandardProcessor:
         - Overlays (BBox, Landmarks, Comparison)
         """
         # FW-RACE-02: read button state from snapshotted feeder dict, not live Qt buttons
-        swap_button_is_checked_global = self.worker.main_window.swapfacesButton.isChecked()
-        edit_button_is_checked_global = self.worker.main_window.editFacesButton.isChecked()
+        swap_button_is_checked_global = (
+            self.worker.main_window.swapfacesButton.isChecked()
+        )
+        edit_button_is_checked_global = (
+            self.worker.main_window.editFacesButton.isChecked()
+        )
 
         # FW-RACE-01: snapshot target_faces under lock so the worker thread never
         # iterates the live dict while the UI thread may be modifying it.
@@ -65,7 +69,7 @@ class StandardProcessor:
                 new_h, new_w = int(512 * img_h / img_w), 512
             else:
                 new_h, new_w = 512, int(512 * img_w / img_h)
-            
+
             # FW-ROBUST-2: respect the user's interpolation setting rather than
             # always using the default (NEAREST / BILINEAR depending on build)
             # FW-PERF-08 / FW-MEM-02: LRU-bounded cache of v2.Resize objects to avoid
@@ -83,13 +87,15 @@ class StandardProcessor:
                 )
             img = self.worker._resize_cache[_up_key](img)
             scale_applied = True
-            
+
             # Upscale Feeder KPS if necessary
             if self.worker.precomputed_bboxes is not None:
                 ratio_w = new_w / img_w
                 ratio_h = new_h / img_h
 
-                self.worker.precomputed_bboxes = [b.copy() for b in self.worker.precomputed_bboxes]
+                self.worker.precomputed_bboxes = [
+                    b.copy() for b in self.worker.precomputed_bboxes
+                ]
                 for b in self.worker.precomputed_bboxes:
                     b[0] *= ratio_w
                     b[2] *= ratio_w
@@ -145,7 +151,8 @@ class StandardProcessor:
 
         # FW-ARCH-FIX: Flag to know if faces were vetted by the Sequential Detector
         is_sequentially_tracked = (
-            self.worker.precomputed_bboxes is not None and self.worker.precomputed_kpss_5 is not None
+            self.worker.precomputed_bboxes is not None
+            and self.worker.precomputed_kpss_5 is not None
         )
 
         if is_sequentially_tracked:
@@ -254,7 +261,7 @@ class StandardProcessor:
                                     use_mean_eyes=control.get(
                                         "LandmarkMeanEyesToggle", False
                                     ),
-                                    from_points=True, 
+                                    from_points=True,
                                 )
                             )
                             kps_203_local = (
@@ -289,14 +296,19 @@ class StandardProcessor:
                         kpss_list.append(kpss_203[idx])
                     else:
                         # Respects the UI toggle state for standard UI landmarks
-                        lm_std_5, lm_std, _ = self.worker.function_worker.run_detect_landmark(
-                            img,
-                            bboxes[idx],
-                            kpss_5[idx],
-                            detect_mode=landmark_mode,
-                            score=control.get("LandmarkDetectScoreSlider", 50) / 100.0,
-                            use_mean_eyes=control.get("LandmarkMeanEyesToggle", False),
-                            from_points=from_points,
+                        lm_std_5, lm_std, _ = (
+                            self.worker.function_worker.run_detect_landmark(
+                                img,
+                                bboxes[idx],
+                                kpss_5[idx],
+                                detect_mode=landmark_mode,
+                                score=control.get("LandmarkDetectScoreSlider", 50)
+                                / 100.0,
+                                use_mean_eyes=control.get(
+                                    "LandmarkMeanEyesToggle", False
+                                ),
+                                from_points=from_points,
+                            )
                         )
 
                         if len(lm_std) > 0:
@@ -325,7 +337,7 @@ class StandardProcessor:
                 if not is_detected_face_eligible_for_matching(
                     kpss_5[i], _bbox_i, self.worker._MIN_FACE_PIXELS
                 ):
-                    continue 
+                    continue
 
                 similarity_type = str("Auto")
                 face_emb, _ = self.worker.function_worker.run_recognize_direct(
@@ -350,7 +362,7 @@ class StandardProcessor:
                         else None,
                         "original_face": None,
                         "swap_mask": None,
-                        "matched_target": None, 
+                        "matched_target": None,
                     }
                 )
 
@@ -365,7 +377,9 @@ class StandardProcessor:
 
                     # FW-ROBUST-04: use .get() with default_parameters as fallback
                     with self.worker.lock:
-                        _default_params = dict(self.worker.main_window.default_parameters.data)
+                        _default_params = dict(
+                            self.worker.main_window.default_parameters.data
+                        )
                     # FIX: Force face_id as string to prevent silent parameter fallback
                     face_id_str = str(target_face.face_id)
                     params = ParametersDict(
@@ -410,9 +424,7 @@ class StandardProcessor:
                             and target_face.assigned_input_faces
                         ):
                             with self.worker.models_processor.model_lock:
-                                if (
-                                    target_face.assigned_kv_map is None
-                                ): 
+                                if target_face.assigned_kv_map is None:
                                     target_face.calculate_assigned_input_embedding()
 
                         # --- MORPHING: Swap Only Best Match ---
@@ -439,7 +451,7 @@ class StandardProcessor:
                         best_fface["kps_5"] = keypoints_adjustments(
                             best_fface["kps_5"],
                             cast(dict, params),
-                            source_kps=source_kps, 
+                            source_kps=source_kps,
                         )
 
                         s_e = None
@@ -504,14 +516,14 @@ class StandardProcessor:
                                     if best_fface.get("kps_203") is not None
                                     else best_fface.get("kps_5")
                                 )
-                                img = self.worker.function_worker.frame_edits.swap_edit_face_core_makeup(
+                                img = self.worker.function_worker.swap_edit_face_core_makeup(
                                     img, kps_for_makeup_best, params.data, control
                                 )
                         except Exception as e:
                             print(
                                 f"[ERROR] Standard mode swap_core failed for best face: {e}"
                             )
-                            continue  # Ignore this face but save the frame 
+                            continue  # Ignore this face but save the frame
 
             else:
                 # --- Branch: Swap All Matches ---
@@ -636,7 +648,7 @@ class StandardProcessor:
                                     if fface.get("kps_203") is not None
                                     else fface.get("kps_5")
                                 )
-                                img = self.worker.function_worker.frame_edits.swap_edit_face_core_makeup(
+                                img = self.worker.function_worker.swap_edit_face_core_makeup(
                                     img, kps_for_makeup, params.data, control
                                 )
                         except Exception as e:
@@ -777,7 +789,9 @@ class StandardProcessor:
                 temp_permuted = paint_landmarks_on_image(temp_permuted, landmarks_data)
                 processed_tensor_rgb_uint8 = temp_permuted.permute(2, 0, 1)
 
-        compare_mode_active = self.worker.is_view_face_mask or self.worker.is_view_face_compare
+        compare_mode_active = (
+            self.worker.is_view_face_mask or self.worker.is_view_face_compare
+        )
         if compare_mode_active and det_faces_data_for_display:
             processed_tensor_rgb_uint8 = self.get_compare_faces_image(
                 processed_tensor_rgb_uint8, det_faces_data_for_display, control
@@ -795,7 +809,9 @@ class StandardProcessor:
             cached_tgt = fface_data.get("matched_target")
             if cached_tgt is not None:
                 with self.worker.lock:
-                    _default_params = dict(self.worker.main_window.default_parameters.data)
+                    _default_params = dict(
+                        self.worker.main_window.default_parameters.data
+                    )
                 _face_id_1 = getattr(cached_tgt, "face_id", None)
                 face_specific: dict = cast(
                     dict,
@@ -861,7 +877,9 @@ class StandardProcessor:
             cached_tgt = fface.get("matched_target")
             if cached_tgt is not None:
                 with self.worker.lock:
-                    _default_params = dict(self.worker.main_window.default_parameters.data)
+                    _default_params = dict(
+                        self.worker.main_window.default_parameters.data
+                    )
                 _face_id_2 = getattr(cached_tgt, "face_id", None)
                 face_specific: dict = cast(
                     dict,
@@ -947,7 +965,9 @@ class StandardProcessor:
         Returns:
             CHW uint8 tensor of shape [3, 512, 512].
         """
-        tform = self.worker.get_face_similarity_tform(parameters["SwapModelSelection"], kps_5)
+        tform = self.worker.get_face_similarity_tform(
+            parameters["SwapModelSelection"], kps_5
+        )
 
         M_tensor = (
             torch.from_numpy(cast(np.ndarray, tform.params)[0:2])

@@ -3554,7 +3554,7 @@ class VideoProcessor(QObject):
                 for _start_frame, _end_frame, local_control, _local_params in scan_segments
             )
             if tracking_enabled:
-                self.main_window.function_worker.face_detectors.reset_tracker()
+                self.main_window.function_worker.reset_face_tracker()
             previous_segment_tracking_enabled: Optional[bool] = None
             previous_segment_bytetrack_config = None
 
@@ -3617,7 +3617,7 @@ class VideoProcessor(QObject):
                     and current_segment_bytetrack_config
                     != previous_segment_bytetrack_config
                 ):
-                    self.main_window.function_worker.face_detectors.reset_tracker()
+                    self.main_window.function_worker.reset_face_tracker()
                     self._reset_issue_scan_sequential_state()
                 match_context = self._prepare_issue_scan_match_context(
                     local_control, local_params, target_faces_snapshot
@@ -3741,7 +3741,7 @@ class VideoProcessor(QObject):
             )
 
             if tracking_enabled:
-                self.main_window.function_worker.face_detectors.reset_tracker()
+                self.main_window.function_worker.reset_face_tracker()
             self.current_frame_number = (
                 reset_frame_number
                 if reset_frame_number is not None

@@ -966,7 +966,7 @@ class TargetFaceCardButton(CardButton):
                     if not input_face_button:
                         continue
 
-                    with main_window.function_worker.face_denoiser.kv_extraction_lock:
+                    with main_window.function_worker.denoiser_kv_extraction_lock:
                         if (
                             hasattr(input_face_button, "kv_map")
                             and input_face_button.kv_map is not None
@@ -1012,7 +1012,7 @@ class TargetFaceCardButton(CardButton):
 
                 # Cleanup: Unload the extractor once the batch is fully processed
                 if extracted_new_kv:
-                    main_window.function_worker.face_denoiser.unload_kv_extractor()
+                    main_window.function_worker.unload_denoiser_kv_extractor()
 
             # 3. Merge all collected KV Maps and strictly enforce VRAM localization
             if all_kv_maps:
@@ -1928,7 +1928,7 @@ class CreateEmbeddingDialog(QtWidgets.QDialog):
             try:
                 extracted_new_kv = False
                 for input_face in self.selected_faces:
-                    with self.main_window.function_worker.face_denoiser.kv_extraction_lock:
+                    with self.main_window.function_worker.denoiser_kv_extraction_lock:
                         # Check Cache first
                         if (
                             hasattr(input_face, "kv_map")
@@ -1966,7 +1966,7 @@ class CreateEmbeddingDialog(QtWidgets.QDialog):
 
                 # Cleanup: Unload the extractor once the batch is fully processed
                 if extracted_new_kv:
-                    self.main_window.function_worker.face_denoiser.unload_kv_extractor()
+                    self.main_window.function_worker.unload_denoiser_kv_extractor()
 
                 # Enforce VRAM localization for created embeddings without merging them
                 if all_kv_maps:

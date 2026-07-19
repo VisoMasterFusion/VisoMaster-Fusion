@@ -15,7 +15,6 @@ import kornia.geometry.transform as kgm
 from app.processors.utils import faceutil
 
 if TYPE_CHECKING:
-    from app.ui.widgets import widget_components
     # Forward reference to the main FrameWorker orchestrator
     from .frame_worker import FrameWorker
 
@@ -25,25 +24,30 @@ class PipelineProcessor:
     Handles the heavy tensor operations, model inference, and VRAM management.
     Operates strictly within the CUDA stream and thread context of its parent FrameWorker.
     """
+
     def __init__(self, worker: "FrameWorker"):
         self.worker = worker
-        
+
         # Q-QUAL-03: EMA alpha for AutoColor reference statistics
         self._COLOR_EMA_ALPHA: float = 0.30
-        
+
         # FW-MEM-01: Gabor kernel cache as strictly typed LRU-bounded OrderedDict
-        self._gabor_kernels_expanded_cache: OrderedDict[tuple, torch.Tensor] = OrderedDict()
+        self._gabor_kernels_expanded_cache: OrderedDict[tuple, torch.Tensor] = (
+            OrderedDict()
+        )
         self._gabor_kernels_cache: OrderedDict[tuple, torch.Tensor] = OrderedDict()
-        
+
         # Q-QUAL-03: EMA over per-face AutoColor reference statistics to reduce flicker.
-        self._color_stats_ema: OrderedDict[bytes, dict[str, torch.Tensor]] = OrderedDict()
+        self._color_stats_ema: OrderedDict[bytes, dict[str, torch.Tensor]] = (
+            OrderedDict()
+        )
         self._COLOR_STATS_EMA_MAX: int = 32
-        
+
         # OPTIMIZATION: Cached Convolution Kernels (VRAM)
         self._kernel_lap: torch.Tensor | None = None
         self._kernel_sobel_x: torch.Tensor | None = None
         self._kernel_sobel_y: torch.Tensor | None = None
-        
+
         self._mouth_action_score: float = 0.0
 
     @property
@@ -273,11 +277,21 @@ class PipelineProcessor:
             _s_latent_np = self.worker.function_worker.calc_inswapper_latent(s_e)
             _t_latent_np = self.worker.function_worker.calc_inswapper_latent(t_e)
             if _s_latent_np is None or _t_latent_np is None:
-                print("[ERROR] calc_inswapper_latent returned None (emap unavailable). Skipping swap.")
+                print(
+                    "[ERROR] calc_inswapper_latent returned None (emap unavailable). Skipping swap."
+                )
                 return input_face_affined, dfm_model_instance, dim, latent
-            
-            latent = torch.from_numpy(_s_latent_np).float().to(self.worker.models_processor.device)
-            dst_latent = torch.from_numpy(_t_latent_np).float().to(self.worker.models_processor.device)
+
+            latent = (
+                torch.from_numpy(_s_latent_np)
+                .float()
+                .to(self.worker.models_processor.device)
+            )
+            dst_latent = (
+                torch.from_numpy(_t_latent_np)
+                .float()
+                .to(self.worker.models_processor.device)
+            )
 
             latent = self._apply_likeness(latent, dst_latent, parameters)
 
@@ -310,16 +324,43 @@ class PipelineProcessor:
                     input_face_affined = original_face_512
 
         # --- InStyleSwapper Logic ---
-        elif swapper_model in ("InStyleSwapper256 Version A", "InStyleSwapper256 Version B", "InStyleSwapper256 Version C"):
+        elif swapper_model in (
+            "InStyleSwapper256 Version A",
+            "InStyleSwapper256 Version B",
+            "InStyleSwapper256 Version C",
+        ):
             version = swapper_model[-1]
-            latent = torch.from_numpy(self.worker.function_worker.calc_swapper_latent_iss(s_e, version)).float().to(self.worker.models_processor.device)
-            dst_latent = torch.from_numpy(self.worker.function_worker.calc_swapper_latent_iss(t_e, version)).float().to(self.worker.models_processor.device)
+            latent = (
+                torch.from_numpy(
+                    self.worker.function_worker.calc_swapper_latent_iss(s_e, version)
+                )
+                .float()
+                .to(self.worker.models_processor.device)
+            )
+            dst_latent = (
+                torch.from_numpy(
+                    self.worker.function_worker.calc_swapper_latent_iss(t_e, version)
+                )
+                .float()
+                .to(self.worker.models_processor.device)
+            )
 
             latent = self._apply_likeness(latent, dst_latent, parameters)
 
-            if ((parameters["SwapModelSelection"] == "InStyleSwapper256 Version A" and parameters["InStyleResAEnableToggle"]) or 
-                (parameters["SwapModelSelection"] == "InStyleSwapper256 Version B" and parameters["InStyleResBEnableToggle"]) or 
-                (parameters["SwapModelSelection"] == "InStyleSwapper256 Version C" and parameters["InStyleResCEnableToggle"])):
+            if (
+                (
+                    parameters["SwapModelSelection"] == "InStyleSwapper256 Version A"
+                    and parameters["InStyleResAEnableToggle"]
+                )
+                or (
+                    parameters["SwapModelSelection"] == "InStyleSwapper256 Version B"
+                    and parameters["InStyleResBEnableToggle"]
+                )
+                or (
+                    parameters["SwapModelSelection"] == "InStyleSwapper256 Version C"
+                    and parameters["InStyleResCEnableToggle"]
+                )
+            ):
                 dim = 4
                 input_face_affined = original_face_512
             else:
@@ -328,8 +369,20 @@ class PipelineProcessor:
 
         # --- SimSwap Logic ---
         elif swapper_model == "SimSwap512":
-            latent = torch.from_numpy(self.worker.function_worker.calc_swapper_latent_simswap512(s_e)).float().to(self.worker.models_processor.device)
-            dst_latent = torch.from_numpy(self.worker.function_worker.calc_swapper_latent_simswap512(t_e)).float().to(self.worker.models_processor.device)
+            latent = (
+                torch.from_numpy(
+                    self.worker.function_worker.calc_swapper_latent_simswap512(s_e)
+                )
+                .float()
+                .to(self.worker.models_processor.device)
+            )
+            dst_latent = (
+                torch.from_numpy(
+                    self.worker.function_worker.calc_swapper_latent_simswap512(t_e)
+                )
+                .float()
+                .to(self.worker.models_processor.device)
+            )
 
             latent = self._apply_likeness(latent, dst_latent, parameters)
             dim = 4
@@ -338,8 +391,20 @@ class PipelineProcessor:
         # --- GhostFace Logic ---
         # FW-QUAL-10: use GHOSTFACE_MODELS frozenset
         elif swapper_model in self.worker.GHOSTFACE_MODELS:
-            latent = torch.from_numpy(self.worker.function_worker.calc_swapper_latent_ghost(s_e)).float().to(self.worker.models_processor.device)
-            dst_latent = torch.from_numpy(self.worker.function_worker.calc_swapper_latent_ghost(t_e)).float().to(self.worker.models_processor.device)
+            latent = (
+                torch.from_numpy(
+                    self.worker.function_worker.calc_swapper_latent_ghost(s_e)
+                )
+                .float()
+                .to(self.worker.models_processor.device)
+            )
+            dst_latent = (
+                torch.from_numpy(
+                    self.worker.function_worker.calc_swapper_latent_ghost(t_e)
+                )
+                .float()
+                .to(self.worker.models_processor.device)
+            )
 
             latent = self._apply_likeness(latent, dst_latent, parameters)
             dim = 2
@@ -347,8 +412,20 @@ class PipelineProcessor:
 
         # --- CSCS Logic ---
         elif swapper_model == "CSCS":
-            latent = torch.from_numpy(self.worker.function_worker.calc_swapper_latent_cscs(s_e)).float().to(self.worker.models_processor.device)
-            dst_latent = torch.from_numpy(self.worker.function_worker.calc_swapper_latent_cscs(t_e)).float().to(self.worker.models_processor.device)
+            latent = (
+                torch.from_numpy(
+                    self.worker.function_worker.calc_swapper_latent_cscs(s_e)
+                )
+                .float()
+                .to(self.worker.models_processor.device)
+            )
+            dst_latent = (
+                torch.from_numpy(
+                    self.worker.function_worker.calc_swapper_latent_cscs(t_e)
+                )
+                .float()
+                .to(self.worker.models_processor.device)
+            )
 
             latent = self._apply_likeness(latent, dst_latent, parameters)
             dim = 2
@@ -358,10 +435,13 @@ class PipelineProcessor:
         elif swapper_model == "DeepFaceLive (DFM)" and dfm_model_name:
             # Explicitly notify FaceSwappers to unload the previous ONNX model
             # This prevents VRAM leaks when switching to heavy DFM models.
-            self.worker.function_worker.face_swappers._manage_model("DeepFaceLive (DFM)")
-            self.worker.function_worker.face_swappers.current_swapper_model = "DeepFaceLive (DFM)"
+            self.worker.function_worker.manage_dfm_swapper_model_state(
+                "DeepFaceLive (DFM)"
+            )
 
-            dfm_model_instance = self.worker.models_processor.load_dfm_model(dfm_model_name)
+            dfm_model_instance = self.worker.models_processor.load_dfm_model(
+                dfm_model_name
+            )
             # FIX: Attach the filename to the instance so we can robustly extract its resolution later
             if dfm_model_instance is not None:
                 dfm_model_instance._dfm_filename_fallback = dfm_model_name
@@ -667,7 +747,11 @@ class PipelineProcessor:
                         torch.cuda.current_stream().synchronize()
 
                     for idx, (j, i) in enumerate(tile_coords):
-                        res = tile_inputs[idx] if tile_outputs[idx].sum() < 1.0 else tile_outputs[idx]
+                        res = (
+                            tile_inputs[idx]
+                            if tile_outputs[idx].sum() < 1.0
+                            else tile_outputs[idx]
+                        )
                         temp_output[j::dim, i::dim] = res.squeeze(0).permute(1, 2, 0)
 
                     # --- MODE 2 ---
@@ -676,14 +760,20 @@ class PipelineProcessor:
                         if k == 0:
                             first_pass_face = curr_chw.clone()
                         else:
-                            curr_chw = self._fix_drift_and_texture(curr_chw, first_pass_face)
+                            curr_chw = self._fix_drift_and_texture(
+                                curr_chw, first_pass_face
+                            )
                             temp_output = curr_chw.permute(1, 2, 0)
 
                     input_face_affined = temp_output
                     output = torch.clamp(temp_output * 255.0, 0, 255)
 
         # --- InStyleSwapper Path ---
-        elif swapper_model in ("InStyleSwapper256 Version A", "InStyleSwapper256 Version B", "InStyleSwapper256 Version C"):
+        elif swapper_model in (
+            "InStyleSwapper256 Version A",
+            "InStyleSwapper256 Version B",
+            "InStyleSwapper256 Version C",
+        ):
             version = swapper_model[-1]
             dim_res = dim // 2
             for k in range(itex):
@@ -712,8 +802,14 @@ class PipelineProcessor:
                     torch.cuda.current_stream().synchronize()
 
                 for idx, (j, i) in enumerate(tile_coords):
-                    res = tile_inputs[idx] if tile_outputs[idx].sum() < 1.0 else tile_outputs[idx]
-                    temp_output[j::dim_res, i::dim_res] = res.squeeze(0).permute(1, 2, 0)
+                    res = (
+                        tile_inputs[idx]
+                        if tile_outputs[idx].sum() < 1.0
+                        else tile_outputs[idx]
+                    )
+                    temp_output[j::dim_res, i::dim_res] = res.squeeze(0).permute(
+                        1, 2, 0
+                    )
 
                 # --- MODE 2 ---
                 if use_mode_2:
@@ -721,7 +817,9 @@ class PipelineProcessor:
                     if k == 0:
                         first_pass_face = curr_chw.clone()
                     else:
-                        curr_chw = self._fix_drift_and_texture(curr_chw, first_pass_face)
+                        curr_chw = self._fix_drift_and_texture(
+                            curr_chw, first_pass_face
+                        )
                         temp_output = curr_chw.permute(1, 2, 0)
 
                 input_face_affined = temp_output
@@ -732,12 +830,18 @@ class PipelineProcessor:
             for k in range(itex):
                 # Zero-clone optimization: Model generates a fresh tensor
                 prev_face = input_face_affined
-                input_face_disc = input_face_affined.permute(2, 0, 1).unsqueeze(0).contiguous()
+                input_face_disc = (
+                    input_face_affined.permute(2, 0, 1).unsqueeze(0).contiguous()
+                )
                 swapper_output = torch.empty(
-                    (1, 3, 512, 512), dtype=torch.float32, device=self.worker.models_processor.device
+                    (1, 3, 512, 512),
+                    dtype=torch.float32,
+                    device=self.worker.models_processor.device,
                 ).contiguous()
 
-                self.worker.function_worker.run_swapper_simswap512(input_face_disc, latent, swapper_output)
+                self.worker.function_worker.run_swapper_simswap512(
+                    input_face_disc, latent, swapper_output
+                )
                 if self.worker.models_processor.device_type == "cuda":
                     torch.cuda.current_stream().synchronize()
 
@@ -751,7 +855,9 @@ class PipelineProcessor:
                     if k == 0:
                         first_pass_face = swapper_output.clone()
                     else:
-                        swapper_output = self._fix_drift_and_texture(swapper_output, first_pass_face)
+                        swapper_output = self._fix_drift_and_texture(
+                            swapper_output, first_pass_face
+                        )
 
                 swapper_output_hwc = swapper_output.permute(1, 2, 0)
                 input_face_affined = swapper_output_hwc
@@ -766,10 +872,14 @@ class PipelineProcessor:
                 # Model-specific preprocessing (Normalizing to [-1, 1])
                 input_face_disc = torch.mul(input_face_affined, 255.0).permute(2, 0, 1)
                 input_face_disc = torch.div(input_face_disc.float(), 127.5)
-                input_face_disc = torch.sub(input_face_disc, 1).unsqueeze(0).contiguous()
+                input_face_disc = (
+                    torch.sub(input_face_disc, 1).unsqueeze(0).contiguous()
+                )
 
                 swapper_output = torch.empty(
-                    (1, 3, 256, 256), dtype=torch.float32, device=self.worker.models_processor.device
+                    (1, 3, 256, 256),
+                    dtype=torch.float32,
+                    device=self.worker.models_processor.device,
                 ).contiguous()
 
                 self.worker.function_worker.run_swapper_ghostface(
@@ -794,7 +904,9 @@ class PipelineProcessor:
                     if k == 0:
                         first_pass_face = curr_chw.clone()
                     else:
-                        curr_chw = self._fix_drift_and_texture(curr_chw, first_pass_face)
+                        curr_chw = self._fix_drift_and_texture(
+                            curr_chw, first_pass_face
+                        )
 
                     input_face_affined = curr_chw.permute(1, 2, 0)
                     output = torch.clamp(input_face_affined * 255.0, 0, 255)
@@ -816,10 +928,14 @@ class PipelineProcessor:
                 input_face_disc = input_face_disc.unsqueeze(0).contiguous()
 
                 swapper_output = torch.empty(
-                    (1, 3, 256, 256), dtype=torch.float32, device=self.worker.models_processor.device
+                    (1, 3, 256, 256),
+                    dtype=torch.float32,
+                    device=self.worker.models_processor.device,
                 ).contiguous()
 
-                self.worker.function_worker.run_swapper_cscs(input_face_disc, latent, swapper_output)
+                self.worker.function_worker.run_swapper_cscs(
+                    input_face_disc, latent, swapper_output
+                )
                 if self.worker.models_processor.device_type == "cuda":
                     torch.cuda.current_stream().synchronize()
 
@@ -831,7 +947,9 @@ class PipelineProcessor:
                     if k == 0:
                         first_pass_face = swapper_output.clone()
                     else:
-                        swapper_output = self._fix_drift_and_texture(swapper_output, first_pass_face)
+                        swapper_output = self._fix_drift_and_texture(
+                            swapper_output, first_pass_face
+                        )
 
                     input_face_affined = swapper_output.permute(1, 2, 0)
                     output = torch.clamp(input_face_affined * 255.0, 0, 255)
@@ -868,7 +986,10 @@ class PipelineProcessor:
                 if found_res:
                     dfm_res = found_res
                 elif hasattr(dfm_model, "_dfm_filename_fallback"):
-                    match = re.search(r"(128|192|224|256|320|384|448|512)", dfm_model._dfm_filename_fallback)
+                    match = re.search(
+                        r"(128|192|224|256|320|384|448|512)",
+                        dfm_model._dfm_filename_fallback,
+                    )
                     if match:
                         dfm_res = int(match.group(1))
                 # Cache it for all future frames
@@ -890,14 +1011,18 @@ class PipelineProcessor:
                 if self.worker.models_processor.device_type == "cuda":
                     torch.cuda.current_stream().synchronize()
                 out_celeb, _, _ = dfm_model.convert(
-                    dfm_input, parameters["DFMAmpMorphSlider"] / 100, rct=parameters["DFMRCTColorToggle"]
+                    dfm_input,
+                    parameters["DFMAmpMorphSlider"] / 100,
+                    rct=parameters["DFMRCTColorToggle"],
                 )
 
             if isinstance(out_celeb, np.ndarray):
                 out_celeb = torch.from_numpy(out_celeb).to(original_face_512.device)
 
             if getattr(out_celeb, "ndim", 0) != 3 or out_celeb.shape[2] != 3:
-                print(f"[WARN] DFM output shape unexpected: {out_celeb.shape}. Proceeding anyway.")
+                print(
+                    f"[WARN] DFM output shape unexpected: {out_celeb.shape}. Proceeding anyway."
+                )
 
             # Standardize output scale
             if out_celeb.max() > 2.0:
@@ -912,17 +1037,23 @@ class PipelineProcessor:
 
         # Quality check: Alert if output is abnormally dark (potential VRAM/Model issue)
         if output.abs().max() < 30.0:
-            print("[WARN] Swap model output near-zero for face — possible VRAM pressure")
+            print(
+                "[WARN] Swap model output near-zero for face — possible VRAM pressure"
+            )
 
         # Prepare final CHW tensor and resize back to canonical template size (512)
         output = output.permute(2, 0, 1)
-        assert self.worker.t512 is not None, "t512 transform must be initialized before swapping"
+        assert self.worker.t512 is not None, (
+            "t512 transform must be initialized before swapping"
+        )
         swap = self.worker.t512(output)
         return swap, prev_face
 
     def get_border_mask(self, parameters):
         """Creates the border fade mask based on sliders."""
-        border_mask = torch.ones((128, 128), dtype=torch.float32, device=self.worker.models_processor.device)
+        border_mask = torch.ones(
+            (128, 128), dtype=torch.float32, device=self.worker.models_processor.device
+        )
         border_mask = torch.unsqueeze(border_mask, 0)
 
         if not parameters.get("BordermaskEnableToggle", False):
@@ -953,7 +1084,9 @@ class PipelineProcessor:
             border_mask = gauss(border_mask)
         return border_mask, border_mask_calc
 
-    def get_dynamic_side_mask(self, yaw_deg, pitch_deg, height, width, device, parameters, kps_5, tform):
+    def get_dynamic_side_mask(
+        self, yaw_deg, pitch_deg, height, width, device, parameters, kps_5, tform
+    ):
         """
         Smart Profile Masking:
         Instead of a blind gradient, this uses the projected eye positions to ensure
@@ -993,18 +1126,31 @@ class PipelineProcessor:
                 # Looking Left -> Mask Right side
                 fade_start = min(1.0, re_x_norm + eye_safety_margin)
                 if fade_start < 0.95:
-                    grad_yaw = torch.clamp((linspace_x - fade_start) / (1.0 - fade_start), 0, 1)
+                    grad_yaw = torch.clamp(
+                        (linspace_x - fade_start) / (1.0 - fade_start), 0, 1
+                    )
                     grad_yaw = 1.0 - grad_yaw
                     mask_r = torch.ones_like(linspace_x)
-                    mask_r[linspace_x > fade_start] = 1.0 - ((linspace_x[linspace_x > fade_start] - fade_start) / (1.0 - fade_start))
+                    mask_r[linspace_x > fade_start] = 1.0 - (
+                        (linspace_x[linspace_x > fade_start] - fade_start)
+                        / (1.0 - fade_start)
+                    )
                     grad_yaw = 1.0 - (1.0 - mask_r) * strength_yaw
                     mask = mask * grad_yaw
         return mask
 
     def _apply_restorer_with_auto(
-        self, swap: torch.Tensor, swap2: torch.Tensor, swap_original2: torch.Tensor,
-        original_face_512: torch.Tensor, mask_forcalc_512: torch.Tensor,
-        parameters: dict, tform_scale: float, debug: bool, debug_info: dict, slot_id: int
+        self,
+        swap: torch.Tensor,
+        swap2: torch.Tensor,
+        swap_original2: torch.Tensor,
+        original_face_512: torch.Tensor,
+        mask_forcalc_512: torch.Tensor,
+        parameters: dict,
+        tform_scale: float,
+        debug: bool,
+        debug_info: dict,
+        slot_id: int,
     ) -> torch.Tensor:
         """
         FW-QUAL-01/02: Shared helper for Restoration-2 auto-blend logic.
@@ -1034,14 +1180,24 @@ class PipelineProcessor:
             adjust_sharpness2 = float(parameters["FaceRestorerAutoSharpAdjust2Slider"])
             scale_factor2 = round(tform_scale, 2)
             automasktoggle2 = parameters["FaceRestorerAutoMask2EnableToggle"]
-            automaskadjust2 = parameters["FaceRestorerAutoSharpMask2AdjustDecimalSlider"]
+            automaskadjust2 = parameters[
+                "FaceRestorerAutoSharpMask2AdjustDecimalSlider"
+            ]
             automaskblur2 = 2
             restore_mask = mask_forcalc_512.clone()
 
             alpha_auto2, blur_value2 = self.face_restorer_auto(
-                original_face_512.clone(), swap_original2.clone(), swap2,
-                alpha_restorer2, adjust_sharpness2, scale_factor2, debug,
-                restore_mask, automasktoggle2, automaskadjust2, automaskblur2,
+                original_face_512.clone(),
+                swap_original2.clone(),
+                swap2,
+                alpha_restorer2,
+                adjust_sharpness2,
+                scale_factor2,
+                debug,
+                restore_mask,
+                automasktoggle2,
+                automaskadjust2,
+                automaskblur2,
             )
 
             if blur_value2 > 0:
@@ -1062,11 +1218,17 @@ class PipelineProcessor:
                     debug_info[debug_key] = f": {alpha_auto2 * 100:.2f}"
         else:
             alpha_restorer2 = float(parameters["FaceRestorerBlend2Slider"]) / 100.0
-            swap = torch.lerp(swap_original2.float(), swap2.float(), alpha_restorer2).to(swap2.dtype).contiguous()
+            swap = (
+                torch.lerp(swap_original2.float(), swap2.float(), alpha_restorer2)
+                .to(swap2.dtype)
+                .contiguous()
+            )
         return swap
 
     def _detect_mouth_action_score(
-        self, face_bbox: "np.ndarray | None" = None, vr_crop_chw: "torch.Tensor | np.ndarray | None" = None
+        self,
+        face_bbox: "np.ndarray | None" = None,
+        vr_crop_chw: "torch.Tensor | np.ndarray | None" = None,
     ) -> "float | None":
         """Run the mouth action detector on a face-region crop.
 
@@ -1083,6 +1245,7 @@ class PipelineProcessor:
         MouthOpennessState occlusion-timeout can bridge short missed-frame gaps.
         """
         from app.processors.mouth_action_detector import MouthActionDetector
+
         detector = MouthActionDetector.get()
         if not detector.available:
             if not getattr(self, "_mouth_action_detector_warned", False):
@@ -1101,7 +1264,12 @@ class PipelineProcessor:
             # Standard mode — crop self.frame (HWC) at 2× scale around the face bbox
             frame_hwc = self.worker.frame  # HWC uint8 RGB numpy
             fh, fw = frame_hwc.shape[:2]
-            x1, y1, x2, y2 = float(face_bbox[0]), float(face_bbox[1]), float(face_bbox[2]), float(face_bbox[3])
+            x1, y1, x2, y2 = (
+                float(face_bbox[0]),
+                float(face_bbox[1]),
+                float(face_bbox[2]),
+                float(face_bbox[3]),
+            )
 
             # FW-MOUTH-1: For sub-512px input frames, _process_frame_standard
             # upscales the working tensor and scales the bboxes UP to match.
@@ -1141,7 +1309,11 @@ class PipelineProcessor:
         return raw_score if raw_score > 0.0 else None
 
     def _apply_auto_mouth(
-        self, params: dict, target_fb: Any, face_bbox: "np.ndarray | None" = None, vr_crop_chw: "torch.Tensor | np.ndarray | None" = None
+        self,
+        params: dict,
+        target_fb: Any,
+        face_bbox: "np.ndarray | None" = None,
+        vr_crop_chw: "torch.Tensor | np.ndarray | None" = None,
     ) -> dict:
         """Check auto-mouth state and, if active, return a modified params dict.
 
@@ -1163,9 +1335,13 @@ class PipelineProcessor:
         _alpha = params.get("AutoMouthEMAAlphaDecimalSlider", 0.65)
         _threshold = params.get("AutoMouthOpenThresholdDecimalSlider", 0.50)
         # None = no detection; triggers occlusion grace period in state machine.
-        _ratio: "float | None" = self._detect_mouth_action_score(face_bbox=face_bbox, vr_crop_chw=vr_crop_chw)
+        _ratio: "float | None" = self._detect_mouth_action_score(
+            face_bbox=face_bbox, vr_crop_chw=vr_crop_chw
+        )
 
-        _state: "MouthOpennessState | None" = getattr(target_fb, "mouth_openness_state", None)
+        _state: "MouthOpennessState | None" = getattr(
+            target_fb, "mouth_openness_state", None
+        )
         if _state is None:
             target_fb.mouth_openness_state = MouthOpennessState()
             _state = target_fb.mouth_openness_state
@@ -1177,9 +1353,13 @@ class PipelineProcessor:
         # frame slowly decays the EMA past the deactivate threshold and the user
         # cannot re-enable auto-mouth without resuming playback.
         _single_frame_mode = bool(getattr(self.worker, "is_single_frame", False))
-        _auto_active, _ema_value = _state.update(_ratio, _alpha, _threshold, single_frame_mode=_single_frame_mode)
+        _auto_active, _ema_value = _state.update(
+            _ratio, _alpha, _threshold, single_frame_mode=_single_frame_mode
+        )
 
-        _exclude_upper_teeth = bool(params.get("AutoMouthExcludeUpperTeethToggle", False))
+        _exclude_upper_teeth = bool(
+            params.get("AutoMouthExcludeUpperTeethToggle", False)
+        )
         _was_auto_active = bool(getattr(target_fb, "_auto_mouth_prev_active", False))
         target_fb._auto_mouth_prev_active = _auto_active
 
@@ -1188,7 +1368,9 @@ class PipelineProcessor:
 
         _base_strength = params.get("AutoMouthExpressionStrengthDecimalSlider", 1.00)
         _normalize = params.get("AutoMouthNormalizeLipsToggle", True)
-        _restore_mode = params.get("AutoMouthRestoreModeSelection", "Expression Restorer")
+        _restore_mode = params.get(
+            "AutoMouthRestoreModeSelection", "Expression Restorer"
+        )
         # Proportional strength ramp: smooth fade-in from threshold to threshold+ramp.
         _ramp_range = max(_threshold * 0.5, 0.04)
         _proportion = min(1.0, max(0.0, (_ema_value - _threshold) / _ramp_range))
@@ -1335,12 +1517,29 @@ class PipelineProcessor:
         # set_scaling_transforms) instead of constructing new objects each call
         t512_mask = self.worker.t512_mask
         t128_mask = self.worker.t128_mask
-        assert t512_mask is not None, "t512_mask must be initialized via set_scaling_transforms before swap_core"
-        assert t128_mask is not None, "t128_mask must be initialized via set_scaling_transforms before swap_core"
+        assert t512_mask is not None, (
+            "t512_mask must be initialized via set_scaling_transforms before swap_core"
+        )
+        assert t128_mask is not None, (
+            "t128_mask must be initialized via set_scaling_transforms before swap_core"
+        )
 
-        _face_interp = "bicubic" if parameters.get("FaceAlignmentInterpolation", "Bilinear") == "Bicubic" else "bilinear"
-        original_face_512, original_face_384, original_face_256, original_face_128 = self.worker.get_transformed_and_scaled_faces(tform, img, interp_mode=_face_interp)
-        original_faces = (original_face_512, original_face_384, original_face_256, original_face_128)
+        _face_interp = (
+            "bicubic"
+            if parameters.get("FaceAlignmentInterpolation", "Bilinear") == "Bicubic"
+            else "bilinear"
+        )
+        original_face_512, original_face_384, original_face_256, original_face_128 = (
+            self.worker.get_transformed_and_scaled_faces(
+                tform, img, interp_mode=_face_interp
+            )
+        )
+        original_faces = (
+            original_face_512,
+            original_face_384,
+            original_face_256,
+            original_face_128,
+        )
         swap = original_face_512
         # Initialise prev_face to the normalised original face so that the
         # StrengthEnableToggle blend at the end of swap_core always has a valid
@@ -1349,9 +1548,20 @@ class PipelineProcessor:
         prev_face = torch.div(original_face_512.float(), 255.0).permute(1, 2, 0)
 
         # --- SWAPPING INFERENCE ---
-        if valid_s_e is not None or (swapper_model == "DeepFaceLive (DFM)" and dfm_model_name):
-            input_face_affined, dfm_model_instance, dim, latent = self.get_affined_face_dim_and_swapping_latents(
-                original_faces, swapper_model, dfm_model_name, valid_s_e, valid_t_e, parameters, debug, tform,
+        if valid_s_e is not None or (
+            swapper_model == "DeepFaceLive (DFM)" and dfm_model_name
+        ):
+            input_face_affined, dfm_model_instance, dim, latent = (
+                self.get_affined_face_dim_and_swapping_latents(
+                    original_faces,
+                    swapper_model,
+                    dfm_model_name,
+                    valid_s_e,
+                    valid_t_e,
+                    parameters,
+                    debug,
+                    tform,
+                )
             )
 
             # FW-BUG-03: guard input_face_affined is None (latent computation failed)
@@ -1373,12 +1583,19 @@ class PipelineProcessor:
                     # Scaling here natively zooms in/out from the center.
                     theta = torch.tensor(
                         [[1.0 / scale_val, 0.0, 0.0], [0.0, 1.0 / scale_val, 0.0]],
-                        dtype=torch.float32, device=self.worker.models_processor.device,
+                        dtype=torch.float32,
+                        device=self.worker.models_processor.device,
                     ).unsqueeze(0)
 
-                    grid = F.affine_grid(theta, affined_float.size(), align_corners=False)
+                    grid = F.affine_grid(
+                        theta, affined_float.size(), align_corners=False
+                    )
                     scaled_float = F.grid_sample(
-                        affined_float, grid, mode="bicubic", padding_mode="zeros", align_corners=False,
+                        affined_float,
+                        grid,
+                        mode="bicubic",
+                        padding_mode="zeros",
+                        align_corners=False,
                     )
                     # Bicubic interpolation can overshoot (ringing artifacts). Clamp before casting back.
                     if orig_dtype == torch.uint8:
@@ -1391,14 +1608,23 @@ class PipelineProcessor:
 
                 output_size = int(128 * dim)
                 output = torch.zeros(
-                    (output_size, output_size, 3), dtype=torch.float32, device=self.worker.models_processor.device,
+                    (output_size, output_size, 3),
+                    dtype=torch.float32,
+                    device=self.worker.models_processor.device,
                 )
                 input_face_affined = input_face_affined.permute(1, 2, 0).contiguous()
                 input_face_affined = torch.div(input_face_affined, 255.0)
 
                 swap, prev_face = self.get_swapped_and_prev_face(
-                    output, input_face_affined, original_face_512, latent, itex, dim,
-                    swapper_model, dfm_model_instance, parameters,
+                    output,
+                    input_face_affined,
+                    original_face_512,
+                    latent,
+                    itex,
+                    dim,
+                    swapper_model,
+                    dfm_model_instance,
+                    parameters,
                 )
         else:
             swap = original_face_512
@@ -1412,28 +1638,49 @@ class PipelineProcessor:
                 swap = original_face_512.clone()
             else:
                 alpha = np.mod(parameters["StrengthAmountSlider"], 100) * 0.01
-                if alpha == 0: alpha = 1
+                if alpha == 0:
+                    alpha = 1
                 prev_face = torch.mul(prev_face, 255)
                 prev_face = torch.clamp(prev_face, 0, 255)
                 prev_face = prev_face.permute(2, 0, 1)
                 if prev_face.shape[-1] != swap.shape[-1]:
                     # Using functional resize for RGB buffer (antialias=True is fine here)
-                    prev_face = _resize_func(prev_face, (swap.shape[-2], swap.shape[-1]), is_mask=False)
-                swap = torch.lerp(prev_face.float(), swap.float(), alpha).to(swap.dtype).contiguous()
+                    prev_face = _resize_func(
+                        prev_face, (swap.shape[-2], swap.shape[-1]), is_mask=False
+                    )
+                swap = (
+                    torch.lerp(prev_face.float(), swap.float(), alpha)
+                    .to(swap.dtype)
+                    .contiguous()
+                )
 
         # --- DYNAMIC MASKS INITIALIZATION ---
         current_swap_h, current_swap_w = swap.shape[1], swap.shape[2]
         yaw_deg, pitch_deg = faceutil.calc_face_yaw_pitch(kps_5)
         side_mask = self.get_dynamic_side_mask(
-            yaw_deg, pitch_deg, current_swap_h, current_swap_w, self.worker.models_processor.device, parameters, kps_5, tform,
+            yaw_deg,
+            pitch_deg,
+            current_swap_h,
+            current_swap_w,
+            self.worker.models_processor.device,
+            parameters,
+            kps_5,
+            tform,
         )
 
         # FW-PERF-09: skip get_border_mask entirely when the toggle is off
         if parameters.get("BordermaskEnableToggle", False):
             border_mask, border_mask_calc = self.get_border_mask(parameters)
-            if border_mask.shape[1] != current_swap_h or border_mask.shape[2] != current_swap_w:
-                border_mask = _resize_func(border_mask, (current_swap_h, current_swap_w), is_mask=True)
-                border_mask_calc = _resize_func(border_mask_calc, (current_swap_h, current_swap_w), is_mask=True)
+            if (
+                border_mask.shape[1] != current_swap_h
+                or border_mask.shape[2] != current_swap_w
+            ):
+                border_mask = _resize_func(
+                    border_mask, (current_swap_h, current_swap_w), is_mask=True
+                )
+                border_mask_calc = _resize_func(
+                    border_mask_calc, (current_swap_h, current_swap_w), is_mask=True
+                )
             border_mask = border_mask * side_mask
             border_mask_calc = border_mask_calc * side_mask
         else:
@@ -1441,17 +1688,31 @@ class PipelineProcessor:
             border_mask_calc = side_mask
 
         # BLEND MASKS (Soft edges, Alpha compositing)
-        swap_mask = torch.ones((1, current_swap_h, current_swap_w), dtype=torch.float32, device=self.worker.models_processor.device)
+        swap_mask = torch.ones(
+            (1, current_swap_h, current_swap_w),
+            dtype=torch.float32,
+            device=self.worker.models_processor.device,
+        )
         swap_mask_noFP = border_mask.clone()
         # CORE STATS MASKS (Hard edges, inner face isolation only)
-        core_stats_mask = torch.ones((1, current_swap_h, current_swap_w), dtype=torch.float32, device=self.worker.models_processor.device)
+        core_stats_mask = torch.ones(
+            (1, current_swap_h, current_swap_w),
+            dtype=torch.float32,
+            device=self.worker.models_processor.device,
+        )
 
         # Removed shared tensor 'BgExclude' which was causing state bleeding
         # (Race Conditions) between unconnected features. Explicit allocation is safer.
         base_shape = (1, 512, 512)
-        diff_mask = torch.ones(base_shape, dtype=torch.float32, device=self.worker.models_processor.device)
-        texture_mask_view = torch.ones(base_shape, dtype=torch.float32, device=self.worker.models_processor.device)
-        texture_exclude_512 = torch.ones(base_shape, dtype=torch.float32, device=self.worker.models_processor.device)
+        diff_mask = torch.ones(
+            base_shape, dtype=torch.float32, device=self.worker.models_processor.device
+        )
+        texture_mask_view = torch.ones(
+            base_shape, dtype=torch.float32, device=self.worker.models_processor.device
+        )
+        texture_exclude_512 = torch.ones(
+            base_shape, dtype=torch.float32, device=self.worker.models_processor.device
+        )
 
         # Legacy pointers mapped to our clean core mask to prevent crashing the rest of the pipeline
         calc_mask = core_stats_mask
@@ -1466,44 +1727,83 @@ class PipelineProcessor:
 
         # --- FACE EDITING (Beginning) ---
         # Expression Restorer beginning
-        if (parameters["FaceExpressionEnableBothToggle"] and 
-           (parameters["FaceExpressionLipsToggle"] or parameters["FaceExpressionEyesToggle"] or 
-            parameters["FaceExpressionBrowsToggle"] or parameters["FaceExpressionGeneralToggle"] or 
-            parameters.get("FaceExpressionModeSelection", "Advanced") in ("Simple", "Recast")) and 
-            parameters["FaceExpressionBeforeTypeSelection"] == "Beginning"):
+        if (
+            parameters["FaceExpressionEnableBothToggle"]
+            and (
+                parameters["FaceExpressionLipsToggle"]
+                or parameters["FaceExpressionEyesToggle"]
+                or parameters["FaceExpressionBrowsToggle"]
+                or parameters["FaceExpressionGeneralToggle"]
+                or parameters.get("FaceExpressionModeSelection", "Advanced")
+                in ("Simple", "Recast")
+            )
+            and parameters["FaceExpressionBeforeTypeSelection"] == "Beginning"
+        ):
             if parameters.get("FaceExpressionModeSelection", "Advanced") == "Recast":
-                swap = self.worker.function_worker.frame_edits.apply_perform_recast(
-                    original_face_512, swap, cast(dict, parameters), cast(dict, control), driving_kps=kps_all_crop,
+                swap = self.worker.function_worker.apply_perform_recast(
+                    original_face_512,
+                    swap,
+                    cast(dict, parameters),
+                    cast(dict, control),
+                    driving_kps=kps_all_crop,
                 )
             else:
-                swap = self.worker.function_worker.frame_edits.apply_face_expression_restorer(
-                    original_face_512, swap, cast(dict, parameters), cast(dict, control), driving_kps=kps_all_crop,
+                swap = self.worker.function_worker.apply_face_expression_restorer(
+                    original_face_512,
+                    swap,
+                    cast(dict, parameters),
+                    cast(dict, control),
+                    driving_kps=kps_all_crop,
                 )
 
         # Face editor beginning
-        if (parameters["FaceEditorEnableToggle"] and self.worker.local_control_state_from_feeder.get("edit_enabled", True) and 
-            parameters["FaceEditorBeforeTypeSelection"] == "Beginning"):
+        if (
+            parameters["FaceEditorEnableToggle"]
+            and self.worker.local_control_state_from_feeder.get("edit_enabled", True)
+            and parameters["FaceEditorBeforeTypeSelection"] == "Beginning"
+        ):
             editor_mask = swap_mask.clone()
-            swap = torch.lerp(original_face_512.float(), swap.float(), editor_mask).to(swap.dtype).contiguous()
-            swap = self.worker.function_worker.frame_edits.swap_edit_face_core(swap, swap, parameters, control)
+            swap = (
+                torch.lerp(original_face_512.float(), swap.float(), editor_mask)
+                .to(swap.dtype)
+                .contiguous()
+            )
+            swap = self.worker.function_worker.swap_edit_face_core(
+                swap, swap, parameters, control
+            )
 
         # First Denoiser pass - Before Restorers
         if control.get("DenoiserUNetEnableBeforeRestorersToggle", False):
-            swap = self._apply_denoiser_pass(swap, control, "Before", kv_map, color_mask=mask_forcalc_512, blend_mask=swap_mask)
+            swap = self._apply_denoiser_pass(
+                swap,
+                control,
+                "Before",
+                kv_map,
+                color_mask=mask_forcalc_512,
+                blend_mask=swap_mask,
+            )
 
         # --- MOUTH ENHANCEMENT & ALIGNMENT (PRE-RESTORER) ---
         paste_after_restorer = parameters.get("MouthParserStretchAfterToggle", False)
         if not paste_after_restorer:
             mouth_overlay_pkg = None
-            if hasattr(self.worker.function_worker, "face_masks"):
-                mouth_overlay_pkg = self.worker.function_worker.face_masks.get_mouth_overlay(swap, original_face_512, parameters)
+            if hasattr(self.worker.function_worker, "get_mouth_overlay"):
+                mouth_overlay_pkg = self.worker.function_worker.get_mouth_overlay(
+                    swap, original_face_512, parameters
+                )
 
             if mouth_overlay_pkg is not None:
                 overlay_rgb, overlay_mask = mouth_overlay_pkg
                 if overlay_rgb is not None and overlay_mask is not None:
                     if overlay_rgb.shape[-1] != swap.shape[-1]:
-                        overlay_rgb = _resize_func(overlay_rgb, (swap.shape[-2], swap.shape[-1]), is_mask=False)
-                        overlay_mask = _resize_func(overlay_mask.unsqueeze(0), (swap.shape[-2], swap.shape[-1]), is_mask=True).squeeze(0)
+                        overlay_rgb = _resize_func(
+                            overlay_rgb, (swap.shape[-2], swap.shape[-1]), is_mask=False
+                        )
+                        overlay_mask = _resize_func(
+                            overlay_mask.unsqueeze(0),
+                            (swap.shape[-2], swap.shape[-1]),
+                            is_mask=True,
+                        ).squeeze(0)
                     swap = swap * (1.0 - overlay_mask) + overlay_rgb * overlay_mask
 
         # --- RESTORATION 1 ---
@@ -1513,37 +1813,67 @@ class PipelineProcessor:
             # FW-PERF-11: clone only when the restorer will actually run
             swap_original = swap.clone()
             swap_restorecalc = self.worker.function_worker.apply_facerestorer(
-                swap, parameters["FaceRestorerDetTypeSelection"], parameters["FaceRestorerTypeSelection"],
-                parameters["FaceRestorerBlendSlider"], parameters["FaceFidelityWeightDecimalSlider"],
-                control["DetectorScoreSlider"], kps_ref, slot_id=1,
+                swap,
+                parameters["FaceRestorerDetTypeSelection"],
+                parameters["FaceRestorerTypeSelection"],
+                parameters["FaceRestorerBlendSlider"],
+                parameters["FaceFidelityWeightDecimalSlider"],
+                control["DetectorScoreSlider"],
+                kps_ref,
+                slot_id=1,
             )
         else:
             swap_restorecalc = swap.clone()
 
         # Occluder
         if parameters["OccluderEnableToggle"]:
-            mask = self.worker.function_worker.face_masks.apply_occlusion(
-                original_face_256, parameters["OccluderSizeSlider"], parameters=parameters, original_face_512=swap_restorecalc,
+            mask = self.worker.function_worker.apply_occlusion(
+                original_face_256,
+                parameters["OccluderSizeSlider"],
+                parameters=parameters,
+                original_face_512=swap_restorecalc,
             )
             if mask.shape[-1] != swap_mask.shape[-1]:
-                mask = _resize_func(mask, (swap_mask.shape[-2], swap_mask.shape[-1]), is_mask=True)
+                mask = _resize_func(
+                    mask, (swap_mask.shape[-2], swap_mask.shape[-1]), is_mask=True
+                )
             swap_mask.mul_(mask)
 
-            gauss = v2.GaussianBlur(parameters["OccluderXSegBlurSlider"] * 2 + 1, (parameters["OccluderXSegBlurSlider"] + 1) * 0.2)
+            gauss = v2.GaussianBlur(
+                parameters["OccluderXSegBlurSlider"] * 2 + 1,
+                (parameters["OccluderXSegBlurSlider"] + 1) * 0.2,
+            )
             swap_mask = gauss(swap_mask)
 
             if swap_mask_noFP.shape[-1] != swap_mask.shape[-1]:
-                swap_mask_noFP = _resize_func(swap_mask_noFP, (swap_mask.shape[-2], swap_mask.shape[-1]), is_mask=True)
+                swap_mask_noFP = _resize_func(
+                    swap_mask_noFP,
+                    (swap_mask.shape[-2], swap_mask.shape[-1]),
+                    is_mask=True,
+                )
             swap_mask_noFP.mul_(swap_mask)
 
         # --- MASKS (Parser / CLIPs / Restore) ---
         need_any_parser = (
-            parameters.get("FaceParserEnableToggle", False) or
-            (parameters.get("DFLXSegEnableToggle", False) and 
-             ((parameters.get("XSegMouthEnableToggle", False) and parameters.get("DFLXSegSizeSlider", 0) != parameters.get("DFLXSeg2SizeSlider", 0)) or 
-              parameters.get("XSegExcludeInnerMouthToggle", False))) or
-            ((parameters.get("TransferTextureEnableToggle", False) or parameters.get("DifferencingEnableToggle", False)) and 
-             parameters.get("ExcludeMaskEnableToggle", False))
+            parameters.get("FaceParserEnableToggle", False)
+            or (
+                parameters.get("DFLXSegEnableToggle", False)
+                and (
+                    (
+                        parameters.get("XSegMouthEnableToggle", False)
+                        and parameters.get("DFLXSegSizeSlider", 0)
+                        != parameters.get("DFLXSeg2SizeSlider", 0)
+                    )
+                    or parameters.get("XSegExcludeInnerMouthToggle", False)
+                )
+            )
+            or (
+                (
+                    parameters.get("TransferTextureEnableToggle", False)
+                    or parameters.get("DifferencingEnableToggle", False)
+                )
+                and parameters.get("ExcludeMaskEnableToggle", False)
+            )
         )
 
         FaceParser_mask = None
@@ -1553,7 +1883,9 @@ class PipelineProcessor:
         inner_mouth_protection_512 = None
 
         if need_any_parser:
-            out = self.worker.function_worker.process_masks_and_masks(swap_restorecalc, original_face_512, parameters, control)
+            out = self.worker.function_worker.process_masks_and_masks(
+                swap_restorecalc, original_face_512, parameters, control
+            )
             if not parameters.get("FaceParserEndToggle", False):
                 FaceParser_mask = out.get("FaceParser_mask", None)
             texture_exclude_512 = out.get("texture_mask", texture_exclude_512)
@@ -1564,42 +1896,78 @@ class PipelineProcessor:
 
         if FaceParser_mask is not None:
             if FaceParser_mask.shape[-1] != swap_mask.shape[-1]:
-                FaceParser_mask = _resize_func(FaceParser_mask, (swap_mask.shape[-2], swap_mask.shape[-1]), is_mask=True)
+                FaceParser_mask = _resize_func(
+                    FaceParser_mask,
+                    (swap_mask.shape[-2], swap_mask.shape[-1]),
+                    is_mask=True,
+                )
             swap_mask.mul_(FaceParser_mask)
 
         # CLIPs
         if parameters.get("ClipEnableToggle", False):
-            mask_clip = self.worker.function_worker.run_CLIPs(original_face_512, parameters["ClipText"], parameters["ClipAmountSlider"])
+            mask_clip = self.worker.function_worker.run_CLIPs(
+                original_face_512,
+                parameters["ClipText"],
+                parameters["ClipAmountSlider"],
+            )
             if mask_clip.shape[-1] != swap_mask.shape[-1]:
-                mask_clip = _resize_func(mask_clip, (swap_mask.shape[-2], swap_mask.shape[-1]), is_mask=True)
+                mask_clip = _resize_func(
+                    mask_clip, (swap_mask.shape[-2], swap_mask.shape[-1]), is_mask=True
+                )
             swap_mask.mul_(mask_clip)
             if swap_mask_noFP.shape[-1] != mask_clip.shape[-1]:
-                swap_mask_noFP = _resize_func(swap_mask_noFP, (mask_clip.shape[-2], mask_clip.shape[-1]), is_mask=True)
+                swap_mask_noFP = _resize_func(
+                    swap_mask_noFP,
+                    (mask_clip.shape[-2], mask_clip.shape[-1]),
+                    is_mask=True,
+                )
             swap_mask_noFP.mul_(mask_clip)
 
         # Restore Eyes/Mouth
-        if parameters.get("RestoreMouthEnableToggle", False) or parameters.get("RestoreEyesEnableToggle", False):
+        if parameters.get("RestoreMouthEnableToggle", False) or parameters.get(
+            "RestoreEyesEnableToggle", False
+        ):
             M = cast(np.ndarray, tform.params)[0:2]
             ones_column = np.ones((kps_5.shape[0], 1), dtype=np.float32)
             dst_kps_5 = np.hstack([kps_5, ones_column]) @ M.T
 
-            img_swap_mask = torch.ones((1, 512, 512), dtype=torch.float32, device=self.worker.models_processor.device)
-            img_orig_mask = torch.zeros((1, 512, 512), dtype=torch.float32, device=self.worker.models_processor.device)
+            img_swap_mask = torch.ones(
+                (1, 512, 512),
+                dtype=torch.float32,
+                device=self.worker.models_processor.device,
+            )
+            img_orig_mask = torch.zeros(
+                (1, 512, 512),
+                dtype=torch.float32,
+                device=self.worker.models_processor.device,
+            )
 
             if parameters.get("RestoreMouthEnableToggle", False):
                 img_swap_mask = self.worker.function_worker.restore_mouth(
-                    img_orig_mask, img_swap_mask, dst_kps_5, parameters["RestoreMouthBlendAmountSlider"] / 100.0,
-                    parameters["RestoreMouthFeatherBlendSlider"], parameters["RestoreMouthSizeFactorSlider"] / 100.0,
-                    parameters["RestoreXMouthRadiusFactorDecimalSlider"], parameters["RestoreYMouthRadiusFactorDecimalSlider"],
-                    parameters["RestoreXMouthOffsetSlider"], parameters["RestoreYMouthOffsetSlider"],
+                    img_orig_mask,
+                    img_swap_mask,
+                    dst_kps_5,
+                    parameters["RestoreMouthBlendAmountSlider"] / 100.0,
+                    parameters["RestoreMouthFeatherBlendSlider"],
+                    parameters["RestoreMouthSizeFactorSlider"] / 100.0,
+                    parameters["RestoreXMouthRadiusFactorDecimalSlider"],
+                    parameters["RestoreYMouthRadiusFactorDecimalSlider"],
+                    parameters["RestoreXMouthOffsetSlider"],
+                    parameters["RestoreYMouthOffsetSlider"],
                 ).clamp(0, 1)
 
             if parameters.get("RestoreEyesEnableToggle", False):
                 img_swap_mask = self.worker.function_worker.restore_eyes(
-                    img_orig_mask, img_swap_mask, dst_kps_5, parameters["RestoreEyesBlendAmountSlider"] / 100.0,
-                    parameters["RestoreEyesFeatherBlendSlider"], parameters["RestoreEyesSizeFactorDecimalSlider"],
-                    parameters["RestoreXEyesRadiusFactorDecimalSlider"], parameters["RestoreYEyesRadiusFactorDecimalSlider"],
-                    parameters["RestoreXEyesOffsetSlider"], parameters["RestoreYEyesOffsetSlider"],
+                    img_orig_mask,
+                    img_swap_mask,
+                    dst_kps_5,
+                    parameters["RestoreEyesBlendAmountSlider"] / 100.0,
+                    parameters["RestoreEyesFeatherBlendSlider"],
+                    parameters["RestoreEyesSizeFactorDecimalSlider"],
+                    parameters["RestoreXEyesRadiusFactorDecimalSlider"],
+                    parameters["RestoreYEyesRadiusFactorDecimalSlider"],
+                    parameters["RestoreXEyesOffsetSlider"],
+                    parameters["RestoreYEyesOffsetSlider"],
                     parameters["RestoreEyesSpacingOffsetSlider"],
                 ).clamp(0, 1)
 
@@ -1609,7 +1977,11 @@ class PipelineProcessor:
                 img_swap_mask = gauss(img_swap_mask)
 
             if img_swap_mask.shape[-1] != swap_mask.shape[-1]:
-                mask_resized = _resize_func(img_swap_mask, (swap_mask.shape[-2], swap_mask.shape[-1]), is_mask=True)
+                mask_resized = _resize_func(
+                    img_swap_mask,
+                    (swap_mask.shape[-2], swap_mask.shape[-1]),
+                    is_mask=True,
+                )
             else:
                 mask_resized = img_swap_mask
             swap_mask = swap_mask * mask_resized
@@ -1617,31 +1989,61 @@ class PipelineProcessor:
         # --- DFL XSeg ---
         # FW-PERF-5: use promoted instance-attribute transform
         t256_near = self.worker.t256_near
-        assert t256_near is not None, "t256_near must be initialized via set_scaling_transforms"
+        assert t256_near is not None, (
+            "t256_near must be initialized via set_scaling_transforms"
+        )
 
         if parameters.get("DFLXSegEnableToggle", False):
             img_xseg_256 = t256_near(original_face_512)
             mouth_256 = None
             inner_mouth_protection_256 = None
-            if parameters.get("XSegMouthEnableToggle", False) and parameters.get("DFLXSegSizeSlider", 0) != parameters.get("DFLXSeg2SizeSlider", 0) and mouth_512 is not None:
+            if (
+                parameters.get("XSegMouthEnableToggle", False)
+                and parameters.get("DFLXSegSizeSlider", 0)
+                != parameters.get("DFLXSeg2SizeSlider", 0)
+                and mouth_512 is not None
+            ):
                 mouth_256 = t256_near(mouth_512.unsqueeze(0))
-            if parameters.get("XSegExcludeInnerMouthToggle", False) and inner_mouth_protection_512 is not None:
-                inner_mouth_protection_256 = t256_near(inner_mouth_protection_512.unsqueeze(0)).squeeze(0)
+            if (
+                parameters.get("XSegExcludeInnerMouthToggle", False)
+                and inner_mouth_protection_512 is not None
+            ):
+                inner_mouth_protection_256 = t256_near(
+                    inner_mouth_protection_512.unsqueeze(0)
+                ).squeeze(0)
 
-            img_mask_256, mask_forcalc_256, mask_forcalc_dill_256, outpred_noFP_256 = self.worker.function_worker.apply_dfl_xseg(
-                img_xseg_256, -parameters["DFLXSegSizeSlider"], mouth_256 if mouth_256 is not None else 0, parameters, inner_mouth_mask=inner_mouth_protection_256,
+            img_mask_256, mask_forcalc_256, mask_forcalc_dill_256, outpred_noFP_256 = (
+                self.worker.function_worker.apply_dfl_xseg(
+                    img_xseg_256,
+                    -parameters["DFLXSegSizeSlider"],
+                    mouth_256 if mouth_256 is not None else 0,
+                    parameters,
+                    inner_mouth_mask=inner_mouth_protection_256,
+                )
             )
 
             # 1. Update Blend Masks (swap_mask)
             if img_mask_256.shape[-1] != swap_mask.shape[-1]:
-                img_mask_res = _resize_func(img_mask_256, (swap_mask.shape[-2], swap_mask.shape[-1]), is_mask=True)
-                outpred_noFP_res = _resize_func(outpred_noFP_256, (swap_mask.shape[-2], swap_mask.shape[-1]), is_mask=True)
+                img_mask_res = _resize_func(
+                    img_mask_256,
+                    (swap_mask.shape[-2], swap_mask.shape[-1]),
+                    is_mask=True,
+                )
+                outpred_noFP_res = _resize_func(
+                    outpred_noFP_256,
+                    (swap_mask.shape[-2], swap_mask.shape[-1]),
+                    is_mask=True,
+                )
             else:
                 img_mask_res = img_mask_256
                 outpred_noFP_res = outpred_noFP_256
 
             if swap_mask_noFP.shape[-1] != outpred_noFP_res.shape[-1]:
-                swap_mask_noFP = _resize_func(swap_mask_noFP, (outpred_noFP_res.shape[-2], outpred_noFP_res.shape[-1]), is_mask=True)
+                swap_mask_noFP = _resize_func(
+                    swap_mask_noFP,
+                    (outpred_noFP_res.shape[-2], outpred_noFP_res.shape[-1]),
+                    is_mask=True,
+                )
 
             # The standard Occluder blurs the global swap_mask, softening the harsh
             # border_mask edges. DFLXSeg blurs its mask internally, leaving the base
@@ -1687,8 +2089,13 @@ class PipelineProcessor:
         mask_autocolor = (mask_autocolor > 0.5).float()
 
         # Auto Restore (First Pass)
-        if parameters["FaceRestorerEnableToggle"] and parameters["FaceRestorerAutoEnableToggle"]:
-            assert swap_original is not None, "swap_original must be set when FaceRestorerEnableToggle is active"
+        if (
+            parameters["FaceRestorerEnableToggle"]
+            and parameters["FaceRestorerAutoEnableToggle"]
+        ):
+            assert swap_original is not None, (
+                "swap_original must be set when FaceRestorerEnableToggle is active"
+            )
             alpha_restorer = float(parameters["FaceRestorerBlendSlider"]) / 100.0
             adjust_sharpness = float(parameters["FaceRestorerAutoSharpAdjustSlider"])
             scale_factor = round(tform.scale, 2)
@@ -1698,8 +2105,17 @@ class PipelineProcessor:
             restore_mask = mask_forcalc_512
 
             alpha_auto, blur_value = self.face_restorer_auto(
-                original_face_512, swap_original, swap_restorecalc, alpha_restorer, adjust_sharpness,
-                scale_factor, debug, restore_mask, automasktoggle, automaskadjust, automaskblur,
+                original_face_512,
+                swap_original,
+                swap_restorecalc,
+                alpha_restorer,
+                adjust_sharpness,
+                scale_factor,
+                debug,
+                restore_mask,
+                automasktoggle,
+                automaskadjust,
+                automaskblur,
             )
 
             if blur_value > 0:
@@ -1712,81 +2128,169 @@ class PipelineProcessor:
                 swap = swap_restorecalc * alpha_auto + swap_original * (1 - alpha_auto)
             elif alpha_auto != 0:
                 swap = swap_restorecalc * alpha_auto + swap_original * (1 - alpha_auto)
-                if debug: debug_info["Restore1"] = f": {alpha_auto * 100:.2f}"
+                if debug:
+                    debug_info["Restore1"] = f": {alpha_auto * 100:.2f}"
             else:
                 swap = swap_original
-                if debug: debug_info["Restore1"] = f": {alpha_auto * 100:.2f}"
+                if debug:
+                    debug_info["Restore1"] = f": {alpha_auto * 100:.2f}"
         elif parameters["FaceRestorerEnableToggle"]:
-            assert swap_original is not None, "swap_original must be set when FaceRestorerEnableToggle is active"
+            assert swap_original is not None, (
+                "swap_original must be set when FaceRestorerEnableToggle is active"
+            )
             alpha_restorer = float(parameters["FaceRestorerBlendSlider"]) / 100.0
-            swap = torch.lerp(swap_original.float(), swap_restorecalc.float(), alpha_restorer).to(swap_restorecalc.dtype).contiguous()
+            swap = (
+                torch.lerp(
+                    swap_original.float(), swap_restorecalc.float(), alpha_restorer
+                )
+                .to(swap_restorecalc.dtype)
+                .contiguous()
+            )
 
         # Expression Restorer (After First)
-        if (parameters["FaceExpressionEnableBothToggle"] and 
-           (parameters["FaceExpressionLipsToggle"] or parameters["FaceExpressionEyesToggle"] or 
-            parameters["FaceExpressionBrowsToggle"] or parameters["FaceExpressionGeneralToggle"] or 
-            parameters.get("FaceExpressionModeSelection", "Advanced") in ("Simple", "Recast")) and 
-            parameters["FaceExpressionBeforeTypeSelection"] == "After First Restorer"):
+        if (
+            parameters["FaceExpressionEnableBothToggle"]
+            and (
+                parameters["FaceExpressionLipsToggle"]
+                or parameters["FaceExpressionEyesToggle"]
+                or parameters["FaceExpressionBrowsToggle"]
+                or parameters["FaceExpressionGeneralToggle"]
+                or parameters.get("FaceExpressionModeSelection", "Advanced")
+                in ("Simple", "Recast")
+            )
+            and parameters["FaceExpressionBeforeTypeSelection"]
+            == "After First Restorer"
+        ):
             if parameters.get("FaceExpressionModeSelection", "Advanced") == "Recast":
-                swap = self.worker.function_worker.frame_edits.apply_perform_recast(
-                    original_face_512, swap, cast(dict, parameters), cast(dict, control), driving_kps=kps_all_crop,
+                swap = self.worker.function_worker.apply_perform_recast(
+                    original_face_512,
+                    swap,
+                    cast(dict, parameters),
+                    cast(dict, control),
+                    driving_kps=kps_all_crop,
                 )
             else:
-                swap = self.worker.function_worker.frame_edits.apply_face_expression_restorer(
-                    original_face_512, swap, cast(dict, parameters), cast(dict, control), driving_kps=kps_all_crop,
+                swap = self.worker.function_worker.apply_face_expression_restorer(
+                    original_face_512,
+                    swap,
+                    cast(dict, parameters),
+                    cast(dict, control),
+                    driving_kps=kps_all_crop,
                 )
 
         # Face Editor (After First)
-        if (parameters["FaceEditorEnableToggle"] and self.worker.local_control_state_from_feeder.get("edit_enabled", True) and 
-            parameters["FaceEditorBeforeTypeSelection"] == "After First Restorer"):
+        if (
+            parameters["FaceEditorEnableToggle"]
+            and self.worker.local_control_state_from_feeder.get("edit_enabled", True)
+            and parameters["FaceEditorBeforeTypeSelection"] == "After First Restorer"
+        ):
             editor_mask = swap_mask.clone()
-            swap = torch.lerp(original_face_512.float(), swap.float(), editor_mask).to(swap.dtype).contiguous()
-            swap = self.worker.function_worker.frame_edits.swap_edit_face_core(swap, swap_restorecalc, parameters, control)
+            swap = (
+                torch.lerp(original_face_512.float(), swap.float(), editor_mask)
+                .to(swap.dtype)
+                .contiguous()
+            )
+            swap = self.worker.function_worker.swap_edit_face_core(
+                swap, swap_restorecalc, parameters, control
+            )
             if swap_mask_noFP.shape[-1] != swap.shape[-1]:
-                swap_mask = _resize_func(swap_mask_noFP, (swap.shape[-2], swap.shape[-1]), is_mask=True)
+                swap_mask = _resize_func(
+                    swap_mask_noFP, (swap.shape[-2], swap.shape[-1]), is_mask=True
+                )
             else:
                 swap_mask = swap_mask_noFP
 
         # Second Denoiser pass - After First Restorer
         if control.get("DenoiserAfterFirstRestorerToggle", False):
-            swap = self._apply_denoiser_pass(swap, control, "AfterFirst", kv_map, color_mask=mask_forcalc_512, blend_mask=swap_mask)
+            swap = self._apply_denoiser_pass(
+                swap,
+                control,
+                "AfterFirst",
+                kv_map,
+                color_mask=mask_forcalc_512,
+                blend_mask=swap_mask,
+            )
 
         # --- RESTORATION 2 ---
         # FW-QUAL-01/02: duplicated ~60-line block extracted to _apply_restorer_with_auto
-        if parameters["FaceRestorerEnable2Toggle"] and not parameters["FaceRestorerEnable2EndToggle"]:
+        if (
+            parameters["FaceRestorerEnable2Toggle"]
+            and not parameters["FaceRestorerEnable2EndToggle"]
+        ):
             swap_original2 = swap.clone()
             swap2 = self.worker.function_worker.apply_facerestorer(
-                swap, parameters["FaceRestorerDetType2Selection"], parameters["FaceRestorerType2Selection"],
-                parameters["FaceRestorerBlend2Slider"], parameters["FaceFidelityWeight2DecimalSlider"],
-                control["DetectorScoreSlider"], kps_ref, slot_id=2,
+                swap,
+                parameters["FaceRestorerDetType2Selection"],
+                parameters["FaceRestorerType2Selection"],
+                parameters["FaceRestorerBlend2Slider"],
+                parameters["FaceFidelityWeight2DecimalSlider"],
+                control["DetectorScoreSlider"],
+                kps_ref,
+                slot_id=2,
             )
             swap = self._apply_restorer_with_auto(
-                swap, swap2, swap_original2, original_face_512, mask_forcalc_512, parameters, tform.scale, debug, debug_info, slot_id=2,
+                swap,
+                swap2,
+                swap_original2,
+                original_face_512,
+                mask_forcalc_512,
+                parameters,
+                tform.scale,
+                debug,
+                debug_info,
+                slot_id=2,
             )
 
         # Expression (After Second)
-        if (parameters["FaceExpressionEnableBothToggle"] and 
-           (parameters["FaceExpressionLipsToggle"] or parameters["FaceExpressionEyesToggle"] or 
-            parameters["FaceExpressionBrowsToggle"] or parameters["FaceExpressionGeneralToggle"] or 
-            parameters.get("FaceExpressionModeSelection", "Advanced") in ("Simple", "Recast")) and 
-            parameters["FaceExpressionBeforeTypeSelection"] == "After Second Restorer"):
+        if (
+            parameters["FaceExpressionEnableBothToggle"]
+            and (
+                parameters["FaceExpressionLipsToggle"]
+                or parameters["FaceExpressionEyesToggle"]
+                or parameters["FaceExpressionBrowsToggle"]
+                or parameters["FaceExpressionGeneralToggle"]
+                or parameters.get("FaceExpressionModeSelection", "Advanced")
+                in ("Simple", "Recast")
+            )
+            and parameters["FaceExpressionBeforeTypeSelection"]
+            == "After Second Restorer"
+        ):
             if parameters.get("FaceExpressionModeSelection", "Advanced") == "Recast":
-                swap = self.worker.function_worker.frame_edits.apply_perform_recast(
-                    original_face_512, swap, cast(dict, parameters), cast(dict, control), driving_kps=kps_all_crop,
+                swap = self.worker.function_worker.apply_perform_recast(
+                    original_face_512,
+                    swap,
+                    cast(dict, parameters),
+                    cast(dict, control),
+                    driving_kps=kps_all_crop,
                 )
             else:
-                swap = self.worker.function_worker.frame_edits.apply_face_expression_restorer(
-                    original_face_512, swap, cast(dict, parameters), cast(dict, control), driving_kps=kps_all_crop,
+                swap = self.worker.function_worker.apply_face_expression_restorer(
+                    original_face_512,
+                    swap,
+                    cast(dict, parameters),
+                    cast(dict, control),
+                    driving_kps=kps_all_crop,
                 )
 
         # Editor (After Second)
-        if (parameters["FaceEditorEnableToggle"] and self.worker.local_control_state_from_feeder.get("edit_enabled", True) and 
-            parameters["FaceEditorBeforeTypeSelection"] == "After Second Restorer"):
+        if (
+            parameters["FaceEditorEnableToggle"]
+            and self.worker.local_control_state_from_feeder.get("edit_enabled", True)
+            and parameters["FaceEditorBeforeTypeSelection"] == "After Second Restorer"
+        ):
             editor_mask = t512_mask(swap_mask).clone()
-            swap = torch.lerp(original_face_512.float(), swap.float(), editor_mask).to(swap.dtype).contiguous()
-            swap = self.worker.function_worker.frame_edits.swap_edit_face_core(swap, swap, parameters, control)
+            swap = (
+                torch.lerp(original_face_512.float(), swap.float(), editor_mask)
+                .to(swap.dtype)
+                .contiguous()
+            )
+            swap = self.worker.function_worker.swap_edit_face_core(
+                swap, swap, parameters, control
+            )
             if swap_mask_noFP.shape[-1] != swap.shape[-1]:
-                swap_mask = _resize_func(swap_mask_noFP, (swap.shape[-2], swap.shape[-1]), is_mask=True)
+                swap_mask = _resize_func(
+                    swap_mask_noFP, (swap.shape[-2], swap.shape[-1]), is_mask=True
+                )
             else:
                 swap_mask = swap_mask_noFP
 
@@ -1807,28 +2311,70 @@ class PipelineProcessor:
             if _ema_key in self._color_stats_ema:
                 self._color_stats_ema.move_to_end(_ema_key)
                 _prev = self._color_stats_ema[_ema_key]
-                _ema_mean = self._COLOR_EMA_ALPHA * _curr_mean + (1.0 - self._COLOR_EMA_ALPHA) * _prev["mean"]
-                _ema_std = self._COLOR_EMA_ALPHA * _curr_std + (1.0 - self._COLOR_EMA_ALPHA) * _prev["std"]
+                _ema_mean = (
+                    self._COLOR_EMA_ALPHA * _curr_mean
+                    + (1.0 - self._COLOR_EMA_ALPHA) * _prev["mean"]
+                )
+                _ema_std = (
+                    self._COLOR_EMA_ALPHA * _curr_std
+                    + (1.0 - self._COLOR_EMA_ALPHA) * _prev["std"]
+                )
             else:
                 _ema_mean, _ema_std = _curr_mean, _curr_std
                 # LRU eviction before inserting a new entry
                 if len(self._color_stats_ema) >= self._COLOR_STATS_EMA_MAX:
                     self._color_stats_ema.popitem(last=False)
-            self._color_stats_ema[_ema_key] = {"mean": _ema_mean.detach(), "std": _ema_std.detach()}
+            self._color_stats_ema[_ema_key] = {
+                "mean": _ema_mean.detach(),
+                "std": _ema_std.detach(),
+            }
             # Remap original_face to have smoothed colour statistics
-            original_face_for_color = (((_face_f - _curr_mean) / _curr_std * _ema_std + _ema_mean).clamp(0, 255).to(original_face_512.dtype))
+            original_face_for_color = (
+                ((_face_f - _curr_mean) / _curr_std * _ema_std + _ema_mean)
+                .clamp(0, 255)
+                .to(original_face_512.dtype)
+            )
 
         if parameters.get("AutoColorEnableToggle", False):
             if parameters["AutoColorTransferTypeSelection"] == "CDF Histogram":
-                swap = faceutil.histogram_matching(original_face_for_color, swap, parameters["AutoColorBlendAmountSlider"])
-            elif parameters["AutoColorTransferTypeSelection"] == "CDF Histogram (Masked)":
-                swap = faceutil.histogram_matching_withmask(original_face_for_color, swap, mask_autocolor, parameters["AutoColorBlendAmountSlider"])
+                swap = faceutil.histogram_matching(
+                    original_face_for_color,
+                    swap,
+                    parameters["AutoColorBlendAmountSlider"],
+                )
+            elif (
+                parameters["AutoColorTransferTypeSelection"] == "CDF Histogram (Masked)"
+            ):
+                swap = faceutil.histogram_matching_withmask(
+                    original_face_for_color,
+                    swap,
+                    mask_autocolor,
+                    parameters["AutoColorBlendAmountSlider"],
+                )
             elif parameters["AutoColorTransferTypeSelection"] == "Reinhard Transfer":
-                swap = faceutil.apply_reinhard_color_transfer(original_face_for_color, swap, parameters["AutoColorBlendAmountSlider"])
-            elif parameters["AutoColorTransferTypeSelection"] == "Reinhard Transfer (Masked)":
-                swap = faceutil.apply_reinhard_color_transfer(original_face_for_color, swap, parameters["AutoColorBlendAmountSlider"], mask_autocolor)
+                swap = faceutil.apply_reinhard_color_transfer(
+                    original_face_for_color,
+                    swap,
+                    parameters["AutoColorBlendAmountSlider"],
+                )
+            elif (
+                parameters["AutoColorTransferTypeSelection"]
+                == "Reinhard Transfer (Masked)"
+            ):
+                swap = faceutil.apply_reinhard_color_transfer(
+                    original_face_for_color,
+                    swap,
+                    parameters["AutoColorBlendAmountSlider"],
+                    mask_autocolor,
+                )
             elif parameters["AutoColorTransferTypeSelection"] == "AdaIN (Core Masked)":
-                swap = faceutil.apply_adain_color_transfer(swap, original_face_for_color, swap_mask, parameters["AutoColorBlendAmountSlider"], calc_mask=mask_autocolor)
+                swap = faceutil.apply_adain_color_transfer(
+                    swap,
+                    original_face_for_color,
+                    swap_mask,
+                    parameters["AutoColorBlendAmountSlider"],
+                    calc_mask=mask_autocolor,
+                )
 
         # --- TRANSFER TEXTURE ---
         if parameters.get("TransferTextureEnableToggle", False):
@@ -1839,16 +2385,32 @@ class PipelineProcessor:
                 swap_mask_noFP = t512_mask(swap_mask_noFP)
 
             mask_input_vgg = t128_mask(calc_mask.clone())
-            mask_vgg_512 = torch.ones((1, 512, 512), dtype=torch.float32, device=self.worker.models_processor.device)
+            mask_vgg_512 = torch.ones(
+                (1, 512, 512),
+                dtype=torch.float32,
+                device=self.worker.models_processor.device,
+            )
             upper_thresh = parameters["TextureUpperLimitSlider"] / 100.0
 
             # 2. VGG Mask Processing
             if parameters.get("ExcludeOriginalVGGMaskEnableToggle", False):
                 # Fetch threshold values from UI
-                thr = parameters["VGGMaskThresholdSlider"] if parameters.get("ExcludeVGGMaskEnableToggle", False) else 0
+                thr = (
+                    parameters["VGGMaskThresholdSlider"]
+                    if parameters.get("ExcludeVGGMaskEnableToggle", False)
+                    else 0
+                )
                 # Retrieve BOTH the thresholded mask and the raw normalized difference (Size: 128x128)
-                mask_vgg_raw, diff_norm_texture_raw = self.worker.function_worker.face_masks.apply_vgg_mask_simple(
-                    swap, original_face_512, mask_input_vgg, center_pct=thr, softness_pct=100, feature_layer="combo_relu3_3_relu3_1", mode="smooth",
+                mask_vgg_raw, diff_norm_texture_raw = (
+                    self.worker.function_worker.apply_vgg_mask_simple(
+                        swap,
+                        original_face_512,
+                        mask_input_vgg,
+                        center_pct=thr,
+                        softness_pct=100,
+                        feature_layer="combo_relu3_3_relu3_1",
+                        mode="smooth",
+                    )
                 )
                 # Upscale to 512x512 IMMEDIATELY to prevent tensor mismatch
                 mask_vgg_512 = t512_mask(mask_vgg_raw).clamp(0.0, 1.0)
@@ -1881,14 +2443,22 @@ class PipelineProcessor:
                 # Combine VGG mask with the spatial FaceParser mask
                 if parameters.get("ExcludeOriginalVGGMaskEnableToggle", False):
                     # Clamp upper limits to protect extreme highlights/differences
-                    mask_vgg_512 = torch.where(mask_vgg_512 >= upper_thresh, upper_thresh, mask_vgg_512)
+                    mask_vgg_512 = torch.where(
+                        mask_vgg_512 >= upper_thresh, upper_thresh, mask_vgg_512
+                    )
 
-                mask_final_512 = (torch.max(mask_vgg_512 * (1.0 - feature_mask), 1.0 - calc_mask_dill)).clamp(0.0, 1.0)
+                mask_final_512 = (
+                    torch.max(mask_vgg_512 * (1.0 - feature_mask), 1.0 - calc_mask_dill)
+                ).clamp(0.0, 1.0)
             elif parameters.get("ExcludeOriginalVGGMaskEnableToggle", False):
                 # Clamp upper limits to protect extreme highlights/differences
-                mask_vgg_512 = torch.where(mask_vgg_512 >= upper_thresh, upper_thresh, mask_vgg_512)
+                mask_vgg_512 = torch.where(
+                    mask_vgg_512 >= upper_thresh, upper_thresh, mask_vgg_512
+                )
                 # Protect background if no spatial exclusion is active
-                mask_final_512 = torch.max(mask_vgg_512, 1.0 - calc_mask_dill).clamp(0.0, 1.0)
+                mask_final_512 = torch.max(mask_vgg_512, 1.0 - calc_mask_dill).clamp(
+                    0.0, 1.0
+                )
             else:
                 # Fallback to raw mask if everything is disabled
                 mask_final_512 = (1.0 - mask_forcalc_512).clamp(0.0, 1.0)
@@ -1993,7 +2563,7 @@ class PipelineProcessor:
             upper_value = parameters["DifferencingUpperLimitValueSlider"] / 100.0
 
             mask_diff_128, diff_norm_texture = (
-                self.worker.function_worker.face_masks.apply_perceptual_diff_onnx(
+                self.worker.function_worker.apply_perceptual_diff_onnx(
                     swapped_face_resized,
                     original_face_resized,
                     diff_mask_128,
@@ -2013,10 +2583,18 @@ class PipelineProcessor:
             inv_high = 1.0 / max((1.0 - upper_thresh), eps)
 
             res_low = diff_norm_texture * inv_lower * middle_value
-            res_mid = middle_value + (diff_norm_texture - lower_thresh) * inv_mid * (upper_value - middle_value)
-            res_high = upper_value + (diff_norm_texture - upper_thresh) * inv_high * (1.0 - upper_value)
+            res_mid = middle_value + (diff_norm_texture - lower_thresh) * inv_mid * (
+                upper_value - middle_value
+            )
+            res_high = upper_value + (diff_norm_texture - upper_thresh) * inv_high * (
+                1.0 - upper_value
+            )
 
-            piece = torch.where(diff_norm_texture < lower_thresh, res_low, torch.where(diff_norm_texture > upper_thresh, res_high, res_mid))
+            piece = torch.where(
+                diff_norm_texture < lower_thresh,
+                res_low,
+                torch.where(diff_norm_texture > upper_thresh, res_high, res_mid),
+            )
             mask512 = t512_mask(piece)
             if parameters.get("DifferencingBlendAmountSlider", 0) > 0:
                 b = parameters["DifferencingBlendAmountSlider"]
@@ -2024,20 +2602,36 @@ class PipelineProcessor:
                 mask512 = gauss(mask512.float())
 
             mask512 = torch.max((mask512), 1 - calc_mask_dill).clamp_(0, 1)
-            swap = torch.lerp(original_face_512.float(), swap.float(), mask512).clamp_(0, 255).to(swap.dtype).contiguous()
+            swap = (
+                torch.lerp(original_face_512.float(), swap.float(), mask512)
+                .clamp_(0, 255)
+                .to(swap.dtype)
+                .contiguous()
+            )
             diff_mask = 1 - mask512.clone()
 
         # Face Editor (After Texture Transfer)
-        if (parameters["FaceEditorEnableToggle"] and self.worker.local_control_state_from_feeder.get("edit_enabled", True) and 
-            parameters["FaceEditorBeforeTypeSelection"] == "After Texture Transfer"):
+        if (
+            parameters["FaceEditorEnableToggle"]
+            and self.worker.local_control_state_from_feeder.get("edit_enabled", True)
+            and parameters["FaceEditorBeforeTypeSelection"] == "After Texture Transfer"
+        ):
             editor_mask = t512_mask(swap_mask).clone()
             if swap.shape[-1] != 512:
                 swap = t512_mask(swap)
 
-            swap = torch.lerp(original_face_512.float(), swap.float(), editor_mask).to(swap.dtype).contiguous()
-            swap = self.worker.function_worker.frame_edits.swap_edit_face_core(swap, swap, parameters, control)
+            swap = (
+                torch.lerp(original_face_512.float(), swap.float(), editor_mask)
+                .to(swap.dtype)
+                .contiguous()
+            )
+            swap = self.worker.function_worker.swap_edit_face_core(
+                swap, swap, parameters, control
+            )
             if swap_mask_noFP.shape[-1] != swap.shape[-1]:
-                swap_mask = _resize_func(swap_mask_noFP, (swap.shape[-2], swap.shape[-1]), is_mask=True)
+                swap_mask = _resize_func(
+                    swap_mask_noFP, (swap.shape[-2], swap.shape[-1]), is_mask=True
+                )
             else:
                 swap_mask = swap_mask_noFP
 
@@ -2048,72 +2642,140 @@ class PipelineProcessor:
 
             # 2. Apply color transformations
             swap_adj = torch.unsqueeze(swap, 0).contiguous()
-            swap_adj = v2.functional.adjust_gamma(swap_adj, parameters["ColorGammaDecimalSlider"], 1.0)
+            swap_adj = v2.functional.adjust_gamma(
+                swap_adj, parameters["ColorGammaDecimalSlider"], 1.0
+            )
             swap_adj = torch.squeeze(swap_adj).permute(1, 2, 0).type(torch.float32)
 
-            del_color = torch.tensor([parameters["ColorRedSlider"], parameters["ColorGreenSlider"], parameters["ColorBlueSlider"]], device=self.worker.models_processor.device)
+            del_color = torch.tensor(
+                [
+                    parameters["ColorRedSlider"],
+                    parameters["ColorGreenSlider"],
+                    parameters["ColorBlueSlider"],
+                ],
+                device=self.worker.models_processor.device,
+            )
             swap_adj += del_color
-            swap_adj = torch.clamp(swap_adj, min=0.0, max=255.0).permute(2, 0, 1) / 255.0
+            swap_adj = (
+                torch.clamp(swap_adj, min=0.0, max=255.0).permute(2, 0, 1) / 255.0
+            )
 
-            swap_adj = v2.functional.adjust_brightness(swap_adj, parameters["ColorBrightnessDecimalSlider"])
-            swap_adj = v2.functional.adjust_contrast(swap_adj, parameters["ColorContrastDecimalSlider"])
-            swap_adj = v2.functional.adjust_saturation(swap_adj, parameters["ColorSaturationDecimalSlider"])
-            swap_adj = v2.functional.adjust_sharpness(swap_adj, parameters["ColorSharpnessDecimalSlider"])
-            swap_adj = v2.functional.adjust_hue(swap_adj, parameters["ColorHueDecimalSlider"])
+            swap_adj = v2.functional.adjust_brightness(
+                swap_adj, parameters["ColorBrightnessDecimalSlider"]
+            )
+            swap_adj = v2.functional.adjust_contrast(
+                swap_adj, parameters["ColorContrastDecimalSlider"]
+            )
+            swap_adj = v2.functional.adjust_saturation(
+                swap_adj, parameters["ColorSaturationDecimalSlider"]
+            )
+            swap_adj = v2.functional.adjust_sharpness(
+                swap_adj, parameters["ColorSharpnessDecimalSlider"]
+            )
+            swap_adj = v2.functional.adjust_hue(
+                swap_adj, parameters["ColorHueDecimalSlider"]
+            )
 
             swap_adj = swap_adj * 255.0
 
             # 3. Blend back using a Soft Padding Mask.
             # Apply a strong blur to the boundary mask for a seamless transition
-            color_bounds_mask = v2.functional.gaussian_blur((swap_pre_color.sum(dim=0, keepdim=True) > 0.05).float(), kernel_size=15, sigma=5.0)
-            swap = torch.lerp(swap_pre_color.float(), swap_adj.float(), color_bounds_mask).to(swap.dtype).contiguous()
+            color_bounds_mask = v2.functional.gaussian_blur(
+                (swap_pre_color.sum(dim=0, keepdim=True) > 0.05).float(),
+                kernel_size=15,
+                sigma=5.0,
+            )
+            swap = (
+                torch.lerp(swap_pre_color.float(), swap_adj.float(), color_bounds_mask)
+                .to(swap.dtype)
+                .contiguous()
+            )
 
         # --- RESTORATION 2 (END) ---
         # FW-QUAL-01/02: duplicated ~60-line block extracted to _apply_restorer_with_auto
-        if parameters["FaceRestorerEnable2Toggle"] and parameters["FaceRestorerEnable2EndToggle"]:
+        if (
+            parameters["FaceRestorerEnable2Toggle"]
+            and parameters["FaceRestorerEnable2EndToggle"]
+        ):
             swap_original2 = swap.clone()
             swap2 = self.worker.function_worker.apply_facerestorer(
-                swap, parameters["FaceRestorerDetType2Selection"], parameters["FaceRestorerType2Selection"],
-                parameters["FaceRestorerBlend2Slider"], parameters["FaceFidelityWeight2DecimalSlider"],
-                control["DetectorScoreSlider"], kps_ref, slot_id=2,
+                swap,
+                parameters["FaceRestorerDetType2Selection"],
+                parameters["FaceRestorerType2Selection"],
+                parameters["FaceRestorerBlend2Slider"],
+                parameters["FaceFidelityWeight2DecimalSlider"],
+                control["DetectorScoreSlider"],
+                kps_ref,
+                slot_id=2,
             )
             swap = self._apply_restorer_with_auto(
-                swap, swap2, swap_original2, original_face_512, mask_forcalc_512, parameters, tform.scale, debug, debug_info, slot_id=2,
+                swap,
+                swap2,
+                swap_original2,
+                original_face_512,
+                mask_forcalc_512,
+                parameters,
+                tform.scale,
+                debug,
+                debug_info,
+                slot_id=2,
             )
 
         # --- MOUTH ENHANCEMENT & ALIGNMENT (POST-RESTORER) ---
         if parameters.get("MouthParserStretchAfterToggle", False):
             mouth_overlay_pkg = None
-            if hasattr(self.worker.function_worker, "face_masks"):
+            if hasattr(self.worker.function_worker, "get_mouth_overlay"):
                 # 'swap' now contains the fully restored face
-                mouth_overlay_pkg = self.worker.function_worker.face_masks.get_mouth_overlay(swap, original_face_512, parameters)
+                mouth_overlay_pkg = self.worker.function_worker.get_mouth_overlay(
+                    swap, original_face_512, parameters
+                )
             if mouth_overlay_pkg is not None:
                 overlay_rgb, overlay_mask = mouth_overlay_pkg
                 if overlay_rgb is not None and overlay_mask is not None:
                     if overlay_rgb.shape[-1] != swap.shape[-1]:
-                        overlay_rgb = _resize_func(overlay_rgb, (swap.shape[-2], swap.shape[-1]), is_mask=False)
-                        overlay_mask = _resize_func(overlay_mask.unsqueeze(0), (swap.shape[-2], swap.shape[-1]), is_mask=True).squeeze(0)
+                        overlay_rgb = _resize_func(
+                            overlay_rgb, (swap.shape[-2], swap.shape[-1]), is_mask=False
+                        )
+                        overlay_mask = _resize_func(
+                            overlay_mask.unsqueeze(0),
+                            (swap.shape[-2], swap.shape[-1]),
+                            is_mask=True,
+                        ).squeeze(0)
                     swap = swap * (1.0 - overlay_mask) + overlay_rgb * overlay_mask
 
         # --- FACE PARSER (END) ---
-        if parameters.get("FaceParserEnableToggle") and parameters.get("FaceParserEndToggle"):
-            out = self.worker.function_worker.process_masks_and_masks(swap, original_face_512, parameters, control)
+        if parameters.get("FaceParserEnableToggle") and parameters.get(
+            "FaceParserEndToggle"
+        ):
+            out = self.worker.function_worker.process_masks_and_masks(
+                swap, original_face_512, parameters, control
+            )
             FaceParser_mask = out.get("FaceParser_mask", None)
             mouth_debug_512 = out.get("mouth_debug", mouth_debug_512)
             mouth_debug_teeth_512 = out.get("mouth_debug_teeth", mouth_debug_teeth_512)
             if FaceParser_mask is not None:
                 if FaceParser_mask.shape[-1] != swap_mask.shape[-1]:
-                    FaceParser_mask = _resize_func(FaceParser_mask, (swap.shape[-2], swap.shape[-1]), is_mask=True)
+                    FaceParser_mask = _resize_func(
+                        FaceParser_mask, (swap.shape[-2], swap.shape[-1]), is_mask=True
+                    )
                 swap_mask.mul_(FaceParser_mask)
 
         # RECALCULATE FINAL CORE STATS MASK (For Ending Color Transfer)
         mask_autocolor_end = mask_forcalc_512.clone()
         # If FaceParser End pass was active, intersect it strictly to exclude eyes/mouth from stats
-        if parameters.get("FaceParserEnableToggle") and parameters.get("FaceParserEndToggle") and FaceParser_mask is not None:
+        if (
+            parameters.get("FaceParserEnableToggle")
+            and parameters.get("FaceParserEndToggle")
+            and FaceParser_mask is not None
+        ):
             # Create a hard binary mask from the soft parser mask to protect stats
             fp_core = (FaceParser_mask > 0.5).float()
             if fp_core.shape[-1] != mask_autocolor_end.shape[-1]:
-                fp_core = _resize_func(fp_core, (mask_autocolor_end.shape[-2], mask_autocolor_end.shape[-1]), is_mask=True)
+                fp_core = _resize_func(
+                    fp_core,
+                    (mask_autocolor_end.shape[-2], mask_autocolor_end.shape[-1]),
+                    is_mask=True,
+                )
             mask_autocolor_end = mask_autocolor_end * fp_core
         # Ensure it is strictly binary
         mask_autocolor_end = (mask_autocolor_end > 0.5).float()
@@ -2121,23 +2783,61 @@ class PipelineProcessor:
         # AutoColor End (EndingColorTransfer)
         if parameters.get("EndingColorTransferEnableToggle", False):
             if parameters["EndingColorTransferTypeSelection"] == "CDF Histogram":
-                swap = faceutil.histogram_matching(original_face_512, swap, parameters["EndingColorBlendAmountSlider"])
-            elif parameters["EndingColorTransferTypeSelection"] == "CDF Histogram (Masked)":
-                swap = faceutil.histogram_matching_withmask(original_face_512, swap, mask_autocolor_end, parameters["EndingColorBlendAmountSlider"])
+                swap = faceutil.histogram_matching(
+                    original_face_512, swap, parameters["EndingColorBlendAmountSlider"]
+                )
+            elif (
+                parameters["EndingColorTransferTypeSelection"]
+                == "CDF Histogram (Masked)"
+            ):
+                swap = faceutil.histogram_matching_withmask(
+                    original_face_512,
+                    swap,
+                    mask_autocolor_end,
+                    parameters["EndingColorBlendAmountSlider"],
+                )
             elif parameters["EndingColorTransferTypeSelection"] == "Reinhard Transfer":
-                swap = faceutil.apply_reinhard_color_transfer(original_face_512, swap, parameters["EndingColorBlendAmountSlider"])
-            elif parameters["EndingColorTransferTypeSelection"] == "Reinhard Transfer (Masked)":
-                swap = faceutil.apply_reinhard_color_transfer(original_face_512, swap, parameters["EndingColorBlendAmountSlider"], mask_autocolor_end)
-            elif parameters["EndingColorTransferTypeSelection"] == "AdaIN (Core Masked)":
-                swap = faceutil.apply_adain_color_transfer(swap, original_face_512, swap_mask, parameters["EndingColorBlendAmountSlider"], calc_mask=mask_autocolor_end)
+                swap = faceutil.apply_reinhard_color_transfer(
+                    original_face_512, swap, parameters["EndingColorBlendAmountSlider"]
+                )
+            elif (
+                parameters["EndingColorTransferTypeSelection"]
+                == "Reinhard Transfer (Masked)"
+            ):
+                swap = faceutil.apply_reinhard_color_transfer(
+                    original_face_512,
+                    swap,
+                    parameters["EndingColorBlendAmountSlider"],
+                    mask_autocolor_end,
+                )
+            elif (
+                parameters["EndingColorTransferTypeSelection"] == "AdaIN (Core Masked)"
+            ):
+                swap = faceutil.apply_adain_color_transfer(
+                    swap,
+                    original_face_512,
+                    swap_mask,
+                    parameters["EndingColorBlendAmountSlider"],
+                    calc_mask=mask_autocolor_end,
+                )
 
         # Third denoiser pass - After all restorations, colour corrections and ending colour transfer.
         if control.get("DenoiserAfterRestorersToggle", False):
             # We use mask_autocolor_end here because it is the most strict mask available at the end of the pipeline
-            swap = self._apply_denoiser_pass(swap, control, "After", kv_map, color_mask=mask_autocolor_end, blend_mask=swap_mask)
+            swap = self._apply_denoiser_pass(
+                swap,
+                control,
+                "After",
+                kv_map,
+                color_mask=mask_autocolor_end,
+                blend_mask=swap_mask,
+            )
 
         # Final blending
-        if parameters["FinalBlendAdjEnableToggle"] and parameters["FinalBlendAmountSlider"] > 0:
+        if (
+            parameters["FinalBlendAdjEnableToggle"]
+            and parameters["FinalBlendAmountSlider"] > 0
+        ):
             final_blur_strength = parameters["FinalBlendAmountSlider"]
             kernel_size = 2 * final_blur_strength + 1
             sigma = final_blur_strength * 0.1
@@ -2196,7 +2896,11 @@ class PipelineProcessor:
 
         if parameters["ColorNoiseDecimalSlider"] > 0:
             swap = swap.to(torch.float32)
-            noise = (torch.rand_like(swap, dtype=torch.float32) - 0.5) * 2 * parameters["ColorNoiseDecimalSlider"]
+            noise = (
+                (torch.rand_like(swap, dtype=torch.float32) - 0.5)
+                * 2
+                * parameters["ColorNoiseDecimalSlider"]
+            )
             swap = torch.clamp(swap + noise, 0.0, 255.0)
 
         if is_perspective_crop:
@@ -2223,44 +2927,105 @@ class PipelineProcessor:
         swap = torch.mul(swap, swap_mask)
 
         # --- VIEW MODES ---
-        original_face_512_clone = original_face_512.clone().type(torch.uint8).permute(1, 2, 0) if self.worker.is_view_face_compare else None
-        
+        original_face_512_clone = (
+            original_face_512.clone().type(torch.uint8).permute(1, 2, 0)
+            if self.worker.is_view_face_compare
+            else None
+        )
+
         swap_mask_clone = None
         if self.worker.is_view_face_mask:
             mask_show_type = parameters.get("MaskShowSelection", "swap_mask")
             if mask_show_type == "swap_mask":
-                swap_mask_clone = torch.ones_like(swap_mask) if (parameters["FaceEditorEnableToggle"] and self.worker.local_control_state_from_feeder.get("edit_enabled", True)) else swap_mask.clone()
+                swap_mask_clone = (
+                    torch.ones_like(swap_mask)
+                    if (
+                        parameters["FaceEditorEnableToggle"]
+                        and self.worker.local_control_state_from_feeder.get(
+                            "edit_enabled", True
+                        )
+                    )
+                    else swap_mask.clone()
+                )
             elif mask_show_type == "diff":
                 swap_mask_clone = diff_mask.clone()
             elif mask_show_type == "texture":
                 swap_mask_clone = texture_mask_view.clone()
 
             if swap_mask_clone is not None:
-                if swap_mask_clone.shape[-1] != 512: swap_mask_clone = t512_mask(swap_mask_clone)
-                swap_mask_clone = torch.mul(torch.cat((torch.sub(1, swap_mask_clone),) * 3, 0).permute(1, 2, 0), 255.0).type(torch.uint8)
+                if swap_mask_clone.shape[-1] != 512:
+                    swap_mask_clone = t512_mask(swap_mask_clone)
+                swap_mask_clone = torch.mul(
+                    torch.cat((torch.sub(1, swap_mask_clone),) * 3, 0).permute(1, 2, 0),
+                    255.0,
+                ).type(torch.uint8)
 
         # --- OPTIMIZED UNTRANSFORM (PASTE BACK) USING KORNIA ---
         # Eliminates CPU bound calculations, manual slicing, and memory-heavy paddings.
         # Warps directly to the full frame resolution in one highly optimized GPU pass.
 
-        M_inv = torch.from_numpy(cast(np.ndarray, tform.inverse.params)[0:2]).float().unsqueeze(0).to(self.worker.models_processor.device)
+        M_inv = (
+            torch.from_numpy(cast(np.ndarray, tform.inverse.params)[0:2])
+            .float()
+            .unsqueeze(0)
+            .to(self.worker.models_processor.device)
+        )
         dsize = (img.shape[1], img.shape[2])
 
         # Warp the 512x512 face and mask directly into the full frame space
-        swap_full = kgm.warp_affine(swap.unsqueeze(0).float(), M_inv, dsize=dsize, mode="bilinear", padding_mode="zeros", align_corners=True).squeeze(0)
-        swap_mask_full = kgm.warp_affine(swap_mask.unsqueeze(0).float(), M_inv, dsize=dsize, mode="bilinear", padding_mode="zeros", align_corners=True).squeeze(0)
+        swap_full = kgm.warp_affine(
+            swap.unsqueeze(0).float(),
+            M_inv,
+            dsize=dsize,
+            mode="bilinear",
+            padding_mode="zeros",
+            align_corners=True,
+        ).squeeze(0)
+        swap_mask_full = kgm.warp_affine(
+            swap_mask.unsqueeze(0).float(),
+            M_inv,
+            dsize=dsize,
+            mode="bilinear",
+            padding_mode="zeros",
+            align_corners=True,
+        ).squeeze(0)
 
-        img = (swap_full + (img.float() * (1.0 - swap_mask_full))).clamp_(0, 255).type(torch.uint8)
+        img = (
+            (swap_full + (img.float() * (1.0 - swap_mask_full)))
+            .clamp_(0, 255)
+            .type(torch.uint8)
+        )
 
         # --- DEBUG: Draw mouth-region contours on full-frame preview ---
         # Colors: mouth(11+12+13)=green, teeth-keep=cyan.
         if parameters.get("AutoMouthShowDebugOutlineToggle", False):
-            for _mask_512, _color in [(mouth_debug_512, [0, 255, 0]), (mouth_debug_teeth_512, [0, 255, 255])]:
+            for _mask_512, _color in [
+                (mouth_debug_512, [0, 255, 0]),
+                (mouth_debug_teeth_512, [0, 255, 255]),
+            ]:
                 if _mask_512 is not None:
-                    _mf = kgm.warp_affine(_mask_512.unsqueeze(0).unsqueeze(0).float(), M_inv, dsize=dsize, mode="bilinear", padding_mode="zeros", align_corners=True).squeeze(0).squeeze(0)
+                    _mf = (
+                        kgm.warp_affine(
+                            _mask_512.unsqueeze(0).unsqueeze(0).float(),
+                            M_inv,
+                            dsize=dsize,
+                            mode="bilinear",
+                            padding_mode="zeros",
+                            align_corners=True,
+                        )
+                        .squeeze(0)
+                        .squeeze(0)
+                    )
                     _bin = (_mf > 0.5).float().unsqueeze(0).unsqueeze(0)
-                    _edge = (F.max_pool2d(_bin, kernel_size=3, stride=1, padding=1) - (-F.max_pool2d(-_bin, kernel_size=3, stride=1, padding=1))).squeeze(0).squeeze(0) > 0.0
-                    img[0][_edge], img[1][_edge], img[2][_edge] = _color[0], _color[1], _color[2]
+                    _edge = (
+                        F.max_pool2d(_bin, kernel_size=3, stride=1, padding=1)
+                        - (-F.max_pool2d(-_bin, kernel_size=3, stride=1, padding=1))
+                    ).squeeze(0).squeeze(0) > 0.0
+                    img[0][_edge], img[1][_edge], img[2][_edge] = (
+                        _color[0],
+                        _color[1],
+                        _color[2],
+                    )
 
         return img, original_face_512_clone, swap_mask_clone
 
@@ -2357,7 +3122,9 @@ class PipelineProcessor:
 
         return weighted * 255  # [C, H, W]
 
-    def apply_gabor_filter_torch(self, image, kernel_size, sigma, lambd, gamma, psi, theta_values):
+    def apply_gabor_filter_torch(
+        self, image, kernel_size, sigma, lambd, gamma, psi, theta_values
+    ):
         """
         Applies Gabor filter bank to image.
 
