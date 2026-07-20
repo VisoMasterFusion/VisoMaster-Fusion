@@ -1,5 +1,5 @@
 import math
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Any
 
 import torch
 import numpy as np
@@ -8,6 +8,7 @@ from app.processors.utils import faceutil
 
 if TYPE_CHECKING:
     from app.processors.models_processor import ModelsProcessor
+    from app.processors.workers.function_worker import FunctionWorker
 
 
 class FrameEnhancers:
@@ -18,17 +19,26 @@ class FrameEnhancers:
     of various ONNX models (RealESRGAN, BSRGan, Deoldify, DDColor, etc.).
     """
 
-    def __init__(self, models_processor: "ModelsProcessor"):
+    def __init__(
+        self,
+        models_processor: "ModelsProcessor",
+        function_worker: "FunctionWorker",
+    ) -> None:
         """
         Initializes the FrameEnhancers class.
 
         Args:
             models_processor (ModelsProcessor): The central processor that manages
                                                model loading, unloading, and execution.
+            function_worker (FunctionWorker): The central FunctionWorker instance. Passed to sub-processors
+                                              so they can route calls through this Facade.
         """
         self.models_processor = models_processor
-        self.current_enhancer_model = None  # Tracks the currently active enhancer model
-        self.model_map = {
+        self.function_worker = function_worker
+        self.current_enhancer_model: str | None = (
+            None  # Tracks the currently active enhancer model
+        )
+        self.model_map: dict[str, str] = {
             # Maps user-facing names to internal model keys (used in models_processor)
             "RealEsrgan-x2-Plus": "RealEsrganx2Plus",
             "RealEsrgan-x4-Plus": "RealEsrganx4Plus",
@@ -44,7 +54,7 @@ class FrameEnhancers:
             "DDColor": "DDcolor",
         }
 
-    def unload_models(self):
+    def unload_models(self) -> None:
         """
         Unloads the currently active enhancer model to free up VRAM.
         This is thread-safe, using the model_lock from models_processor.
@@ -55,8 +65,8 @@ class FrameEnhancers:
                 self.current_enhancer_model = None
 
     def _run_model_with_lazy_build_check(
-        self, model_name: str, ort_session, io_binding
-    ):
+        self, model_name: str, ort_session: Any, io_binding: Any
+    ) -> None:
         """
         Runs the ONNX session with IOBinding, handling TensorRT lazy build dialogs.
 
@@ -79,21 +89,33 @@ class FrameEnhancers:
             )
 
         try:
+            # PRE-INFERENCE SYNC
             if self.models_processor.device_type == "cuda":
                 torch.cuda.current_stream().synchronize()
+            elif self.models_processor.device_type != "cpu":
+                if hasattr(self.models_processor, "syncvec"):
+                    self.models_processor.syncvec.cpu()
 
             ort_session.run_with_iobinding(io_binding)
 
+            # POST-INFERENCE SYNC
             if self.models_processor.device_type == "cuda":
                 torch.cuda.current_stream().synchronize()
+            elif self.models_processor.device_type != "cpu":
+                if hasattr(self.models_processor, "syncvec"):
+                    self.models_processor.syncvec.cpu()
         finally:
             # Always hide the dialog, even if the run fails
             if is_lazy_build:
                 self.models_processor.hide_build_dialog.emit()
 
     def run_enhance_frame_tile_process(
-        self, img, enhancer_type, tile_size=256, scale=1
-    ):
+        self,
+        img: torch.Tensor,
+        enhancer_type: str,
+        tile_size: int = 256,
+        scale: int = 1,
+    ) -> torch.Tensor:
         """
         Applies a selected enhancement model to an image using a tiling process.
         This is necessary for high-resolution images that don't fit into
@@ -202,7 +224,7 @@ class FrameEnhancers:
 
     def _run_enhancer_model(
         self, model_name: str, image: torch.Tensor, output: torch.Tensor
-    ):
+    ) -> None:
         """
         Private helper to run any specified enhancer model.
 
@@ -226,7 +248,7 @@ class FrameEnhancers:
         # Lazy-load the model if it's not already in memory
         # 1. Thread-safe loading
         with self.models_processor.model_lock:
-            if not self.models_processor.models[model_name]:
+            if not self.models_processor.models.get(model_name):
                 self.models_processor.models[model_name] = (
                     self.models_processor.load_model(model_name)
                 )
@@ -276,7 +298,7 @@ class FrameEnhancers:
         # Run the model with lazy build handling and synchronization
         self._run_model_with_lazy_build_check(model_name, ort_session, io_binding)
 
-    def run_realesrganx2(self, image, output):
+    def run_realesrganx2(self, image: torch.Tensor, output: torch.Tensor) -> None:
         """
         Runs the RealEsrganx2Plus model on a given image tensor.
         This function is typically called per-tile by run_enhance_frame_tile_process.
@@ -287,7 +309,7 @@ class FrameEnhancers:
         """
         self._run_enhancer_model("RealEsrganx2Plus", image, output)
 
-    def run_realesrganx4(self, image, output):
+    def run_realesrganx4(self, image: torch.Tensor, output: torch.Tensor) -> None:
         """
         Runs the RealEsrganx4Plus model on a given image tensor.
         This function is typically called per-tile by run_enhance_frame_tile_process.
@@ -298,7 +320,7 @@ class FrameEnhancers:
         """
         self._run_enhancer_model("RealEsrganx4Plus", image, output)
 
-    def run_realesrx4v3(self, image, output):
+    def run_realesrx4v3(self, image: torch.Tensor, output: torch.Tensor) -> None:
         """
         Runs the RealEsrx4v3 model on a given image tensor.
         This function is typically called per-tile by run_enhance_frame_tile_process.
@@ -309,7 +331,7 @@ class FrameEnhancers:
         """
         self._run_enhancer_model("RealEsrx4v3", image, output)
 
-    def run_bsrganx2(self, image, output):
+    def run_bsrganx2(self, image: torch.Tensor, output: torch.Tensor) -> None:
         """
         Runs the BSRGANx2 model on a given image tensor.
         This function is typically called per-tile by run_enhance_frame_tile_process.
@@ -320,7 +342,7 @@ class FrameEnhancers:
         """
         self._run_enhancer_model("BSRGANx2", image, output)
 
-    def run_bsrganx4(self, image, output):
+    def run_bsrganx4(self, image: torch.Tensor, output: torch.Tensor) -> None:
         """
         Runs the BSRGANx4 model on a given image tensor.
         This function is typically called per-tile by run_enhance_frame_tile_process.
@@ -331,7 +353,7 @@ class FrameEnhancers:
         """
         self._run_enhancer_model("BSRGANx4", image, output)
 
-    def run_ultrasharpx4(self, image, output):
+    def run_ultrasharpx4(self, image: torch.Tensor, output: torch.Tensor) -> None:
         """
         Runs the UltraSharpx4 model on a given image tensor.
         This function is typically called per-tile by run_enhance_frame_tile_process.
@@ -342,7 +364,7 @@ class FrameEnhancers:
         """
         self._run_enhancer_model("UltraSharpx4", image, output)
 
-    def run_ultramixx4(self, image, output):
+    def run_ultramixx4(self, image: torch.Tensor, output: torch.Tensor) -> None:
         """
         Runs the UltraMixx4 model on a given image tensor.
         This function is typically called per-tile by run_enhance_frame_tile_process.
@@ -353,7 +375,7 @@ class FrameEnhancers:
         """
         self._run_enhancer_model("UltraMixx4", image, output)
 
-    def run_deoldify_artistic(self, image, output):
+    def run_deoldify_artistic(self, image: torch.Tensor, output: torch.Tensor) -> None:
         """
         Runs the DeoldifyArt (artistic colorization) model on a given image tensor.
 
@@ -363,7 +385,7 @@ class FrameEnhancers:
         """
         self._run_enhancer_model("DeoldifyArt", image, output)
 
-    def run_deoldify_stable(self, image, output):
+    def run_deoldify_stable(self, image: torch.Tensor, output: torch.Tensor) -> None:
         """
         Runs the DeoldifyStable (stable colorization) model on a given image tensor.
 
@@ -373,7 +395,7 @@ class FrameEnhancers:
         """
         self._run_enhancer_model("DeoldifyStable", image, output)
 
-    def run_deoldify_video(self, image, output):
+    def run_deoldify_video(self, image: torch.Tensor, output: torch.Tensor) -> None:
         """
         Runs the DeoldifyVideo (video colorization) model on a given image tensor.
 
@@ -383,7 +405,7 @@ class FrameEnhancers:
         """
         self._run_enhancer_model("DeoldifyVideo", image, output)
 
-    def run_ddcolor_artistic(self, image, output):
+    def run_ddcolor_artistic(self, image: torch.Tensor, output: torch.Tensor) -> None:
         """
         Runs the DDColorArt (artistic colorization) model on a given image tensor.
 
@@ -393,7 +415,7 @@ class FrameEnhancers:
         """
         self._run_enhancer_model("DDColorArt", image, output)
 
-    def run_ddcolor(self, image, output):
+    def run_ddcolor(self, image: torch.Tensor, output: torch.Tensor) -> None:
         """
         Runs the DDcolor (general colorization) model on a given image tensor.
 
@@ -403,7 +425,7 @@ class FrameEnhancers:
         """
         self._run_enhancer_model("DDcolor", image, output)
 
-    def enhance_core(self, img, control):
+    def enhance_core(self, img: torch.Tensor, control: dict[str, Any]) -> torch.Tensor:
         enhancer_type = control["FrameEnhancerTypeSelection"]
 
         match enhancer_type:
@@ -443,7 +465,7 @@ class FrameEnhancers:
                 image = torch.clamp(image, 0, 1)
                 image = torch.mul(image, max_range)
 
-                # Blend
+                # --- Fused Hardware Lerp Blending ---
                 alpha = float(control["FrameEnhancerBlendSlider"]) / 100.0
 
                 t_scale = v2.Resize(
@@ -451,8 +473,10 @@ class FrameEnhancers:
                     interpolation=v2.InterpolationMode.BILINEAR,
                     antialias=False,
                 )
-                img = t_scale(img)
-                img = torch.add(torch.mul(image, alpha), torch.mul(img, 1 - alpha))
+                img_scaled = t_scale(img).to(dtype=torch.float32)
+
+                img = torch.lerp(img_scaled, image, alpha)
+
                 if max_range == 255:
                     img = img.type(torch.uint8)
                 else:
@@ -508,13 +532,11 @@ class FrameEnhancers:
                 hires_yuv = faceutil.rgb_to_yuv(img_float, normalize=True)
 
                 hires_yuv[1:3, :, :] = output_yuv[1:3, :, :]
-
                 hires_rgb = faceutil.yuv_to_rgb(hires_yuv, normalize=True)
 
+                # --- Fused Hardware Lerp Blending ---
                 alpha = float(control["FrameEnhancerBlendSlider"]) / 100.0
-                blended = torch.add(
-                    torch.mul(hires_rgb, alpha), torch.mul(img_float, 1 - alpha)
-                )
+                blended = torch.lerp(img_float, hires_rgb, alpha)
 
                 img = torch.clamp(blended, 0, 255).type(torch.uint8)
 
@@ -582,11 +604,9 @@ class FrameEnhancers:
                     output_lab, True
                 )  # (3, original_H, original_W)
 
-                # Miscela le immagini
+                # --- Fused Hardware Lerp Blending ---
                 alpha = float(control["FrameEnhancerBlendSlider"]) / 100.0
-                blended_img = torch.add(
-                    torch.mul(output_rgb, alpha), torch.mul(img, 1 - alpha)
-                )
+                blended_img = torch.lerp(img.to(dtype=torch.float32), output_rgb, alpha)
 
                 # Converti in uint8
                 img = blended_img.type(torch.uint8)

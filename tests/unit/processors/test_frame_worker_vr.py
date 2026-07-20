@@ -329,7 +329,7 @@ def test_is_left_eye_is_none_for_single_eye_right():
 def test_empty_bboxes_returns_original(mock_main_window, small_equirect):
     """When no faces are detected, _process_frame_vr180 returns the input tensor."""
     # mock run_detect to return empty
-    mock_main_window.models_processor.run_detect.return_value = (
+    mock_main_window.function_worker.run_detect.return_value = (
         np.empty((0, 5), dtype=np.float32),
         None,
         None,
@@ -383,7 +383,7 @@ def test_no_crops_skips_perspective_converter(mock_main_window, small_equirect):
     """If processed_perspective_crops_details is empty, PerspectiveConverter must not be created."""
     original_tensor = torch.from_numpy(small_equirect).permute(2, 0, 1).to(CPU)
 
-    mock_main_window.models_processor.run_detect.return_value = (
+    mock_main_window.function_worker.run_detect.return_value = (
         np.empty((0, 5), dtype=np.float32),
         None,
         None,

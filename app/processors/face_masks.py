@@ -13,6 +13,7 @@ from app.processors.models_data import models_dir
 
 if TYPE_CHECKING:
     from app.processors.models_processor import ModelsProcessor
+    from app.processors.workers.function_worker import FunctionWorker
 
 _VGG_MEAN = torch.tensor([0.485, 0.456, 0.406]).view(3, 1, 1)
 _VGG_STD = torch.tensor([0.229, 0.224, 0.225]).view(3, 1, 1)
@@ -24,8 +25,14 @@ class FaceMasks:
     Handles FaceParser, Occluder, XSeg, CLIP, and VGG-based differencing.
     """
 
-    def __init__(self, models_processor: "ModelsProcessor"):
+    def __init__(
+        self,
+        models_processor: "ModelsProcessor",
+        function_worker: "FunctionWorker",
+    ):
         self.models_processor = models_processor
+        self.function_worker = function_worker
+
         # Caches for morphological operations to avoid re-allocating tensors
         self._morph_kernels: Dict[tuple, torch.Tensor] = {}
         self._kernel_cache: Dict[str, torch.Tensor] = {}
@@ -1253,43 +1260,6 @@ class FaceMasks:
             if is_lazy_build:
                 self.models_processor.hide_build_dialog.emit()
 
-    def run_faceparser(self, img, out):
-        """
-        Robust runner for FaceParser that bypasses generic run_onnx
-        to avoid 'features' NodeArg error.
-        """
-        model_key = "FaceParser"
-
-        # 1. Try TensorRT Execution first (Preferred)
-        if hasattr(self.models_processor, "models_trt"):
-            trt_model = self.models_processor.models_trt.get(model_key)
-            if trt_model is not None:
-                trt_model.run(img, out)
-                return
-
-        # 2. Try ONNX Runtime Execution
-        session = self.models_processor.models.get(model_key)
-
-        if session is None:
-            session = self.models_processor.load_model(model_key)
-
-        if session is not None:
-            try:
-                output_names = [x.name for x in session.get_outputs()]
-                input_name = session.get_inputs()[0].name
-
-                if img.is_cuda:
-                    img_np = img.cpu().numpy()
-                else:
-                    img_np = img.numpy()
-
-                result = session.run(output_names, {input_name: img_np})[0]
-                out.copy_(torch.from_numpy(result))
-            except Exception as e:
-                print(f"[ERROR] run_faceparser (ONNX) failed: {e}")
-        else:
-            print("[ERROR] FaceParser model not found or failed to load.")
-
     def apply_dfl_xseg(
         self,
         img: torch.Tensor,
@@ -1573,7 +1543,9 @@ class FaceMasks:
             if is_lazy_build:
                 self.models_processor.hide_build_dialog.emit()
 
-    def run_onnx(self, image_tensor, output_tensor, model_key):
+    def run_onnx(
+        self, image_tensor: torch.Tensor, output_tensor: torch.Tensor, model_key: str
+    ) -> torch.Tensor:
         sess = self.models_processor.models.get(model_key)
         if sess is None:
             sess = self.models_processor.load_model(model_key)
@@ -1861,72 +1833,85 @@ class FaceMasks:
 
     # --- Difference & Perceptual Loss ---
 
-    def apply_fake_diff(
+    def apply_vgg_mask_simple(
         self,
-        swapped_face,
-        original_face,
-        lower_thresh,
-        lower_value,
-        upper_thresh,
-        upper_value,
-        middle_value,
-        parameters,
+        swapped_face: torch.Tensor,  # [3,512,512] uint8
+        original_face: torch.Tensor,  # [3,512,512] uint8
+        swap_mask_128: torch.Tensor,  # [1,128,128] float mask (0..1)
+        center_pct: float,  # 0..100, e.g. parameters['VGGMaskThresholdSlider']
+        softness_pct: float,  # 0..100, e.g. parameters['VGGMaskSoftnessSlider']
+        feature_layer: str = "combo_relu3_3_relu3_1",
+        mode: str = "smooth",  # 'smooth' (smoothstep) or 'linear'
     ):
         """
-        Calculates a fake difference map based on pixel-wise absolute difference.
-        Used for VGG mask emulation when VGG is disabled.
+        Returns:
+          mask_vgg: [1,512,512] float 0..1 (soft difference mask)
+          diff_norm_texture: [1,128,128] float 0..1 (normalized raw difference in 128 resolution)
         """
-        diff = torch.abs(swapped_face - original_face)
+        # 1) Get raw difference via existing ONNX pipeline in 128x128 (without mapping).
+        #    We use apply_perceptual_diff_onnx in pass-through mode (ExcludeVGGMaskEnableToggle=False),
+        #    and ignore the complex threshold parameters (they are replaced below).
+        dummy_lower = 0.0
+        dummy_upper = 1.0
+        dummy_upper_v = 1.0
+        dummy_middle_v = 0.5
 
-        # OPTIMIZED: Deterministic strided slicing instead of random sampling.
-        # Eliminates CUDA RNG initialization overhead and prevents temporal mask flickering.
-        sample = diff.view(-1)[::10]
-        diff_max = torch.quantile(sample, 0.99)
-        diff = torch.clamp(diff, max=diff_max)
-
-        diff_min = diff.min()
-        diff_max = diff.max()
-        # FM-03: guard against division by zero when diff_min == diff_max
-        diff_norm = (diff - diff_min) / (diff_max - diff_min + 1e-6)
-
-        diff_mean = diff_norm.mean(dim=0)
-        scale = diff_mean / lower_thresh
-        result = torch.where(
-            diff_mean < lower_thresh,
-            lower_value + scale * (middle_value - lower_value),
-            # FM-04: use zeros_like instead of empty_like to avoid uninitialized memory
-            torch.zeros_like(diff_mean),
+        diff_mapped_128, diff_norm_128 = self.apply_perceptual_diff_onnx(
+            swapped_face,
+            original_face,
+            swap_mask_128,
+            dummy_lower,
+            0.0,
+            dummy_upper,
+            dummy_upper_v,
+            dummy_middle_v,
+            feature_layer,
+            ExcludeVGGMaskEnableToggle=False,
         )
+        # diff_norm_128: [1,128,128] in [0..1]
+        d = diff_mapped_128.squeeze(0)  # [128,128]
 
-        middle_scale = (diff_mean - lower_thresh) / (upper_thresh - lower_thresh)
-        result = torch.where(
-            (diff_mean >= lower_thresh) & (diff_mean <= upper_thresh),
-            middle_value + middle_scale * (upper_value - middle_value),
-            result,
-        )
+        # 2) Two-slider-Mapping -> lower/upper threshold derived from (center, softness)
+        center = float(center_pct) / 100.0  # 0..1
+        softness = float(softness_pct) / 100.0  # 0..1
 
-        above_scale = (diff_mean - upper_thresh) / (1 - upper_thresh)
-        result = torch.where(
-            diff_mean > upper_thresh,
-            upper_value + above_scale * (1 - upper_value),
-            result,
-        )
+        # Width of the transition band (practical values):
+        #  - Min width 0.04, Max width 0.40
+        band = 0.04 + 0.36 * softness
+        lo = max(0.0, center - band * 0.5)
+        hi = min(1.0, center + band * 0.5)
 
-        return result.unsqueeze(0)
+        # 3) Curve Shape
+        x = (d - lo) / max(1e-6, (hi - lo))
+        x = x.clamp(0.0, 1.0)
+        if mode == "smooth":
+            # Smoothstep
+            x = x * x * (3.0 - 2.0 * x)
+        # else: 'linear' -> x remains linear
+
+        # 4) Upscale to 512x512 (bilinear)
+        x_512 = torch.nn.functional.interpolate(
+            x.unsqueeze(0).unsqueeze(0),
+            size=(512, 512),
+            mode="bilinear",
+            align_corners=True,
+        ).squeeze(0)
+
+        return x_512.clamp(0, 1), diff_norm_128
 
     def apply_perceptual_diff_onnx(
         self,
-        swapped_face,
-        original_face,
-        swap_mask,
-        lower_thresh,
-        lower_value,
-        upper_thresh,
-        upper_value,
-        middle_value,
-        feature_layer,
-        ExcludeVGGMaskEnableToggle,
-    ):
+        swapped_face: torch.Tensor,
+        original_face: torch.Tensor,
+        swap_mask: torch.Tensor,
+        lower_thresh: float,
+        lower_value: float,
+        upper_thresh: float,
+        upper_value: float,
+        middle_value: float,
+        feature_layer: str,
+        ExcludeVGGMaskEnableToggle: bool,
+    ) -> tuple[torch.Tensor, torch.Tensor]:
         """
         Calculates perceptual difference using VGG features (ONNX).
         Returns both the mapped mask and the raw normalized difference texture.
@@ -1940,9 +1925,9 @@ class FaceMasks:
             self.models_processor.models[model_key] = self.models_processor.load_model(
                 model_key
             )
-            self.active_models.add(model_key)
+            self.models_processor.active_models.add(model_key)
 
-        def preprocess(img):
+        def preprocess(img: torch.Tensor) -> torch.Tensor:
             img = img.clone().float() / 255.0
             mean = _VGG_MEAN.to(img.device)
             std = _VGG_STD.to(img.device)
@@ -1954,6 +1939,7 @@ class FaceMasks:
         shape = feature_shapes[feature_layer]
         outpred = torch.empty(shape, dtype=torch.float32, device=swapped.device)
         outpred2 = torch.empty_like(outpred)
+
         swapped_feat = self.run_onnx(swapped, outpred, model_key)
         original_feat = self.run_onnx(original, outpred2, model_key)
 

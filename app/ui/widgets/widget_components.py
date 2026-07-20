@@ -777,7 +777,7 @@ class TargetFaceCardButton(CardButton):
 
                 # Call run_recognize_direct (which expects CHW tensor)
                 new_embedding, _ = (
-                    self.main_window.models_processor.run_recognize_direct(
+                    self.main_window.function_worker.run_recognize_direct(
                         face_img_rgb_tensor_chw,  # Pass the CHW tensor
                         approx_kps_5,  # Pass the estimated keypoints on the crop
                         similarity_type,
@@ -966,7 +966,7 @@ class TargetFaceCardButton(CardButton):
                     if not input_face_button:
                         continue
 
-                    with main_window.models_processor.face_denoiser.kv_extraction_lock:
+                    with main_window.function_worker.denoiser_kv_extraction_lock:
                         if (
                             hasattr(input_face_button, "kv_map")
                             and input_face_button.kv_map is not None
@@ -980,7 +980,6 @@ class TargetFaceCardButton(CardButton):
                             try:
                                 from PIL import Image
 
-                                models_processor = main_window.models_processor
                                 cropped_face_np = input_face_button.cropped_face
                                 pil_img = Image.fromarray(cropped_face_np[..., ::-1])
 
@@ -991,7 +990,7 @@ class TargetFaceCardButton(CardButton):
 
                                 # Batch processing: Keep the extractor loaded for the duration of the loop
                                 kv_map = (
-                                    models_processor.face_denoiser.get_kv_map_for_face(
+                                    main_window.function_worker.get_kv_map_for_face(
                                         pil_img,
                                         unload_after=False,
                                     )
@@ -1013,7 +1012,7 @@ class TargetFaceCardButton(CardButton):
 
                 # Cleanup: Unload the extractor once the batch is fully processed
                 if extracted_new_kv:
-                    main_window.models_processor.face_denoiser.unload_kv_extractor()
+                    main_window.function_worker.unload_denoiser_kv_extractor()
 
             # 3. Merge all collected KV Maps and strictly enforce VRAM localization
             if all_kv_maps:
@@ -1929,7 +1928,7 @@ class CreateEmbeddingDialog(QtWidgets.QDialog):
             try:
                 extracted_new_kv = False
                 for input_face in self.selected_faces:
-                    with self.main_window.models_processor.face_denoiser.kv_extraction_lock:
+                    with self.main_window.function_worker.denoiser_kv_extraction_lock:
                         # Check Cache first
                         if (
                             hasattr(input_face, "kv_map")
@@ -1952,7 +1951,7 @@ class CreateEmbeddingDialog(QtWidgets.QDialog):
 
                                 # Batch processing: Keep the extractor loaded for the duration of the loop
                                 # average_refs has no mathematical impact here because we process 1 image at a time
-                                kv_map = self.main_window.models_processor.face_denoiser.get_kv_map_for_face(
+                                kv_map = self.main_window.function_worker.get_kv_map_for_face(
                                     pil_img,
                                     unload_after=False,
                                 )
@@ -1967,7 +1966,7 @@ class CreateEmbeddingDialog(QtWidgets.QDialog):
 
                 # Cleanup: Unload the extractor once the batch is fully processed
                 if extracted_new_kv:
-                    self.main_window.models_processor.face_denoiser.unload_kv_extractor()
+                    self.main_window.function_worker.unload_denoiser_kv_extractor()
 
                 # Enforce VRAM localization for created embeddings without merging them
                 if all_kv_maps:

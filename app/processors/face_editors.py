@@ -16,6 +16,7 @@ from app.processors.utils import faceutil
 
 if TYPE_CHECKING:
     from app.processors.models_processor import ModelsProcessor
+    from app.processors.workers.function_worker import FunctionWorker
 
 SYSTEM_PLATFORM = platform.system()
 
@@ -28,14 +29,21 @@ class FaceEditors:
     ONNX Runtime using I/O binding for high performance.
     """
 
-    def __init__(self, models_processor: "ModelsProcessor"):
+    def __init__(
+        self,
+        models_processor: "ModelsProcessor",
+        function_worker: "FunctionWorker",
+    ):
         """
         Initializes the FaceEditors class.
 
         Args:
             models_processor (ModelsProcessor): A reference to the main ModelsProcessor instance.
+            function_worker (FunctionWorker): The central FunctionWorker instance. Passed to sub-processors
+                                              so they can route calls through this Facade.
         """
         self.models_processor = models_processor
+        self.function_worker = function_worker
         self.editor_lock = threading.Lock()
         self.current_face_editor_type: str | None = None
         self.editor_models: Dict[str, list[str]] = {
@@ -563,18 +571,14 @@ class FaceEditors:
         Returns:
             torch.Tensor: Label map tensor [512,512] of type torch.long.
         """
-        fm = getattr(self.models_processor, "face_masks", None)
-        if fm is None or not hasattr(fm, "_faceparser_labels"):
-            raise RuntimeError(
-                "models_processor.face_masks._faceparser_labels is not available."
-            )
-        return fm._faceparser_labels(img_uint8_3x512x512)
+        # Call the unified wrapper in FunctionWorker instead of accessing models_processor internals
+        return self.function_worker.get_faceparser_labels(img_uint8_3x512x512)
 
     def face_parser_makeup_direct_rgb_masked(
         self,
         img: torch.Tensor,
         mask: torch.Tensor,
-        color=None,
+        color: list[int] | None = None,
         blend_factor: float = 0.2,
     ) -> torch.Tensor:
         """
@@ -626,8 +630,13 @@ class FaceEditors:
         return out
 
     def face_parser_makeup_direct_rgb(
-        self, img, parsing, part=(17,), color=None, blend_factor=0.2
-    ):
+        self,
+        img: torch.Tensor,
+        parsing: torch.Tensor,
+        part: tuple[int, ...] = (17,),
+        color: list[int] | None = None,
+        blend_factor: float = 0.2,
+    ) -> torch.Tensor:
         """
         Applies makeup to specific parts of a face based on a semantic parsing map.
 
@@ -665,7 +674,9 @@ class FaceEditors:
             img=img, mask=m, color=color, blend_factor=blend_factor
         )
 
-    def apply_face_makeup(self, img, parameters):
+    def apply_face_makeup(
+        self, img: torch.Tensor, parameters: dict
+    ) -> tuple[torch.Tensor, torch.Tensor]:
         """
         Orchestrates the application of various makeup effects to a face image based on parameters.
 

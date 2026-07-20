@@ -22,6 +22,7 @@ from app.ui.widgets.advanced_embedding_editor import EmbeddingGUI
 import app.ui.widgets.actions.control_actions as control_actions
 from app.processors.video_processor import VideoProcessor
 from app.processors.models_processor import ModelsProcessor
+from app.processors.workers.function_worker import FunctionWorker
 from app.ui.widgets import widget_components
 from app.ui.widgets.event_filters import (
     GraphicsViewEventFilter,
@@ -89,8 +90,15 @@ class MainWindow(QtWidgets.QMainWindow, Ui_MainWindow):
         self.merged_embeddings_filter_worker = ui_workers.FilterWorker(
             main_window=self, search_text="", filter_list="merged_embeddings"
         )
-        self.video_processor = VideoProcessor(self)
+        # 1. Initialize Resource Manager
         self.models_processor = ModelsProcessor(self)
+
+        # 2. Initialize Function Dispatcher (Facade) passing the Resource Manager
+        self.function_worker = FunctionWorker(self.models_processor)
+
+        # 3. Initialize Video Pipeline
+        self.video_processor = VideoProcessor(self)
+
         # Connect the signals from the worker thread to our new slots
         self.models_processor.show_build_dialog.connect(self.show_build_dialog)
         self.models_processor.hide_build_dialog.connect(self.hide_build_dialog)
@@ -814,7 +822,7 @@ class MainWindow(QtWidgets.QMainWindow, Ui_MainWindow):
     def handle_unload_request(self, model_names: list):
         """Unloads models requested by a worker thread, keeping essential ones."""
         current_swapper = self.control.get("FaceSwapperTypeSelection", "Inswapper128")
-        active_arcface_model = self.models_processor.get_arcface_model(current_swapper)
+        active_arcface_model = self.function_worker.get_arcface_model(current_swapper)
 
         print(f"[INFO] Unload request for: {model_names}")
         print(f"[INFO] Keeping active model: {active_arcface_model}")

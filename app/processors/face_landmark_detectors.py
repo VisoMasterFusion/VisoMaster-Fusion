@@ -1,6 +1,6 @@
 import threading
 from itertools import product as product
-from typing import TYPE_CHECKING, List, Dict, Optional
+from typing import TYPE_CHECKING, List, Dict, Optional, Any, Callable
 import pickle
 
 import torch
@@ -9,6 +9,7 @@ from torchvision.transforms import v2
 
 if TYPE_CHECKING:
     from app.processors.models_processor import ModelsProcessor
+    from app.processors.workers.function_worker import FunctionWorker
 from app.processors.models_data import models_dir
 from app.processors.utils import faceutil
 
@@ -143,15 +144,22 @@ class FaceLandmarkDetectors:
         # emptied by the per-model remove() calls in the loop above; no extra
         # .clear() is needed here.
 
-    def __init__(self, models_processor: "ModelsProcessor"):
+    def __init__(
+        self,
+        models_processor: "ModelsProcessor",
+        function_worker: "FunctionWorker",
+    ):
         """
         Initializes the FaceLandmarkDetectors.
 
         Args:
             models_processor (ModelsProcessor): A reference to the main ModelsProcessor instance
                                                 which handles model loading and device management.
+            function_worker (FunctionWorker): The central FunctionWorker instance. Passed to sub-processors
+                                              so they can route calls through this Facade.
         """
         self.models_processor = models_processor
+        self.function_worker = function_worker
         self.active_landmark_models: set[str] = set()
         self.current_landmark_model_name: Optional[str] = None
         # Caches for model-specific data to avoid re-computation.
@@ -166,7 +174,7 @@ class FaceLandmarkDetectors:
         # A dictionary to map a string identifier (e.g., '68') to the corresponding
         # model name and the specific function that processes its output.
         # This makes the class easily extensible with new landmark detectors.
-        self.detector_map = {
+        self.detector_map: Dict[str, Dict[str, Any]] = {
             "5": {
                 "model_name": "FaceLandmark5",
                 "function": self.detect_face_landmark_5,
@@ -199,20 +207,22 @@ class FaceLandmarkDetectors:
 
     def run_detect_landmark(
         self,
-        img,
-        bbox,
-        det_kpss,
-        detect_mode="203",
-        score=0.5,
-        from_points=False,
-        **kwargs,
-    ):
+        img: torch.Tensor,
+        bbox: np.ndarray,
+        det_kpss: np.ndarray | None,
+        detect_mode: str = "203",
+        score: float = 0.5,
+        from_points: bool = False,
+        **kwargs: dict,
+    ) -> tuple[np.ndarray | list, np.ndarray | list, np.ndarray | list]:
         """
         Main dispatcher function to run a specific landmark detector.
         It handles model loading, caching, and calling the correct processing function.
         Accepts **kwargs to pass optional parameters like 'use_mean_eyes' to detectors.
         """
-        kpss_5, kpss, scores = [], [], []
+        kpss_5: list = []
+        kpss: list = []
+        scores: list = []
 
         # Look up the detector information from the map.
         detector_info = self.detector_map.get(detect_mode)
@@ -220,8 +230,8 @@ class FaceLandmarkDetectors:
             print(f"[WARN] Landmark detector mode '{detect_mode}' not found.")
             return kpss_5, kpss, scores
 
-        model_name = detector_info["model_name"]
-        detection_function = detector_info["function"]
+        model_name: str = str(detector_info.get("model_name", ""))
+        detection_function: Callable = detector_info["function"]
 
         # Load model if it is not already loaded.
         loaded_model_instance = self.models_processor.models.get(model_name)
@@ -293,7 +303,7 @@ class FaceLandmarkDetectors:
 
         return [], [], []
 
-    def _ensure_landmark_5_anchors(self):
+    def _ensure_landmark_5_anchors(self) -> None:
         """
         Initializes the anchors for the FaceLandmark5 model.
         This complex calculation is performed only once and the result is cached for efficiency.
@@ -335,15 +345,15 @@ class FaceLandmarkDetectors:
 
     def _prepare_crop(
         self,
-        img,
-        bbox,
-        det_kpss,
-        from_points,
-        target_size,
-        warp_mode=None,
-        scale=1.5,
-        vy_ratio=0.0,
-    ):
+        img: torch.Tensor,
+        bbox: np.ndarray,
+        det_kpss: np.ndarray | None,
+        from_points: bool,
+        target_size: int,
+        warp_mode: str | None = None,
+        scale: float = 1.5,
+        vy_ratio: float = 0.0,
+    ) -> tuple[torch.Tensor | None, np.ndarray | None, np.ndarray | None]:
         """
         Prepares a cropped and warped face image for a landmark detector.
         This helper centralizes the repetitive pre-processing logic of aligning a face

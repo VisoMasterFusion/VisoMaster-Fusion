@@ -9,6 +9,7 @@ import numpy as np
 
 if TYPE_CHECKING:
     from app.processors.models_processor import ModelsProcessor
+    from app.processors.workers.function_worker import FunctionWorker
 
 from app.processors.utils import faceutil
 
@@ -45,15 +46,22 @@ class FaceDetectors:
             self.models_processor.unload_model(self.current_detector_model)
             self.current_detector_model = None
 
-    def __init__(self, models_processor: "ModelsProcessor"):
+    def __init__(
+        self,
+        models_processor: "ModelsProcessor",
+        function_worker: "FunctionWorker",
+    ):
         """
         Initialises the FaceDetectors instance.
 
         Args:
             models_processor: The parent ModelsProcessor that owns this helper.
                               Provides access to model sessions, device, and signals.
+            function_worker: The central FunctionWorker instance. Passed to sub-processors
+                              so they can route calls through this Facade.
         """
         self.models_processor = models_processor
+        self.function_worker = function_worker
         self.center_cache: Dict[tuple, np.ndarray] = {}
         self.current_detector_model = None
         self._ort_model_lock = (
@@ -61,7 +69,7 @@ class FaceDetectors:
         )  # serialises ONNX model switch (unload→load)
 
         # Tracking State
-        self.tracker = None
+        self.tracker: Any = None
         self.track_history: dict = {}  # {track_id: {'cum_score': float, 'last_seen': int}}
         self._track_history_lock = threading.Lock()
         # BT-06/BT-07: dedicated lock for BYTETracker instance and frame_id to prevent
@@ -380,22 +388,22 @@ class FaceDetectors:
 
     def _refine_landmarks(
         self,
-        img_landmark,
-        det,
-        kpss,
-        score_values,
-        use_landmark_detection,
-        landmark_detect_mode,
-        landmark_score,
-        from_points,
-        **kwargs,
-    ):
+        img_landmark: torch.Tensor | None,
+        det: np.ndarray,
+        kpss: np.ndarray,
+        score_values: np.ndarray,
+        use_landmark_detection: bool,
+        landmark_detect_mode: str,
+        landmark_score: float,
+        from_points: bool,
+        **kwargs: Any,
+    ) -> tuple[np.ndarray, np.ndarray, np.ndarray, np.ndarray]:
         """
         Optionally runs a secondary, more detailed landmark detector on the detected faces
-        to refine the keypoints.
+        to refine the keypoints. Strictly typed to protect the FunctionWorker boundary.
         """
         kpss_5 = kpss.copy()
-        if use_landmark_detection and len(kpss_5) > 0:
+        if use_landmark_detection and img_landmark is not None and len(kpss_5) > 0:
             # We need to filter kwargs to remove arguments that are already passed positionally
             # to run_detect_landmark to avoid "got multiple values for argument" error.
             # run_detect_landmark signature: (img, bbox, det_kpss, detect_mode, score, from_points, **kwargs)
@@ -403,10 +411,10 @@ class FaceDetectors:
             for key in ["img", "score", "from_points"]:
                 landmark_kwargs.pop(key, None)
 
-            refined_kpss = []
+            refined_kpss: list[np.ndarray] = []
             for i in range(kpss_5.shape[0]):
                 landmark_kpss_5, landmark_kpss, landmark_scores = (
-                    self.models_processor.run_detect_landmark(
+                    self.function_worker.run_detect_landmark(
                         img_landmark,
                         det[i],
                         kpss_5[i],
@@ -481,23 +489,24 @@ class FaceDetectors:
 
     def run_detect(
         self,
-        img,
-        detect_mode="RetinaFace",
-        max_num=1,
-        score=0.5,
-        input_size=(512, 512),
-        use_landmark_detection=False,
-        landmark_detect_mode="203",
-        landmark_score=0.5,
-        from_points=False,
-        rotation_angles=None,
-        bypass_bytetrack=False,
-        control_override=None,
-        **kwargs,
-    ):
+        img: torch.Tensor,
+        detect_mode: str = "RetinaFace",
+        max_num: int = 1,
+        score: float = 0.5,
+        input_size: tuple[int, int] = (512, 512),
+        use_landmark_detection: bool = False,
+        landmark_detect_mode: str = "203",
+        landmark_score: float = 0.5,
+        from_points: bool = False,
+        rotation_angles: list[int] | None = None,
+        bypass_bytetrack: bool = False,
+        control_override: dict | None = None,
+        **kwargs: Any,
+    ) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
         """
         Main dispatcher for running face detection. Selects and runs the appropriate model.
-        Supports tracking via 'previous_detections'.
+        Supports tracking via 'previous_detections'. Strictly typed to ensure inputs are pre-loaded
+        to the correct device tensor before inference routing.
         """
         rotation_angles = rotation_angles or [0]
 
@@ -515,7 +524,7 @@ class FaceDetectors:
         # FULL DETECTION FALLBACK
         detector = self.detector_map.get(detect_mode)
         if not detector:
-            return np.empty((0, 4)), np.empty((0, 5, 2)), np.empty((0, 5, 2))
+            return np.empty((0, 4)), np.empty((0, 5, 2)), np.empty((0,), dtype=object)
 
         model_name = detector["model_name"]
         # FD-RACE-01: serialise model switch so concurrent workers don't interleave unload/load.
@@ -531,7 +540,7 @@ class FaceDetectors:
             print(
                 f"[ERROR] {model_name} model failed to load or is not available. Skipping detection."
             )
-            return np.empty((0, 4)), np.empty((0, 5, 2)), np.empty((0, 5, 2))
+            return np.empty((0, 4)), np.empty((0, 5, 2)), np.empty((0,), dtype=object)
 
         detection_function = detector["function"]
 
@@ -541,10 +550,10 @@ class FaceDetectors:
         # Previously this was always hardcoded to 0.3, ignoring user intent and
         # falling below ByteTracker's own track_thresh (0.4), causing excess FP tracks.
         if use_bytetrack:
-            user_score = control.get("DetectorScoreSlider", 50) / 100.0
+            user_score = float(control.get("DetectorScoreSlider", 50)) / 100.0
             effective_score = min(user_score, 0.5)
         else:
-            effective_score = score
+            effective_score = float(score)
 
         args = {
             "img": img,
@@ -583,6 +592,9 @@ class FaceDetectors:
             with self._tracker_lock:
                 if self.tracker is None:
                     self.tracker = BYTETracker(_BYTETRACK_ARGS(control))
+
+                # Assert to satisfy static type checkers that tracker is instantiated
+                assert self.tracker is not None
 
                 # Prepare detections for ByteTrack [x1, y1, x2, y2, score]
                 img_hw = (int(img.shape[1]), int(img.shape[2]))
