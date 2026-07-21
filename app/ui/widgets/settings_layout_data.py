@@ -413,9 +413,16 @@ SETTINGS_LAYOUT_DATA: Any = {  # noqa: F811
         "DetectorModelSelection": {
             "level": 1,
             "label": "Face Detect Model",
-            "options": ["RetinaFace", "Yolov8", "SCRFD", "Yunet"],
+            "options": [
+                "RetinaFace",
+                "Yolov8",
+                "SCRFD",
+                "Yunet",
+                "Yolov11 VR180",
+                "Yolov12 VR180",
+            ],
             "default": "RetinaFace",
-            "help": "Select the face detection model to use for detecting faces in the input image or video.",
+            "help": "Select the face detection model to use for detecting faces in the input image or video. 'Yolov11 VR180' and 'Yolov12 VR180' is trained for VR180 content.",
         },
         "DetectorScoreSlider": {
             "level": 1,
