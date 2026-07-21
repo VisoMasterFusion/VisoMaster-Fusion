@@ -374,6 +374,24 @@ models_list = [
         "url": f"{assets_repo}/v0.1.0/yunet_n_640_640.onnx",
     },
     {
+        # Yolov11-face trained at 960×960 for VR180 face detection. Unlike the
+        # other detectors it outputs no facial keypoints (output0: [1,5,N] =
+        # cx,cy,w,h,score); landmarks are synthesised from the bbox downstream.
+        "model_name": "YoloFace11nVR180",
+        "local_path": f"{models_dir}/yoloface_11n-vr180.onnx",
+        "hash": "7572f27c2930ff83d24f95fb4b6321ea0d7f5883cb40ed647fa80889e8d4e4d8",
+        "url": "https://github.com/Glat0s/yolo-face/releases/download/v.0.0.0/yoloface_11n-vr180.onnx",
+    },
+    {
+        # Yolov12-face trained at 640×640 for VR180 face detection. Unlike the
+        # other detectors it outputs no facial keypoints (output0: [1,5,N] =
+        # cx,cy,w,h,score); landmarks are synthesised from the bbox downstream.
+        "model_name": "YoloFace12nVR180",
+        "local_path": f"{models_dir}/yoloface_12n-vr180.onnx",
+        "hash": "8d5e9187fe5aa8f95be7a3267802639299fb39df969407d22bc379eed9aaf1e1",
+        "url": "https://github.com/Glat0s/yolo-face/releases/download/v.0.0.0/yoloface_12n-vr180.onnx",
+    },
+    {
         "model_name": "FaceLandmark5",
         "local_path": f"{models_dir}/res50.onnx",
         "hash": "025db4efa3f7bef9911adc8eb92663608c682696a843cc7e1116d90c223354b5",
