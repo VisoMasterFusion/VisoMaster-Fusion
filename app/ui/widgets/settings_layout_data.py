@@ -355,7 +355,7 @@ SETTINGS_LAYOUT_DATA: Any = {  # noqa: F811
             # high latitudes where equirectangular projection severely compresses
             # horizontal resolution. Power users can disable for max throughput
             # in scenes that don't need it.
-            "default": True,
+            "default": False,
             "help": "Run face detection on a grid of 24 undistorted perspective crops to catch faces missed by standard detection (faces near poles, the ±180° seam, head tilted back, or very close to the camera). Default ON — recommended for most VR content. Disable only when you are certain the standard detector finds every face you need.",
             "parentToggle": "VR180ModeEnableToggle",
             "requiredToggleValue": True,
