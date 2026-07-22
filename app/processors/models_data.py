@@ -380,7 +380,7 @@ models_list = [
         "model_name": "YoloFace11nVR180",
         "local_path": f"{models_dir}/yoloface_11n-vr180.onnx",
         "hash": "7572f27c2930ff83d24f95fb4b6321ea0d7f5883cb40ed647fa80889e8d4e4d8",
-        "url": "https://github.com/Glat0s/yolo-face/releases/download/vr/yoloface_12n-vr180.onnx",
+        "url": "https://github.com/Glat0s/yolo-face/releases/download/vr/yoloface_11n-vr180.onnx",
     },
     {
         # Yolov12-face trained at 640×640 for VR180 face detection. Unlike the
