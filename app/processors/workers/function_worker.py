@@ -620,10 +620,8 @@ class FunctionWorker:
         denoiser_ddim_eta: float = 0.0,
         base_seed: int = 220,
         latent_sharpening_strength: float = 0.0,
-        color_transfer: int = 100,
-        color_transfer_mode: str = "Reinhard Transfer (Masked)",
+        enable_color_correction: bool = True,
         color_mask: torch.Tensor | None = None,
-        blend_mask: torch.Tensor | None = None,
     ) -> torch.Tensor:
         return self.face_denoiser.apply_denoiser_unet(
             image_cxhxw_uint8,
@@ -636,10 +634,8 @@ class FunctionWorker:
             denoiser_ddim_eta,
             base_seed,
             latent_sharpening_strength,
-            color_transfer,
-            color_transfer_mode,
+            enable_color_correction,
             color_mask,
-            blend_mask,
         )
 
     def run_vae_encoder(

@@ -21,38 +21,76 @@ from app.ui.widgets.actions import filter_actions
 from app.ui.widgets import ui_workers
 from app.helpers.typing_helper import ParametersTypes, MarkerTypes
 import app.helpers.miscellaneous as misc_helpers
-from app.ui.widgets.settings_layout_data import REMOVED_SETTINGS_CONTROL_KEYS
 
 if TYPE_CHECKING:
     from app.ui.main_ui import MainWindow
 
 
-def sanitize_removed_settings_controls(control_data: dict | None) -> dict:
-    if not control_data:
-        return {}
-    return {
-        control_name: control_value
-        for control_name, control_value in control_data.items()
-        if control_name not in REMOVED_SETTINGS_CONTROL_KEYS
-    }
-
-
-def purge_removed_settings_controls(control_data: dict) -> None:
-    for control_name in REMOVED_SETTINGS_CONTROL_KEYS:
-        control_data.pop(control_name, None)
-
-
-def scrub_removed_settings_from_markers(markers: dict | None) -> dict:
+def sanitize_markers_dictionary(
+    main_window: "MainWindow", markers: dict | None
+) -> dict:
+    """
+    Deep-sanitizes the markers dictionary, ensuring both 'control' and 'parameters'
+    for every marker conform strictly to the current active schemas.
+    """
     if not markers:
         return {}
-    scrubbed_markers = {}
+
+    sanitized_markers = {}
+    default_control = main_window.control
+    default_params = cast(
+        misc_helpers.ParametersDict, main_window.default_parameters
+    ).data
+
     for marker_position, marker_data in markers.items():
         marker_payload = copy.deepcopy(marker_data)
-        marker_payload["control"] = sanitize_removed_settings_controls(
-            marker_payload.get("control", {})
+
+        # 1. Sanitize Control Settings
+        marker_payload["control"] = sanitize_state_dictionary(
+            marker_payload.get("control", {}), default_control
         )
-        scrubbed_markers[marker_position] = marker_payload
-    return scrubbed_markers
+
+        # 2. Sanitize Parameters (mapped by face_id)
+        if "parameters" in marker_payload:
+            for face_id, face_params in marker_payload["parameters"].items():
+                # Extract dictionary if it's wrapped in ParametersDict
+                face_params_dict = (
+                    face_params.data if hasattr(face_params, "data") else face_params
+                )
+                marker_payload["parameters"][face_id] = sanitize_state_dictionary(
+                    face_params_dict, default_params
+                )
+
+        sanitized_markers[marker_position] = marker_payload
+
+    return sanitized_markers
+
+
+def sanitize_state_dictionary(loaded_dict: dict, reference_dict: dict) -> dict:
+    """
+    Sanitizes a loaded dictionary (parameters or controls) against a reference dictionary.
+    Removes deprecated keys and initializes missing keys with default values.
+    Ensures safe injection into PySide6 UI and CUDA/TensorRT worker pipelines.
+    """
+    sanitized_dict = {}
+    if not isinstance(loaded_dict, dict):
+        return copy.deepcopy(reference_dict)
+
+    # 1. Inject defaults for missing keys and retain valid loaded keys
+    for key, default_value in reference_dict.items():
+        if key in loaded_dict:
+            sanitized_dict[key] = loaded_dict[key]
+        else:
+            sanitized_dict[key] = default_value
+
+    # 2. Identify and log keys that exist in the loaded file but are no longer in the app
+    obsolete_keys = set(loaded_dict.keys()) - set(reference_dict.keys())
+    if obsolete_keys:
+        print(
+            f"[INFO] Sanitization: Removed obsolete keys during load: {obsolete_keys}"
+        )
+
+    return sanitized_dict
 
 
 def _get_clamped_window_geometry(
@@ -373,11 +411,19 @@ def save_current_parameters_and_control(main_window: "MainWindow", face_id):
     data_filename, _ = QtWidgets.QFileDialog.getSaveFileName(
         main_window, filter="JSON (*.json)"
     )
+
+    default_params = cast(
+        misc_helpers.ParametersDict, main_window.default_parameters
+    ).data
+    raw_params = convert_parameters_to_supported_type(
+        main_window, main_window.parameters[face_id], dict
+    )
+
     data = {
-        "parameters": convert_parameters_to_supported_type(
-            main_window, main_window.parameters[face_id], dict
+        "parameters": sanitize_state_dictionary(raw_params, default_params),
+        "control": sanitize_state_dictionary(
+            main_window.control.copy(), main_window.control
         ),
-        "control": sanitize_removed_settings_controls(main_window.control.copy()),
     }
 
     if data_filename:
@@ -403,18 +449,30 @@ def load_parameters_and_settings(
     if data_filename:
         with open(data_filename, "r") as data_file:  # pylint: disable=unspecified-encoding
             data = json.load(data_file)
-            main_window.parameters[face_id] = convert_parameters_to_supported_type(
-                main_window, data["parameters"].copy(), misc_helpers.ParametersDict
+
+            # --- Sanitize Parameters ---
+            default_params = cast(
+                misc_helpers.ParametersDict, main_window.default_parameters
+            ).data
+            sanitized_params = sanitize_state_dictionary(
+                data.get("parameters", {}), default_params
             )
+
+            main_window.parameters[face_id] = convert_parameters_to_supported_type(
+                main_window, sanitized_params, misc_helpers.ParametersDict
+            )
+
             if main_window.selected_target_face_id == face_id:
                 common_widget_actions.set_widgets_values_using_face_id_parameters(
                     main_window, face_id
                 )
             if load_settings:
-                purge_removed_settings_controls(main_window.control)
-                main_window.control.update(
-                    sanitize_removed_settings_controls(data.get("control", {}))
+                # --- Sanitize Controls ---
+                sanitized_control = sanitize_state_dictionary(
+                    data.get("control", {}), main_window.control
                 )
+
+                main_window.control.update(sanitized_control)
                 common_widget_actions.set_control_widgets_values(main_window)
             common_widget_actions.refresh_frame(main_window)
 
@@ -466,8 +524,10 @@ def load_saved_workspace(
             card_actions.clear_merged_embeddings(main_window)
 
             # Load control (settings)
-            purge_removed_settings_controls(main_window.control)
-            control = sanitize_removed_settings_controls(data.get("control", {}))
+            control = sanitize_state_dictionary(
+                data.get("control", {}), main_window.control
+            )
+
             for control_name, control_value in control.items():
                 main_window.control[control_name] = control_value
 
@@ -616,9 +676,17 @@ def load_saved_workspace(
                 list_view_actions.add_media_thumbnail_to_target_faces_list(
                     main_window, cropped_face, embedding_store, pixmap, face_id
                 )
+
+                # --- Sanitize Target Face Parameters ---
+                raw_params = data["target_faces_data"][face_id].get("parameters", {})
+                default_params = cast(
+                    misc_helpers.ParametersDict, main_window.default_parameters
+                ).data
+                sanitized_params = sanitize_state_dictionary(raw_params, default_params)
+
                 main_window.parameters[face_id] = convert_parameters_to_supported_type(
                     main_window,
-                    data["target_faces_data"][face_id]["parameters"],
+                    sanitized_params,
                     misc_helpers.ParametersDict,
                 )
 
@@ -673,11 +741,15 @@ def load_saved_workspace(
                         (job_start_frame, job_end_frame)
                     )
 
-            # Convert params to ParametersDict
-            data["markers"] = scrub_removed_settings_from_markers(
-                convert_markers_to_supported_type(
-                    main_window, data.get("markers", {}), misc_helpers.ParametersDict
-                )
+            # --- Sanitize and Convert Markers ---
+            raw_markers = data.get("markers", {})
+            sanitized_markers_dict = sanitize_markers_dictionary(
+                main_window, raw_markers
+            )
+            data["markers"] = convert_markers_to_supported_type(
+                main_window,
+                cast(MarkerTypes, sanitized_markers_dict),
+                misc_helpers.ParametersDict,
             )
 
             for marker_position, marker_data in data["markers"].items():
@@ -834,16 +906,24 @@ def load_saved_workspace(
                     first_face_id
                 ].copy()
             else:
-                main_window.current_widget_parameters = data.get(
-                    "current_widget_parameters", main_window.default_parameters.copy()
+                raw_current_params = data.get(
+                    "current_widget_parameters",
+                    cast(
+                        misc_helpers.ParametersDict, main_window.default_parameters
+                    ).data.copy(),
                 )
+                default_params = cast(
+                    misc_helpers.ParametersDict, main_window.default_parameters
+                ).data
+                sanitized_current_params = sanitize_state_dictionary(
+                    raw_current_params, default_params
+                )
+
                 main_window.current_widget_parameters = cast(
                     ParametersTypes,
                     misc_helpers.ParametersDict(
-                        main_window.current_widget_parameters,
-                        cast(
-                            misc_helpers.ParametersDict, main_window.default_parameters
-                        ).data,
+                        sanitized_current_params,
+                        default_params,
                     ),
                 )
                 common_widget_actions.set_widgets_values_using_face_id_parameters(
@@ -1138,10 +1218,11 @@ def save_current_workspace(
         }
     # --- Serialize Markers ---
     # Convert Parameters inside the markers from ParametersDict to dict before saving
-    markers_to_save = scrub_removed_settings_from_markers(
+    markers_to_save = sanitize_markers_dictionary(
+        main_window,
         convert_markers_to_supported_type(
-            main_window, copy.deepcopy(main_window.markers), dict
-        )
+            main_window, cast(MarkerTypes, copy.deepcopy(main_window.markers)), dict
+        ),
     )
 
     # Save tab order - store the current tab index and the tab order
@@ -1171,7 +1252,9 @@ def save_current_workspace(
         )
 
     data = {
-        "control": sanitize_removed_settings_controls(main_window.control.copy()),
+        "control": sanitize_state_dictionary(
+            main_window.control.copy(), main_window.control
+        ),
         "target_medias_data": target_medias_data,
         "selected_media_id": main_window.selected_video_button.media_id
         if isinstance(
@@ -1340,6 +1423,17 @@ def save_current_job(main_window: "MainWindow"):
         }
 
     # Prepare job data
+    default_params = cast(
+        misc_helpers.ParametersDict, main_window.default_parameters
+    ).data
+    raw_current_params = (
+        main_window.current_widget_parameters.data.copy()
+        if isinstance(
+            main_window.current_widget_parameters, misc_helpers.ParametersDict
+        )
+        else main_window.current_widget_parameters.copy()
+    )
+
     job_data = {
         "job_name": job_name,
         "use_job_name_for_output": use_job_name,
@@ -1362,22 +1456,25 @@ def save_current_job(main_window: "MainWindow"):
         "input_faces_data": input_faces_data,
         "target_faces_data": {},
         "embeddings_data": embeddings_data,
-        "markers": convert_markers_to_supported_type(
-            main_window, copy.deepcopy(main_window.markers), dict
+        "markers": sanitize_markers_dictionary(
+            main_window,
+            convert_markers_to_supported_type(
+                main_window, cast(MarkerTypes, copy.deepcopy(main_window.markers)), dict
+            ),
         ),
         "issue_frames_by_face": {
             str(face_id): sorted(frames)
             for face_id, frames in main_window.issue_frames_by_face.items()
         },
         "dropped_frames": sorted(main_window.dropped_frames),
-        "control": main_window.control.copy(),
+        "control": sanitize_state_dictionary(
+            main_window.control.copy(), main_window.control
+        ),
         "job_marker_pairs": main_window.job_marker_pairs,
         "scan_tools_expanded": getattr(main_window, "scan_tools_expanded", False),
-        "current_widget_parameters": main_window.current_widget_parameters.data.copy()
-        if isinstance(
-            main_window.current_widget_parameters, misc_helpers.ParametersDict
-        )
-        else main_window.current_widget_parameters.copy(),
+        "current_widget_parameters": sanitize_state_dictionary(
+            raw_current_params, default_params
+        ),
         "last_target_media_folder_path": main_window.last_target_media_folder_path,
         "last_input_media_folder_path": main_window.last_input_media_folder_path,
     }
@@ -1394,12 +1491,16 @@ def save_current_job(main_window: "MainWindow"):
             else params_source.copy()
         )
 
+        sanitized_params_to_save = sanitize_state_dictionary(
+            params_to_save, default_params
+        )
+
         job_data["target_faces_data"][face_id] = {
             "cropped_face": target_face.cropped_face.tolist(),
             "embedding_store": {
                 m: e.tolist() for m, e in target_face.embedding_store.items()
             },
-            "parameters": params_to_save,
+            "parameters": sanitized_params_to_save,
             "assigned_input_faces": list(target_face.assigned_input_faces.keys()),
             "assigned_merged_embeddings": list(
                 target_face.assigned_merged_embeddings.keys()

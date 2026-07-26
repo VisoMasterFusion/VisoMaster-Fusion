@@ -108,11 +108,9 @@ class PipelineProcessor:
         sharpen_val = float(
             control.get(f"DenoiserLatentSharpeningDecimalSlider{pass_suffix}", 0.0)
         )
-        color_val = int(control.get("DenoiserColorSlider", 100))
-        color_mode_val = control.get(
-            f"DenoiserColorTransferTypeSelection{pass_suffix}",
-            "Reinhard Transfer (Masked)",
-        )
+
+        # Global Color Correction toggle (applied equally to all active passes)
+        enable_color = control.get("DenoiserColorCorrectionToggle", True)
 
         if not kv_map and use_exclusive_path:
             return image_tensor_cxhxw_uint8
@@ -127,10 +125,8 @@ class PipelineProcessor:
             denoiser_ddim_steps=ddim_steps_val,
             denoiser_cfg_scale=cfg_scale_val,
             latent_sharpening_strength=sharpen_val,
-            color_transfer=color_val,
-            color_transfer_mode=color_mode_val,
+            enable_color_correction=enable_color,
             color_mask=color_mask,
-            blend_mask=blend_mask,
         )
 
         denoised_image = torch.clamp(denoised_image, 0, 255)
@@ -1573,34 +1569,47 @@ class PipelineProcessor:
                 if parameters["FaceAdjEnableToggle"]:
                     scale_val = 1.0 + (parameters["FaceScaleAmountSlider"] / 100.0)
                     orig_dtype = input_face_affined.dtype
-                    # OPTIMIZED: v2.functional.affine blocks 'bicubic' for tensors.
-                    # We bypass this using the lower-level F.grid_sample API which provides
-                    # hardware-accelerated bicubic interpolation entirely on the GPU.
-                    # We must cast to float32 as grid_sample does not support uint8 bicubic.
-                    affined_float = input_face_affined.unsqueeze(0).to(torch.float32)
 
-                    # In F.affine_grid, coordinate (0,0) represents the exact center of the image.
-                    # Scaling here natively zooms in/out from the center.
-                    theta = torch.tensor(
-                        [[1.0 / scale_val, 0.0, 0.0], [0.0, 1.0 / scale_val, 0.0]],
-                        dtype=torch.float32,
-                        device=self.worker.models_processor.device,
-                    ).unsqueeze(0)
+                    # OPTIMIZED: Replaced F.grid_sample with v2.resize (with Antialiasing) + crop/pad.
+                    # Downscaling with grid_sample lacks an anti-aliasing filter, causing aliasing/blur.
+                    # v2.functional.resize with antialias=True applies proper filtering before scaling.
+                    if scale_val != 1.0:
+                        channels, h, w = input_face_affined.shape
+                        new_h = max(1, int(h * scale_val))
+                        new_w = max(1, int(w * scale_val))
 
-                    grid = F.affine_grid(
-                        theta, affined_float.size(), align_corners=False
-                    )
-                    scaled_float = F.grid_sample(
-                        affined_float,
-                        grid,
-                        mode="bicubic",
-                        padding_mode="zeros",
-                        align_corners=False,
-                    )
-                    # Bicubic interpolation can overshoot (ringing artifacts). Clamp before casting back.
-                    if orig_dtype == torch.uint8:
-                        scaled_float = scaled_float.clamp_(0.0, 255.0).round_()
-                    input_face_affined = scaled_float.squeeze(0).to(orig_dtype)
+                        # Resize applying high-quality Bicubic interpolation and anti-aliasing
+                        resized = v2.functional.resize(
+                            input_face_affined,
+                            [new_h, new_w],
+                            interpolation=v2.InterpolationMode.BICUBIC,
+                            antialias=True,
+                        )
+
+                        if scale_val < 1.0:
+                            # Shrinking: Pad edges with 0 (black) to match original bounds
+                            pad_left = (w - new_w) // 2
+                            pad_right = w - new_w - pad_left
+                            pad_top = (h - new_h) // 2
+                            pad_bottom = h - new_h - pad_top
+                            input_face_affined = F.pad(
+                                resized,
+                                (pad_left, pad_right, pad_top, pad_bottom),
+                                mode="constant",
+                                value=0,
+                            )
+                        else:
+                            # Enlarging: Center crop back to original bounds
+                            crop_top = (new_h - h) // 2
+                            crop_left = (new_w - w) // 2
+                            input_face_affined = v2.functional.crop(
+                                resized, crop_top, crop_left, h, w
+                            )
+
+                        # Torchvision native bicubic respects uint8 bounds automatically,
+                        # but cast back to ensure safety if float-converted downstream.
+                        if orig_dtype == torch.uint8:
+                            input_face_affined = input_face_affined.to(orig_dtype)
 
                 itex = 1
                 if parameters["StrengthEnableToggle"]:
@@ -2833,16 +2842,55 @@ class PipelineProcessor:
                 blend_mask=swap_mask,
             )
 
-        # Final blending
+        # Final blending (Global - Whole Face)
         if (
-            parameters["FinalBlendAdjEnableToggle"]
-            and parameters["FinalBlendAmountSlider"] > 0
+            parameters.get("FinalBlendAdjEnableToggle", False)
+            and parameters.get("FinalBlendAmountSlider", 0) > 0
         ):
             final_blur_strength = parameters["FinalBlendAmountSlider"]
             kernel_size = 2 * final_blur_strength + 1
-            sigma = final_blur_strength * 0.1
+            sigma = max(final_blur_strength * 0.1, 1e-6)
             gaussian_blur = v2.GaussianBlur(kernel_size=kernel_size, sigma=sigma)
             swap = gaussian_blur(swap)
+
+        # Final blending (Border Seam Only via Morphological Gradient)
+        if (
+            parameters.get("FinalBorderBlendEnableToggle", False)
+            and parameters.get("FinalBorderBlendAmountSlider", 0) > 0
+        ):
+            border_blur_strength = int(parameters["FinalBorderBlendAmountSlider"])
+
+            # Ensure kernel size is odd for spatial pooling and blurring
+            kernel_size = int(2 * border_blur_strength + 1)
+            padding = border_blur_strength
+            sigma = max(border_blur_strength * 0.2, 1e-6)
+
+            # 1. Create the blurred version of the swap tensor
+            gaussian_blur = v2.GaussianBlur(kernel_size=kernel_size, sigma=sigma)
+            blurred_swap = gaussian_blur(swap)
+
+            # 2. Calculate Morphological Gradient to perfectly isolate the mask's transition seam.
+            # Dilation expands the mask outward; Erosion shrinks it inward.
+            # We use F.max_pool2d for highly optimized CUDA morphological operations.
+            dilation = F.max_pool2d(
+                swap_mask, kernel_size=kernel_size, stride=1, padding=padding
+            )
+            erosion = -F.max_pool2d(
+                -swap_mask, kernel_size=kernel_size, stride=1, padding=padding
+            )
+
+            # The difference is exactly the boundary edge, spanning inward and outward evenly.
+            raw_border_band = dilation - erosion
+
+            # 3. Soften the extracted border band so the blur effect fades smoothly
+            smooth_border_mask = gaussian_blur(raw_border_band).clamp_(0.0, 1.0)
+
+            # 4. Blend the blurred image strictly along the isolated morphological seam
+            swap = (
+                torch.lerp(swap.float(), blurred_swap.float(), smooth_border_mask)
+                .to(swap.dtype)
+                .contiguous()
+            )
 
         # Artefacts: Jpeg
         if parameters["JPEGCompressionEnableToggle"]:

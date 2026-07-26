@@ -360,22 +360,19 @@ class FaceDenoiser:
         denoiser_ddim_eta: float = 0.0,
         base_seed: int = 220,
         latent_sharpening_strength: float = 0.0,
-        color_transfer: int = 100,
-        color_transfer_mode: str = "Reinhard Transfer (Masked)",
+        enable_color_correction: bool = True,
         color_mask: torch.Tensor | None = None,
-        blend_mask: torch.Tensor | None = None,
     ) -> torch.Tensor:
         """
         Runs the Diffusion-based Denoiser/Restorer (ReF-LDM).
         Supports 'Single Step' (Fast) and 'Full Restore' (DDIM) modes.
-        Also handles pixel sharpening and histogram matching for color consistency.
+        Handles pixel sharpening and optional Reinhard masked color anchor.
         """
         # --- CONFIGURATION ---
         ENABLE_PIXEL_SHARPENING = latent_sharpening_strength > 0.0
         PIXEL_SHARPEN_STRENGTH = latent_sharpening_strength
 
-        ENABLE_COLOR_MATCH = color_transfer > 0
-        COLOR_STRENGTH = color_transfer
+        ENABLE_COLOR_MATCH = enable_color_correction
 
         # P2-04: enable debug output via env var: set VISOMASTER_DEBUG_DENOISER=1
         DEBUG_DENOISER = os.environ.get("VISOMASTER_DEBUG_DENOISER", "0") == "1"
@@ -763,35 +760,11 @@ class FaceDenoiser:
                 mask = (ref_tensor.sum(dim=0) > 0).float()
 
             try:
-                if color_transfer_mode == "CDF Histogram":
-                    matched_result = faceutil.histogram_matching(
-                        ref_tensor, res_tensor, float(COLOR_STRENGTH)
-                    )
-                elif color_transfer_mode == "CDF Histogram (Masked)":
-                    matched_result = faceutil.histogram_matching_withmask(
-                        ref_tensor, res_tensor, mask, float(COLOR_STRENGTH)
-                    )
-                elif color_transfer_mode == "Reinhard Transfer":
-                    matched_result = faceutil.apply_reinhard_color_transfer(
-                        ref_tensor, res_tensor, float(COLOR_STRENGTH), mask=None
-                    )
-                elif color_transfer_mode == "Reinhard Transfer (Masked)":
-                    matched_result = faceutil.apply_reinhard_color_transfer(
-                        ref_tensor, res_tensor, float(COLOR_STRENGTH), mask
-                    )
-                elif color_transfer_mode == "AdaIN (Core Masked)":
-                    # For AdaIN: source and target are swapped so the generated face (res_tensor)
-                    # matches the statistics of the raw input face (ref_tensor)
-                    matched_result = faceutil.apply_adain_color_transfer(
-                        res_tensor,
-                        ref_tensor,
-                        mask if blend_mask is None else blend_mask,
-                        blend_amount=float(COLOR_STRENGTH),
-                        calc_mask=mask,
-                    )
-                else:
-                    matched_result = res_tensor
-
+                # Fast, lightweight Reinhard statistical transfer in LAB space.
+                # Locked to 100% blend strength using the facial region mask.
+                matched_result = faceutil.apply_reinhard_color_transfer(
+                    ref_tensor, res_tensor, 100.0, mask
+                )
                 image_after_postproc_float_0_1 = matched_result / 255.0
 
             except Exception as e:
