@@ -480,12 +480,12 @@ def _load_job_controls_and_state(
     main_window: "MainWindow", data: dict, is_batch_load: bool = False
 ):
     """Loads global control settings and misc UI state."""
-    save_load_actions.purge_removed_settings_controls(main_window.control)
-    control_data = save_load_actions.sanitize_removed_settings_controls(
-        data.get("control", {})
+    raw_control = data.get("control", {})
+    sanitized_control = save_load_actions.sanitize_state_dictionary(
+        raw_control, main_window.control
     )
-    for control_name, control_value in control_data.items():
-        main_window.control[control_name] = control_value
+    main_window.control.update(sanitized_control)
+
     # Ensure AutoSwap is off after loading a job
     main_window.control["AutoSwapToggle"] = False
 
@@ -543,12 +543,18 @@ def _load_job_controls_and_state(
 def _load_job_markers(main_window: "MainWindow", data: dict):
     """Loads standard markers and job segment markers."""
     # Load standard markers
-    loaded_markers = data.get("markers", {})
+    raw_markers = data.get("markers", {})
+
+    # Sanitize the raw dictionary first to clear out obsolete UI schema keys
+    sanitized_markers_dict = save_load_actions.sanitize_markers_dictionary(
+        main_window, raw_markers
+    )
+
     # Convert marker parameters from dict to ParametersDict
-    loaded_markers_converted = save_load_actions.scrub_removed_settings_from_markers(
-        convert_markers_to_job_type(
-            main_window, copy.deepcopy(loaded_markers), misc_helpers.ParametersDict
-        )
+    loaded_markers_converted = convert_markers_to_job_type(
+        main_window,
+        cast(MarkerTypes, sanitized_markers_dict),
+        misc_helpers.ParametersDict,
     )
 
     for marker_position, marker_data in loaded_markers_converted.items():
@@ -1195,21 +1201,17 @@ def _serialize_job_data(main_window: "MainWindow") -> dict:
         else None
     )
 
-    # Convert markers and controls to plain dicts for JSON
-    markers_to_save_typed = convert_markers_to_job_type(
-        main_window, copy.deepcopy(main_window.markers), dict
+    # Convert markers and controls to plain dicts for JSON, strictly sanitizing them
+    markers_to_save = save_load_actions.sanitize_markers_dictionary(
+        main_window,
+        convert_markers_to_job_type(
+            main_window, cast(MarkerTypes, copy.deepcopy(main_window.markers)), dict
+        ),
     )
-    # Manually convert MarkerTypes to a plain dict for JSON serialization
-    markers_to_save = {}
-    for marker_pos, marker_data in markers_to_save_typed.items():
-        markers_to_save[marker_pos] = {
-            "parameters": marker_data["parameters"],
-            "control": save_load_actions.sanitize_removed_settings_controls(
-                marker_data["control"]
-            ),
-        }
-    control_to_save = save_load_actions.sanitize_removed_settings_controls(
-        convert_parameters_to_job_type(main_window, main_window.control, dict)
+
+    control_to_save = save_load_actions.sanitize_state_dictionary(
+        convert_parameters_to_job_type(main_window, main_window.control, dict),
+        main_window.control,
     )
 
     # Assemble the final data dictionary

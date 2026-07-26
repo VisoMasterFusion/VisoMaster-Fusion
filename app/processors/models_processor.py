@@ -347,102 +347,126 @@ class ModelsProcessor(QtCore.QObject):
             traceback.print_exc()
             return onnx_path
 
-    def _check_tensorrt_cache(self, model_name: str, onnx_path: str) -> bool:
+    def _check_tensorrt_cache_state(
+        self, model_name: str, onnx_path: str
+    ) -> str | None:
         """
         Checks if a valid TensorRT cache (ctx and engine file) exists for the given model.
-        Returns True if a valid cache is found, False otherwise.
+
+        Returns:
+            "LEGACY": if a valid legacy cache (generic TensorrtExecutionProvider_ naming) is found.
+            "EXPLICIT": if a valid explicit cache (custom model_name prefix) is found.
+            None: if no valid cache is found.
         """
         try:
             cache_dir = "tensorrt-engines"
             base_onnx_name = os.path.splitext(os.path.basename(onnx_path))[0]
-            ctx_file_name = f"{base_onnx_name}_ctx.onnx"
-            ctx_file_path = os.path.join(cache_dir, ctx_file_name)
 
-            if os.path.exists(ctx_file_path):
-                with open(ctx_file_path, "rb") as f:
-                    content = f.read()
+            # Support both UI model names (explicit prefix) and base ONNX file names (legacy prefix)
+            possible_prefixes = list(dict.fromkeys([model_name, base_onnx_name]))
 
-                # Look for the engine name embedded in the context file
-                match = re.search(b"TensorrtExecutionProvider_.*?\\.engine", content)
-                if not match:
-                    return False
+            for prefix in possible_prefixes:
+                ctx_file_name = f"{prefix}_ctx.onnx"
+                ctx_file_path = os.path.join(cache_dir, ctx_file_name)
 
-                engine_name = match.group(0).decode("utf-8")
-                engine_subdirectory_name = os.path.basename(cache_dir)
-                engine_file_path = os.path.join(
-                    cache_dir, engine_subdirectory_name, engine_name
-                )
+                if os.path.exists(ctx_file_path) and os.path.isfile(ctx_file_path):
+                    with open(ctx_file_path, "rb") as f:
+                        content = f.read()
 
-                if os.path.exists(engine_file_path):
-                    return True
-                else:
-                    return False
-            else:
-                return False
+                    # Look for the engine name embedded in the context file using regex
+                    match = re.search(rb"[A-Za-z0-9_.-]+\.engine", content)
+                    if not match:
+                        continue  # Keep searching next prefix instead of failing early
+
+                    engine_name = match.group(0).decode("utf-8")
+                    engine_subdirectory_name = os.path.basename(cache_dir)
+
+                    # Check root cache directory and subdirectory
+                    engine_file_path_root = os.path.join(cache_dir, engine_name)
+                    engine_file_path_sub = os.path.join(
+                        cache_dir, engine_subdirectory_name, engine_name
+                    )
+
+                    if os.path.exists(engine_file_path_root) or os.path.exists(
+                        engine_file_path_sub
+                    ):
+                        if engine_name.startswith("TensorrtExecutionProvider_"):
+                            return "LEGACY"
+                        return "EXPLICIT"
+
+            return None  # No valid engine found after checking all prefixes
 
         except Exception as e:
-            print(f"[ERROR] Failed TensorRT cache check: {e}")
-            return False
+            print(f"[ERROR] Failed TensorRT cache state check for {model_name}: {e}")
+            return None
 
-    def _clean_tensorrt_cache(self, onnx_path: str, trt_options: dict) -> None:
+    def _clean_tensorrt_cache(
+        self, onnx_path: str, trt_options: Dict[str, Any]
+    ) -> None:
         """
         Cleans up potentially corrupted TensorRT cache files for a specific model.
-        Safely ignores missing files or locked files to prevent crashes during the cleanup process.
+        Safely handles both legacy (generic ORT naming) and explicit prefixed caches.
 
         Args:
             onnx_path (str): The local path to the ONNX model.
-            trt_options (dict): The TensorRT options containing the dynamic cache path.
+            trt_options (Dict[str, Any]): The TensorRT options dictionary.
         """
-        import os
-        import re
-
         cache_dir = trt_options.get("trt_engine_cache_path", "tensorrt-engines")
         base_onnx_name = os.path.splitext(os.path.basename(onnx_path))[0]
 
-        # 1. Try to read the context file to find the specific engine file before deleting it
-        ctx_file_name = f"{base_onnx_name}_ctx.onnx"
-        ctx_file_path = os.path.join(cache_dir, ctx_file_name)
+        # Extract the explicit prefix if available
+        target_prefix = trt_options.get("trt_engine_cache_prefix")
 
-        engine_file_paths_to_check = []
-        if os.path.exists(ctx_file_path) and os.path.isfile(ctx_file_path):
-            try:
-                with open(ctx_file_path, "rb") as f:
-                    content = f.read()
+        possible_prefixes: list[str] = []
+        if target_prefix:
+            possible_prefixes.append(target_prefix)
+        possible_prefixes.append(base_onnx_name)
+        possible_prefixes = list(dict.fromkeys(possible_prefixes))
 
-                # Extract the engine name generated by ONNX Runtime
-                match = re.search(b"TensorrtExecutionProvider_.*?\\.engine", content)
-                if match:
-                    engine_name = match.group(0).decode("utf-8")
+        engine_file_paths_to_check: list[str] = []
 
-                    # Failsafe: ORT pathing behavior varies.
-                    engine_subdirectory_name = os.path.basename(cache_dir)
-                    engine_file_paths_to_check.extend(
-                        [
-                            os.path.join(cache_dir, engine_name),
-                            os.path.join(
-                                cache_dir, engine_subdirectory_name, engine_name
-                            ),
-                        ]
+        # 1. Read context files across all candidate prefixes to extract referenced engine paths
+        for prefix in possible_prefixes:
+            ctx_file_name = f"{prefix}_ctx.onnx"
+            ctx_file_path = os.path.join(cache_dir, ctx_file_name)
+
+            if os.path.exists(ctx_file_path) and os.path.isfile(ctx_file_path):
+                try:
+                    with open(ctx_file_path, "rb") as f:
+                        content = f.read()
+
+                    # Extract the engine name using the broader regex
+                    match = re.search(rb"[A-Za-z0-9_.-]+\.engine", content)
+                    if match:
+                        engine_name = match.group(0).decode("utf-8")
+
+                        # Failsafe: ORT pathing behavior varies.
+                        engine_subdirectory_name = os.path.basename(cache_dir)
+                        engine_file_paths_to_check.extend(
+                            [
+                                os.path.join(cache_dir, engine_name),
+                                os.path.join(
+                                    cache_dir, engine_subdirectory_name, engine_name
+                                ),
+                            ]
+                        )
+                except Exception as e:
+                    print(
+                        f"[WARN] Could not read context file {ctx_file_path} to find engine name: {e}"
                     )
-            except Exception as e:
-                print(
-                    f"[WARN] Could not read corrupted context file {ctx_file_path} to find engine name: {e}"
-                )
 
-        # 2. Delete the context file
-        if os.path.exists(ctx_file_path) and os.path.isfile(ctx_file_path):
-            try:
-                os.remove(ctx_file_path)
-                print(
-                    f"[INFO] Deleted corrupted TensorRT context file: {ctx_file_path}"
-                )
-            except Exception as e:
-                print(
-                    f"[WARN] Failed to delete {ctx_file_path} (it might be locked or missing): {e}"
-                )
+            # 2. Delete context file safely
+            if os.path.exists(ctx_file_path) and os.path.isfile(ctx_file_path):
+                try:
+                    os.remove(ctx_file_path)
+                    print(f"[INFO] Deleted TensorRT context file: {ctx_file_path}")
+                except Exception as e:
+                    print(
+                        f"[WARN] Failed to delete {ctx_file_path} (locked or missing): {e}"
+                    )
 
-        # 3. Delete the engine file(s) if we found them
-        for engine_path in engine_file_paths_to_check:
+        # 3. Delete referenced engine files
+        for engine_path in set(engine_file_paths_to_check):
             if (
                 engine_path
                 and os.path.exists(engine_path)
@@ -450,18 +474,18 @@ class ModelsProcessor(QtCore.QObject):
             ):
                 try:
                     os.remove(engine_path)
-                    print(
-                        f"[INFO] Deleted corrupted TensorRT engine file: {engine_path}"
-                    )
+                    print(f"[INFO] Deleted TensorRT engine file: {engine_path}")
                 except Exception as e:
                     print(f"[WARN] Failed to delete engine file {engine_path}: {e}")
 
-        # 4. Delete any associated timing cache, profile files, or general cache files
+        # 4. Clean up auxiliary / profile / timing cache files
         if os.path.exists(cache_dir) and os.path.isdir(cache_dir):
             try:
                 for file_name in os.listdir(cache_dir):
-                    # Catch model-specific files (e.g., SomeModel.profile)
-                    is_model_specific = file_name.startswith(base_onnx_name) and (
+                    # Catch model-specific files tracking all prefixes
+                    is_model_specific = any(
+                        file_name.startswith(p) for p in possible_prefixes
+                    ) and (
                         file_name.endswith(".profile")
                         or file_name.endswith(".cache")
                         or file_name.endswith(".timing")
@@ -471,7 +495,6 @@ class ModelsProcessor(QtCore.QObject):
                     is_generic_timing = file_name == "timing.cache"
 
                     # Catch ORT's global architecture-based timing caches
-                    # Example: TensorrtExecutionProvider_cache_sm120.timing
                     is_ort_global_timing = file_name.startswith(
                         "TensorrtExecutionProvider_"
                     ) and (
@@ -484,18 +507,16 @@ class ModelsProcessor(QtCore.QObject):
                             try:
                                 os.remove(target_path)
                                 print(
-                                    f"[INFO] Deleted TensorRT auxiliary/timing file: {target_path}"
+                                    f"[INFO] Deleted TensorRT auxiliary file: {target_path}"
                                 )
                             except Exception as e:
                                 print(
                                     f"[WARN] Failed to delete auxiliary file {target_path}: {e}"
                                 )
             except Exception as e:
-                print(
-                    f"[WARN] Failed to clean profile/timing/cache files in {cache_dir}: {e}"
-                )
+                print(f"[WARN] Failed to clean auxiliary files in {cache_dir}: {e}")
 
-    def load_model(self, model_name, session_options=None):
+    def load_model(self, model_name: str, session_options: Any = None) -> Any | None:
         """
         Loads an AI model (ONNX) with thread safety.
         Handles checking for existing TensorRT caches and launching the build probe if needed.
@@ -523,6 +544,19 @@ class ModelsProcessor(QtCore.QObject):
 
             # --- DYNAMIC PRECISION CONFIGURATION (WHITELIST FP16) ---
             model_trt_options = dict(self.trt_ep_options)
+
+            # --- DETECT TRT CACHE STATE ---
+            cache_state = self._check_tensorrt_cache_state(model_name, onnx_path)
+
+            if cache_state == "LEGACY":
+                print(
+                    f"[INFO] Legacy TRT cache detected for {model_name}. Bypassing explicit prefix."
+                )
+                # Remove prefix so ONNX Runtime loads generic TensorrtExecutionProvider_ files
+                model_trt_options.pop("trt_engine_cache_prefix", None)
+            else:
+                # For EXPLICIT caches or brand new builds (None), strictly set custom prefix
+                model_trt_options["trt_engine_cache_prefix"] = model_name
 
             # Check if the model is explicitly marked as safe for FP16 in models_data.py
             if model_name in fp16_safe_models_list:
@@ -553,8 +587,7 @@ class ModelsProcessor(QtCore.QObject):
             if onnx_path.lower().endswith(".onnx"):
                 # Only run the isolated probe if TensorRT is the target provider
                 if is_tensorrt_load:
-                    # Check if engine config file exists...
-                    cache_is_valid = self._check_tensorrt_cache(model_name, onnx_path)
+                    cache_is_valid = cache_state is not None
 
                     # If no engine config file or cache file exists run the probe
                     if not cache_is_valid:
@@ -598,7 +631,7 @@ class ModelsProcessor(QtCore.QObject):
                                     args=(
                                         onnx_path,
                                         current_providers_list,
-                                        model_trt_options,  # On passe les options dynamiques
+                                        model_trt_options,
                                         sess_options_dict,
                                     ),
                                 )
@@ -607,7 +640,7 @@ class ModelsProcessor(QtCore.QObject):
                                     probe_process.start()
                                     build_was_triggered = True
 
-                                    # Force timeout at 15Min if the compilator silently crashed, enabling app to stay alive
+                                    # Timeout at 15 minutes to recover if compiler locks up
                                     probe_process.join(timeout=900)
 
                                     if probe_process.is_alive():
@@ -710,7 +743,7 @@ class ModelsProcessor(QtCore.QObject):
                     # Check cache AGAIN.
                     # If the probe succeeded BUT the cache STILL doesn't exist,
                     # it's a "Lazy Build" model.
-                    if not self._check_tensorrt_cache(model_name, onnx_path):
+                    if self._check_tensorrt_cache_state(model_name, onnx_path) is None:
                         print(
                             f"[INFO] Model {model_name} requires a lazy build (engine not found after probe)."
                         )

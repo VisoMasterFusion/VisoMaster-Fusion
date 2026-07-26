@@ -17,13 +17,6 @@ EXPERIMENTAL_SETTINGS_CONTROL_KEYS = frozenset(
         "AntialiasTypeSelection",
     }
 )
-REMOVED_SETTINGS_CONTROL_KEYS = frozenset(
-    {
-        "CommandLineDebugEnableToggle",
-        "DilatationTypeSelection",
-        *EXPERIMENTAL_SETTINGS_CONTROL_KEYS,
-    }
-)
 
 SETTINGS_LAYOUT_DATA: Any = {  # noqa: F811
     "Appearance": {

@@ -35,7 +35,19 @@ def handle_face_detector_tracking_reset(main_window: "MainWindow", value: bool) 
     common_widget_actions.refresh_frame(main_window)
 
 
-def change_execution_provider(main_window: "MainWindow", new_provider: str) -> None:
+def change_execution_provider(
+    main_window: "MainWindow", new_provider: str | None = None
+) -> None:
+    """
+    Changes the global execution provider.
+    If new_provider is omitted (e.g., during startup initialization), it safely
+    falls back to reading the current state from the main_window's control dictionary.
+    """
+    if new_provider is None:
+        new_provider = str(
+            main_window.control.get("ProvidersPrioritySelection", "TensorRT")
+        )
+
     main_window.video_processor.stop_processing()
     main_window.function_worker.switch_providers_priority(new_provider)
     main_window.function_worker.clear_gpu_memory()

@@ -975,7 +975,12 @@ class MainWindow(QtWidgets.QMainWindow, Ui_MainWindow):
         # Optionally handle the event if needed
         event.accept()
 
-    def load_last_workspace(self):
+    def load_last_workspace(self) -> None:
+        """
+        Loads the last used workspace if available.
+        If no workspace is found (first launch or deleted config), prompts the user
+        to select an Execution Provider to prevent unwanted TensorRT engine generation.
+        """
         # Show the load workspace dialog if the file exists
         last_workspace_path = self.project_root_path / "last_workspace.json"
         if last_workspace_path.is_file():
@@ -989,10 +994,42 @@ class MainWindow(QtWidgets.QMainWindow, Ui_MainWindow):
             else:
                 load_dialog = widget_components.LoadLastWorkspaceDialog(self)
                 load_dialog.exec_()
+        else:
+            # First launch or no workspace: Prompt for execution provider
+            options = ["CUDA", "TensorRT", "TensorRT-Engine", "CPU"]
 
-            # Re-populate and set current selection for dynamic widgets like DenoiserUNetModelSelection
-            self._populate_denoiser_unet_models()
-            self._populate_reference_kv_tensors()
+            provider, ok = QtWidgets.QInputDialog.getItem(
+                self,
+                "Initial Setup: Execution Provider",
+                "No previous workspace found.\n\nPlease select your preferred execution provider.\n(Select 'CUDA' or 'CPU' to avoid generating TensorRT engines on this launch):",
+                options,
+                1,  # Default index (1 = TensorRT)
+                False,  # Non-editable dropdown
+            )
+
+            if ok and provider:
+                print(f"[INFO] Initial provider selected: {provider}")
+                # 1. Update the control state
+                self.control["ProvidersPrioritySelection"] = provider
+
+                # 2. Update the corresponding UI widget if it has been instantiated
+                provider_widget = self.parameter_widgets.get(
+                    "ProvidersPrioritySelection"
+                )
+                if provider_widget and hasattr(provider_widget, "setCurrentText"):
+                    provider_widget.setCurrentText(provider)
+
+                # 3. Execute the function to apply the provider changes system-wide
+                try:
+                    control_actions.change_execution_provider(self)
+                except Exception as e:
+                    print(
+                        f"[ERROR] Failed to apply execution provider during startup: {e}"
+                    )
+
+        # Re-populate and set current selection for dynamic widgets like DenoiserUNetModelSelection
+        self._populate_denoiser_unet_models()
+        self._populate_reference_kv_tensors()
 
     def register_parameter_section(
         self,
