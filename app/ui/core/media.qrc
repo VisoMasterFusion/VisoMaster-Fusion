@@ -52,4 +52,18 @@
     <file>media/tl_right_on.png</file>
     <file>media/reset_default.png</file>
   </qresource>
+  <qresource prefix="glyphs">
+    <file>media/glyphs/camcorder_bold.svg</file>
+    <file>media/glyphs/camcorder_on.svg</file>
+    <file>media/glyphs/film_duo.svg</file>
+    <file>media/glyphs/film_on.svg</file>
+    <file>media/glyphs/filter_bold.svg</file>
+    <file>media/glyphs/filter_on.svg</file>
+    <file>media/glyphs/folder_on.svg</file>
+    <file>media/glyphs/images_bold.svg</file>
+    <file>media/glyphs/images_on.svg</file>
+    <file>media/glyphs/sort-amount-down_bold.svg</file>
+    <file>media/glyphs/sort-amount-up_bold.svg</file>
+    <file>media/glyphs/times_on.svg</file>
+  </qresource>
 </RCC>

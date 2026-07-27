@@ -1,0 +1,14 @@
+<svg width="80" height="80" viewBox="0 0 80 80" fill="none" xmlns="http://www.w3.org/2000/svg">
+  <path d="M12 20H22V28H12V20Z" fill="#C2CCDE" fill-opacity="0.25" />
+  <path d="M12 44H22V52H12V44Z" fill="#C2CCDE" fill-opacity="0.25" />
+  <path d="M12 28H22V36H12V28Z" fill="#C2CCDE" fill-opacity="0.25" />
+  <path d="M12 52H22V60H12V52Z" fill="#C2CCDE" fill-opacity="0.25" />
+  <path d="M12 36H22V44H12V36Z" fill="#C2CCDE" fill-opacity="0.25" />
+  <path d="M58 20H68V28H58V20Z" fill="#C2CCDE" fill-opacity="0.25" />
+  <path d="M58 44H68V52H58V44Z" fill="#C2CCDE" fill-opacity="0.25" />
+  <path d="M58 28H68V36H58V28Z" fill="#C2CCDE" fill-opacity="0.25" />
+  <path d="M58 52H68V60H58V52Z" fill="#C2CCDE" fill-opacity="0.25" />
+  <path d="M58 36H68V44H58V36Z" fill="#C2CCDE" fill-opacity="0.25" />
+  <path d="M58 12H22V68H58V12Z" fill="#C2CCDE" fill-opacity="0.25" />
+  <path d="M12 20H22M12 20V28M12 20V12M22 20V28M22 20V12M22 28H12M22 28V36M12 28V36M12 44H22M12 44V52M12 44V36M22 44V52M22 44V36M22 52H12M22 52V60M12 52V60M22 36H12M22 60H12M22 60V68M12 60V68M22 68V12M22 68H58M22 12H58M58 20H68M58 20V28M58 20V12M68 20V28M68 20V12M68 28H58M68 28V36M58 28V36M58 44H68M58 44V52M58 44V36M68 44V52M68 44V36M68 52H58M68 52V60M58 52V60M68 36H58M68 60H58M68 60V68M58 60V68M58 68V12M58 40H22" stroke="#C2CCDE" stroke-linecap="round" stroke-linejoin="round" />
+</svg>

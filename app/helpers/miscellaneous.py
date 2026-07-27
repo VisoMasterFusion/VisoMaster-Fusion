@@ -4,6 +4,7 @@ import cv2
 import time
 from bisect import bisect_left, bisect_right
 from collections import UserDict, OrderedDict
+from dataclasses import dataclass
 import hashlib
 import numpy as np
 from functools import wraps
@@ -558,6 +559,76 @@ def get_file_type(file_name):
     if is_video_file(file_name):
         return "video"
     return None
+
+
+@dataclass(frozen=True)
+class MediaMetadata:
+    """Metadata used to sort and filter the target media list.
+
+    Populated by probe_media_metadata() in the loader thread so the GUI thread
+    never has to open a media file just to sort the list.
+    """
+
+    width: int = 0
+    height: int = 0
+    total_frames: int = 0
+    frame_rate: float = 0.0
+    bitrate_kbits: float = 0.0
+
+    @property
+    def pixels(self) -> int:
+        return self.width * self.height
+
+
+def probe_media_metadata(media_file_path, file_type) -> Optional[MediaMetadata]:
+    """Read dimensions/length of a media file without decoding its pixels.
+
+    Images are read header-only via PIL and videos are queried through OpenCV
+    properties, so this stays cheap enough to run once per file while scanning a
+    folder.  Returns None for webcams and for anything that cannot be probed.
+    """
+    if file_type == "image":
+        try:
+            with Image.open(media_file_path) as img:
+                width, height = img.size
+        except Exception as e:
+            print(f"[WARN] Could not read image metadata for {media_file_path}: {e}")
+            return None
+        # A still image is one frame; that keeps images sortable by length too.
+        return MediaMetadata(width=int(width), height=int(height), total_frames=1)
+
+    if file_type != "video":
+        return None
+
+    cap = None
+    try:
+        cap = cv2.VideoCapture(str(media_file_path))
+        if not cap.isOpened():
+            return None
+        width = int(cap.get(cv2.CAP_PROP_FRAME_WIDTH))
+        height = int(cap.get(cv2.CAP_PROP_FRAME_HEIGHT))
+        total_frames = int(cap.get(cv2.CAP_PROP_FRAME_COUNT))
+        frame_rate = float(cap.get(cv2.CAP_PROP_FPS))
+        bitrate_kbits = float(cap.get(cv2.CAP_PROP_BITRATE))
+    except Exception as e:
+        print(f"[WARN] Could not read video metadata for {media_file_path}: {e}")
+        return None
+    finally:
+        if cap is not None:
+            cap.release()
+
+    # CAP_PROP_FRAME_* reports the stored frame size, so a rotated video needs its
+    # dimensions swapped to match what the user actually sees.
+    if get_video_rotation(str(media_file_path)) in (90, 270):
+        width, height = height, width
+
+    return MediaMetadata(
+        width=max(0, width),
+        height=max(0, height),
+        total_frames=max(0, total_frames),
+        frame_rate=max(0.0, frame_rate),
+        bitrate_kbits=max(0.0, bitrate_kbits),
+    )
 
 
 def get_scaled_resolution(

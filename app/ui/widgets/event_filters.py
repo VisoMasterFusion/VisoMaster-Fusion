@@ -127,7 +127,7 @@ class ListWidgetEventFilter(QtCore.QObject):
                 # Accept drag events with URLs
                 if event.mimeData().hasUrls():
                     urls = event.mimeData().urls()
-                    print("[INFO] Drag: URLS", [url.toLocalFile() for url in urls])
+                    print("[INFO] DragEnter: URLS", len(urls))
                     event.acceptProposedAction()
                     return True
             # Handle the drop event
@@ -147,7 +147,7 @@ class ListWidgetEventFilter(QtCore.QObject):
                         ) or misc_helpers.is_video_file(url):
                             file_paths.append(url)
                         else:
-                            print(f"[ERROR] {url} is not an Video or Image file")
+                            print(f"[ERROR] Drop: {url} is not a Video or Image file")
                     # print("Drop: URLS", [url.toLocalFile() for url in urls])
                     if file_paths:
                         self.main_window.video_loader_worker = (
@@ -181,7 +181,7 @@ class ListWidgetEventFilter(QtCore.QObject):
                 # Accept drag events with URLs
                 if event.mimeData().hasUrls():
                     urls = event.mimeData().urls()
-                    print("[INFO] Drag: URLS", [url.toLocalFile() for url in urls])
+                    print("[INFO] DragEnter: URLS", len(urls))
                     event.acceptProposedAction()
                     return True
             # Handle the drop event
@@ -199,7 +199,7 @@ class ListWidgetEventFilter(QtCore.QObject):
                         if misc_helpers.is_image_file(url):
                             file_paths.append(url)
                         else:
-                            print(f"[ERROR] {url} is not an Image file")
+                            print(f"[ERROR] Drop: {url} is not an Image file")
                     # print("Drop: URLS", [url.toLocalFile() for url in urls])
                     if file_paths:
                         self.main_window.input_faces_loader_worker = (
