@@ -131,13 +131,12 @@ class CardButton(QPushButton):
         self.blockSignals(False)
 
     def get_item_position(self):
-        if self.list_widget is None:
+        if self.list_widget is None or self.list_item is None:
             return None
-        for i in range(self.list_widget.count() - 1, -1, -1):
-            list_item = self.list_widget.item(i)
-            if list_item.listWidget().itemWidget(list_item) == self:
-                return i
-        return None
+        # row() is O(1) and stays correct after the list is re-sorted, unlike
+        # scanning for the item whose widget is self.
+        row = self.list_widget.row(self.list_item)
+        return row if row >= 0 else None
 
     # To find the index of second last selected button by traversing the list
     # Mainly used as a helper for Shift Selection of CardButtons
@@ -532,8 +531,9 @@ class TargetMediaCardButton(CardButton):
                 self.media_capture = False
 
         i = self.get_item_position()
-        main_window.targetVideosList.takeItem(i)
-        main_window.target_videos.pop(self.media_id)
+        if i is not None:
+            main_window.targetVideosList.takeItem(i)
+        main_window.target_videos.pop(self.media_id, None)
 
         # If the target media list is empty, show the placeholder text
         if not main_window.target_videos:
@@ -2214,7 +2214,9 @@ class LoadLastWorkspaceDialog(QtWidgets.QDialog):
 
     def load_workspace(self):
         self.accept()
-        save_load_actions.load_saved_workspace(self.main_window, "last_workspace.json")
+        save_load_actions.load_saved_workspace(
+            self.main_window, str(self.main_window.last_workspace_path)
+        )
 
 
 class JobLoadingDialog(QtWidgets.QDialog):

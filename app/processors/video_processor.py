@@ -3929,17 +3929,26 @@ class VideoProcessor(QObject):
             shutil.rmtree(temp_audio_dir, ignore_errors=True)
 
     def _auto_save_workspace_for_output(self, final_file_path: str) -> None:
-        if not self.main_window.control.get("AutoSaveWorkspaceToggle"):
-            return
         if not final_file_path:
             return
 
-        try:
-            save_load_actions.save_current_workspace(
-                self.main_window, f"{final_file_path}.json"
-            )
-        except Exception as e:
-            print(f"[WARN] Failed to auto-save workspace after recording: {e}")
+        if self.main_window.control.get("AutoSaveWorkspaceToggle"):
+            try:
+                save_load_actions.save_current_workspace(
+                    self.main_window, f"{final_file_path}.json"
+                )
+            except Exception as e:
+                print(f"[WARN] Failed to auto-save workspace after recording: {e}")
+
+        if self.main_window.control.get("AutoSaveLastWorkspaceToggle"):
+            try:
+                save_load_actions.save_current_workspace(
+                    self.main_window, str(self.main_window.last_workspace_path)
+                )
+            except Exception as e:
+                print(
+                    f"[WARN] Failed to auto-save last_workspace.json after recording: {e}"
+                )
 
     def _finalize_default_style_recording(self):
         """Finalizes a successful default-style recording (adds audio, cleans up)."""

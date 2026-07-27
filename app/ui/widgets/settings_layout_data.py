@@ -724,6 +724,12 @@ SETTINGS_LAYOUT_DATA: Any = {  # noqa: F811
             "default": False,
             "help": "Auto Saves Workspace .json in output folder at end of recording (only the status at end of recording)",
         },
+        "AutoSaveLastWorkspaceToggle": {
+            "level": 1,
+            "label": "Auto Save Last Workspace",
+            "default": False,
+            "help": "Auto Saves last_workspace.json in the project root at end of recording (only the status at end of recording)",
+        },
         "AutoLoadWorkspaceToggle": {
             "level": 1,
             "label": "Auto Load Last Workspace",

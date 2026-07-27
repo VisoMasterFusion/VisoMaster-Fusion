@@ -1038,7 +1038,7 @@ def load_saved_workspace(
 
 
 def save_current_workspace(
-    main_window: "MainWindow", data_filename: str | bool = False
+    main_window: "MainWindow", data_filename: str | Path | bool = False
 ):
     target_faces_data = {}
     embeddings_data = {}
@@ -1295,9 +1295,7 @@ def save_current_workspace(
                     data, indent=4
                 )  # Save with indentation for readability
                 data_file.write(data_as_json)
-            if isinstance(data_filename, str) and data_filename.endswith(
-                "last_workspace.json"
-            ):
+            if str(data_filename).endswith("last_workspace.json"):
                 print(f"[INFO] Last workspace saved to: {data_filename}")
             else:
                 common_widget_actions.create_and_show_toast_message(
