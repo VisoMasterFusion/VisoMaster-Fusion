@@ -742,12 +742,35 @@ def set_up_menu_actions(main_window: "MainWindow"):
             main_window,
         )
     )
+    main_window.actionReset_to_LastWorkspace.triggered.connect(
+        partial(
+            save_load_actions.load_saved_workspace,
+            main_window,
+            str(main_window.last_workspace_path),
+        )
+    )
+    main_window.actionSave_LastWorkspace.triggered.connect(
+        partial(
+            save_load_actions.save_current_workspace,
+            main_window,
+            str(main_window.last_workspace_path),
+        )
+    )
     main_window.actionSave_CurrentWorkspace.triggered.connect(
         partial(
             save_load_actions.save_current_workspace,
             main_window,
         )
     )
+
+    def quit_without_saving(_checked=False):
+        # close() rather than QCoreApplication.quit() so closeEvent still runs and
+        # the processing threads are shut down cleanly.
+        main_window.quit_without_saving = True
+        main_window.close()
+
+    main_window.actionQuit_WithoutSaving.triggered.connect(quit_without_saving)
+    main_window.actionQuit.triggered.connect(lambda _checked=False: main_window.close())
 
     main_window.actionOpen_Videos_Folder.triggered.connect(
         partial(list_view_actions.select_target_medias, main_window, "folder")

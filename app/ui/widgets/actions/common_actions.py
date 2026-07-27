@@ -602,7 +602,7 @@ def set_gpu_memory_progressbar_value(
 
 def clear_gpu_memory(main_window: "MainWindow"):
     main_window.video_processor.stop_processing()
-    main_window.models_processor.clear_gpu_memory()
+    main_window.function_worker.clear_gpu_memory()
     main_window.swapfacesButton.setChecked(False)
     main_window.editFacesButton.setChecked(False)
     update_gpu_memory_progressbar(main_window)
@@ -618,6 +618,7 @@ def extract_frame_as_image(
     webcam_index=False,
     webcam_backend=False,
     cache_thumbnail=True,
+    scale: tuple[int, int] | None = (70, 70),
 ):
     """
     Extracts a frame from a media file and converts it to a QImage for thumbnails.
@@ -636,8 +637,12 @@ def extract_frame_as_image(
             frame.data, width, height, bytes_per_line, QtGui.QImage.Format.Format_RGB888
         ).rgbSwapped()
 
+        if scale is None:
+            # .copy() decouples the QImage from the numpy array memory, which
+            # .scaled() would otherwise have done for us.
+            return q_img.copy()
         # .scaled() returns a deep copy, completely decoupling from the numpy array memory!
-        return q_img.scaled(70, 70, QtCore.Qt.AspectRatioMode.KeepAspectRatio)
+        return q_img.scaled(*scale, QtCore.Qt.AspectRatioMode.KeepAspectRatio)
 
     # For images and videos, first check for a cached thumbnail.
     if file_type in ["image", "video"]:

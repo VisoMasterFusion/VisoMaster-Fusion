@@ -1,0 +1,18 @@
+<svg width="80" height="80" viewBox="0 0 80 80" fill="none" xmlns="http://www.w3.org/2000/svg">
+  <rect x="12" y="20" width="10" height="8" stroke="#9B51E0" stroke-width="4" stroke-linecap="round" stroke-linejoin="round" />
+  <rect x="12" y="44" width="10" height="8" stroke="#9B51E0" stroke-width="4" stroke-linecap="round" stroke-linejoin="round" />
+  <rect x="12" y="28" width="10" height="8" stroke="#9B51E0" stroke-width="4" stroke-linecap="round" stroke-linejoin="round" />
+  <rect x="12" y="52" width="10" height="8" stroke="#9B51E0" stroke-width="4" stroke-linecap="round" stroke-linejoin="round" />
+  <path d="M22 68V60H12L12 68" stroke="#9B51E0" stroke-width="4" stroke-linecap="round" stroke-linejoin="round" />
+  <path d="M12 12L12 20H22V12" stroke="#9B51E0" stroke-width="4" stroke-linecap="round" stroke-linejoin="round" />
+  <rect x="12" y="36" width="10" height="8" stroke="#9B51E0" stroke-width="4" stroke-linecap="round" stroke-linejoin="round" />
+  <rect x="58" y="20" width="10" height="8" stroke="#9B51E0" stroke-width="4" stroke-linecap="round" stroke-linejoin="round" />
+  <rect x="58" y="44" width="10" height="8" stroke="#9B51E0" stroke-width="4" stroke-linecap="round" stroke-linejoin="round" />
+  <rect x="58" y="28" width="10" height="8" stroke="#9B51E0" stroke-width="4" stroke-linecap="round" stroke-linejoin="round" />
+  <rect x="58" y="52" width="10" height="8" stroke="#9B51E0" stroke-width="4" stroke-linecap="round" stroke-linejoin="round" />
+  <path d="M68 68V60H58V68" stroke="#9B51E0" stroke-width="4" stroke-linecap="round" stroke-linejoin="round" />
+  <path d="M58 12V20H68V12" stroke="#9B51E0" stroke-width="4" stroke-linecap="round" stroke-linejoin="round" />
+  <rect x="58" y="36" width="10" height="8" stroke="#9B51E0" stroke-width="4" stroke-linecap="round" stroke-linejoin="round" />
+  <path fill-rule="evenodd" clip-rule="evenodd" d="M58 12L22 12L22 36L58 36L58 12ZM58 44L22 44L22 68H58V44Z" fill="#56CCF2" />
+  <path d="M22 12V10C20.8954 10 20 10.8954 20 12H22ZM58 12H60C60 10.8954 59.1046 10 58 10V12ZM22 36H20C20 37.1046 20.8954 38 22 38V36ZM58 36V38C59.1046 38 60 37.1046 60 36H58ZM58 44H60C60 42.8954 59.1046 42 58 42V44ZM22 44V42C20.8954 42 20 42.8954 20 44H22ZM22 68H20C20 69.1046 20.8954 70 22 70V68ZM58 68V70C59.1046 70 60 69.1046 60 68H58ZM22 14L58 14V10L22 10V14ZM24 36L24 12H20L20 36H24ZM22 38L58 38L58 34L22 34V38ZM56 12L56 36H60L60 12H56ZM58 42L22 42L22 46L58 46V42ZM24 68L24 44H20V68H24ZM58 66H22L22 70H58V66ZM56 44V68H60V44H56Z" fill="#9B51E0" />
+</svg>

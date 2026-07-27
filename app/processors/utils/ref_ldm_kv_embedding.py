@@ -41,7 +41,7 @@ import math
 import os
 from abc import abstractmethod
 from collections import defaultdict
-from typing import Dict, Optional
+from typing import Dict, Optional, Union
 
 import numpy as np
 import torch
@@ -1410,7 +1410,7 @@ class KVExtractor:
     @torch.no_grad()
     def extract_kv(
         self,
-        image,
+        image: Union["Image.Image", torch.Tensor],
         scale_factor: float = 1.0,
         color_match_image: Optional[torch.Tensor] = None,
     ) -> Dict[str, Dict[str, torch.Tensor]]:
@@ -1461,7 +1461,9 @@ class KVExtractor:
         if pad_channels < 0:
             raise ValueError("Ref latent channels > UNet input channels")
         elif pad_channels > 0:
-            latent_for_unet = F.pad(latent_for_unet, (0, 0, 0, 0, 0, pad_channels))
+            latent_for_unet = torch.nn.functional.pad(
+                latent_for_unet, (0, 0, 0, 0, 0, pad_channels)
+            )
 
         is_ref_tensor = torch.tensor(True, device=self.device, dtype=torch.bool)
         _ = self.unet_model(

@@ -9,6 +9,7 @@ import numpy as np
 
 if TYPE_CHECKING:
     from app.processors.models_processor import ModelsProcessor
+    from app.processors.workers.function_worker import FunctionWorker
 
 from app.processors.utils import faceutil
 
@@ -16,6 +17,21 @@ try:
     from app.processors.external.yolox.tracker.byte_tracker import BYTETracker
 except ImportError:
     BYTETracker = None  # type: ignore[assignment,misc]
+
+# Canonical 5-point landmark offsets expressed as fractions of a bounding box's
+# width/height. Derived from the ArcFace 112×112 destination template
+# (left eye, right eye, nose, left mouth, right mouth). Used to synthesise
+# landmarks for detectors that output only boxes (e.g. Yolov11 VR180).
+_KPS_TEMPLATE_FRACTIONS = np.array(
+    [
+        [0.34192, 0.46158],  # left eye
+        [0.65653, 0.45983],  # right eye
+        [0.50022, 0.64051],  # nose tip
+        [0.37097, 0.82469],  # left mouth corner
+        [0.63152, 0.82325],  # right mouth corner
+    ],
+    dtype=np.float32,
+)
 
 
 class _BYTETRACK_ARGS:
@@ -45,15 +61,22 @@ class FaceDetectors:
             self.models_processor.unload_model(self.current_detector_model)
             self.current_detector_model = None
 
-    def __init__(self, models_processor: "ModelsProcessor"):
+    def __init__(
+        self,
+        models_processor: "ModelsProcessor",
+        function_worker: "FunctionWorker",
+    ):
         """
         Initialises the FaceDetectors instance.
 
         Args:
             models_processor: The parent ModelsProcessor that owns this helper.
                               Provides access to model sessions, device, and signals.
+            function_worker: The central FunctionWorker instance. Passed to sub-processors
+                              so they can route calls through this Facade.
         """
         self.models_processor = models_processor
+        self.function_worker = function_worker
         self.center_cache: Dict[tuple, np.ndarray] = {}
         self.current_detector_model = None
         self._ort_model_lock = (
@@ -61,7 +84,7 @@ class FaceDetectors:
         )  # serialises ONNX model switch (unload→load)
 
         # Tracking State
-        self.tracker = None
+        self.tracker: Any = None
         self.track_history: dict = {}  # {track_id: {'cum_score': float, 'last_seen': int}}
         self._track_history_lock = threading.Lock()
         # BT-06/BT-07: dedicated lock for BYTETracker instance and frame_id to prevent
@@ -78,6 +101,14 @@ class FaceDetectors:
             "SCRFD": {"model_name": "SCRFD2.5g", "function": self.detect_scrdf},
             "Yolov8": {"model_name": "YoloFace8n", "function": self.detect_yoloface},
             "Yunet": {"model_name": "YunetN", "function": self.detect_yunet},
+            "Yolov11 VR180": {
+                "model_name": "YoloFace11nVR180",
+                "function": self.detect_yoloface11_vr180,
+            },
+            "Yolov12 VR180": {
+                "model_name": "YoloFace12nVR180",
+                "function": self.detect_yoloface12_vr180,
+            },
         }
 
     def _prepare_detection_image(
@@ -380,22 +411,22 @@ class FaceDetectors:
 
     def _refine_landmarks(
         self,
-        img_landmark,
-        det,
-        kpss,
-        score_values,
-        use_landmark_detection,
-        landmark_detect_mode,
-        landmark_score,
-        from_points,
-        **kwargs,
-    ):
+        img_landmark: torch.Tensor | None,
+        det: np.ndarray,
+        kpss: np.ndarray,
+        score_values: np.ndarray,
+        use_landmark_detection: bool,
+        landmark_detect_mode: str,
+        landmark_score: float,
+        from_points: bool,
+        **kwargs: Any,
+    ) -> tuple[np.ndarray, np.ndarray, np.ndarray, np.ndarray]:
         """
         Optionally runs a secondary, more detailed landmark detector on the detected faces
-        to refine the keypoints.
+        to refine the keypoints. Strictly typed to protect the FunctionWorker boundary.
         """
         kpss_5 = kpss.copy()
-        if use_landmark_detection and len(kpss_5) > 0:
+        if use_landmark_detection and img_landmark is not None and len(kpss_5) > 0:
             # We need to filter kwargs to remove arguments that are already passed positionally
             # to run_detect_landmark to avoid "got multiple values for argument" error.
             # run_detect_landmark signature: (img, bbox, det_kpss, detect_mode, score, from_points, **kwargs)
@@ -403,10 +434,10 @@ class FaceDetectors:
             for key in ["img", "score", "from_points"]:
                 landmark_kwargs.pop(key, None)
 
-            refined_kpss = []
+            refined_kpss: list[np.ndarray] = []
             for i in range(kpss_5.shape[0]):
                 landmark_kpss_5, landmark_kpss, landmark_scores = (
-                    self.models_processor.run_detect_landmark(
+                    self.function_worker.run_detect_landmark(
                         img_landmark,
                         det[i],
                         kpss_5[i],
@@ -481,23 +512,24 @@ class FaceDetectors:
 
     def run_detect(
         self,
-        img,
-        detect_mode="RetinaFace",
-        max_num=1,
-        score=0.5,
-        input_size=(512, 512),
-        use_landmark_detection=False,
-        landmark_detect_mode="203",
-        landmark_score=0.5,
-        from_points=False,
-        rotation_angles=None,
-        bypass_bytetrack=False,
-        control_override=None,
-        **kwargs,
-    ):
+        img: torch.Tensor,
+        detect_mode: str = "RetinaFace",
+        max_num: int = 1,
+        score: float = 0.5,
+        input_size: tuple[int, int] = (512, 512),
+        use_landmark_detection: bool = False,
+        landmark_detect_mode: str = "203",
+        landmark_score: float = 0.5,
+        from_points: bool = False,
+        rotation_angles: list[int] | None = None,
+        bypass_bytetrack: bool = False,
+        control_override: dict | None = None,
+        **kwargs: Any,
+    ) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
         """
         Main dispatcher for running face detection. Selects and runs the appropriate model.
-        Supports tracking via 'previous_detections'.
+        Supports tracking via 'previous_detections'. Strictly typed to ensure inputs are pre-loaded
+        to the correct device tensor before inference routing.
         """
         rotation_angles = rotation_angles or [0]
 
@@ -515,7 +547,7 @@ class FaceDetectors:
         # FULL DETECTION FALLBACK
         detector = self.detector_map.get(detect_mode)
         if not detector:
-            return np.empty((0, 4)), np.empty((0, 5, 2)), np.empty((0, 5, 2))
+            return np.empty((0, 4)), np.empty((0, 5, 2)), np.empty((0,), dtype=object)
 
         model_name = detector["model_name"]
         # FD-RACE-01: serialise model switch so concurrent workers don't interleave unload/load.
@@ -531,7 +563,7 @@ class FaceDetectors:
             print(
                 f"[ERROR] {model_name} model failed to load or is not available. Skipping detection."
             )
-            return np.empty((0, 4)), np.empty((0, 5, 2)), np.empty((0, 5, 2))
+            return np.empty((0, 4)), np.empty((0, 5, 2)), np.empty((0,), dtype=object)
 
         detection_function = detector["function"]
 
@@ -541,10 +573,10 @@ class FaceDetectors:
         # Previously this was always hardcoded to 0.3, ignoring user intent and
         # falling below ByteTracker's own track_thresh (0.4), causing excess FP tracks.
         if use_bytetrack:
-            user_score = control.get("DetectorScoreSlider", 50) / 100.0
+            user_score = float(control.get("DetectorScoreSlider", 50)) / 100.0
             effective_score = min(user_score, 0.5)
         else:
-            effective_score = score
+            effective_score = float(score)
 
         args = {
             "img": img,
@@ -583,6 +615,9 @@ class FaceDetectors:
             with self._tracker_lock:
                 if self.tracker is None:
                     self.tracker = BYTETracker(_BYTETRACK_ARGS(control))
+
+                # Assert to satisfy static type checkers that tracker is instantiated
+                assert self.tracker is not None
 
                 # Prepare detections for ByteTrack [x1, y1, x2, y2, score]
                 img_hw = (int(img.shape[1]), int(img.shape[2]))
@@ -1295,6 +1330,324 @@ class FaceDetectors:
                     score_raw = score_raw[:, np.newaxis]
 
                 # Check if there are still detections after rotation filtering
+                if score_raw.size > 0:
+                    kpss_list.append(kpss_raw)
+                    bboxes_list.append(bboxes_raw)
+                    scores_list.append(score_raw)
+
+        det, kpss, score_values = self._filter_detections_gpu(
+            scores_list,
+            bboxes_list,
+            kpss_list,
+            img.shape[1],
+            img.shape[2],
+            det_scale,
+            kwargs.get("max_num"),
+        )
+        if det is None:
+            return (
+                np.empty((0, 4)),
+                np.empty((0, 5, 2)),
+                np.empty((0, 5, 2)),
+                np.empty((0,)),
+            )
+
+        return self._refine_landmarks(img_landmark, det, kpss, score_values, **kwargs)
+
+    @staticmethod
+    def _synthesize_kps_from_bboxes(bboxes: np.ndarray) -> np.ndarray:
+        """
+        Estimates 5-point facial landmarks from bounding boxes for keypoint-less
+        detectors (e.g. Yolov11 VR180).
+
+        The canonical ArcFace keypoint template is placed inside each box, giving
+        a rough frontal-facing landmark set. This keeps the shared detection
+        pipeline working (geometric KPS validation, recognition, optional
+        landmark refinement) even though the detector itself produces no
+        keypoints. When landmark detection is enabled these points are refined by
+        the dedicated landmark model; in VR180 mode the detector's landmarks are
+        ignored entirely (landmarks are re-detected on each perspective crop).
+
+        Args:
+            bboxes (np.ndarray): Array of shape (N, 4) in [x1, y1, x2, y2] format.
+
+        Returns:
+            np.ndarray: Landmarks of shape (N, 5, 2).
+        """
+        bboxes = np.asarray(bboxes, dtype=np.float32)
+        if bboxes.ndim != 2 or bboxes.shape[0] == 0:
+            return np.empty((0, 5, 2), dtype=np.float32)
+
+        x1 = bboxes[:, 0:1]
+        y1 = bboxes[:, 1:2]
+        w = bboxes[:, 2:3] - bboxes[:, 0:1]
+        h = bboxes[:, 3:4] - bboxes[:, 1:2]
+
+        fx = _KPS_TEMPLATE_FRACTIONS[:, 0][np.newaxis, :]  # (1, 5)
+        fy = _KPS_TEMPLATE_FRACTIONS[:, 1][np.newaxis, :]  # (1, 5)
+
+        kx = x1 + w * fx  # (N, 5)
+        ky = y1 + h * fy  # (N, 5)
+        return np.stack([kx, ky], axis=-1).astype(np.float32)  # (N, 5, 2)
+
+    def detect_yoloface11_vr180(self, **kwargs):
+        """
+        Runs the Yolov11-face (VR180) detection pipeline.
+
+        Unlike RetinaFace/SCRFD/Yolov8, does NOT output facial keypoints. Its single
+        output tensor has shape [1, 5, N] = (cx, cy, w, h, score) per anchor, so
+        5-point landmarks are synthesised from each box via
+        `_synthesize_kps_from_bboxes`.
+        """
+        model_name = "YoloFace11nVR180"
+        ort_session = kwargs.get("ort_session")
+
+        img, score, rotation_angles = (
+            kwargs.get("img"),
+            kwargs.get("score"),
+            kwargs.get("rotation_angles"),
+        )
+        img_landmark = img.clone() if kwargs.get("use_landmark_detection") else None
+
+        input_size = (640, 640)
+        # _prepare_detection_image returns uint8 CHW tensor for yolo mode
+        det_img, det_scale, final_input_size = self._prepare_detection_image(
+            img, input_size, "yolo"
+        )
+
+        scores_list, bboxes_list, kpss_list = [], [], []
+        cx, cy = final_input_size[0] / 2, final_input_size[1] / 2
+
+        for angle in rotation_angles:
+            if angle != 0:
+                aimg, M = faceutil.transform(
+                    det_img, (cx, cy), input_size[0], 1.0, angle
+                )  # Rotates uint8
+                IM = faceutil.invertAffineTransform(M)
+            else:
+                IM, aimg = None, det_img  # aimg is uint8 CHW
+
+            # Convert to float and normalize AFTER rotation, before binding
+            aimg_prepared = aimg.to(torch.float32) / 255.0
+            aimg_prepared = torch.unsqueeze(
+                aimg_prepared, 0
+            ).contiguous()  # Add batch dim
+
+            io_binding = ort_session.io_binding()
+            io_binding.bind_input(
+                name="images",
+                device_type=self.models_processor.device_type,
+                device_id=self.models_processor.binding_device_id,
+                element_type=np.float32,
+                shape=aimg_prepared.size(),
+                buffer_ptr=aimg_prepared.data_ptr(),
+            )
+            io_binding.bind_output(
+                "output0",
+                self.models_processor.device_type,
+                self.models_processor.binding_device_id,
+            )
+            # Run the model with lazy build handling
+            net_outs = self._run_model_with_lazy_build_check(
+                model_name, ort_session, io_binding
+            )
+
+            # Output [1, 5, N] -> [N, 5] where columns are (cx, cy, w, h, score).
+            outputs = np.squeeze(net_outs).T
+            bbox_raw, score_raw = outputs[:, :4], outputs[:, 4:5]
+            # Flatten score_raw before comparison
+            score_raw_flat = score_raw.flatten()
+            keep_indices = np.where(score_raw_flat > score)[0]
+
+            if keep_indices.size > 0:
+                bbox_raw, score_raw = bbox_raw[keep_indices], score_raw[keep_indices]
+                # Convert (center_x, center_y, w, h) to (x1, y1, x2, y2)
+                bboxes_raw = np.stack(
+                    (
+                        bbox_raw[:, 0] - bbox_raw[:, 2] / 2,
+                        bbox_raw[:, 1] - bbox_raw[:, 3] / 2,
+                        bbox_raw[:, 0] + bbox_raw[:, 2] / 2,
+                        bbox_raw[:, 1] + bbox_raw[:, 3] / 2,
+                    ),
+                    axis=-1,
+                )
+                if angle != 0 and len(bboxes_raw) > 0:
+                    points1, points2 = (
+                        faceutil.trans_points2d(bboxes_raw[:, :2], IM),
+                        faceutil.trans_points2d(bboxes_raw[:, 2:], IM),
+                    )
+                    _x1, _y1, _x2, _y2 = (
+                        points1[:, 0],
+                        points1[:, 1],
+                        points2[:, 0],
+                        points2[:, 1],
+                    )
+                    if angle in (-270, 90):
+                        points1, points2 = (
+                            np.stack((_x1, _y2), axis=1),
+                            np.stack((_x2, _y1), axis=1),
+                        )
+                    elif angle in (-180, 180):
+                        points1, points2 = (
+                            np.stack((_x2, _y2), axis=1),
+                            np.stack((_x1, _y1), axis=1),
+                        )
+                    elif angle in (-90, 270):
+                        points1, points2 = (
+                            np.stack((_x2, _y1), axis=1),
+                            np.stack((_x1, _y2), axis=1),
+                        )
+                    bboxes_raw = np.hstack((points1, points2))
+
+                # This model has no keypoints — synthesise 5-point landmarks from
+                # each bbox so the shared filtering/refinement pipeline works.
+                kpss_raw = self._synthesize_kps_from_bboxes(bboxes_raw)
+
+                # Ensure score_raw has the correct shape [N, 1] before appending
+                if score_raw.ndim == 1:
+                    score_raw = score_raw[:, np.newaxis]
+
+                if score_raw.size > 0:
+                    kpss_list.append(kpss_raw)
+                    bboxes_list.append(bboxes_raw)
+                    scores_list.append(score_raw)
+
+        det, kpss, score_values = self._filter_detections_gpu(
+            scores_list,
+            bboxes_list,
+            kpss_list,
+            img.shape[1],
+            img.shape[2],
+            det_scale,
+            kwargs.get("max_num"),
+        )
+        if det is None:
+            return (
+                np.empty((0, 4)),
+                np.empty((0, 5, 2)),
+                np.empty((0, 5, 2)),
+                np.empty((0,)),
+            )
+
+        return self._refine_landmarks(img_landmark, det, kpss, score_values, **kwargs)
+
+    def detect_yoloface12_vr180(self, **kwargs):
+        """
+        Runs the Yolov12-face (VR180) detection pipeline.
+
+        Unlike RetinaFace/SCRFD/Yolov8, does NOT output facial keypoints. Its single
+        output tensor has shape [1, 5, N] = (cx, cy, w, h, score) per anchor, so
+        5-point landmarks are synthesised from each box via
+        `_synthesize_kps_from_bboxes`.
+        """
+        model_name = "YoloFace12nVR180"
+        ort_session = kwargs.get("ort_session")
+
+        img, score, rotation_angles = (
+            kwargs.get("img"),
+            kwargs.get("score"),
+            kwargs.get("rotation_angles"),
+        )
+        img_landmark = img.clone() if kwargs.get("use_landmark_detection") else None
+
+        input_size = (640, 640)
+        # _prepare_detection_image returns uint8 CHW tensor for yolo mode
+        det_img, det_scale, final_input_size = self._prepare_detection_image(
+            img, input_size, "yolo"
+        )
+
+        scores_list, bboxes_list, kpss_list = [], [], []
+        cx, cy = final_input_size[0] / 2, final_input_size[1] / 2
+
+        for angle in rotation_angles:
+            if angle != 0:
+                aimg, M = faceutil.transform(
+                    det_img, (cx, cy), input_size[0], 1.0, angle
+                )  # Rotates uint8
+                IM = faceutil.invertAffineTransform(M)
+            else:
+                IM, aimg = None, det_img  # aimg is uint8 CHW
+
+            # Convert to float and normalize AFTER rotation, before binding
+            aimg_prepared = aimg.to(torch.float32) / 255.0
+            aimg_prepared = torch.unsqueeze(
+                aimg_prepared, 0
+            ).contiguous()  # Add batch dim
+
+            io_binding = ort_session.io_binding()
+            io_binding.bind_input(
+                name="images",
+                device_type=self.models_processor.device_type,
+                device_id=self.models_processor.binding_device_id,
+                element_type=np.float32,
+                shape=aimg_prepared.size(),
+                buffer_ptr=aimg_prepared.data_ptr(),
+            )
+            io_binding.bind_output(
+                "output0",
+                self.models_processor.device_type,
+                self.models_processor.binding_device_id,
+            )
+            # Run the model with lazy build handling
+            net_outs = self._run_model_with_lazy_build_check(
+                model_name, ort_session, io_binding
+            )
+
+            # Output [1, 5, N] -> [N, 5] where columns are (cx, cy, w, h, score).
+            outputs = np.squeeze(net_outs).T
+            bbox_raw, score_raw = outputs[:, :4], outputs[:, 4:5]
+            # Flatten score_raw before comparison
+            score_raw_flat = score_raw.flatten()
+            keep_indices = np.where(score_raw_flat > score)[0]
+
+            if keep_indices.size > 0:
+                bbox_raw, score_raw = bbox_raw[keep_indices], score_raw[keep_indices]
+                # Convert (center_x, center_y, w, h) to (x1, y1, x2, y2)
+                bboxes_raw = np.stack(
+                    (
+                        bbox_raw[:, 0] - bbox_raw[:, 2] / 2,
+                        bbox_raw[:, 1] - bbox_raw[:, 3] / 2,
+                        bbox_raw[:, 0] + bbox_raw[:, 2] / 2,
+                        bbox_raw[:, 1] + bbox_raw[:, 3] / 2,
+                    ),
+                    axis=-1,
+                )
+                if angle != 0 and len(bboxes_raw) > 0:
+                    points1, points2 = (
+                        faceutil.trans_points2d(bboxes_raw[:, :2], IM),
+                        faceutil.trans_points2d(bboxes_raw[:, 2:], IM),
+                    )
+                    _x1, _y1, _x2, _y2 = (
+                        points1[:, 0],
+                        points1[:, 1],
+                        points2[:, 0],
+                        points2[:, 1],
+                    )
+                    if angle in (-270, 90):
+                        points1, points2 = (
+                            np.stack((_x1, _y2), axis=1),
+                            np.stack((_x2, _y1), axis=1),
+                        )
+                    elif angle in (-180, 180):
+                        points1, points2 = (
+                            np.stack((_x2, _y2), axis=1),
+                            np.stack((_x1, _y1), axis=1),
+                        )
+                    elif angle in (-90, 270):
+                        points1, points2 = (
+                            np.stack((_x2, _y1), axis=1),
+                            np.stack((_x1, _y2), axis=1),
+                        )
+                    bboxes_raw = np.hstack((points1, points2))
+
+                # This model has no keypoints — synthesise 5-point landmarks from
+                # each bbox so the shared filtering/refinement pipeline works.
+                kpss_raw = self._synthesize_kps_from_bboxes(bboxes_raw)
+
+                # Ensure score_raw has the correct shape [N, 1] before appending
+                if score_raw.ndim == 1:
+                    score_raw = score_raw[:, np.newaxis]
+
                 if score_raw.size > 0:
                     kpss_list.append(kpss_raw)
                     bboxes_list.append(bboxes_raw)

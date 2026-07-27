@@ -17,13 +17,6 @@ EXPERIMENTAL_SETTINGS_CONTROL_KEYS = frozenset(
         "AntialiasTypeSelection",
     }
 )
-REMOVED_SETTINGS_CONTROL_KEYS = frozenset(
-    {
-        "CommandLineDebugEnableToggle",
-        "DilatationTypeSelection",
-        *EXPERIMENTAL_SETTINGS_CONTROL_KEYS,
-    }
-)
 
 SETTINGS_LAYOUT_DATA: Any = {  # noqa: F811
     "Appearance": {
@@ -355,7 +348,7 @@ SETTINGS_LAYOUT_DATA: Any = {  # noqa: F811
             # high latitudes where equirectangular projection severely compresses
             # horizontal resolution. Power users can disable for max throughput
             # in scenes that don't need it.
-            "default": True,
+            "default": False,
             "help": "Run face detection on a grid of 24 undistorted perspective crops to catch faces missed by standard detection (faces near poles, the ±180° seam, head tilted back, or very close to the camera). Default ON — recommended for most VR content. Disable only when you are certain the standard detector finds every face you need.",
             "parentToggle": "VR180ModeEnableToggle",
             "requiredToggleValue": True,
@@ -413,9 +406,16 @@ SETTINGS_LAYOUT_DATA: Any = {  # noqa: F811
         "DetectorModelSelection": {
             "level": 1,
             "label": "Face Detect Model",
-            "options": ["RetinaFace", "Yolov8", "SCRFD", "Yunet"],
+            "options": [
+                "RetinaFace",
+                "Yolov8",
+                "SCRFD",
+                "Yunet",
+                "Yolov11 VR180",
+                "Yolov12 VR180",
+            ],
             "default": "RetinaFace",
-            "help": "Select the face detection model to use for detecting faces in the input image or video.",
+            "help": "Select the face detection model to use for detecting faces in the input image or video. 'Yolov11 VR180' and 'Yolov12 VR180' is trained for VR180 content.",
         },
         "DetectorScoreSlider": {
             "level": 1,
@@ -723,6 +723,12 @@ SETTINGS_LAYOUT_DATA: Any = {  # noqa: F811
             "label": "Auto Save Workspace",
             "default": False,
             "help": "Auto Saves Workspace .json in output folder at end of recording (only the status at end of recording)",
+        },
+        "AutoSaveLastWorkspaceToggle": {
+            "level": 1,
+            "label": "Auto Save Last Workspace",
+            "default": False,
+            "help": "Auto Saves last_workspace.json in the project root at end of recording (only the status at end of recording)",
         },
         "AutoLoadWorkspaceToggle": {
             "level": 1,

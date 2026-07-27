@@ -20,9 +20,9 @@ from app.ui.widgets.actions import common_actions as common_widget_actions
 #'''
 
 
-def handle_face_detector_tracking_reset(main_window: "MainWindow", value):
+def handle_face_detector_tracking_reset(main_window: "MainWindow", value: bool) -> None:
     """Resets the tracker instance when tracking is toggled or media changes."""
-    main_window.models_processor.face_detectors.reset_tracker()
+    main_window.function_worker.reset_face_tracker()
     # When ByteTrack is disabled, reset its child toggle so it doesn't stay True
     # while hidden (parentToggle mechanism only hides the widget, it doesn't reset the value).
     if not value:
@@ -35,14 +35,26 @@ def handle_face_detector_tracking_reset(main_window: "MainWindow", value):
     common_widget_actions.refresh_frame(main_window)
 
 
-def change_execution_provider(main_window: "MainWindow", new_provider):
+def change_execution_provider(
+    main_window: "MainWindow", new_provider: str | None = None
+) -> None:
+    """
+    Changes the global execution provider.
+    If new_provider is omitted (e.g., during startup initialization), it safely
+    falls back to reading the current state from the main_window's control dictionary.
+    """
+    if new_provider is None:
+        new_provider = str(
+            main_window.control.get("ProvidersPrioritySelection", "TensorRT")
+        )
+
     main_window.video_processor.stop_processing()
-    main_window.models_processor.switch_providers_priority(new_provider)
-    main_window.models_processor.clear_gpu_memory()
+    main_window.function_worker.switch_providers_priority(new_provider)
+    main_window.function_worker.clear_gpu_memory()
     common_widget_actions.update_gpu_memory_progressbar(main_window)
 
 
-def change_threads_number(main_window: "MainWindow", new_threads_number):
+def change_threads_number(main_window: "MainWindow", new_threads_number: int) -> None:
     main_window.video_processor.set_number_of_threads(new_threads_number)
     torch.cuda.empty_cache()
     common_widget_actions.update_gpu_memory_progressbar(main_window)
@@ -135,7 +147,7 @@ def handle_denoiser_state_change(
     main_window: "MainWindow",
     new_value_of_toggle_that_just_changed: bool,
     control_name_that_changed: str,
-):
+) -> None:
     """
     Manages unloading of denoiser models (UNet, VAEs, KV Extractor) based on the
     overall state of all denoiser UI toggles. Models are lazy-loaded by the inference
@@ -195,14 +207,14 @@ def handle_denoiser_state_change(
             print(
                 "[INFO] Exclusive path is inactive. Ensuring KV Extractor is unloaded."
             )
-            main_window.models_processor.face_denoiser.unload_kv_extractor()
+            main_window.function_worker.unload_denoiser_kv_extractor()
     else:
         # If NO denoiser pass will be active, aggressively free VRAM.
         print(
             "[INFO] All denoiser passes are inactive. Unloading all denoiser-related models."
         )
-        main_window.models_processor.face_denoiser.unload_models()
-        main_window.models_processor.face_denoiser.unload_kv_extractor()
+        main_window.function_worker.unload_denoiser_models()
+        main_window.function_worker.unload_denoiser_kv_extractor()
 
     # 5. Update UI visibility for the specific pass that was just toggled.
     pass_suffix_to_update = None
@@ -223,6 +235,44 @@ def handle_denoiser_state_change(
             )
 
     # Frame refresh is handled by common_actions.update_control after this function returns.
+
+
+def handle_average_kv_toggle_change(
+    main_window: "MainWindow", new_value: bool, control_name: str
+) -> None:
+    """
+    Dynamically handles the Average K/V toggle state change.
+
+    Why: Synchronizes the main UI control dictionary before triggering VRAM tensor recalculations.
+    If we do not explicitly set the control value here, the downstream `calculate_assigned_input_embedding`
+    will read the out-of-sync previous state, causing inverted logic (ON triggers Concatenation, OFF triggers Averaging).
+    """
+    # 1. FORCE UI STATE SYNCHRONIZATION
+    # Ensure the control dictionary knows the new value before calculation methods read it.
+    main_window.control[control_name] = new_value
+
+    # 2. RECALCULATE TENSOR MERGING FOR ALL TARGET FACES
+    if hasattr(main_window, "target_faces") and main_window.target_faces:
+        for target_face in main_window.target_faces.values():
+            # Clear the downstream combined VRAM maps
+            if hasattr(target_face, "assigned_kv_map"):
+                target_face.assigned_kv_map = None
+            if hasattr(target_face, "aged_kv_map"):
+                target_face.aged_kv_map = None
+
+            # Re-run the lightweight tensor merge (mean/cat) using the fresh toggle state
+            if hasattr(target_face, "calculate_assigned_input_embedding"):
+                target_face.calculate_assigned_input_embedding()
+
+    # 3. UPDATE ACTIVE CONTEXT POINTER
+    selected_id = getattr(main_window, "selected_target_face_id", None)
+    if selected_id and hasattr(main_window, "target_faces"):
+        active_face = main_window.target_faces.get(selected_id)
+        if active_face and hasattr(active_face, "assigned_kv_map"):
+            main_window.current_kv_tensors_map = active_face.assigned_kv_map
+
+    # 4. DISPATCH UI THREAD RENDER
+    common_widget_actions.refresh_frame(main_window)
 
 
 def handle_face_mask_state_change(
@@ -246,11 +296,11 @@ def handle_face_mask_state_change(
 
 def handle_restorer_state_change(
     main_window: "MainWindow", new_value: bool, control_name: str
-):
+) -> None:
     """Loads or unloads a specific face restorer model based on its toggle state."""
     params = main_window.current_widget_parameters
-    model_map = main_window.models_processor.face_restorers.model_map
-    face_restorers_manager = main_window.models_processor.face_restorers
+    model_map = main_window.function_worker.face_restorers.model_map
+    face_restorers_manager = main_window.function_worker.face_restorers
 
     model_type_key = None
     active_model_attr = None
@@ -312,11 +362,11 @@ def handle_restorer_state_change(
 
 def handle_model_selection_change(
     main_window: "MainWindow", new_model_type: str, control_name: str
-):
+) -> None:
     """Unloads the old model and loads the new one when a selection dropdown changes."""
     params = main_window.current_widget_parameters
-    model_map = main_window.models_processor.face_restorers.model_map
-    face_restorers_manager = main_window.models_processor.face_restorers
+    model_map = main_window.function_worker.face_restorers.model_map
+    face_restorers_manager = main_window.function_worker.face_restorers
 
     is_enabled = False
     active_model_attr = None
@@ -372,10 +422,11 @@ def handle_model_selection_change(
 
 def handle_landmark_state_change(
     main_window: "MainWindow", new_value: bool, control_name: str
-):
+) -> None:
     """Loads/Unloads landmark models when the main toggle is changed."""
     models_processor = main_window.models_processor
-    landmark_detectors = models_processor.face_landmark_detectors
+    function_worker = main_window.function_worker
+    landmark_detectors = function_worker.face_landmark_detectors
 
     if not new_value:
         # Toggle is OFF: Unload all landmark models EXCEPT essential ones (like 203)
@@ -408,7 +459,7 @@ def handle_landmark_state_change(
 
 def handle_landmark_model_selection_change(
     main_window: "MainWindow", new_detect_mode: str, control_name: str
-):
+) -> None:
     """Unloads the old landmark model and loads the new one."""
     from app.processors.models_data import landmark_model_mapping
 
@@ -419,7 +470,8 @@ def handle_landmark_model_selection_change(
         return  # Invalid selection
 
     models_processor = main_window.models_processor
-    landmark_detectors = models_processor.face_landmark_detectors
+    function_worker = main_window.function_worker
+    landmark_detectors = function_worker.face_landmark_detectors
 
     old_model_name = landmark_detectors.current_landmark_model_name
 
@@ -450,9 +502,9 @@ def handle_landmark_model_selection_change(
 
 def handle_frame_enhancer_state_change(
     main_window: "MainWindow", new_value: bool, control_name: str
-):
+) -> None:
     """Loads or unloads the currently selected frame enhancer model."""
-    frame_enhancers = main_window.models_processor.frame_enhancers
+    frame_enhancers = main_window.function_worker.frame_enhancers
 
     if new_value:
         # Get the currently selected enhancer type from the UI controls
@@ -470,9 +522,9 @@ def handle_frame_enhancer_state_change(
 
 def handle_enhancer_model_selection_change(
     main_window: "MainWindow", new_enhancer_type: str, control_name: str
-):
+) -> None:
     """Unloads the old enhancer model and loads the new one when the selection changes."""
-    frame_enhancers = main_window.models_processor.frame_enhancers
+    frame_enhancers = main_window.function_worker.frame_enhancers
     is_enabled = main_window.control.get("FrameEnhancerEnableToggle", False)
 
     # Get the actual ONNX model name from the user-friendly type
@@ -492,12 +544,13 @@ def handle_enhancer_model_selection_change(
         frame_enhancers.current_enhancer_model = new_model_name
 
 
-def _check_and_manage_face_editor_models(main_window: "MainWindow"):
+def _check_and_manage_face_editor_models(main_window: "MainWindow") -> None:
     """
     Central function to load/unload FaceEditor (LivePortrait) models
     based on the state of BOTH UI controls.
     """
     models_processor = main_window.models_processor
+    function_worker = main_window.function_worker
 
     # 1. Check if the main 'Edit Face' button (outside the tab) is checked
     is_edit_face_active = main_window.editFacesButton.isChecked()
@@ -524,10 +577,10 @@ def _check_and_manage_face_editor_models(main_window: "MainWindow"):
     # are not part of the LivePortrait face-editor group.
     recast_loaded = any(
         models_processor.models.get(m) is not None
-        for m in models_processor.perform_recast.model_group
+        for m in function_worker.perform_recast.model_group
     )
     models_are_currently_loaded = (
-        models_processor.face_editors.current_face_editor_type is not None
+        function_worker.face_editors.current_face_editor_type is not None
         or recast_loaded
     )
 
@@ -544,9 +597,9 @@ def _check_and_manage_face_editor_models(main_window: "MainWindow"):
         print(
             "[INFO] Face Editor and Expression Restorer are inactive. Unloading LivePortrait models."
         )
-        models_processor.unload_face_editor_models()
+        function_worker.unload_face_editor_models()
         if recast_loaded:
-            models_processor.unload_perform_recast_models()
+            function_worker.unload_perform_recast_models()
 
 
 def handle_face_editor_button_click(main_window: "MainWindow"):
@@ -664,6 +717,7 @@ def apply_face_reaging(main_window: "MainWindow", *_args) -> None:
 
     try:
         models_processor = main_window.models_processor
+        function_worker = main_window.function_worker
 
         # BGR numpy → RGB CHW uint8 tensor
         face_rgb_np = np.ascontiguousarray(cropped_face_bgr[..., ::-1])
@@ -674,7 +728,7 @@ def apply_face_reaging(main_window: "MainWindow", *_args) -> None:
             face_chw = v2.Resize((512, 512), antialias=False)(face_chw)
 
         # Run re-aging
-        aged_chw = models_processor.face_reaging.apply_reaging(
+        aged_chw = function_worker.apply_reaging(
             face_chw, source_age, target_age_val
         )  # CHW uint8 RGB
 
@@ -715,7 +769,7 @@ def apply_face_reaging(main_window: "MainWindow", *_args) -> None:
         aged_embeddings = {}
         for arcface_model in models_to_compute:
             try:
-                embedding, _ = models_processor.run_recognize_direct(
+                embedding, _ = function_worker.run_recognize_direct(
                     aged_chw_dev, approx_kps_5, similarity_type, arcface_model
                 )
                 if embedding is not None and embedding.size > 0:
@@ -734,12 +788,13 @@ def apply_face_reaging(main_window: "MainWindow", *_args) -> None:
             or control.get("DenoiserAfterFirstRestorerToggle", False)
             or control.get("DenoiserAfterRestorersToggle", False)
         )
+
         if denoiser_on:
             try:
                 aged_hwc = aged_chw.permute(1, 2, 0).cpu().numpy()
                 pil_img = Image.fromarray(aged_hwc)
-                with models_processor.face_denoiser.kv_extraction_lock:
-                    kv_map = models_processor.face_denoiser.get_kv_map_for_face(pil_img)
+                with function_worker.denoiser_kv_extraction_lock:
+                    kv_map = function_worker.get_kv_map_for_face(pil_img)
                 target_face.aged_kv_map = kv_map
             except Exception as e_kv:
                 print(f"[ERROR] apply_face_reaging: KV map extraction failed: {e_kv}")

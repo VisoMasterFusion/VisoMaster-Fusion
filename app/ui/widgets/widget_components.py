@@ -3,7 +3,7 @@ import os
 import traceback
 from functools import partial
 import uuid
-from typing import TYPE_CHECKING, Any, Dict
+from typing import TYPE_CHECKING, Any, Dict, List
 from send2trash import send2trash
 import subprocess
 import sys
@@ -131,13 +131,12 @@ class CardButton(QPushButton):
         self.blockSignals(False)
 
     def get_item_position(self):
-        if self.list_widget is None:
+        if self.list_widget is None or self.list_item is None:
             return None
-        for i in range(self.list_widget.count() - 1, -1, -1):
-            list_item = self.list_widget.item(i)
-            if list_item.listWidget().itemWidget(list_item) == self:
-                return i
-        return None
+        # row() is O(1) and stays correct after the list is re-sorted, unlike
+        # scanning for the item whose widget is self.
+        row = self.list_widget.row(self.list_item)
+        return row if row >= 0 else None
 
     # To find the index of second last selected button by traversing the list
     # Mainly used as a helper for Shift Selection of CardButtons
@@ -532,8 +531,9 @@ class TargetMediaCardButton(CardButton):
                 self.media_capture = False
 
         i = self.get_item_position()
-        main_window.targetVideosList.takeItem(i)
-        main_window.target_videos.pop(self.media_id)
+        if i is not None:
+            main_window.targetVideosList.takeItem(i)
+        main_window.target_videos.pop(self.media_id, None)
 
         # If the target media list is empty, show the placeholder text
         if not main_window.target_videos:
@@ -777,7 +777,7 @@ class TargetFaceCardButton(CardButton):
 
                 # Call run_recognize_direct (which expects CHW tensor)
                 new_embedding, _ = (
-                    self.main_window.models_processor.run_recognize_direct(
+                    self.main_window.function_worker.run_recognize_direct(
                         face_img_rgb_tensor_chw,  # Pass the CHW tensor
                         approx_kps_5,  # Pass the estimated keypoints on the crop
                         similarity_type,
@@ -871,11 +871,15 @@ class TargetFaceCardButton(CardButton):
             self.face_id
         ].copy()
 
-    def calculate_assigned_input_embedding(self):
+    def calculate_assigned_input_embedding(self) -> None:
+        """
+        Gathers and processes selected embeddings and K/V Maps dynamically based on UI state.
+        Defers tensor concatenation/averaging to execution time to respect real-time UI toggles.
+        """
         control = self.main_window.control.copy()
 
-        all_input_embeddings = []
-        all_embedding_swap_models = set()
+        all_input_embeddings: list[dict[str, np.ndarray]] = []
+        all_embedding_swap_models: set[str] = set()
 
         # Itera su `assigned_input_faces` e raccogli gli embedding e i modelli
         for _, embedding_store in self.assigned_input_faces.items():
@@ -899,9 +903,9 @@ class TargetFaceCardButton(CardButton):
                 ]
 
                 # 1. Apply Mean or Median
-                if control["EmbMergeMethodSelection"] == "Mean":
+                if control.get("EmbMergeMethodSelection", "Mean") == "Mean":
                     merged_emb = np.mean(embeddings_to_merge, axis=0)
-                elif control["EmbMergeMethodSelection"] == "Median":
+                elif control.get("EmbMergeMethodSelection", "Mean") == "Median":
                     merged_emb = np.median(embeddings_to_merge, axis=0)
                 else:
                     merged_emb = np.mean(embeddings_to_merge, axis=0)  # Fallback
@@ -925,6 +929,9 @@ class TargetFaceCardButton(CardButton):
             or control.get("DenoiserAfterRestorersToggle", False)
         )
 
+        # 1. READ THE NEW TOGGLE
+        average_kv_maps = control.get("AverageKVToggle", True)
+
         self.assigned_kv_map = None
         self.kv_data_color_transferred = False
 
@@ -939,8 +946,12 @@ class TargetFaceCardButton(CardButton):
                 if not embed_button:
                     continue
 
-                # Check if the embedding has a pre-generated KV map
-                if (
+                # NEW LOGIC: Use `.extend()` to inject the unbaked list of raw tensors
+                if hasattr(embed_button, "kv_map_list") and embed_button.kv_map_list:
+                    all_kv_maps.extend(embed_button.kv_map_list)
+
+                # BACKWARD COMPATIBILITY: Support old saved embeddings that have a baked map
+                elif (
                     hasattr(embed_button, "kv_map")
                     and embed_button.kv_map is not None
                     and len(embed_button.kv_map) > 0
@@ -955,7 +966,7 @@ class TargetFaceCardButton(CardButton):
                     if not input_face_button:
                         continue
 
-                    with main_window.models_processor.face_denoiser.kv_extraction_lock:
+                    with main_window.function_worker.denoiser_kv_extraction_lock:
                         if (
                             hasattr(input_face_button, "kv_map")
                             and input_face_button.kv_map is not None
@@ -969,7 +980,6 @@ class TargetFaceCardButton(CardButton):
                             try:
                                 from PIL import Image
 
-                                models_processor = main_window.models_processor
                                 cropped_face_np = input_face_button.cropped_face
                                 pil_img = Image.fromarray(cropped_face_np[..., ::-1])
 
@@ -980,8 +990,9 @@ class TargetFaceCardButton(CardButton):
 
                                 # Batch processing: Keep the extractor loaded for the duration of the loop
                                 kv_map = (
-                                    models_processor.face_denoiser.get_kv_map_for_face(
-                                        pil_img, unload_after=False
+                                    main_window.function_worker.get_kv_map_for_face(
+                                        pil_img,
+                                        unload_after=False,
                                     )
                                 )
 
@@ -1001,10 +1012,12 @@ class TargetFaceCardButton(CardButton):
 
                 # Cleanup: Unload the extractor once the batch is fully processed
                 if extracted_new_kv:
-                    main_window.models_processor.face_denoiser.unload_kv_extractor()
+                    main_window.function_worker.unload_denoiser_kv_extractor()
 
             # 3. Merge all collected KV Maps and strictly enforce VRAM localization
             if all_kv_maps:
+                import torch
+
                 target_device = main_window.models_processor.device
 
                 if len(all_kv_maps) == 1:
@@ -1015,10 +1028,11 @@ class TargetFaceCardButton(CardButton):
                             k: v.to(target_device) for k, v in layer_dict.items()
                         }
                 else:
+                    merge_mode_str = "Averaging" if average_kv_maps else "Concatenating"
                     print(
-                        f"[INFO] Merging K/V maps across {len(all_kv_maps)} prioritized sources..."
+                        f"[INFO] {merge_mode_str} K/V maps across {len(all_kv_maps)} prioritized sources..."
                     )
-                    merged_kv_map = {}
+                    merged_kv_map: dict[str, dict[str, torch.Tensor]] = {}
                     first_map = all_kv_maps[0]
 
                     for layer_key, layer_dict in first_map.items():
@@ -1034,15 +1048,25 @@ class TargetFaceCardButton(CardButton):
                                 tensors_to_merge = [
                                     t.to(target_device) for t in tensors_to_merge
                                 ]
-                                stacked = torch.stack(tensors_to_merge, dim=0)
-                                merged_tensor = torch.mean(stacked, dim=0)
+
+                                # 3. DYNAMICALLY MERGE BASED ON THE TOGGLE
+                                if average_kv_maps:
+                                    stacked = torch.stack(tensors_to_merge, dim=0)
+                                    merged_tensor = torch.mean(stacked, dim=0)
+                                else:
+                                    # Concatenate along the sequence dimension (-1)
+                                    # to expand the attention window
+                                    merged_tensor = torch.cat(tensors_to_merge, dim=-1)
+
                                 merged_kv_map[layer_key][kv_key] = merged_tensor
 
                     self.assigned_kv_map = merged_kv_map
             else:
                 self.assigned_kv_map = None
 
-        if main_window.selected_target_face_id == self.face_id:
+        if getattr(main_window, "selected_target_face_id", None) == getattr(
+            self, "face_id", None
+        ):
             main_window.current_kv_tensors_map = self.assigned_kv_map
 
         # Dirty Flag
@@ -1619,9 +1643,9 @@ class EmbeddingCardButton(CardButton):
         embedding_name: str,
         embedding_store: Dict[str, np.ndarray],
         embedding_id: str,
-        *args,
-        **kwargs,
-    ):
+        *args: Any,
+        **kwargs: Any,
+    ) -> None:
         super().__init__(*args, **kwargs)
         self.embedding_id = embedding_id
         self.embedding_store = (
@@ -1629,7 +1653,9 @@ class EmbeddingCardButton(CardButton):
         )
         self.embedding_name = embedding_name
 
+        # Support both legacy dictionary maps and new batched list maps
         self._kv_map: Dict | None = None
+        self._kv_map_list: List[Dict] | None = None
 
         self.setCheckable(True)
         self.setText(embedding_name)
@@ -1642,18 +1668,39 @@ class EmbeddingCardButton(CardButton):
         self.customContextMenuRequested.connect(self.on_context_menu)
 
     # --- Property definitions to intercept when a K/V map is assigned ---
+
     @property
-    def kv_map(self):
-        """Getter for the K/V map."""
+    def kv_map(self) -> Dict | None:
+        """Getter for the legacy single K/V map."""
         return self._kv_map
 
     @kv_map.setter
-    def kv_map(self, value):
-        """Setter for the K/V map. Updates the UI color automatically."""
+    def kv_map(self, value: Dict | None) -> None:
+        """Setter for legacy K/V maps. Updates the UI color automatically."""
         self._kv_map = value
+        self._update_ui_state()
 
-        # If valid tensors are loaded, change the text color to red and update tooltip
-        if self._kv_map is not None and len(self._kv_map) > 0:
+    @property
+    def kv_map_list(self) -> List[Dict] | None:
+        """Getter for the new raw K/V map lists."""
+        return self._kv_map_list
+
+    @kv_map_list.setter
+    def kv_map_list(self, value: List[Dict] | None) -> None:
+        """Setter for the dynamic unbaked K/V map lists. Updates UI color automatically."""
+        self._kv_map_list = value
+        self._update_ui_state()
+
+    def _update_ui_state(self) -> None:
+        """
+        Consolidated UI updater.
+        Checks if either a legacy baked map or a new raw map list is present and valid.
+        """
+        has_legacy_map = self._kv_map is not None and len(self._kv_map) > 0
+        has_new_map_list = self._kv_map_list is not None and len(self._kv_map_list) > 0
+
+        # If valid tensors are loaded, change the text color to the accent and update tooltip
+        if has_legacy_map or has_new_map_list:
             # Using the UI's native accent color (#4090a3) for consistency
             self.setStyleSheet("color: #4090a3;")
             self.setToolTip(f"{self.embedding_name} (Includes K/V Maps)")
@@ -1662,14 +1709,14 @@ class EmbeddingCardButton(CardButton):
             self.setStyleSheet("")
             self.setToolTip(self.embedding_name)
 
-    def set_embedding(self, embedding_swap_model: str, embedding: np.ndarray):
+    def set_embedding(self, embedding_swap_model: str, embedding: np.ndarray) -> None:
         self.embedding_store[embedding_swap_model] = embedding
 
-    def get_embedding(self, embedding_swap_model: str):
+    def get_embedding(self, embedding_swap_model: str) -> np.ndarray | None:
         """Restituisce l'embedding associato a un embedding_swap_model, se esiste."""
         return self.embedding_store.get(embedding_swap_model, None)
 
-    def load_embedding(self):
+    def load_embedding(self) -> None:
         main_window = self.main_window
         if video_control_actions.block_if_issue_scan_active(
             main_window, "change merged-embedding assignments"
@@ -1718,7 +1765,7 @@ class EmbeddingCardButton(CardButton):
 
         common_widget_actions.refresh_frame(main_window)
 
-    def create_context_menu(self):
+    def create_context_menu(self) -> None:
         # create context menu
         from app.ui.widgets.actions import list_view_actions
 
@@ -1734,7 +1781,7 @@ class EmbeddingCardButton(CardButton):
         )
         self.popMenu.addAction(self.clear_all_embeddings_action)
 
-    def on_context_menu(self, point):
+    def on_context_menu(self, point: QtCore.QPoint) -> None:
         # show context menu
         self.create_context_menu()
         try:
@@ -1750,7 +1797,7 @@ class EmbeddingCardButton(CardButton):
                 "clear_all_embeddings_action",
             )
 
-    def remove_embedding_from_list(self):
+    def remove_embedding_from_list(self) -> None:
         if video_control_actions.block_if_issue_scan_active(
             self.main_window, "remove embeddings"
         ):
@@ -1820,7 +1867,7 @@ class CreateEmbeddingDialog(QtWidgets.QDialog):
         # Set dialog layout
         self.setLayout(layout)
 
-    def create_embedding(self):
+    def create_embedding(self) -> None:
         self.embedding_name = self.embed_name_edit.text().strip()
         self.merge_type = self.merge_type_selection.currentText()
 
@@ -1834,8 +1881,8 @@ class CreateEmbeddingDialog(QtWidgets.QDialog):
             return
 
         # 1. Classic embedding merge and KPS separation
-        merged_embedding_store = {}
-        kps_5_list = []  # List to safely collect spatial keypoints
+        merged_embedding_store: dict[str, list[np.ndarray]] = {}
+        kps_5_list: list[np.ndarray] = []  # List to safely collect spatial keypoints
 
         for input_face in self.selected_faces:
             for embedding_swap_model, embedding in input_face.embedding_store.items():
@@ -1869,8 +1916,8 @@ class CreateEmbeddingDialog(QtWidgets.QDialog):
         if kps_5_list:
             final_embedding_store["kps_5"] = np.mean(kps_5_list, axis=0)
 
-        # 2. Extract and merge K/V Maps (if checked)
-        final_kv_map = None
+        # 2. Extract and Collect RAW K/V Maps (Deferred Merging)
+        final_kv_map_list = []
         if self.include_kv_checkbox.isChecked():
             all_kv_maps = []
             import traceback
@@ -1881,7 +1928,7 @@ class CreateEmbeddingDialog(QtWidgets.QDialog):
             try:
                 extracted_new_kv = False
                 for input_face in self.selected_faces:
-                    with self.main_window.models_processor.face_denoiser.kv_extraction_lock:
+                    with self.main_window.function_worker.denoiser_kv_extraction_lock:
                         # Check Cache first
                         if (
                             hasattr(input_face, "kv_map")
@@ -1903,8 +1950,10 @@ class CreateEmbeddingDialog(QtWidgets.QDialog):
                                     )
 
                                 # Batch processing: Keep the extractor loaded for the duration of the loop
-                                kv_map = self.main_window.models_processor.face_denoiser.get_kv_map_for_face(
-                                    pil_img, unload_after=False
+                                # average_refs has no mathematical impact here because we process 1 image at a time
+                                kv_map = self.main_window.function_worker.get_kv_map_for_face(
+                                    pil_img,
+                                    unload_after=False,
                                 )
 
                                 if kv_map:
@@ -1917,45 +1966,18 @@ class CreateEmbeddingDialog(QtWidgets.QDialog):
 
                 # Cleanup: Unload the extractor once the batch is fully processed
                 if extracted_new_kv:
-                    self.main_window.models_processor.face_denoiser.unload_kv_extractor()
+                    self.main_window.function_worker.unload_denoiser_kv_extractor()
 
-                # Enforce VRAM localization for created embeddings
+                # Enforce VRAM localization for created embeddings without merging them
                 if all_kv_maps:
                     target_device = self.main_window.models_processor.device
-                    if len(all_kv_maps) == 1:
-                        final_kv_map = {}
-                        for layer_key, layer_dict in all_kv_maps[0].items():
-                            final_kv_map[layer_key] = {
-                                k: v.to(target_device) for k, v in layer_dict.items()
-                            }
-                    else:
-                        print(
-                            f"[INFO] Dialog: Merging K/V maps across {len(all_kv_maps)} faces..."
-                        )
-                        merged_kv_map = {}
-                        first_map = all_kv_maps[0]
+                    for m in all_kv_maps:
+                        for layer_key, layer_dict in m.items():
+                            for k, v in layer_dict.items():
+                                layer_dict[k] = v.to(target_device)
 
-                        for layer_key, layer_dict in first_map.items():
-                            merged_kv_map[layer_key] = {}
-                            for kv_key in layer_dict.keys():
-                                tensors_to_merge = []
-                                for m in all_kv_maps:
-                                    if layer_key in m and kv_key in m[layer_key]:
-                                        tensors_to_merge.append(m[layer_key][kv_key])
+                    final_kv_map_list = all_kv_maps
 
-                                if tensors_to_merge:
-                                    import torch
-
-                                    # Force all tensors onto the target VRAM device before operations
-                                    tensors_to_merge = [
-                                        t.to(target_device) for t in tensors_to_merge
-                                    ]
-                                    stacked = torch.stack(tensors_to_merge, dim=0)
-                                    # Never use Median on spacial k/v -> always mean
-                                    merged_tensor = torch.mean(stacked, dim=0)
-                                    merged_kv_map[layer_key][kv_key] = merged_tensor
-
-                        final_kv_map = merged_kv_map
             finally:
                 QtWidgets.QApplication.restoreOverrideCursor()
 
@@ -1971,12 +1993,15 @@ class CreateEmbeddingDialog(QtWidgets.QDialog):
             embedding_id=embedding_id,
         )
 
-        # 4. Assign the K/V Map to the new button
-        if final_kv_map is not None:
+        # 4. Assign the RAW K/V Map list to the new button
+        if final_kv_map_list:
             if embedding_id in self.main_window.merged_embeddings:
-                self.main_window.merged_embeddings[embedding_id].kv_map = final_kv_map
+                # Store the unmerged list so calculate_assigned_input_embedding can merge it dynamically
+                self.main_window.merged_embeddings[
+                    embedding_id
+                ].kv_map_list = final_kv_map_list
                 print(
-                    f"[INFO] Successfully linked merged K/V map to embedding '{self.embedding_name}'."
+                    f"[INFO] Successfully linked {len(final_kv_map_list)} raw K/V maps to embedding '{self.embedding_name}'."
                 )
 
         self.accept()
@@ -2189,7 +2214,9 @@ class LoadLastWorkspaceDialog(QtWidgets.QDialog):
 
     def load_workspace(self):
         self.accept()
-        save_load_actions.load_saved_workspace(self.main_window, "last_workspace.json")
+        save_load_actions.load_saved_workspace(
+            self.main_window, str(self.main_window.last_workspace_path)
+        )
 
 
 class JobLoadingDialog(QtWidgets.QDialog):

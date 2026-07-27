@@ -8,11 +8,17 @@ import kornia.geometry.transform as kgm
 
 if TYPE_CHECKING:
     from app.processors.models_processor import ModelsProcessor
+    from app.processors.workers.function_worker import FunctionWorker
 
 
 class FaceRestorers:
-    def __init__(self, models_processor: "ModelsProcessor"):
+    def __init__(
+        self,
+        models_processor: "ModelsProcessor",
+        function_worker: "FunctionWorker",
+    ):
         self.models_processor = models_processor
+        self.function_worker = function_worker
         self.active_model_slot1: Optional[str] = None
         self.active_model_slot2: Optional[str] = None
         self._warned_models: set[str] = set()  # To track warnings
@@ -133,12 +139,15 @@ class FaceRestorers:
             except Exception:
                 return swapped_face_upscaled
 
-            # OPTIMIZED: Direct GPU Affine Warp with Kornia, skipping torchvision crop/affine
+            # Push matrix to device with non_blocking=True to hide PCIe transfer latency
             M_tensor = (
                 torch.from_numpy(tform.params[0:2])
-                .float()
+                .to(
+                    device=swapped_face_upscaled.device,
+                    dtype=torch.float32,
+                    non_blocking=True,
+                )
                 .unsqueeze(0)
-                .to(swapped_face_upscaled.device)
             )
             img_b = (
                 swapped_face_upscaled.unsqueeze(0)
@@ -148,20 +157,22 @@ class FaceRestorers:
 
             # Kornia allocates a new tensor here, so we own this memory space.
             temp = kgm.warp_affine(
-                img_b.float(),
+                img_b.to(dtype=torch.float32, non_blocking=True),
                 M_tensor,
                 dsize=(512, 512),
                 mode="bilinear",
                 align_corners=True,
             ).squeeze(0)
-            # Safe to perform math operations since 'temp' is a brand new tensor
-            temp = temp.float() / 255.0
+
+            # Safe to perform in-place math since 'temp' is a brand new tensor from Kornia
+            temp.mul_(1.0 / 255.0)
 
         else:
             # If we did not warp the image, we MUST clone the original tensor
-            # before applying division. Using .div_(255.0) on the original reference corrupts
-            # memory for other threads (Race Condition).
-            temp = swapped_face_upscaled.clone().float() / 255.0
+            # copy=True safely detaches it for this thread; in-place math saves a VRAM allocation.
+            temp = swapped_face_upscaled.to(
+                dtype=torch.float32, copy=True, non_blocking=True
+            ).mul_(1.0 / 255.0)
 
         # High-Fidelity Scaling BEFORE Normalization
         # Use Bicubic to preserve eyelashes/pores, and clamp to prevent GAN ringing artifacts.
@@ -291,12 +302,11 @@ class FaceRestorers:
 
         # Invert Transform
         if restorer_det_type in ["Blend", "Reference"]:
-            # OPTIMIZED: Direct Inverse GPU Affine Warp with Kornia
+            # OPTIMIZED: Direct Inverse GPU Affine Warp with non_blocking=True
             M_inv_tensor = (
                 torch.from_numpy(tform.inverse.params[0:2])
-                .float()
+                .to(device=outpred.device, dtype=torch.float32, non_blocking=True)
                 .unsqueeze(0)
-                .to(outpred.device)
             )
             out_b = outpred.unsqueeze(0) if outpred.dim() == 3 else outpred
             dsize = (swapped_face_upscaled.shape[1], swapped_face_upscaled.shape[2])
@@ -310,28 +320,13 @@ class FaceRestorers:
                 align_corners=True,
             ).squeeze(0)
 
-        # Blend (Disabled by default as in original code)
-        # alpha = float(restorer_blend)/100.0
-        # outpred = torch.add(torch.mul(outpred, alpha), torch.mul(swapped_face_upscaled, 1-alpha))
-
-        # --- EXPLICIT CLEANUP ---
-        # Explicitly delete local intermediate tensors to free VRAM immediately
-        # before returning the final image. This keeps the VRAM peak perfectly flat.
-        try:
-            del temp
-            if restorer_det_type in ["Blend", "Reference"]:
-                del M_tensor
-                del img_b
-                del M_inv_tensor
-                del out_b
-        except Exception:
-            pass
-
+        # Python's GC clears local variables instantaneously on return.
+        # Removing the explicit try/except `del` block saves CPU branching overhead.
         return outpred
 
     def run_vae_encoder(
         self, image_input_tensor: torch.Tensor, output_latent_tensor: torch.Tensor
-    ):
+    ) -> None:
         """
         Runs the VAE encoder model.
         image_input_tensor: Batch x 3 x Height x Width, float32, normalized to [-1, 1]
@@ -341,8 +336,8 @@ class FaceRestorers:
         # FR-BUG-04: use .get() to avoid KeyError when model is not yet loaded
         ort_session = self.models_processor.models.get(model_name)
         if ort_session is None:
-            # Lazy reload in case clear_gpu_memory() cleared the session after a provider switch.
-            self.models_processor.face_denoiser.ensure_denoiser_models_loaded()
+            # Lazy reload via unified facade in case clear_gpu_memory() cleared the session
+            self.function_worker.ensure_denoiser_models_loaded()
             ort_session = self.models_processor.models.get(model_name)
         if ort_session is None:
             error_msg = f"[ERROR] VAE Encoder model '{model_name}' not loaded when run_vae_encoder was called. This model should be loaded by ModelsProcessor.face_denoiser.ensure_denoiser_models_loaded()."
@@ -383,7 +378,7 @@ class FaceRestorers:
 
     def run_vae_decoder(
         self, latent_input_tensor: torch.Tensor, output_image_tensor: torch.Tensor
-    ):
+    ) -> None:
         """
         Runs the VAE decoder model.
         latent_input_tensor: Batch x 8 x LatentH x LatentW, float32
@@ -393,8 +388,8 @@ class FaceRestorers:
         # FR-BUG-04: use .get() to avoid KeyError when model is not yet loaded
         ort_session = self.models_processor.models.get(model_name)
         if ort_session is None:
-            # Lazy reload in case clear_gpu_memory() cleared the session after a provider switch.
-            self.models_processor.face_denoiser.ensure_denoiser_models_loaded()
+            # Lazy reload via unified facade in case clear_gpu_memory() cleared the session
+            self.function_worker.ensure_denoiser_models_loaded()
             ort_session = self.models_processor.models.get(model_name)
         if ort_session is None:
             error_msg = f"[ERROR] VAE Decoder model '{model_name}' not loaded when run_vae_decoder was called. This model should be loaded by ModelsProcessor.face_denoiser.ensure_denoiser_models_loaded()."
@@ -441,7 +436,7 @@ class FaceRestorers:
         use_reference_exclusive_path_globally_tensor: torch.Tensor,
         kv_tensor_map: Optional[Dict[str, Dict[str, torch.Tensor]]],
         output_unet_tensor: torch.Tensor,
-    ):
+    ) -> None:
         """
         Runs the UNet denoiser model with external K/V inputs.
         """
@@ -452,7 +447,6 @@ class FaceRestorers:
             # Enhanced error reporting
             error_messages = [
                 f"[ERROR] UNet model '{model_name}' not loaded when run_ref_ldm_unet was called.",
-                "  This model should be loaded by ModelsProcessor.face_denoiser.apply_denoiser_unet or a similar setup routine.",
             ]
             print("\n".join(error_messages))
             return

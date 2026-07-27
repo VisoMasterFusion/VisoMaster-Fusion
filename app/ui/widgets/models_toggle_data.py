@@ -184,6 +184,18 @@ MODELS_TOGGLE_MAP: Dict[str, List[ToggleDef]] = {
         ToggleDef("EyeBrowsMakeupEnableToggle", ToggleScope.PER_FACE),
         ToggleDef("LipsMakeupEnableToggle", ToggleScope.PER_FACE),
     ],
+    "PerformRecastAppearanceFeatureExtractor": [
+        ToggleDef("FaceExpressionEnableBothToggle", ToggleScope.PER_FACE)
+    ],
+    "PerformRecastMotionExtractor": [
+        ToggleDef("FaceExpressionEnableBothToggle", ToggleScope.PER_FACE)
+    ],
+    "PerformRecastWarpingModule": [
+        ToggleDef("FaceExpressionEnableBothToggle", ToggleScope.PER_FACE)
+    ],
+    "PerformRecastSpadeGenerator": [
+        ToggleDef("FaceExpressionEnableBothToggle", ToggleScope.PER_FACE)
+    ],
 }
 
 

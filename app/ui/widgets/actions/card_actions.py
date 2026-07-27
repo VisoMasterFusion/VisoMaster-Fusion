@@ -206,7 +206,7 @@ def find_target_faces(main_window: "MainWindow"):
                     expand=True,
                 )
 
-            _, kpss_5, _ = main_window.models_processor.run_detect(
+            _, kpss_5, _ = main_window.function_worker.run_detect(
                 img,
                 control.get("DetectorModelSelection", "retinaface_10g"),
                 max_num=control.get("MaxFacesToDetectSlider", 1),
@@ -228,7 +228,7 @@ def find_target_faces(main_window: "MainWindow"):
             similarity_type = str("Auto")
             for face_kps in kpss_5:
                 face_emb, cropped_img = (
-                    main_window.models_processor.run_recognize_direct(
+                    main_window.function_worker.run_recognize_direct(
                         img,
                         face_kps,
                         similarity_type,
@@ -245,7 +245,7 @@ def find_target_faces(main_window: "MainWindow"):
                     for face_id, target_face in main_window.target_faces.items():
                         parameters = main_window.parameters[target_face.face_id]
                         threshhold = parameters.get("SimilarityThresholdSlider", 0.6)
-                        if main_window.models_processor.findCosineDistance(
+                        if main_window.function_worker.findCosineDistance(
                             target_face.get_embedding(
                                 str(
                                     control.get(

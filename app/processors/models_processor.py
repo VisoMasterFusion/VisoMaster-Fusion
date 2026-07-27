@@ -28,22 +28,12 @@ except ImportError as _ort_err:
     print("  4. Portable install: run 'Check / Update Dependencies' in the Launcher.")
     print("=" * 70 + "\n")
     raise
+
 import torch
 import onnx
 from torchvision.transforms import v2
 
 from app.processors.utils import faceutil
-
-# --- Optional Imports & Fallbacks ---
-
-# KORNIA IMPORT
-try:
-    import kornia.color as K
-except ImportError:
-    K = None  # Fallback if Kornia is not installed
-    print(
-        "[WARN] Kornia library not found. Color space conversions will use power-law approximation."
-    )
 
 from PySide6 import QtCore
 
@@ -57,22 +47,9 @@ except ModuleNotFoundError:
     TENSORRT_AVAILABLE = False
     trt = None
 
-# --- Internal Project Imports ---
-
-from app.processors.face_detectors import FaceDetectors
-from app.processors.face_landmark_detectors import FaceLandmarkDetectors
-from app.processors.face_masks import FaceMasks
-from app.processors.face_restorers import FaceRestorers
-from app.processors.face_swappers import FaceSwappers
-from app.processors.frame_enhancers import FrameEnhancers
-from app.processors.face_editors import FaceEditors
-from app.processors.face_reaging import FaceReaging
-from app.processors.perform_recast import PerformRecast
-from app.processors.face_denoiser import FaceDenoiser
 from app.processors.utils.dfm_model import DFMModel
 from app.processors.models_data import (
     models_list,
-    arcface_mapping_model_dict,
     fp16_safe_models_list,
     tensorrt_shape_infer_models,
     ARCFACE_DST,
@@ -87,10 +64,6 @@ if TYPE_CHECKING:
 
 onnxruntime.set_default_logger_severity(4)
 onnxruntime.log_verbosity_level = -1
-
-SRGB_GAMMA = (
-    2.2  # More precise sRGB gamma handling is complex, this is an approximation
-)
 
 
 # --- Isolated Process Workers ---
@@ -157,26 +130,6 @@ def _probe_onnx_model_worker(
         sys.exit(1)  # Failure
 
 
-def gamma_encode_linear_rgb_to_srgb(linear_rgb: torch.Tensor, gamma=SRGB_GAMMA):
-    """Converts linear RGB to sRGB. Uses Kornia if available for better accuracy."""
-    if K is not None:
-        # Kornia expects input in range [0, 1] and handles tensor dimensions correctly.
-        return K.linear_rgb_to_srgb(linear_rgb.clamp(0.0, 1.0))
-    else:
-        # Fallback to the original power-law approximation
-        return torch.pow(linear_rgb.clamp(0.0, 1.0), 1.0 / gamma)
-
-
-def gamma_decode_srgb_to_linear_rgb(srgb: torch.Tensor, gamma=SRGB_GAMMA):
-    """Converts sRGB to linear RGB. Uses Kornia if available for better accuracy."""
-    if K is not None:
-        # Kornia expects input in range [0, 1]
-        return K.srgb_to_linear_rgb(srgb.clamp(0.0, 1.0))
-    else:
-        # Fallback to the original power-law approximation
-        return torch.pow(srgb.clamp(0.0, 1.0), gamma)
-
-
 class ModelsProcessor(QtCore.QObject):
     """
     Central hub for managing AI models (ONNX, TensorRT, PyTorch).
@@ -196,12 +149,12 @@ class ModelsProcessor(QtCore.QObject):
     # Signal to request the GUI thread to hide the build dialog
     hide_build_dialog = QtCore.Signal()
 
-    def __init__(self, main_window: "MainWindow", device="cuda"):
+    def __init__(self, main_window: "MainWindow", device: str = "cuda") -> None:
         """
         Initialises the ModelsProcessor.
 
-        Sets up all model dictionaries, TensorRT options, provider lists, sub-processors
-        (face detectors, masks, restorers, etc.), and helper state (locks, sync vectors).
+        Sets up all model dictionaries, TensorRT options, provider lists,
+        and helper state (locks, sync vectors). Sub-processors are managed externally.
 
         Args:
             main_window: The application's MainWindow, used to access UI controls and signals.
@@ -210,8 +163,8 @@ class ModelsProcessor(QtCore.QObject):
         super().__init__()
         self.main_window = main_window
         self.gpu_id = getattr(main_window, "gpu_id", 0)
-        self.K = K  # Assign the module-level K to an instance attribute
         self.provider_name = "TensorRT"
+
         # NOTE: internal_deep_copied_kv_map / internal_kv_map_source_filename were
         # placeholder attributes for a planned per-session KV-map cache.  They are
         # currently unused (never written after __init__).  If a future feature
@@ -236,10 +189,8 @@ class ModelsProcessor(QtCore.QObject):
         try:
             # Get total GPU memory in bytes
             total_vram = torch.cuda.get_device_properties(self.gpu_id).total_memory
-
             # Safely allocate 40% of total VRAM for TensorRT workspace
             calculated_workspace = int(total_vram * 0.40)
-
             # Enforce a minimum of 1 GB to avoid compilation failures on very low-end GPUs
             workspace_size = max(calculated_workspace, MIN_WORKSPACE_SIZE)
         except Exception:
@@ -247,7 +198,7 @@ class ModelsProcessor(QtCore.QObject):
             workspace_size = FALLBACK_WORKSPACE_SIZE
 
         # Default TensorRT options
-        self.trt_ep_options = {
+        self.trt_ep_options: Dict[str, Any] = {
             "device_id": self.gpu_id,
             "trt_engine_cache_enable": True,
             "trt_engine_cache_path": "tensorrt-engines",
@@ -259,10 +210,11 @@ class ModelsProcessor(QtCore.QObject):
             "trt_max_workspace_size": workspace_size,
             "trt_builder_optimization_level": 5,
         }
+
         # A set to keep track of models that have been loaded but
         # have not had their engine built (lazy build).
         self.models_pending_build: set = set()
-        self.providers = [
+        self.providers: list = [
             ("TensorrtExecutionProvider", self.trt_ep_options),
             ("CUDAExecutionProvider", {"device_id": self.gpu_id}),
             ("CPUExecutionProvider"),
@@ -271,9 +223,9 @@ class ModelsProcessor(QtCore.QObject):
         self.nThreads = 1
 
         # Initialize models and models_path dictionaries
-        self.models: Dict[str, onnxruntime.InferenceSession] = {}
-        self.models_path = {}
-        self.models_data = {}
+        self.models: Dict[str, Any] = {}
+        self.models_path: Dict[str, str] = {}
+        self.models_data: Dict[str, Dict[str, Any]] = {}
 
         for model_data in models_list:
             model_name, model_path = model_data["model_name"], model_data["local_path"]
@@ -291,18 +243,6 @@ class ModelsProcessor(QtCore.QObject):
 
         # --- SMART UNLOAD STATE ---
         self.deferred_unloads: Dict[str, Dict[str, Any]] = {}
-
-        # Initialize Sub-Processors
-        self.face_detectors = FaceDetectors(self)
-        self.face_landmark_detectors = FaceLandmarkDetectors(self)
-        self.face_masks = FaceMasks(self)
-        self.face_restorers = FaceRestorers(self)
-        self.face_swappers = FaceSwappers(self)
-        self.frame_enhancers = FrameEnhancers(self)
-        self.face_editors = FaceEditors(self)
-        self.face_reaging = FaceReaging(self)
-        self.perform_recast = PerformRecast(self)
-        self.face_denoiser = FaceDenoiser(self)
 
         # Initialize Mask Latent
         self.lp_mask_crop_latent = faceutil.create_faded_inner_mask(
@@ -330,11 +270,6 @@ class ModelsProcessor(QtCore.QObject):
         self.normalize = v2.Normalize(
             mean=[0.0, 0.0, 0.0], std=[1 / 1.0, 1 / 1.0, 1 / 1.0]
         )
-
-        self.lp_mask_crop = self.face_editors.lp_mask_crop
-        self.lp_lip_array = self.face_editors.lp_lip_array
-        self.rgb_to_linear_rgb_converter = None
-        self.linear_rgb_to_rgb_converter = None
 
     @property
     def binding_device_id(self) -> int:
@@ -412,102 +347,126 @@ class ModelsProcessor(QtCore.QObject):
             traceback.print_exc()
             return onnx_path
 
-    def _check_tensorrt_cache(self, model_name: str, onnx_path: str) -> bool:
+    def _check_tensorrt_cache_state(
+        self, model_name: str, onnx_path: str
+    ) -> str | None:
         """
         Checks if a valid TensorRT cache (ctx and engine file) exists for the given model.
-        Returns True if a valid cache is found, False otherwise.
+
+        Returns:
+            "LEGACY": if a valid legacy cache (generic TensorrtExecutionProvider_ naming) is found.
+            "EXPLICIT": if a valid explicit cache (custom model_name prefix) is found.
+            None: if no valid cache is found.
         """
         try:
             cache_dir = "tensorrt-engines"
             base_onnx_name = os.path.splitext(os.path.basename(onnx_path))[0]
-            ctx_file_name = f"{base_onnx_name}_ctx.onnx"
-            ctx_file_path = os.path.join(cache_dir, ctx_file_name)
 
-            if os.path.exists(ctx_file_path):
-                with open(ctx_file_path, "rb") as f:
-                    content = f.read()
+            # Support both UI model names (explicit prefix) and base ONNX file names (legacy prefix)
+            possible_prefixes = list(dict.fromkeys([model_name, base_onnx_name]))
 
-                # Look for the engine name embedded in the context file
-                match = re.search(b"TensorrtExecutionProvider_.*?\\.engine", content)
-                if not match:
-                    return False
+            for prefix in possible_prefixes:
+                ctx_file_name = f"{prefix}_ctx.onnx"
+                ctx_file_path = os.path.join(cache_dir, ctx_file_name)
 
-                engine_name = match.group(0).decode("utf-8")
-                engine_subdirectory_name = os.path.basename(cache_dir)
-                engine_file_path = os.path.join(
-                    cache_dir, engine_subdirectory_name, engine_name
-                )
+                if os.path.exists(ctx_file_path) and os.path.isfile(ctx_file_path):
+                    with open(ctx_file_path, "rb") as f:
+                        content = f.read()
 
-                if os.path.exists(engine_file_path):
-                    return True
-                else:
-                    return False
-            else:
-                return False
+                    # Look for the engine name embedded in the context file using regex
+                    match = re.search(rb"[A-Za-z0-9_.-]+\.engine", content)
+                    if not match:
+                        continue  # Keep searching next prefix instead of failing early
+
+                    engine_name = match.group(0).decode("utf-8")
+                    engine_subdirectory_name = os.path.basename(cache_dir)
+
+                    # Check root cache directory and subdirectory
+                    engine_file_path_root = os.path.join(cache_dir, engine_name)
+                    engine_file_path_sub = os.path.join(
+                        cache_dir, engine_subdirectory_name, engine_name
+                    )
+
+                    if os.path.exists(engine_file_path_root) or os.path.exists(
+                        engine_file_path_sub
+                    ):
+                        if engine_name.startswith("TensorrtExecutionProvider_"):
+                            return "LEGACY"
+                        return "EXPLICIT"
+
+            return None  # No valid engine found after checking all prefixes
 
         except Exception as e:
-            print(f"[ERROR] Failed TensorRT cache check: {e}")
-            return False
+            print(f"[ERROR] Failed TensorRT cache state check for {model_name}: {e}")
+            return None
 
-    def _clean_tensorrt_cache(self, onnx_path: str, trt_options: dict) -> None:
+    def _clean_tensorrt_cache(
+        self, onnx_path: str, trt_options: Dict[str, Any]
+    ) -> None:
         """
         Cleans up potentially corrupted TensorRT cache files for a specific model.
-        Safely ignores missing files or locked files to prevent crashes during the cleanup process.
+        Safely handles both legacy (generic ORT naming) and explicit prefixed caches.
 
         Args:
             onnx_path (str): The local path to the ONNX model.
-            trt_options (dict): The TensorRT options containing the dynamic cache path.
+            trt_options (Dict[str, Any]): The TensorRT options dictionary.
         """
-        import os
-        import re
-
         cache_dir = trt_options.get("trt_engine_cache_path", "tensorrt-engines")
         base_onnx_name = os.path.splitext(os.path.basename(onnx_path))[0]
 
-        # 1. Try to read the context file to find the specific engine file before deleting it
-        ctx_file_name = f"{base_onnx_name}_ctx.onnx"
-        ctx_file_path = os.path.join(cache_dir, ctx_file_name)
+        # Extract the explicit prefix if available
+        target_prefix = trt_options.get("trt_engine_cache_prefix")
 
-        engine_file_paths_to_check = []
-        if os.path.exists(ctx_file_path) and os.path.isfile(ctx_file_path):
-            try:
-                with open(ctx_file_path, "rb") as f:
-                    content = f.read()
+        possible_prefixes: list[str] = []
+        if target_prefix:
+            possible_prefixes.append(target_prefix)
+        possible_prefixes.append(base_onnx_name)
+        possible_prefixes = list(dict.fromkeys(possible_prefixes))
 
-                # Extract the engine name generated by ONNX Runtime
-                match = re.search(b"TensorrtExecutionProvider_.*?\\.engine", content)
-                if match:
-                    engine_name = match.group(0).decode("utf-8")
+        engine_file_paths_to_check: list[str] = []
 
-                    # Failsafe: ORT pathing behavior varies.
-                    engine_subdirectory_name = os.path.basename(cache_dir)
-                    engine_file_paths_to_check.extend(
-                        [
-                            os.path.join(cache_dir, engine_name),
-                            os.path.join(
-                                cache_dir, engine_subdirectory_name, engine_name
-                            ),
-                        ]
+        # 1. Read context files across all candidate prefixes to extract referenced engine paths
+        for prefix in possible_prefixes:
+            ctx_file_name = f"{prefix}_ctx.onnx"
+            ctx_file_path = os.path.join(cache_dir, ctx_file_name)
+
+            if os.path.exists(ctx_file_path) and os.path.isfile(ctx_file_path):
+                try:
+                    with open(ctx_file_path, "rb") as f:
+                        content = f.read()
+
+                    # Extract the engine name using the broader regex
+                    match = re.search(rb"[A-Za-z0-9_.-]+\.engine", content)
+                    if match:
+                        engine_name = match.group(0).decode("utf-8")
+
+                        # Failsafe: ORT pathing behavior varies.
+                        engine_subdirectory_name = os.path.basename(cache_dir)
+                        engine_file_paths_to_check.extend(
+                            [
+                                os.path.join(cache_dir, engine_name),
+                                os.path.join(
+                                    cache_dir, engine_subdirectory_name, engine_name
+                                ),
+                            ]
+                        )
+                except Exception as e:
+                    print(
+                        f"[WARN] Could not read context file {ctx_file_path} to find engine name: {e}"
                     )
-            except Exception as e:
-                print(
-                    f"[WARN] Could not read corrupted context file {ctx_file_path} to find engine name: {e}"
-                )
 
-        # 2. Delete the context file
-        if os.path.exists(ctx_file_path) and os.path.isfile(ctx_file_path):
-            try:
-                os.remove(ctx_file_path)
-                print(
-                    f"[INFO] Deleted corrupted TensorRT context file: {ctx_file_path}"
-                )
-            except Exception as e:
-                print(
-                    f"[WARN] Failed to delete {ctx_file_path} (it might be locked or missing): {e}"
-                )
+            # 2. Delete context file safely
+            if os.path.exists(ctx_file_path) and os.path.isfile(ctx_file_path):
+                try:
+                    os.remove(ctx_file_path)
+                    print(f"[INFO] Deleted TensorRT context file: {ctx_file_path}")
+                except Exception as e:
+                    print(
+                        f"[WARN] Failed to delete {ctx_file_path} (locked or missing): {e}"
+                    )
 
-        # 3. Delete the engine file(s) if we found them
-        for engine_path in engine_file_paths_to_check:
+        # 3. Delete referenced engine files
+        for engine_path in set(engine_file_paths_to_check):
             if (
                 engine_path
                 and os.path.exists(engine_path)
@@ -515,18 +474,18 @@ class ModelsProcessor(QtCore.QObject):
             ):
                 try:
                     os.remove(engine_path)
-                    print(
-                        f"[INFO] Deleted corrupted TensorRT engine file: {engine_path}"
-                    )
+                    print(f"[INFO] Deleted TensorRT engine file: {engine_path}")
                 except Exception as e:
                     print(f"[WARN] Failed to delete engine file {engine_path}: {e}")
 
-        # 4. Delete any associated timing cache, profile files, or general cache files
+        # 4. Clean up auxiliary / profile / timing cache files
         if os.path.exists(cache_dir) and os.path.isdir(cache_dir):
             try:
                 for file_name in os.listdir(cache_dir):
-                    # Catch model-specific files (e.g., SomeModel.profile)
-                    is_model_specific = file_name.startswith(base_onnx_name) and (
+                    # Catch model-specific files tracking all prefixes
+                    is_model_specific = any(
+                        file_name.startswith(p) for p in possible_prefixes
+                    ) and (
                         file_name.endswith(".profile")
                         or file_name.endswith(".cache")
                         or file_name.endswith(".timing")
@@ -536,7 +495,6 @@ class ModelsProcessor(QtCore.QObject):
                     is_generic_timing = file_name == "timing.cache"
 
                     # Catch ORT's global architecture-based timing caches
-                    # Example: TensorrtExecutionProvider_cache_sm120.timing
                     is_ort_global_timing = file_name.startswith(
                         "TensorrtExecutionProvider_"
                     ) and (
@@ -549,18 +507,16 @@ class ModelsProcessor(QtCore.QObject):
                             try:
                                 os.remove(target_path)
                                 print(
-                                    f"[INFO] Deleted TensorRT auxiliary/timing file: {target_path}"
+                                    f"[INFO] Deleted TensorRT auxiliary file: {target_path}"
                                 )
                             except Exception as e:
                                 print(
                                     f"[WARN] Failed to delete auxiliary file {target_path}: {e}"
                                 )
             except Exception as e:
-                print(
-                    f"[WARN] Failed to clean profile/timing/cache files in {cache_dir}: {e}"
-                )
+                print(f"[WARN] Failed to clean auxiliary files in {cache_dir}: {e}")
 
-    def load_model(self, model_name, session_options=None):
+    def load_model(self, model_name: str, session_options: Any = None) -> Any | None:
         """
         Loads an AI model (ONNX) with thread safety.
         Handles checking for existing TensorRT caches and launching the build probe if needed.
@@ -588,6 +544,19 @@ class ModelsProcessor(QtCore.QObject):
 
             # --- DYNAMIC PRECISION CONFIGURATION (WHITELIST FP16) ---
             model_trt_options = dict(self.trt_ep_options)
+
+            # --- DETECT TRT CACHE STATE ---
+            cache_state = self._check_tensorrt_cache_state(model_name, onnx_path)
+
+            if cache_state == "LEGACY":
+                print(
+                    f"[INFO] Legacy TRT cache detected for {model_name}. Bypassing explicit prefix."
+                )
+                # Remove prefix so ONNX Runtime loads generic TensorrtExecutionProvider_ files
+                model_trt_options.pop("trt_engine_cache_prefix", None)
+            else:
+                # For EXPLICIT caches or brand new builds (None), strictly set custom prefix
+                model_trt_options["trt_engine_cache_prefix"] = model_name
 
             # Check if the model is explicitly marked as safe for FP16 in models_data.py
             if model_name in fp16_safe_models_list:
@@ -618,8 +587,7 @@ class ModelsProcessor(QtCore.QObject):
             if onnx_path.lower().endswith(".onnx"):
                 # Only run the isolated probe if TensorRT is the target provider
                 if is_tensorrt_load:
-                    # Check if engine config file exists...
-                    cache_is_valid = self._check_tensorrt_cache(model_name, onnx_path)
+                    cache_is_valid = cache_state is not None
 
                     # If no engine config file or cache file exists run the probe
                     if not cache_is_valid:
@@ -663,7 +631,7 @@ class ModelsProcessor(QtCore.QObject):
                                     args=(
                                         onnx_path,
                                         current_providers_list,
-                                        model_trt_options,  # On passe les options dynamiques
+                                        model_trt_options,
                                         sess_options_dict,
                                     ),
                                 )
@@ -672,7 +640,7 @@ class ModelsProcessor(QtCore.QObject):
                                     probe_process.start()
                                     build_was_triggered = True
 
-                                    # Force timeout at 15Min if the compilator silently crashed, enabling app to stay alive
+                                    # Timeout at 15 minutes to recover if compiler locks up
                                     probe_process.join(timeout=900)
 
                                     if probe_process.is_alive():
@@ -775,7 +743,7 @@ class ModelsProcessor(QtCore.QObject):
                     # Check cache AGAIN.
                     # If the probe succeeded BUT the cache STILL doesn't exist,
                     # it's a "Lazy Build" model.
-                    if not self._check_tensorrt_cache(model_name, onnx_path):
+                    if self._check_tensorrt_cache_state(model_name, onnx_path) is None:
                         print(
                             f"[INFO] Model {model_name} requires a lazy build (engine not found after probe)."
                         )
@@ -1038,11 +1006,14 @@ class ModelsProcessor(QtCore.QObject):
         )
 
         # 1. SPECIAL CASE: FACE RESTORERS
-        if hasattr(self, "face_restorers") and hasattr(
-            self.face_restorers, "model_map"
+        if hasattr(self.main_window.function_worker, "face_restorers") and hasattr(
+            self.main_window.function_worker.face_restorers, "model_map"
         ):
             expected_combo = None
-            for combo_str, ort_name in self.face_restorers.model_map.items():
+            for (
+                combo_str,
+                ort_name,
+            ) in self.main_window.function_worker.face_restorers.model_map.items():
                 if ort_name == model_name:
                     expected_combo = combo_str
                     break
@@ -1178,74 +1149,6 @@ class ModelsProcessor(QtCore.QObject):
         if self.main_window.model_load_dialog:
             self.main_window.model_load_dialog.close()
 
-    def switch_providers_priority(self, provider_name):
-        """
-        Reconfigures the ONNX Runtime provider list and the active device.
-
-        Supported values for *provider_name*: ``"TensorRT"``, ``"TensorRT-Engine"``,
-        ``"CUDA"``, ``"CPU"``.  Raises ``RuntimeError`` if TensorRT is requested but
-        not installed, and ``ValueError`` for any unknown provider name.
-
-        Returns:
-            str: The resolved provider name (may differ from the input when TensorRT
-                 is downgraded due to a version constraint).
-        """
-        # Release existing ORT sessions whenever the provider is changed so that
-        # GPU memory from the old provider is freed before new sessions are allocated.
-        self.face_detectors.unload_models()
-        self.face_masks.unload_models()
-        self.face_swappers.unload_models()
-        self.face_landmark_detectors.unload_models()
-        self.face_restorers.unload_models()
-
-        match provider_name:
-            case "TensorRT" | "TensorRT-Engine":
-                # MP-04: guard against TensorRT not being installed
-                if not TENSORRT_AVAILABLE or trt is None:
-                    raise RuntimeError("TensorRT is not installed.")
-                providers = [
-                    ("TensorrtExecutionProvider", self.trt_ep_options),
-                    ("CUDAExecutionProvider", {"device_id": self.gpu_id}),
-                    ("CPUExecutionProvider"),
-                ]
-                self.device = f"cuda:{self.gpu_id}"
-                self.device_type = "cuda"
-                if (
-                    version.parse(trt.__version__) < version.parse("10.2.0")
-                    and provider_name == "TensorRT-Engine"
-                ):
-                    print(
-                        "[WARN] TensorRT-Engine provider cannot be used when TensorRT version is lower than 10.2.0."
-                    )
-                    provider_name = "TensorRT"
-
-            case "CPU":
-                providers = [("CPUExecutionProvider")]
-                self.device = "cpu"
-                self.device_type = "cpu"
-            case "CUDA":
-                providers = [
-                    ("CUDAExecutionProvider", {"device_id": self.gpu_id}),
-                    ("CPUExecutionProvider"),
-                ]
-                self.device = f"cuda:{self.gpu_id}"
-                self.device_type = "cuda"
-            case _:
-                # MP-22: raise on unknown provider name
-                raise ValueError(f"Unknown provider: {provider_name}")
-
-        self.providers = providers
-        self.provider_name = provider_name
-        self.lp_mask_crop = self.lp_mask_crop.to(self.device)
-        # Also move auxiliary tensors that are used alongside lp_mask_crop so
-        # they remain on the same device and do not cause device-mismatch errors.
-        self.lp_mask_crop_latent = self.lp_mask_crop_latent.to(self.device)
-        self.face_denoiser.alphas_cumprod_torch = (
-            self.face_denoiser.alphas_cumprod_torch.to(self.device)
-        )
-
-        return self.provider_name
-
     def set_number_of_threads(self, value):
         """Sets the ONNX thread count. TRT engine reloading is no longer needed here."""
         self.nThreads = value
@@ -1280,462 +1183,47 @@ class ModelsProcessor(QtCore.QObject):
                 return memory_used, memory_total_val
             return 0, 0
 
-    def clear_gpu_memory(self):
+    def update_provider_configuration(self, provider_name: str) -> str:
         """
-        Force-unloads every loaded model (ONNX, DFM, KV Extractor, CLIP) and
-        releases all GPU memory.
-
-        Bypasses the KeepModelsAliveToggle by temporarily setting
-        ``force_unload_in_progress = True``.  Stops any active video processing first
-        to ensure no worker threads are using the models during unload.
+        Updates the internal device and provider lists.
+        Called exclusively by the FunctionWorker after it safely unloads active models.
         """
-        print("[INFO] Clearing GPU Memory: Unloading all models...")
-        self.main_window.video_processor.stop_processing()  # Ensure no workers are active
+        match provider_name:
+            case "TensorRT" | "TensorRT-Engine":
+                if not TENSORRT_AVAILABLE or trt is None:
+                    raise RuntimeError("TensorRT is not installed.")
+                providers = [
+                    ("TensorrtExecutionProvider", self.trt_ep_options),
+                    ("CUDAExecutionProvider", {"device_id": self.gpu_id}),
+                    ("CPUExecutionProvider"),
+                ]
+                self.device = f"cuda:{self.gpu_id}"
+                self.device_type = "cuda"
+                if (
+                    version.parse(trt.__version__) < version.parse("10.2.0")
+                    and provider_name == "TensorRT-Engine"
+                ):
+                    print(
+                        "[WARN] TensorRT-Engine provider cannot be used when TensorRT version is lower than 10.2.0."
+                    )
+                    provider_name = "TensorRT"
 
-        # Set the force_unload flag to bypass the 'KeepModelsAlive' check
-        self.force_unload_in_progress = True
-        try:
-            # Explicitly call unloaders for each category
-            self.face_detectors.unload_models()
-            self.face_landmark_detectors.unload_models()
-            self.face_masks.unload_models()
-            self.face_restorers.unload_models()
-            self.face_swappers.unload_models()
-            self.frame_enhancers.unload_models()
-            self.face_editors.unload_models()
+            case "CPU":
+                providers = ["CPUExecutionProvider"]
+                self.device = "cpu"
+                self.device_type = "cpu"
 
-            # Unload any remaining models in the main dictionaries
-            self.delete_models()
-            self.delete_models_dfm()
+            case "CUDA":
+                providers = [
+                    ("CUDAExecutionProvider", {"device_id": self.gpu_id}),
+                    ("CPUExecutionProvider"),
+                ]
+                self.device = f"cuda:{self.gpu_id}"
+                self.device_type = "cuda"
 
-            # Unload the Clip and KV Extractor models specifically
-            self.face_denoiser.unload_kv_extractor()
-            if self.clip_session:
-                del self.clip_session
-                self.clip_session = []
-        finally:
-            self.force_unload_in_progress = False
+            case _:
+                raise ValueError(f"Unknown provider: {provider_name}")
 
-        # Finally, clear caches
-        print("[INFO] Running garbage collection and clearing CUDA cache.")
-        gc.collect()
-        if torch.cuda.is_available():
-            torch.cuda.empty_cache()
-
-        print("[INFO] GPU Memory Cleared.")
-
-    # --- Wrapper Unloaders ---
-
-    def unload_face_detector_models(self):
-        """Unloads the active face detector model under the model lock."""
-        with self.model_lock:
-            self.face_detectors.unload_models()
-
-    def unload_face_landmark_detector_models(self):
-        """Unloads the active face landmark detector model under the model lock."""
-        with self.model_lock:
-            self.face_landmark_detectors.unload_models()
-
-    def unload_face_editor_models(self):
-        """Unloads all loaded face editor models under the model lock."""
-        with self.model_lock:
-            self.face_editors.unload_models()
-
-    def unload_perform_recast_models(self):
-        """Unloads all loaded PerformRecast (Recast mode) models under the lock."""
-        with self.model_lock:
-            self.perform_recast.unload_models()
-
-    def unload_face_mask_models(self):
-        """Unloads all loaded face mask models under the model lock."""
-        with self.model_lock:
-            self.face_masks.unload_models()
-
-    def unload_frame_enhancer_models(self):
-        """Unloads all loaded frame enhancer models under the model lock."""
-        with self.model_lock:
-            self.frame_enhancers.unload_models()
-
-    def unload_face_restorer_models(self):
-        """Unloads all loaded face restorer models under the model lock."""
-        with self.model_lock:
-            self.face_restorers.unload_models()
-
-    # --- Processing Wrappers ---
-
-    def apply_vgg_mask_simple(
-        self,
-        swapped_face: torch.Tensor,  # [3,512,512] uint8
-        original_face: torch.Tensor,  # [3,512,512] uint8
-        swap_mask_128: torch.Tensor,  # [1,128,128] float mask (0..1)
-        center_pct: float,  # 0..100, e.g. parameters['VGGMaskThresholdSlider']
-        softness_pct: float,  # 0..100, e.g. parameters['VGGMaskSoftnessSlider']
-        feature_layer: str = "combo_relu3_3_relu3_1",
-        mode: str = "smooth",  # 'smooth' (smoothstep) or 'linear'
-    ):
-        """
-        Returns:
-          mask_vgg: [1,512,512] float 0..1 (soft difference mask)
-          diff_norm_texture: [1,128,128] float 0..1 (normalized raw difference in 128 resolution)
-        """
-        # 1) Get raw difference via existing ONNX pipeline in 128x128 (without mapping).
-        #    We use apply_perceptual_diff_onnx in pass-through mode (ExcludeVGGMaskEnableToggle=False),
-        #    and ignore the complex threshold parameters (they are replaced below).
-        dummy_lower = 0.0
-        dummy_upper = 1.0
-        dummy_upper_v = 1.0
-        dummy_middle_v = 0.5
-
-        diff_mapped_128, diff_norm_128 = self.apply_perceptual_diff_onnx(
-            swapped_face,
-            original_face,
-            swap_mask_128,
-            dummy_lower,
-            0.0,
-            dummy_upper,
-            dummy_upper_v,
-            dummy_middle_v,
-            feature_layer,
-            ExcludeVGGMaskEnableToggle=False,
-        )
-        # diff_norm_128: [1,128,128] in [0..1]
-        d = diff_mapped_128.squeeze(0)  # [128,128]
-
-        # 2) Two-slider-Mapping -> lower/upper threshold derived from (center, softness)
-        center = float(center_pct) / 100.0  # 0..1
-        softness = float(softness_pct) / 100.0  # 0..1
-
-        # Width of the transition band (practical values):
-        #  - Min width 0.04, Max width 0.40
-        band = 0.04 + 0.36 * softness
-        lo = max(0.0, center - band * 0.5)
-        hi = min(1.0, center + band * 0.5)
-
-        # 3) Curve Shape
-        x = (d - lo) / max(1e-6, (hi - lo))
-        x = x.clamp(0.0, 1.0)
-        if mode == "smooth":
-            # Smoothstep
-            x = x * x * (3.0 - 2.0 * x)
-        # else: 'linear' -> x remains linear
-
-        # 4) Upscale to 512x512 (bilinear)
-        x_512 = torch.nn.functional.interpolate(
-            x.unsqueeze(0).unsqueeze(0),
-            size=(512, 512),
-            mode="bilinear",
-            align_corners=True,
-        ).squeeze(0)
-
-        return x_512.clamp(0, 1), diff_norm_128
-
-    def run_detect(
-        self,
-        img,
-        detect_mode="RetinaFace",
-        max_num=1,
-        score=0.5,
-        input_size=(512, 512),
-        use_landmark_detection=False,
-        landmark_detect_mode="203",
-        landmark_score=0.5,
-        from_points=False,
-        rotation_angles=None,
-        **kwargs,
-    ):
-        rotation_angles = rotation_angles or [0]
-        return self.face_detectors.run_detect(
-            img,
-            detect_mode,
-            max_num,
-            score,
-            input_size,
-            use_landmark_detection,
-            landmark_detect_mode,
-            landmark_score,
-            from_points,
-            rotation_angles,
-            **kwargs,
-        )
-
-    def run_detect_landmark(
-        self,
-        img,
-        bbox,
-        det_kpss,
-        detect_mode="203",
-        score=0.5,
-        from_points=False,
-        **kwargs,
-    ):
-        return self.face_landmark_detectors.run_detect_landmark(
-            img, bbox, det_kpss, detect_mode, score, from_points, **kwargs
-        )
-
-    def get_arcface_model(self, face_swapper_model):
-        if face_swapper_model in arcface_mapping_model_dict:
-            return arcface_mapping_model_dict[face_swapper_model]
-        else:
-            raise ValueError(f"Face swapper model {face_swapper_model} not found.")
-
-    def run_recognize_direct(
-        self, img, kps, similarity_type="Auto", arcface_model="Inswapper128ArcFace"
-    ):
-        return self.face_swappers.run_recognize_direct(
-            img, kps, similarity_type, arcface_model
-        )
-
-    def calc_inswapper_latent(self, source_embedding):
-        return self.face_swappers.calc_inswapper_latent(source_embedding)
-
-    def run_inswapper(self, image, embedding, output):
-        self.face_swappers.run_inswapper(image, embedding, output)
-
-    def run_inswapper_batched(self, images, embedding, output):
-        self.face_swappers.run_inswapper_batched(images, embedding, output)
-
-    def calc_swapper_latent_iss(self, source_embedding, version="A"):
-        return self.face_swappers.calc_swapper_latent_iss(source_embedding, version)
-
-    def run_iss_swapper(self, image, embedding, output, version="A"):
-        self.face_swappers.run_iss_swapper(image, embedding, output, version)
-
-    def calc_swapper_latent_simswap512(self, source_embedding):
-        return self.face_swappers.calc_swapper_latent_simswap512(source_embedding)
-
-    def run_swapper_simswap512(self, image, embedding, output):
-        self.face_swappers.run_swapper_simswap512(image, embedding, output)
-
-    def calc_swapper_latent_ghost(self, source_embedding):
-        return self.face_swappers.calc_swapper_latent_ghost(source_embedding)
-
-    def run_swapper_ghostface(
-        self, image, embedding, output, swapper_model="GhostFace-v2"
-    ):
-        self.face_swappers.run_swapper_ghostface(
-            image, embedding, output, swapper_model
-        )
-
-    def calc_swapper_latent_cscs(self, source_embedding):
-        return self.face_swappers.calc_swapper_latent_cscs(source_embedding)
-
-    def run_swapper_cscs(self, image, embedding, output):
-        self.face_swappers.run_swapper_cscs(image, embedding, output)
-
-    def run_occluder(self, image, output):
-        self.face_masks.run_occluder(image, output)
-
-    def run_dfl_xseg(self, image, output):
-        self.face_masks.run_dfl_xseg(image, output)
-
-    def run_faceparser(self, image, output):
-        self.face_masks.run_faceparser(image, output)
-
-    def run_CLIPs(self, img, CLIPText, CLIPAmount):
-        return self.face_masks.run_CLIPs(img, CLIPText, CLIPAmount)
-
-    def lp_motion_extractor(self, img, face_editor_type="Human-Face", **kwargs) -> dict:
-        return self.face_editors.lp_motion_extractor(img, face_editor_type, **kwargs)
-
-    def lp_appearance_feature_extractor(self, img, face_editor_type="Human-Face"):
-        return self.face_editors.lp_appearance_feature_extractor(img, face_editor_type)
-
-    def lp_retarget_eye(
-        self,
-        kp_source: torch.Tensor,
-        eye_close_ratio: torch.Tensor,
-        face_editor_type="Human-Face",
-    ) -> torch.Tensor:
-        return self.face_editors.lp_retarget_eye(
-            kp_source, eye_close_ratio, face_editor_type
-        )
-
-    def lp_retarget_lip(
-        self,
-        kp_source: torch.Tensor,
-        lip_close_ratio: torch.Tensor,
-        face_editor_type="Human-Face",
-    ) -> torch.Tensor:
-        return self.face_editors.lp_retarget_lip(
-            kp_source, lip_close_ratio, face_editor_type
-        )
-
-    def lp_stitch(
-        self,
-        kp_source: torch.Tensor,
-        kp_driving: torch.Tensor,
-        face_editor_type="Human-Face",
-    ) -> torch.Tensor:
-        return self.face_editors.lp_stitch(kp_source, kp_driving, face_editor_type)
-
-    def lp_stitching(
-        self,
-        kp_source: torch.Tensor,
-        kp_driving: torch.Tensor,
-        face_editor_type="Human-Face",
-    ) -> torch.Tensor:
-        return self.face_editors.lp_stitching(kp_source, kp_driving, face_editor_type)
-
-    def lp_warp_decode(
-        self,
-        feature_3d: torch.Tensor,
-        kp_source: torch.Tensor,
-        kp_driving: torch.Tensor,
-        face_editor_type="Human-Face",
-    ) -> torch.Tensor:
-        return self.face_editors.lp_warp_decode(
-            feature_3d, kp_source, kp_driving, face_editor_type
-        )
-
-    def findCosineDistance(self, vector1, vector2):
-        vector1 = vector1.ravel()
-        vector2 = vector2.ravel()
-        cos_dist = 1 - np.dot(vector1, vector2) / (
-            np.linalg.norm(vector1) * np.linalg.norm(vector2)
-        )  # 2..0
-        return 100 - cos_dist * 50
-
-    def apply_facerestorer(
-        self,
-        swapped_face_upscaled,
-        restorer_det_type,
-        restorer_type,
-        restorer_blend,
-        fidelity_weight,
-        detect_score,
-        target_kps,
-        slot_id: int = 1,
-    ):
-        return self.face_restorers.apply_facerestorer(
-            swapped_face_upscaled,
-            restorer_det_type,
-            restorer_type,
-            restorer_blend,
-            fidelity_weight,
-            detect_score,
-            target_kps,
-            slot_id=slot_id,
-        )
-
-    def apply_occlusion(self, img, amount):
-        return self.face_masks.apply_occlusion(img, amount)
-
-    def apply_dfl_xseg(self, img, amount, mouth, parameters, inner_mouth_mask):
-        return self.face_masks.apply_dfl_xseg(
-            img, amount, mouth, parameters, inner_mouth_mask
-        )
-
-    def process_masks_and_masks(
-        self, swap_restorecalc, original_face_512, parameters, control
-    ):
-        return self.face_masks.process_masks_and_masks(
-            swap_restorecalc, original_face_512, parameters, control
-        )
-
-    def apply_face_makeup(self, img, parameters):
-        return self.face_editors.apply_face_makeup(img, parameters)
-
-    def restore_mouth(
-        self,
-        img_orig,
-        img_swap,
-        kpss_orig,
-        blend_alpha=0.5,
-        feather_radius=10,
-        size_factor=0.5,
-        radius_factor_x=1.0,
-        radius_factor_y=1.0,
-        x_offset=0,
-        y_offset=0,
-    ):
-        return self.face_masks.restore_mouth(
-            img_orig,
-            img_swap,
-            kpss_orig,
-            blend_alpha,
-            feather_radius,
-            size_factor,
-            radius_factor_x,
-            radius_factor_y,
-            x_offset,
-            y_offset,
-        )
-
-    def restore_eyes(
-        self,
-        img_orig,
-        img_swap,
-        kpss_orig,
-        blend_alpha=0.5,
-        feather_radius=10,
-        size_factor=3.5,
-        radius_factor_x=1.0,
-        radius_factor_y=1.0,
-        x_offset=0,
-        y_offset=0,
-        eye_spacing_offset=0,
-    ):
-        return self.face_masks.restore_eyes(
-            img_orig,
-            img_swap,
-            kpss_orig,
-            blend_alpha,
-            feather_radius,
-            size_factor,
-            radius_factor_x,
-            radius_factor_y,
-            x_offset,
-            y_offset,
-            eye_spacing_offset,
-        )
-
-    def apply_fake_diff(
-        self,
-        swapped_face,
-        original_face,
-        lower_limit_thresh,
-        lower_value,
-        upper_thresh,
-        upper_value,
-        middle_value,
-        parameters,
-    ):
-        return self.face_masks.apply_fake_diff(
-            swapped_face,
-            original_face,
-            lower_limit_thresh,
-            lower_value,
-            upper_thresh,
-            upper_value,
-            middle_value,
-            parameters,
-        )
-
-    def run_onnx(self, image, output, model_key):
-        return self.face_masks.run_onnx(image, output, model_key)
-
-    def apply_perceptual_diff_onnx(
-        self,
-        swapped_face,
-        original_face,
-        swap_mask,
-        lower_limit_thresh,
-        lower_value,
-        upper_thresh,
-        upper_value,
-        middle_value,
-        feature_layer,
-        ExcludeVGGMaskEnableToggle,
-    ):
-        return self.face_masks.apply_perceptual_diff_onnx(
-            swapped_face,
-            original_face,
-            swap_mask,
-            lower_limit_thresh,
-            lower_value,
-            upper_thresh,
-            upper_value,
-            middle_value,
-            feature_layer,
-            ExcludeVGGMaskEnableToggle,
-        )
+        self.providers = providers
+        self.provider_name = provider_name
+        return self.provider_name

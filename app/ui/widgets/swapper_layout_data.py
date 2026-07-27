@@ -1745,9 +1745,9 @@ SWAPPER_LAYOUT_DATA: Any = {  # noqa: F811
     "Blend Adjustments": {
         "FinalBlendAdjEnableToggle": {
             "level": 1,
-            "label": "Final Blend",
+            "label": "Final Blend (Whole Face)",
             "default": False,
-            "help": "Blend at the end of pipeline.",
+            "help": "Apply a blur to the entire swapped face at the end of the pipeline.",
         },
         "FinalBlendAmountSlider": {
             "level": 2,
@@ -1758,7 +1758,24 @@ SWAPPER_LAYOUT_DATA: Any = {  # noqa: F811
             "step": 1,
             "parentToggle": "FinalBlendAdjEnableToggle",
             "requiredToggleValue": True,
-            "help": "Adjust the final blend value.",
+            "help": "Adjust the overall final blur value applied to the entire face.",
+        },
+        "FinalBorderBlendEnableToggle": {
+            "level": 1,
+            "label": "Border Seam Blend",
+            "default": False,
+            "help": "Apply a localized blur strictly to the outer mask border to hide seams and hard cutoffs.",
+        },
+        "FinalBorderBlendAmountSlider": {
+            "level": 2,
+            "label": "Border Seam Blend Amount",
+            "min_value": "1",
+            "max_value": "50",
+            "default": "5",
+            "step": 1,
+            "parentToggle": "FinalBorderBlendEnableToggle",
+            "requiredToggleValue": True,
+            "help": "Adjust the intensity and thickness of the border seam blur.",
         },
         "OverallMaskBlendAmountSlider": {
             "level": 1,

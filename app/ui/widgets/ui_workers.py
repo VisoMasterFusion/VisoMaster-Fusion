@@ -23,8 +23,8 @@ if TYPE_CHECKING:
 class TargetMediaLoaderWorker(qtc.QThread):
     # Define signals to emit when loading is done or if there are updates - changed to QImage
     thumbnail_ready = qtc.Signal(
-        str, QImage, str, str
-    )  # Signal with media path and QImage and file_type, media_id
+        str, QImage, str, str, object
+    )  # media path, QImage, file_type, media_id, MediaMetadata|None
     webcam_thumbnail_ready = qtc.Signal(str, QImage, str, str, int, int)
     finished = qtc.Signal()  # Signal to indicate completion
 
@@ -101,8 +101,13 @@ class TargetMediaLoaderWorker(qtc.QThread):
             media_id = self.media_ids[i] if self.media_ids else str(uuid.uuid1().int)
 
             if q_image:
+                # Probed here, off the GUI thread, so sorting/filtering never has to
+                # open a media file from the main thread.
+                metadata = misc_helpers.probe_media_metadata(media_file_path, file_type)
                 # Emit the signal to update GUI
-                self.thumbnail_ready.emit(media_file_path, q_image, file_type, media_id)
+                self.thumbnail_ready.emit(
+                    media_file_path, q_image, file_type, media_id, metadata
+                )
             i += 1
         # Show/Hide the placeholder text based on the number of items in ListWidget
         self.main_window.placeholder_update_signal.emit(
@@ -137,8 +142,11 @@ class TargetMediaLoaderWorker(qtc.QThread):
                 cache_thumbnail=True,
             )
             if q_image:
+                metadata = misc_helpers.probe_media_metadata(media_file_path, file_type)
                 # Emit the signal to update GUI
-                self.thumbnail_ready.emit(media_file_path, q_image, file_type, media_id)
+                self.thumbnail_ready.emit(
+                    media_file_path, q_image, file_type, media_id, metadata
+                )
 
         self.main_window.placeholder_update_signal.emit(
             self.main_window.targetVideosList, False
@@ -380,7 +388,7 @@ class InputFacesLoaderWorker(qtc.QThread):
                 )
                 img = img.permute(2, 0, 1)
 
-                _, kpss_5, _ = self.main_window.models_processor.run_detect(
+                _, kpss_5, _ = self.main_window.function_worker.run_detect(
                     img,
                     control.get("DetectorModelSelection", "RetinaFace"),
                     max_num=1,
@@ -408,7 +416,7 @@ class InputFacesLoaderWorker(qtc.QThread):
                     )
                     similarity_type = str("Auto")
                     face_emb, cropped_img = (
-                        self.main_window.models_processor.run_recognize_direct(
+                        self.main_window.function_worker.run_recognize_direct(
                             img,
                             face_kps,
                             similarity_type,
@@ -472,6 +480,7 @@ class FilterWorker(qtc.QThread):
         # Initialised to safe empty defaults so the worker never accesses Qt widgets.
         self.items_snapshot: list = []
         self.include_file_types: list = []
+        self.min_image_size: tuple[int, int] = (0, 0)
         self.filter_list_widget = self.get_list_widget()
         self.filtered_results.connect(
             partial(
@@ -504,12 +513,19 @@ class FilterWorker(qtc.QThread):
         search_text = self.search_text
         include_file_types = self.include_file_types
 
+        min_width, min_height = self.min_image_size
+
         visible_indices = []
-        for index, media_path, file_type in self.items_snapshot:
-            if (not search_text or search_text in media_path.lower()) and (
-                file_type in include_file_types
-            ):
-                visible_indices.append(index)
+        for index, media_path, file_type, width, height in self.items_snapshot:
+            if search_text and search_text not in media_path.lower():
+                continue
+            if file_type not in include_file_types:
+                continue
+            # Items whose dimensions are unknown (webcams) are never filtered out
+            # by the size sliders.
+            if width and height and (width < min_width or height < min_height):
+                continue
+            visible_indices.append(index)
 
         self.filtered_results.emit(visible_indices, len(self.items_snapshot))
 

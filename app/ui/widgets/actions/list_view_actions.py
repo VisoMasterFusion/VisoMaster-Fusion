@@ -15,6 +15,7 @@ from app.ui.widgets.actions import filter_actions
 from app.ui.widgets import widget_components
 import app.helpers.miscellaneous as misc_helpers
 from app.ui.widgets import ui_workers
+from app.ui.widgets import sortable_widgets
 
 if TYPE_CHECKING:
     from app.ui.main_ui import MainWindow
@@ -59,12 +60,12 @@ def _flush_target_media_thumbnail_batch(main_window: "MainWindow") -> None:
 
     list_widget = main_window.targetVideosList
     pending_before = len(pending_items)
+    adaptive_batch_size = _get_target_media_batch_size(pending_before)
+    batch_size = min(adaptive_batch_size, pending_before)
     list_widget.setUpdatesEnabled(False)
     try:
-        adaptive_batch_size = _get_target_media_batch_size(pending_before)
-        batch_size = min(adaptive_batch_size, pending_before)
         for _ in range(batch_size):
-            media_path, q_image, file_type, media_id = pending_items.popleft()
+            media_path, q_image, file_type, media_id, metadata = pending_items.popleft()
             add_media_thumbnail_button(
                 main_window,
                 widget_components.TargetMediaCardButton,
@@ -74,10 +75,12 @@ def _flush_target_media_thumbnail_batch(main_window: "MainWindow") -> None:
                 media_path=media_path,
                 file_type=file_type,
                 media_id=media_id,
+                metadata=metadata,
             )
     finally:
         list_widget.setUpdatesEnabled(True)
         list_widget.viewport().update()
+        _advance_target_media_progress(main_window, batch_size)
 
     if pending_items:
         _ensure_target_media_batch_timer(main_window).start(
@@ -86,17 +89,47 @@ def _flush_target_media_thumbnail_batch(main_window: "MainWindow") -> None:
 
 
 def _queue_target_media_thumbnail(
-    main_window: "MainWindow", media_path, q_image, file_type, media_id
+    main_window: "MainWindow", media_path, q_image, file_type, media_id, metadata=None
 ) -> None:
     pending_items = getattr(main_window, "_pending_target_media_thumbnails", None)
     if pending_items is None:
         pending_items = deque()
         main_window._pending_target_media_thumbnails = pending_items
 
-    pending_items.append((media_path, q_image, file_type, media_id))
+    pending_items.append((media_path, q_image, file_type, media_id, metadata))
+    _add_target_media_progress_total(main_window, 1)
     timer = _ensure_target_media_batch_timer(main_window)
     if not timer.isActive():
         timer.start(_TARGET_MEDIA_BATCH_INTERVAL_MS)
+
+
+def _add_target_media_progress_total(main_window: "MainWindow", n: int) -> None:
+    """Grow the loading progress bar's total.  GUI thread only."""
+    bar = getattr(main_window, "targetVideosListProgressBar", None)
+    if bar is None or n <= 0:
+        return
+    bar.setMaximum(bar.maximum() + n)
+    bar.setVisible(True)
+
+
+def _advance_target_media_progress(main_window: "MainWindow", n: int) -> None:
+    """Advance the loading progress bar, hiding it once the queue has drained."""
+    bar = getattr(main_window, "targetVideosListProgressBar", None)
+    if bar is None:
+        return
+    bar.setValue(min(bar.value() + n, bar.maximum()))
+    if bar.value() >= bar.maximum():
+        _reset_target_media_progress(main_window)
+
+
+def _reset_target_media_progress(main_window: "MainWindow") -> None:
+    """Hide and zero the loading progress bar (also used when loading is cancelled)."""
+    bar = getattr(main_window, "targetVideosListProgressBar", None)
+    if bar is None:
+        return
+    bar.setVisible(False)
+    bar.setMaximum(0)
+    bar.reset()
 
 
 def _has_pending_target_media_thumbnail_work(main_window: "MainWindow") -> bool:
@@ -188,11 +221,13 @@ def _queue_input_face_thumbnail(
 
 
 # Functions to add Buttons with thumbnail for selecting videos/images and faces
-@QtCore.Slot(str, QtGui.QImage, str, str)
+@QtCore.Slot(str, QtGui.QImage, str, str, object)
 def add_media_thumbnail_to_target_videos_list(
-    main_window: "MainWindow", media_path, q_image, file_type, media_id
+    main_window: "MainWindow", media_path, q_image, file_type, media_id, metadata=None
 ):
-    _queue_target_media_thumbnail(main_window, media_path, q_image, file_type, media_id)
+    _queue_target_media_thumbnail(
+        main_window, media_path, q_image, file_type, media_id, metadata
+    )
 
 
 # Functions to add Buttons with thumbnail for selecting videos/images and faces
@@ -323,16 +358,52 @@ def add_media_thumbnail_button(
         buttons_list[button.embedding_id] = button
 
     # Create a QListWidgetItem and set the button as its widget
-    list_item = QtWidgets.QListWidgetItem(listWidget)
+    list_item = sortable_widgets.SortableListWidgetItem()
     list_item.setSizeHint(button_size)
-    button.list_item = list_item
-    button.list_widget = listWidget
     # Align the item to center
     list_item.setTextAlignment(QtCore.Qt.AlignmentFlag.AlignCenter)
+
+    if buttonClass == widget_components.TargetMediaCardButton:
+        # Populate the sort/filter keys before inserting: the target media list has
+        # sorting enabled, so the item is placed using this data on addItem().
+        _apply_target_media_item_data(list_item, button, kwargs.get("metadata"))
+
+    listWidget.addItem(list_item)
+    button.list_item = list_item
+    button.list_widget = listWidget
+    list_item.setCardButton(button)
     listWidget.setItemWidget(list_item, button)
 
     if buttonClass == widget_components.TargetFaceCardButton:
         refresh_target_face_display_labels(main_window)
+
+
+def _apply_target_media_item_data(
+    list_item: "sortable_widgets.SortableListWidgetItem",
+    button: "widget_components.TargetMediaCardButton",
+    metadata,
+) -> None:
+    """Attach the sort/filter keys for a target media item.
+
+    Everything here comes from data the loader thread already gathered, so no
+    media file is opened on the GUI thread.
+    """
+    list_item.setFileType(button.file_type or "")
+
+    media_path = button.media_path
+    # Webcams have no file on disk, so they only carry their file type.
+    if media_path and not button.is_webcam:
+        list_item.setFileInfo(QtCore.QFileInfo(str(media_path)))
+
+    if metadata is not None:
+        list_item.setMediaMetadata(metadata)
+        imgdim = sortable_widgets.SortableImageDimension.from_metadata(metadata)
+        if imgdim is not None:
+            list_item.setImageDimension(imgdim)
+
+    tooltip = list_item.to_tooltip()
+    if tooltip:
+        button.setToolTip(tooltip)
 
 
 def refresh_target_face_display_labels(main_window: "MainWindow"):
@@ -422,6 +493,7 @@ def initialize_embeddings_list_widget(main_window: "MainWindow"):
     inputEmbeddingsList.setUniformItemSizes(True)
     inputEmbeddingsList.setViewMode(QtWidgets.QListView.IconMode)
     inputEmbeddingsList.setMovement(QtWidgets.QListView.Static)
+    # inputEmbeddingsList.setSortingEnabled(True)
 
     inputEmbeddingsList.setFixedHeight(_EMBED_LIST_HEIGHT)
 
@@ -444,8 +516,11 @@ def initialize_embeddings_list_widget(main_window: "MainWindow"):
 
 
 def create_and_add_embed_button_to_list(
-    main_window: "MainWindow", embedding_name, embedding_store, embedding_id
-):
+    main_window: "MainWindow",
+    embedding_name: str,
+    embedding_store: dict,
+    embedding_id: str,
+) -> None:
     inputEmbeddingsList = main_window.inputEmbeddingsList
     embed_button = widget_components.EmbeddingCardButton(
         main_window=main_window,
@@ -459,6 +534,15 @@ def create_and_add_embed_button_to_list(
 
     list_item = QtWidgets.QListWidgetItem(inputEmbeddingsList)
     list_item.setSizeHint(button_size)
+
+    """
+    # Give the underlying QListWidgetItem the text so the PySide6 C++ sorter can alphabetize it
+    list_item.setText(embedding_name)
+    # Make the text fully transparent so it doesn't visually overlap with your custom EmbeddingCardButton
+    from PySide6 import QtGui
+
+    list_item.setForeground(QtGui.QColor(0, 0, 0, 0))
+    """
     embed_button.list_item = list_item
     list_item.setTextAlignment(QtCore.Qt.AlignmentFlag.AlignCenter)
 
@@ -472,6 +556,7 @@ def clear_stop_loading_target_media(main_window: "MainWindow", clear_list: bool 
     if batch_timer is not None:
         batch_timer.stop()
     main_window._pending_target_media_thumbnails = deque()
+    _reset_target_media_progress(main_window)
 
     if main_window.video_loader_worker is not None:
         worker = main_window.video_loader_worker
@@ -558,12 +643,7 @@ def load_target_webcams(main_window: "MainWindow", *args, **kwargs):
     if video_control_actions.is_issue_scan_active(main_window):
         video_control_actions._mark_pending_target_media_refresh(main_window)
         return
-    if filter_actions._get_target_video_filter_checked(
-        main_window,
-        "targetVideosFilterWebcamsAction",
-        "targetVideosFilterWebcamsCheckBox",
-        False,
-    ):
+    if main_window.targetVideosFilterWebcamsCheckBox.isChecked():
         main_window.video_loader_worker = ui_workers.TargetMediaLoaderWorker(
             main_window=main_window, webcam_mode=True
         )
