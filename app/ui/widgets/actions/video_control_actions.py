@@ -2559,6 +2559,23 @@ def record_video(main_window: "MainWindow", checked: bool):
                 set_record_button_icon_to_stop(main_window)
                 return
 
+        # If a job queue is actively running, treat manual record-stop as a request
+        # to cancel remaining queued jobs after this stop.
+        job_processor = getattr(main_window, "job_processor", None)
+        if (
+            job_processor is not None
+            and hasattr(job_processor, "isRunning")
+            and job_processor.isRunning()
+            and not job_mgr_flag
+            and hasattr(job_processor, "request_cancel")
+        ):
+            try:
+                job_processor.request_cancel(
+                    "Cancelled by user via Record stop while batch queue is active."
+                )
+            except Exception as e:
+                print(f"[WARN] Failed to request queue cancellation from UI stop: {e}")
+
         if video_processor.is_processing_segments:
             print(
                 "[INFO] Record button released: User requested stop during segment processing. Finalizing..."
