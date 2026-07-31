@@ -15,6 +15,7 @@ from PySide6.QtGui import QImage
 from app.helpers import miscellaneous as misc_helpers
 from app.ui.widgets.actions import common_actions as common_widget_actions
 from app.ui.widgets.actions import filter_actions
+from app.ui.widgets.actions import target_videos_list_actions
 from app.ui.widgets.settings_layout_data import CAMERA_BACKENDS
 from app.processors.video_utils.issue_scanner import IssueScanner
 
@@ -37,6 +38,7 @@ class TargetMediaLoaderWorker(qtc.QThread):
         files_list=None,
         media_ids=None,
         sort_files_list_by_name=True,
+        metadata_enabled=None,
         webcam_mode=False,
         parent=None,
     ):
@@ -46,6 +48,32 @@ class TargetMediaLoaderWorker(qtc.QThread):
         self.files_list = files_list or []
         self.media_ids = media_ids or []
         self.sort_files_list_by_name = sort_files_list_by_name
+        if metadata_enabled is None:
+            filter_button = getattr(main_window, "targetVideosFilterMenuButton", None)
+            filter_panel_open = (
+                filter_button.isChecked() if filter_button is not None else False
+            )
+            sort_needs_metadata = (
+                target_videos_list_actions.current_sort_needs_metadata(main_window)
+            )
+            metadata_enabled = (
+                filter_panel_open
+                or sort_needs_metadata
+            )
+        else:
+            filter_button = getattr(main_window, "targetVideosFilterMenuButton", None)
+            filter_panel_open = (
+                filter_button.isChecked() if filter_button is not None else False
+            )
+            sort_needs_metadata = (
+                target_videos_list_actions.current_sort_needs_metadata(main_window)
+            )
+        self.metadata_enabled = bool(metadata_enabled)
+        print(
+            "[INFO] target media loader metadata_enabled="
+            f"{self.metadata_enabled} filter_open={filter_panel_open} "
+            f"sort_needs_metadata={sort_needs_metadata}"
+        )
         self.webcam_mode = webcam_mode
         self._running = True  # Flag to control the running state
         self.control_snapshot = (
@@ -80,12 +108,20 @@ class TargetMediaLoaderWorker(qtc.QThread):
 
         if recursive_toggle:
             media_files = list(self._iter_sorted_recursive_media_files(folder_name))
+            media_count = len(media_files)
         else:
             video_files = misc_helpers.get_video_files(folder_name, recursive_toggle)
             image_files = misc_helpers.get_image_files(folder_name, recursive_toggle)
             media_files = video_files + image_files
             # Sorting the list
             media_files.sort(key=lambda x: os.path.basename(str(x)).lower())
+            media_count = len(media_files)
+
+        print(
+            "[INFO] Preparing target media thumbnails "
+            f"source=folder count={media_count} metadata_enabled={self.metadata_enabled}: "
+            f"{folder_name}"
+        )
 
         paired_files_ids = [
             (
@@ -96,7 +132,6 @@ class TargetMediaLoaderWorker(qtc.QThread):
         ]
 
         self._process_media_concurrently(paired_files_ids)
-
         # Show/Hide the placeholder text based on the number of items in ListWidget
         self.main_window.placeholder_update_signal.emit(
             self.main_window.targetVideosList, False
@@ -137,14 +172,18 @@ class TargetMediaLoaderWorker(qtc.QThread):
             if not os.path.exists(media_file_path):
                 return None
             file_type = misc_helpers.get_file_type(media_file_path)
-            q_image = common_widget_actions.extract_frame_as_image(
+            thumbnail_result = common_widget_actions.extract_frame_as_image(
                 self.main_window,
                 media_file_path,
                 file_type,
                 cache_thumbnail=True,
+                return_metadata=self.metadata_enabled,
             )
+            if self.metadata_enabled:
+                q_image, metadata = thumbnail_result
+            else:
+                q_image, metadata = thumbnail_result, None
             if q_image:
-                metadata = misc_helpers.probe_media_metadata(media_file_path, file_type)
                 return (media_file_path, q_image, file_type, media_id, metadata)
             return None
 

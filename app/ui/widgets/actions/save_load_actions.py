@@ -516,6 +516,7 @@ def load_saved_workspace(
         with open(data_filename, "r") as data_file:  # pylint: disable=unspecified-encoding
             data = json.load(data_file)
         try:
+            window_state = data.get("window_state_data", {})
             list_view_actions.clear_stop_loading_input_media(main_window)
             list_view_actions.clear_stop_loading_target_media(main_window)
             main_window.target_videos = {}
@@ -539,12 +540,20 @@ def load_saved_workspace(
                 target_medias_files_list.append(media_data["media_path"])
                 target_media_ids.append(media_data["media_id"])
 
+            from app.ui.widgets.actions import target_videos_list_actions
+
             main_window.video_loader_worker = ui_workers.TargetMediaLoaderWorker(
                 main_window=main_window,
                 folder_name=False,
                 files_list=target_medias_files_list,
                 media_ids=target_media_ids,
                 sort_files_list_by_name=False,
+                metadata_enabled=bool(
+                    window_state.get("targetVideosFilterMenuExpanded", False)
+                    or target_videos_list_actions.current_sort_needs_metadata(
+                        main_window
+                    )
+                ),
             )
             main_window.video_loader_worker.thumbnail_ready.connect(
                 partial(
@@ -938,7 +947,6 @@ def load_saved_workspace(
             control_actions.handle_face_editor_button_click(main_window)
 
             # Restore Window State
-            window_state = data.get("window_state_data", {})
             needs_post_restore_frame_clamp = _apply_workspace_window_state(
                 main_window, window_state
             )
@@ -989,6 +997,11 @@ def load_saved_workspace(
                 main_window.targetVideosFilterWebcamsCheckBox,
                 window_state.get("filterWebcamsCheckBox", False),
             )
+            restore_checkbox_without_emitting_signals(
+                main_window.targetVideosFilterMenuButton,
+                window_state.get("targetVideosFilterMenuExpanded", False),
+            )
+            target_videos_list_actions.toggle_target_video_filters_sorting(main_window)
             saved_face_thumbnail_size = window_state.get("face_thumbnail_size")
             if saved_face_thumbnail_size == "small":
                 list_view_actions.apply_face_thumbnail_size(
@@ -1093,6 +1106,9 @@ def save_current_workspace(
         "filterImagesCheckBox": main_window.targetVideosFilterImagesCheckBox.isChecked(),
         "filterVideosCheckBox": main_window.targetVideosFilterVideosCheckBox.isChecked(),
         "filterWebcamsCheckBox": main_window.targetVideosFilterWebcamsCheckBox.isChecked(),
+        "targetVideosFilterMenuExpanded": (
+            main_window.targetVideosFilterMenuButton.isChecked()
+        ),
         "face_thumbnail_size": (
             "small"
             if getattr(

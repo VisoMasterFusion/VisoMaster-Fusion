@@ -656,12 +656,13 @@ class MainWindow(QtWidgets.QMainWindow, Ui_MainWindow):
 
         # Filters: the button now toggles the filter row instead of opening a menu
         self.targetVideosFilterMenuButton.setCheckable(True)
-        self.targetVideosFilterMenuButton.setChecked(True)
+        self.targetVideosFilterMenuButton.setChecked(False)
         self.targetVideosFilterMenuButton.clicked.connect(
             partial(
                 target_videos_list_actions.toggle_target_video_filters_sorting, self
             )
         )
+        target_videos_list_actions.toggle_target_video_filters_sorting(self)
 
         for checkbox in (
             self.targetVideosFilterImagesCheckBox,
