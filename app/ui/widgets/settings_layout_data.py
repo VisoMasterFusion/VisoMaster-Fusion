@@ -148,6 +148,12 @@ SETTINGS_LAYOUT_DATA: Any = {  # noqa: F811
             "default": False,
             "help": "Activates buffering for smoother video playback.",
         },
+        "VideoPlaybackSegmentsToggle": {
+            "level": 1,
+            "label": "Plays Active Segments Only",
+            "default": False,
+            "help": "Only plays the active segments of the video, skipping inactive parts.",
+        },
         "VideoPlaybackLoopToggle": {
             "level": 1,
             "label": "Playback Loop",
@@ -180,16 +186,6 @@ SETTINGS_LAYOUT_DATA: Any = {  # noqa: F811
             "step": 0.01,
             "decimals": 2,
             "help": "Set the playback audio of the audio, when Live Sound is enabled",
-        },
-        "LiveSoundDelayDecimalSlider": {
-            "level": 1,
-            "label": "Audio Start Delay (Seconds)",
-            "min_value": "0.00",
-            "max_value": "3.00",
-            "default": "0.30",
-            "step": 0.01,
-            "decimals": 2,
-            "help": "Set the audio starting delay to adjust for latency.",
         },
     },
     "Video Recording Settings": {

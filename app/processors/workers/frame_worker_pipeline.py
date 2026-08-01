@@ -1045,20 +1045,23 @@ class PipelineProcessor:
         swap = self.worker.t512(output)
         return swap, prev_face
 
-    def get_border_mask(self, parameters):
-        """Creates the border fade mask based on sliders."""
-        border_mask = torch.ones(
-            (128, 128), dtype=torch.float32, device=self.worker.models_processor.device
-        )
-        border_mask = torch.unsqueeze(border_mask, 0)
+    def get_border_mask(self, parameters: dict) -> tuple[torch.Tensor, torch.Tensor]:
+        """
+        Creates the border fade mask based on sliders, supporting independent blurs for each edge.
+        Returns a tuple of (blurred_mask, sharp_mask).
+        """
+        device = self.worker.models_processor.device
+
+        # Initialize base 1x128x128 mask immediately to save an unsqueeze operation
+        base_mask = torch.ones((1, 128, 128), dtype=torch.float32, device=device)
 
         if not parameters.get("BordermaskEnableToggle", False):
-            return border_mask, border_mask.clone()
+            return base_mask, base_mask.clone()
 
-        top = parameters["BorderTopSlider"]
-        left = parameters["BorderLeftSlider"]
-        right = 128 - parameters["BorderRightSlider"]
-        bottom = 128 - parameters["BorderBottomSlider"]
+        top: int = parameters["BorderTopSlider"]
+        left: int = parameters["BorderLeftSlider"]
+        right: int = 128 - parameters["BorderRightSlider"]
+        bottom: int = 128 - parameters["BorderBottomSlider"]
 
         # P3-02: clamp border values instead of assert (assert is disabled under -O)
         left = max(0, min(left, 128))
@@ -1066,18 +1069,46 @@ class PipelineProcessor:
         top = max(0, min(top, 128))
         bottom = max(top, min(bottom, 128))
 
-        border_mask[:, :top, :] = 0
-        border_mask[:, bottom:, :] = 0
-        border_mask[:, :, :left] = 0
-        border_mask[:, :, right:] = 0
+        # 1. Create the sharp composite mask for reference / calculations
+        border_mask_calc = base_mask.clone()
+        border_mask_calc[:, :top, :] = 0
+        border_mask_calc[:, bottom:, :] = 0
+        border_mask_calc[:, :, :left] = 0
+        border_mask_calc[:, :, right:] = 0
 
-        border_mask_calc = border_mask.clone()
-        blur_amount = parameters["BorderBlurSlider"]
-        blur_kernel_size = blur_amount * 2 + 1
-        if blur_kernel_size > 1:
-            sigma_val = max(blur_amount * 0.15 + 0.1, 1e-6)
-            gauss = v2.GaussianBlur(blur_kernel_size, sigma=sigma_val)
-            border_mask = gauss(border_mask)
+        # 2. Create independent half-plane masks for each edge
+        mask_top = base_mask.clone()
+        mask_top[:, :top, :] = 0
+
+        mask_bottom = base_mask.clone()
+        mask_bottom[:, bottom:, :] = 0
+
+        mask_left = base_mask.clone()
+        mask_left[:, :, :left] = 0
+
+        mask_right = base_mask.clone()
+        mask_right[:, :, right:] = 0
+
+        # 3. Helper closure to calculate kernel and apply blur safely
+        def apply_blur(mask: torch.Tensor, blur_amount: int) -> torch.Tensor:
+            blur_kernel_size = blur_amount * 2 + 1
+            if blur_kernel_size > 1:
+                sigma_val = max(blur_amount * 0.15 + 0.1, 1e-6)
+                gauss = v2.GaussianBlur(blur_kernel_size, sigma=sigma_val)
+                return gauss(mask)
+            return mask
+
+        # 4. Fetch the independent blur sliders and apply blurs (defaults to 0 if not found)
+        mask_top = apply_blur(mask_top, parameters.get("TopBorderBlurSlider", 8))
+        mask_bottom = apply_blur(
+            mask_bottom, parameters.get("BottomBorderBlurSlider", 8)
+        )
+        mask_left = apply_blur(mask_left, parameters.get("LeftBorderBlurSlider", 8))
+        mask_right = apply_blur(mask_right, parameters.get("RightBorderBlurSlider", 8))
+
+        # 5. Combine the masks by multiplying them element-wise for perfect corner blending
+        border_mask = mask_top * mask_bottom * mask_left * mask_right
+
         return border_mask, border_mask_calc
 
     def get_dynamic_side_mask(
