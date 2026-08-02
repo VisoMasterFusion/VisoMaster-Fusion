@@ -517,50 +517,63 @@ class FaceSwappers:
     ) -> None:
         """Batched InSwapper inference for pixel-shift resolution mode.
 
-        Processes each tile sequentially through the ORT session since the ONNX
-        model expects a batch size of 1.
+        Optimized zero-copy tile execution using a persistent IOBinding instance
+        and direct GPU pointer offsets into contiguous memory blocks.
         """
-        model_name = "Inswapper128"
+        model_name: str = "Inswapper128"
         model = self._load_swapper_model(model_name)
         if not model:
             print("[ERROR] Inswapper128 model not loaded.")
             return
 
-        batch_size = images.shape[0]
-        for idx in range(batch_size):
-            img = images[idx : idx + 1].contiguous()
-            out = output[idx : idx + 1].contiguous()
-            emb = embedding.contiguous()
+        # Ensure memory contiguity once outside the tile loop
+        if not images.is_contiguous():
+            images = images.contiguous()
+        if not embedding.is_contiguous():
+            embedding = embedding.contiguous()
+        if not output.is_contiguous():
+            output = output.contiguous()
 
-            io_binding = model.io_binding()
+        batch_size: int = images.shape[0]
+        device_type: str = self.models_processor.device_type
+        device_id: int = self.models_processor.binding_device_id
+
+        # Reuse a single IOBinding instance across tiles
+        io_binding = model.io_binding()
+
+        for idx in range(batch_size):
+            img_tile: torch.Tensor = images[idx : idx + 1]
+            out_tile: torch.Tensor = output[idx : idx + 1]
+
             io_binding.clear_binding_inputs()
             io_binding.clear_binding_outputs()
+
             io_binding.bind_input(
                 name="target",
-                device_type=self.models_processor.device_type,
-                device_id=self.models_processor.binding_device_id,
+                device_type=device_type,
+                device_id=device_id,
                 element_type=np.float32,
                 shape=(1, 3, 128, 128),
-                buffer_ptr=img.data_ptr(),
+                buffer_ptr=img_tile.data_ptr(),
             )
             io_binding.bind_input(
                 name="source",
-                device_type=self.models_processor.device_type,
-                device_id=self.models_processor.binding_device_id,
+                device_type=device_type,
+                device_id=device_id,
                 element_type=np.float32,
                 shape=(1, 512),
-                buffer_ptr=emb.data_ptr(),
+                buffer_ptr=embedding.data_ptr(),
             )
             io_binding.bind_output(
                 name="output",
-                device_type=self.models_processor.device_type,
-                device_id=self.models_processor.binding_device_id,
+                device_type=device_type,
+                device_id=device_id,
                 element_type=np.float32,
                 shape=(1, 3, 128, 128),
-                buffer_ptr=out.data_ptr(),
+                buffer_ptr=out_tile.data_ptr(),
             )
+
             self._run_model_with_lazy_build_check(model_name, model, io_binding)
-            output[idx].copy_(out[0])
 
     def calc_swapper_latent_ghost(self, source_embedding: np.ndarray) -> np.ndarray:
         latent = source_embedding.reshape((1, -1))

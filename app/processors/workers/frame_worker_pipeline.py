@@ -5,6 +5,7 @@ from collections import OrderedDict, deque
 from typing import TYPE_CHECKING, Any, cast
 
 import numpy as np
+import skimage.transform as trans
 import torch
 import torch.nn.functional as F
 from torchvision.transforms import v2
@@ -458,8 +459,10 @@ class PipelineProcessor:
 
         OPTIMIZED:
         1. Thread-safe grid caching to prevent CUDA memory fragmentation.
-        2. Masked LAB AdaIN to prevent background color pollution.
-        3. Hardcoded 5.0 pixel limit (tuned for 512x512) for micro-jitter correction.
+        2. Precomputed GPU Gaussian Kernels to eliminate implicit Host-to-Device syncs.
+        3. Masked LAB AdaIN to prevent background color pollution.
+        4. Pure GPU affine matrix construction to prevent D2H blocking transfers.
+        5. Hardcoded 5.0 pixel limit (tuned for 512x512) for micro-jitter correction.
 
         Args:
             current_face:  Current swapped face tensor [C, H, W] in range [0..1].
@@ -484,7 +487,7 @@ class PipelineProcessor:
             curr_bchw = current_face.unsqueeze(0)
             first_bchw = first_face.unsqueeze(0)
 
-            # --- 0. CACHE RETRIEVAL FOR ZERO-ALLOCATION GRIDS ---
+            # --- 0. CACHE RETRIEVAL FOR ZERO-ALLOCATION GRIDS & KERNELS ---
             if cache_key not in self._drift_cache:
                 y_coords = torch.arange(H, dtype=torch.float32, device=device)
                 x_coords = torch.arange(W, dtype=torch.float32, device=device)
@@ -508,11 +511,32 @@ class PipelineProcessor:
                 ).unsqueeze(0)
                 spatial_mask = torch.clamp(spatial_mask, 0.0, 1.0)
 
+                weights = torch.tensor(
+                    [0.299, 0.587, 0.114], dtype=torch.float32, device=device
+                ).view(1, 3, 1, 1)
+
+                k_size = 51
+                sigma = 15.0
+                x_cord = torch.arange(k_size, dtype=torch.float32, device=device)
+                x_cord = x_cord - (k_size - 1) / 2.0
+                g = torch.exp(-(x_cord**2) / (2 * sigma**2))
+                g = g / g.sum()
+                blob_kernel = (
+                    (g.unsqueeze(1) * g.unsqueeze(0)).unsqueeze(0).unsqueeze(0)
+                )
+
+                base_M = torch.eye(3, dtype=torch.float32, device=device)[
+                    :2, :
+                ].unsqueeze(0)
+
                 self._drift_cache[cache_key] = {
                     "Y_pix": Y_pix,
                     "X_pix": X_pix,
                     "core_mask": core_mask,
                     "spatial_mask": spatial_mask,
+                    "weights": weights,
+                    "blob_kernel": blob_kernel,
+                    "base_M": base_M,
                 }
 
             cache = self._drift_cache[cache_key]
@@ -520,18 +544,17 @@ class PipelineProcessor:
             X_pix = cache["X_pix"]
             core_mask = cache["core_mask"]
             spatial_mask = cache["spatial_mask"]
+            weights = cache["weights"]
+            blob_kernel = cache["blob_kernel"]
+            base_M = cache["base_M"]
 
             # --- 1. ROBUST SUB-PIXEL DRIFT CORRECTION ---
-            # Fast grayscale conversion
-            weights = torch.tensor([0.299, 0.587, 0.114], device=device).view(
-                1, 3, 1, 1
-            )
             curr_gray = (curr_bchw * weights).sum(dim=1, keepdim=True)
             first_gray = (first_bchw * weights).sum(dim=1, keepdim=True)
 
-            blob_blur = v2.GaussianBlur(kernel_size=51, sigma=15.0)
-            curr_blob = blob_blur(curr_gray)
-            first_blob = blob_blur(first_gray)
+            padding = blob_kernel.shape[-1] // 2
+            curr_blob = F.conv2d(curr_gray, blob_kernel, padding=padding)
+            first_blob = F.conv2d(first_gray, blob_kernel, padding=padding)
 
             # Apply core mask to isolate face volume
             curr_blob_masked = curr_blob * core_mask
@@ -551,9 +574,12 @@ class PipelineProcessor:
             dx = torch.clamp(first_cx - curr_cx, -max_drift, max_drift)
             dy = torch.clamp(first_cy - curr_cy, -max_drift, max_drift)
 
-            M = torch.eye(3, device=device)[:2, :].unsqueeze(0)
-            M[0, 0, 2] = dx
-            M[0, 1, 2] = dy
+            # OPTIMIZATION: Pure GPU Tensor Construction.
+            # Avoids `M[:, 0, 2] = dx` which forces a CPU-GPU extraction stall.
+            dx_view = dx.view(1, 1, 1)
+            dy_view = dy.view(1, 1, 1)
+            translations = torch.cat([dx_view, dy_view], dim=1)  # [1, 2, 1]
+            M = torch.cat([base_M[:, :, :2], translations], dim=2)  # [1, 2, 3]
 
             curr_bchw = kgm.warp_affine(
                 curr_bchw,
@@ -659,7 +685,8 @@ class PipelineProcessor:
 
         # --- Inswapper128 Path ---
         if swapper_model == "Inswapper128":
-            _use_batched = False
+            # Dynamically trigger batched path for resolutions > 128px
+            _use_batched = dim > 1
 
             for k in range(itex):
                 # Double Buffering: Update previous state reference before current pass
@@ -667,41 +694,47 @@ class PipelineProcessor:
 
                 if _use_batched:
                     # ------ BATCHED PATH (dim > 1) ------
-                    tiles_list = []
-                    tile_coords = []
-                    for j in range(dim):
-                        for i in range(dim):
-                            tiles_list.append(
-                                input_face_affined[j::dim, i::dim]
-                                .permute(2, 0, 1)
-                                .contiguous()
-                            )
-                            tile_coords.append((j, i))
+                    # Vectorized Pixel-Unshuffle (Space-to-Depth)
+                    H_tgt: int = 128
+                    W_tgt: int = 128
 
-                    batch_input = torch.stack(tiles_list, dim=0)  # [B, 3, 128, 128]
-                    batch_output = torch.empty_like(batch_input)
+                    batch_input: torch.Tensor = (
+                        input_face_affined.view(H_tgt, dim, W_tgt, dim, 3)
+                        .permute(1, 3, 4, 0, 2)
+                        .reshape(dim * dim, 3, H_tgt, W_tgt)
+                        .contiguous()
+                    )
+
+                    batch_output: torch.Tensor = torch.empty_like(batch_input)
 
                     self.worker.function_worker.run_inswapper_batched(
                         batch_input, latent, batch_output
                     )
 
+                    # CRITICAL GPU SYNCHRONIZATION BARRIER
                     if self.worker.models_processor.device_type == "cuda":
                         torch.cuda.current_stream().synchronize()
 
-                    # Fallback for zero-output tiles
-                    tile_sums = batch_output.abs().sum(dim=(1, 2, 3))
-                    zero_mask = tile_sums < 1.0
-                    if zero_mask.any():
-                        batch_output[zero_mask] = batch_input[zero_mask]
+                    # OPTIMIZATION: Zero-Sync Fallback
+                    # Previously, `if zero_mask.any():` forced a Device-to-Host transfer,
+                    # causing a massive global pipeline stall. We use `torch.where` to keep it 100% on GPU.
+                    tile_sums: torch.Tensor = batch_output.abs().sum(
+                        dim=(1, 2, 3), keepdim=True
+                    )
+                    zero_mask: torch.Tensor = tile_sums < 1.0
+                    batch_output = torch.where(zero_mask, batch_input, batch_output)
 
-                    # Reconstruction: Only one clone needed as a canvas per iteration
-                    temp_output = input_face_affined.clone()
-                    for idx, (j, i) in enumerate(tile_coords):
-                        temp_output[j::dim, i::dim] = batch_output[idx].permute(1, 2, 0)
+                    # Vectorized Pixel-Shuffle (Depth-to-Space)
+                    temp_output: torch.Tensor = (
+                        batch_output.view(dim, dim, 3, H_tgt, W_tgt)
+                        .permute(3, 0, 4, 1, 2)
+                        .reshape(dim * H_tgt, dim * W_tgt, 3)
+                        .contiguous()
+                    )
 
                     # --- MODE 2 ---
                     if use_mode_2:
-                        curr_chw = temp_output.permute(2, 0, 1)
+                        curr_chw: torch.Tensor = temp_output.permute(2, 0, 1)
                         if k == 0:
                             first_pass_face = (
                                 curr_chw.clone()
@@ -743,18 +776,19 @@ class PipelineProcessor:
                         torch.cuda.current_stream().synchronize()
 
                     for idx, (j, i) in enumerate(tile_coords):
-                        res = (
-                            tile_inputs[idx]
-                            if tile_outputs[idx].sum() < 1.0
-                            else tile_outputs[idx]
-                        )
+                        # OPTIMIZATION: Zero-Sync Fallback for sequential path
+                        t_in = tile_inputs[idx]
+                        t_out = tile_outputs[idx]
+                        res = torch.where(t_out.abs().sum() < 1.0, t_in, t_out)
                         temp_output[j::dim, i::dim] = res.squeeze(0).permute(1, 2, 0)
 
                     # --- MODE 2 ---
                     if use_mode_2:
                         curr_chw = temp_output.permute(2, 0, 1)
                         if k == 0:
-                            first_pass_face = curr_chw.clone()
+                            first_pass_face = (
+                                curr_chw.clone()
+                            )  # Store first pass for drift correction
                         else:
                             curr_chw = self._fix_drift_and_texture(
                                 curr_chw, first_pass_face
@@ -1093,9 +1127,13 @@ class PipelineProcessor:
         def apply_blur(mask: torch.Tensor, blur_amount: int) -> torch.Tensor:
             blur_kernel_size = blur_amount * 2 + 1
             if blur_kernel_size > 1:
-                sigma_val = max(blur_amount * 0.15 + 0.1, 1e-6)
-                gauss = v2.GaussianBlur(blur_kernel_size, sigma=sigma_val)
-                return gauss(mask)
+                sigma_val = float(max(blur_amount * 0.15 + 0.1, 1e-6))
+                # OPTIMIZATION: Stateless functional API call
+                return v2.functional.gaussian_blur(
+                    mask,
+                    kernel_size=[blur_kernel_size, blur_kernel_size],
+                    sigma=[sigma_val, sigma_val],
+                )
             return mask
 
         # 4. Fetch the independent blur sliders and apply blurs (defaults to 0 if not found)
@@ -1228,10 +1266,12 @@ class PipelineProcessor:
             )
 
             if blur_value2 > 0:
-                kernel_size = 2 * blur_value2 + 1
-                sigma = blur_value2 * 0.1
-                gaussian_blur = v2.GaussianBlur(kernel_size=kernel_size, sigma=sigma)
-                swap = gaussian_blur(swap_original2)
+                k_size = int(2 * blur_value2 + 1)
+                s_val = float(blur_value2 * 0.1)
+                # OPTIMIZATION: Functional blur
+                swap = v2.functional.gaussian_blur(
+                    swap_original2, kernel_size=[k_size, k_size], sigma=[s_val, s_val]
+                )
                 debug_info[debug_key] = f": {-blur_value2:.2f}"
             elif isinstance(alpha_auto2, torch.Tensor):
                 swap = swap2 * alpha_auto2 + swap_original2 * (1 - alpha_auto2)
@@ -1532,13 +1572,11 @@ class PipelineProcessor:
         debug_info: dict[str, str] = {}
 
         tform = self.worker.get_face_similarity_tform(swapper_model, kps_5)
-        # OPTIMIZATION: Transform full-frame smoothed keypoints to the 512x512 crop space
-        kps_all_crop = None
-        if (
-            kps_203 is not None and len(kps_203) == 203
-        ):  # Use the dedicated 203 variable
-            raw_kps_crop = tform(kps_203)
-            kps_all_crop = np.array(raw_kps_crop, dtype=np.float32)
+
+        # --- Preserve the unmodified matrix strictly for final paste-back ---
+        # We must use the original bounds to paste the canvas back. If we use a scaled inverse,
+        # the scale operations mathematically cancel out in the final frame.
+        tform_original = tform
 
         # FW-PERF-5: use promoted instance-attribute transforms (initialized in
         # set_scaling_transforms) instead of constructing new objects each call
@@ -1561,6 +1599,70 @@ class PipelineProcessor:
                 tform, img, interp_mode=_face_interp
             )
         )
+
+        # --- OPTIMIZATION / FIX: Synchronized Pixel & Keypoint Face Scaling ---
+        if parameters.get("FaceAdjEnableToggle", False):
+            scale_val = 1.0 + (parameters.get("FaceScaleAmountSlider", 0) / 100.0)
+            if scale_val != 1.0:
+                # 1. Scale the primary 512 canvas pixels
+                _, h, w = original_face_512.shape
+                new_h, new_w = max(1, int(h * scale_val)), max(1, int(w * scale_val))
+
+                resized = v2.functional.resize(
+                    original_face_512,
+                    [new_h, new_w],
+                    interpolation=v2.InterpolationMode.BICUBIC,
+                    antialias=True,
+                )
+
+                if scale_val < 1.0:
+                    pad_l = (w - new_w) // 2
+                    pad_r = w - new_w - pad_l
+                    pad_t = (h - new_h) // 2
+                    pad_b = h - new_h - pad_t
+                    original_face_512 = F.pad(
+                        resized, (pad_l, pad_r, pad_t, pad_b), mode="constant", value=0
+                    )
+                else:
+                    crop_t = (new_h - h) // 2
+                    crop_l = (new_w - w) // 2
+                    original_face_512 = v2.functional.crop(
+                        resized, crop_t, crop_l, h, w
+                    )
+
+                # 2. Cascade changes to down-res variants used by specific swappers/masks
+                original_face_384 = _resize_func(
+                    original_face_512, (384, 384), is_mask=False
+                )
+                original_face_256 = _resize_func(
+                    original_face_512, (256, 256), is_mask=False
+                )
+                original_face_128 = _resize_func(
+                    original_face_512, (128, 128), is_mask=False
+                )
+
+                # 3. Mathematically shift the coordinate matrix so Restorers track the new pixel locations
+                scale_matrix = np.array(
+                    [
+                        [scale_val, 0.0, 256.0 * (1.0 - scale_val)],
+                        [0.0, scale_val, 256.0 * (1.0 - scale_val)],
+                        [0.0, 0.0, 1.0],
+                    ],
+                    dtype=np.float32,
+                )
+
+                # Update tform. Because Python assigns objects by reference, tform_original
+                # remains safely pointing to the unscaled bounds.
+                tform = trans.SimilarityTransform(matrix=scale_matrix @ tform.params)
+
+        # OPTIMIZATION: Transform full-frame smoothed keypoints to the 512x512 crop space
+        kps_all_crop = None
+        if (
+            kps_203 is not None and len(kps_203) == 203
+        ):  # Use the dedicated 203 variable
+            raw_kps_crop = tform(kps_203)
+            kps_all_crop = np.array(raw_kps_crop, dtype=np.float32)
+
         original_faces = (
             original_face_512,
             original_face_384,
@@ -1594,54 +1696,7 @@ class PipelineProcessor:
             # FW-BUG-03: guard input_face_affined is None (latent computation failed)
             if input_face_affined is None:
                 swap = original_face_512
-            # skip to mask section — latent computation failed, use original face
             else:
-                # Optional Face Scaling adjustment
-                if parameters["FaceAdjEnableToggle"]:
-                    scale_val = 1.0 + (parameters["FaceScaleAmountSlider"] / 100.0)
-                    orig_dtype = input_face_affined.dtype
-
-                    # OPTIMIZED: Replaced F.grid_sample with v2.resize (with Antialiasing) + crop/pad.
-                    # Downscaling with grid_sample lacks an anti-aliasing filter, causing aliasing/blur.
-                    # v2.functional.resize with antialias=True applies proper filtering before scaling.
-                    if scale_val != 1.0:
-                        channels, h, w = input_face_affined.shape
-                        new_h = max(1, int(h * scale_val))
-                        new_w = max(1, int(w * scale_val))
-
-                        # Resize applying high-quality Bicubic interpolation and anti-aliasing
-                        resized = v2.functional.resize(
-                            input_face_affined,
-                            [new_h, new_w],
-                            interpolation=v2.InterpolationMode.BICUBIC,
-                            antialias=True,
-                        )
-
-                        if scale_val < 1.0:
-                            # Shrinking: Pad edges with 0 (black) to match original bounds
-                            pad_left = (w - new_w) // 2
-                            pad_right = w - new_w - pad_left
-                            pad_top = (h - new_h) // 2
-                            pad_bottom = h - new_h - pad_top
-                            input_face_affined = F.pad(
-                                resized,
-                                (pad_left, pad_right, pad_top, pad_bottom),
-                                mode="constant",
-                                value=0,
-                            )
-                        else:
-                            # Enlarging: Center crop back to original bounds
-                            crop_top = (new_h - h) // 2
-                            crop_left = (new_w - w) // 2
-                            input_face_affined = v2.functional.crop(
-                                resized, crop_top, crop_left, h, w
-                            )
-
-                        # Torchvision native bicubic respects uint8 bounds automatically,
-                        # but cast back to ensure safety if float-converted downstream.
-                        if orig_dtype == torch.uint8:
-                            input_face_affined = input_face_affined.to(orig_dtype)
-
                 itex = 1
                 if parameters["StrengthEnableToggle"]:
                     itex = ceil(parameters["StrengthAmountSlider"] / 100.0)
@@ -1879,11 +1934,12 @@ class PipelineProcessor:
                 )
             swap_mask.mul_(mask)
 
-            gauss = v2.GaussianBlur(
-                parameters["OccluderXSegBlurSlider"] * 2 + 1,
-                (parameters["OccluderXSegBlurSlider"] + 1) * 0.2,
+            k_size = int(parameters["OccluderXSegBlurSlider"] * 2 + 1)
+            s_val = float((parameters["OccluderXSegBlurSlider"] + 1) * 0.2)
+            # OPTIMIZATION: Functional blur
+            swap_mask = v2.functional.gaussian_blur(
+                swap_mask, kernel_size=[k_size, k_size], sigma=[s_val, s_val]
             )
-            swap_mask = gauss(swap_mask)
 
             if swap_mask_noFP.shape[-1] != swap_mask.shape[-1]:
                 swap_mask_noFP = _resize_func(
@@ -2013,8 +2069,12 @@ class PipelineProcessor:
 
             if parameters.get("RestoreEyesMouthBlurSlider", 0) > 0:
                 b = parameters["RestoreEyesMouthBlurSlider"]
-                gauss = v2.GaussianBlur(b * 2 + 1, (b + 1) * 0.2)
-                img_swap_mask = gauss(img_swap_mask)
+                k_size = int(b * 2 + 1)
+                s_val = float((b + 1) * 0.2)
+                # OPTIMIZATION: Functional blur
+                img_swap_mask = v2.functional.gaussian_blur(
+                    img_swap_mask, kernel_size=[k_size, k_size], sigma=[s_val, s_val]
+                )
 
             if img_swap_mask.shape[-1] != swap_mask.shape[-1]:
                 mask_resized = _resize_func(
@@ -2092,11 +2152,17 @@ class PipelineProcessor:
             if not parameters.get("OccluderEnableToggle", False):
                 blur_amount = parameters.get("OccluderXSegBlurSlider", 0)
                 if blur_amount > 0:
-                    kernel_size = blur_amount * 2 + 1
-                    sigma = (blur_amount + 1) * 0.2
-                    gauss_op = v2.GaussianBlur(kernel_size, sigma)
-                    swap_mask = gauss_op(swap_mask)
-                    swap_mask_noFP = gauss_op(swap_mask_noFP)
+                    k_size = int(blur_amount * 2 + 1)
+                    s_val = float((blur_amount + 1) * 0.2)
+                    # OPTIMIZATION: Functional blur
+                    swap_mask = v2.functional.gaussian_blur(
+                        swap_mask, kernel_size=[k_size, k_size], sigma=[s_val, s_val]
+                    )
+                    swap_mask_noFP = v2.functional.gaussian_blur(
+                        swap_mask_noFP,
+                        kernel_size=[k_size, k_size],
+                        sigma=[s_val, s_val],
+                    )
 
             # apply_dfl_xseg returns inverted masks (0=Face, 1=BG).
             # We multiply by (1 - mask) to carve out the background.
@@ -2159,10 +2225,12 @@ class PipelineProcessor:
             )
 
             if blur_value > 0:
-                kernel_size = 2 * blur_value + 1
-                sigma = blur_value * 0.1
-                gaussian_blur = v2.GaussianBlur(kernel_size=kernel_size, sigma=sigma)
-                swap = gaussian_blur(swap_original)
+                k_size = int(2 * blur_value + 1)
+                s_val = float(blur_value * 0.1)
+                # OPTIMIZATION: Functional blur
+                swap = v2.functional.gaussian_blur(
+                    swap_original, kernel_size=[k_size, k_size], sigma=[s_val, s_val]
+                )
                 debug_info["Restore1"] = f": {-blur_value:.2f}"
             elif isinstance(alpha_auto, torch.Tensor):
                 swap = swap_restorecalc * alpha_auto + swap_original * (1 - alpha_auto)
@@ -2463,8 +2531,14 @@ class PipelineProcessor:
                 # Optional VGG specific blur
                 if parameters.get("TextureBlendAmountSlider", 0) > 0:
                     b = parameters["TextureBlendAmountSlider"]
-                    gauss = v2.GaussianBlur(b * 2 + 1, (b + 1) * 0.2)
-                    mask_vgg_512 = gauss(mask_vgg_512.float())
+                    k_size = int(b * 2 + 1)
+                    s_val = float((b + 1) * 0.2)
+                    # OPTIMIZATION: Functional blur
+                    mask_vgg_512 = v2.functional.gaussian_blur(
+                        mask_vgg_512.float(),
+                        kernel_size=[k_size, k_size],
+                        sigma=[s_val, s_val],
+                    )
 
             # 3. Features Exclusion Logic (Eyes, Mouth, etc.)
             if parameters.get("ExcludeMaskEnableToggle", False):
@@ -2475,10 +2549,14 @@ class PipelineProcessor:
                 if parameters.get("ExcludeOriginalVGGMaskEnableToggle", False):
                     blur_val = parameters.get("FaceParserBlurTextureSlider", 0)
                     if blur_val > 0:
-                        kernel_size = int(blur_val * 2 + 1)
-                        sigma = max((blur_val + 1) * 0.2, 1e-6)
-                        blur_op = v2.GaussianBlur(kernel_size, sigma=sigma)
-                        feature_mask = blur_op(feature_mask)
+                        k_size = int(blur_val * 2 + 1)
+                        s_val = float(max((blur_val + 1) * 0.2, 1e-6))
+                        # OPTIMIZATION: Functional blur
+                        feature_mask = v2.functional.gaussian_blur(
+                            feature_mask,
+                            kernel_size=[k_size, k_size],
+                            sigma=[s_val, s_val],
+                        )
 
                 # Combine VGG mask with the spatial FaceParser mask
                 if parameters.get("ExcludeOriginalVGGMaskEnableToggle", False):
@@ -2568,12 +2646,17 @@ class PipelineProcessor:
 
             if parameters["FaceParserBlurTextureSlider"] > 0:
                 orig = mask_final_512.clone()
-                gauss = v2.GaussianBlur(
-                    parameters["FaceParserBlurTextureSlider"] * 2 + 1,
-                    (parameters["FaceParserBlurTextureSlider"] + 1) * 0.2,
+                b_val = parameters["FaceParserBlurTextureSlider"]
+                k_size = int(b_val * 2 + 1)
+                s_val = float((b_val + 1) * 0.2)
+                # OPTIMIZATION: Functional blur
+                mask_final_512 = v2.functional.gaussian_blur(
+                    mask_final_512.to(torch.float32),
+                    kernel_size=[k_size, k_size],
+                    sigma=[s_val, s_val],
                 )
-                mask_final_512 = gauss(mask_final_512.type(torch.float32))
                 mask_final_512 = torch.max(mask_final_512, orig).clamp(0.0, 1.0)
+
             # 6. Final Blending
             # alpha_t modulates the overall strength, w determines the per-pixel application map
             alpha_t = parameters["TransferTextureBlendAmountSlider"] / 100.0
@@ -2636,10 +2719,15 @@ class PipelineProcessor:
                 torch.where(diff_norm_texture > upper_thresh, res_high, res_mid),
             )
             mask512 = t512_mask(piece)
+
             if parameters.get("DifferencingBlendAmountSlider", 0) > 0:
                 b = parameters["DifferencingBlendAmountSlider"]
-                gauss = v2.GaussianBlur(b * 2 + 1, (b + 1) * 0.2)
-                mask512 = gauss(mask512.float())
+                k_size = int(b * 2 + 1)
+                s_val = float((b + 1) * 0.2)
+                # OPTIMIZATION: Functional blur
+                mask512 = v2.functional.gaussian_blur(
+                    mask512.float(), kernel_size=[k_size, k_size], sigma=[s_val, s_val]
+                )
 
             mask512 = torch.max((mask512), 1 - calc_mask_dill).clamp_(0, 1)
             swap = (
@@ -2879,10 +2967,12 @@ class PipelineProcessor:
             and parameters.get("FinalBlendAmountSlider", 0) > 0
         ):
             final_blur_strength = parameters["FinalBlendAmountSlider"]
-            kernel_size = 2 * final_blur_strength + 1
-            sigma = max(final_blur_strength * 0.1, 1e-6)
-            gaussian_blur = v2.GaussianBlur(kernel_size=kernel_size, sigma=sigma)
-            swap = gaussian_blur(swap)
+            k_size = int(2 * final_blur_strength + 1)
+            s_val = float(max(final_blur_strength * 0.1, 1e-6))
+            # OPTIMIZATION: Functional blur
+            swap = v2.functional.gaussian_blur(
+                swap, kernel_size=[k_size, k_size], sigma=[s_val, s_val]
+            )
 
         # Final blending (Border Seam Only via Morphological Gradient)
         if (
@@ -2894,11 +2984,13 @@ class PipelineProcessor:
             # Ensure kernel size is odd for spatial pooling and blurring
             kernel_size = int(2 * border_blur_strength + 1)
             padding = border_blur_strength
-            sigma = max(border_blur_strength * 0.2, 1e-6)
+            sigma = float(max(border_blur_strength * 0.2, 1e-6))
 
             # 1. Create the blurred version of the swap tensor
-            gaussian_blur = v2.GaussianBlur(kernel_size=kernel_size, sigma=sigma)
-            blurred_swap = gaussian_blur(swap)
+            # OPTIMIZATION: Functional blur
+            blurred_swap = v2.functional.gaussian_blur(
+                swap, kernel_size=[kernel_size, kernel_size], sigma=[sigma, sigma]
+            )
 
             # 2. Calculate Morphological Gradient to perfectly isolate the mask's transition seam.
             # Dilation expands the mask outward; Erosion shrinks it inward.
@@ -2914,7 +3006,12 @@ class PipelineProcessor:
             raw_border_band = dilation - erosion
 
             # 3. Soften the extracted border band so the blur effect fades smoothly
-            smooth_border_mask = gaussian_blur(raw_border_band).clamp_(0.0, 1.0)
+            # OPTIMIZATION: Functional blur
+            smooth_border_mask = v2.functional.gaussian_blur(
+                raw_border_band,
+                kernel_size=[kernel_size, kernel_size],
+                sigma=[sigma, sigma],
+            ).clamp_(0.0, 1.0)
 
             # 4. Blend the blurred image strictly along the isolated morphological seam
             swap = (
@@ -2986,11 +3083,13 @@ class PipelineProcessor:
             return t512_mask(swap), t512_mask(swap_mask), None
 
         # Mask Post-Processing (Final Blend)
-        gauss = v2.GaussianBlur(
-            parameters["OverallMaskBlendAmountSlider"] * 2 + 1,
-            (parameters["OverallMaskBlendAmountSlider"] + 1) * 0.2,
+        b_val = parameters["OverallMaskBlendAmountSlider"]
+        k_size = int(b_val * 2 + 1)
+        s_val = float((b_val + 1) * 0.2)
+        # OPTIMIZATION: Functional blur
+        swap_mask = v2.functional.gaussian_blur(
+            swap_mask, kernel_size=[k_size, k_size], sigma=[s_val, s_val]
         )
-        swap_mask = gauss(swap_mask)
 
         if border_mask.shape[-1] != swap_mask.shape[-1]:
             border_mask = _resize_func(
@@ -3044,7 +3143,7 @@ class PipelineProcessor:
         # Warps directly to the full frame resolution in one highly optimized GPU pass.
 
         M_inv = (
-            torch.from_numpy(cast(np.ndarray, tform.inverse.params)[0:2])
+            torch.from_numpy(cast(np.ndarray, tform_original.inverse.params)[0:2])
             .float()
             .unsqueeze(0)
             .to(self.worker.models_processor.device)
@@ -3350,17 +3449,21 @@ class PipelineProcessor:
                 prev_alpha = 0.0
                 base = swap_original
                 max_blur_strength = 10
-                # FW-PERF-10: precompute GaussianBlur objects outside the scoring loop
-                blur_kernels_for_auto = [
-                    (
-                        v2.GaussianBlur(1, 1e-6)
-                        if bs == 0
-                        else v2.GaussianBlur(2 * bs + 1, max(bs, 1e-6))
-                    )
-                    for bs in range(0, max_blur_strength + 1)
-                ]
-                for bs, gaussian_blur in enumerate(blur_kernels_for_auto):
-                    swap2_blurred = gaussian_blur(base)
+
+                # OPTIMIZATION: Replaced the list comprehension of GaussianBlur objects
+                # with direct functional calls to avoid iterative memory allocation.
+                for bs in range(0, max_blur_strength + 1):
+                    if bs == 0:
+                        swap2_blurred = v2.functional.gaussian_blur(
+                            base, kernel_size=[1, 1], sigma=[1e-6, 1e-6]
+                        )
+                    else:
+                        k_size = int(2 * bs + 1)
+                        s_val = float(max(bs, 1e-6))
+                        swap2_blurred = v2.functional.gaussian_blur(
+                            base, kernel_size=[k_size, k_size], sigma=[s_val, s_val]
+                        )
+
                     scores_swap_b = self.sharpness_score(swap2_blurred)
                     score_new_swap_b = scores_swap_b["combined"].item() * 100.0
                     sharpness_diff_b = score_new_swap_b - score_new_original
@@ -3562,10 +3665,18 @@ class PipelineProcessor:
                 smooth_kernel += 1
             smooth_kernel = max(3, smooth_kernel)
         if smooth_kernel and smooth_kernel >= 3:
-            k = smooth_kernel
+            k = int(smooth_kernel)
+            s_val = float(max(1, k // 2))
             smap3 = smap.unsqueeze(0).unsqueeze(0)  # [1,1,H,W]
-            gb = v2.GaussianBlur(kernel_size=k, sigma=max(1, k // 2))
-            smap = gb(smap3).squeeze(0).squeeze(0)
+
+            # OPTIMIZATION: Functional blur mapping
+            smap = (
+                v2.functional.gaussian_blur(
+                    smap3, kernel_size=[k, k], sigma=[s_val, s_val]
+                )
+                .squeeze(0)
+                .squeeze(0)
+            )
 
         return smap.clamp(0, 1)
 

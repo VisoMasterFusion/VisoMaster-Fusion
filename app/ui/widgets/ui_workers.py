@@ -1,10 +1,11 @@
 import uuid
 from functools import partial
-from typing import TYPE_CHECKING, Dict
+from typing import TYPE_CHECKING, Dict, List, Tuple, Optional
 import traceback
 import os
 import threading
 import time
+from concurrent.futures import ThreadPoolExecutor
 
 import torch
 import numpy
@@ -68,7 +69,7 @@ class TargetMediaLoaderWorker(qtc.QThread):
                 if misc_helpers.get_file_type(media_file_path):
                     yield media_file_path
 
-    def load_videos_and_images_from_folder(self, folder_name):
+    def load_videos_and_images_from_folder(self, folder_name: str) -> None:
         # Initially hide the placeholder text
         self.main_window.placeholder_update_signal.emit(
             self.main_window.targetVideosList, True
@@ -77,9 +78,8 @@ class TargetMediaLoaderWorker(qtc.QThread):
             "TargetMediaFolderRecursiveToggle", False
         )
 
-        i = 0
         if recursive_toggle:
-            media_files = self._iter_sorted_recursive_media_files(folder_name)
+            media_files = list(self._iter_sorted_recursive_media_files(folder_name))
         else:
             video_files = misc_helpers.get_video_files(folder_name, recursive_toggle)
             image_files = misc_helpers.get_image_files(folder_name, recursive_toggle)
@@ -87,35 +87,22 @@ class TargetMediaLoaderWorker(qtc.QThread):
             # Sorting the list
             media_files.sort(key=lambda x: os.path.basename(str(x)).lower())
 
-        for media_file in media_files:
-            if not self._running:  # Check if the thread is still running
-                break
-            media_file_path = os.path.join(folder_name, media_file)
-            file_type = misc_helpers.get_file_type(media_file_path)
-            q_image = common_widget_actions.extract_frame_as_image(
-                self.main_window,
-                media_file_path,
-                file_type,
-                cache_thumbnail=True,
+        paired_files_ids = [
+            (
+                os.path.join(folder_name, f),
+                self.media_ids[i] if self.media_ids else str(uuid.uuid1().int),
             )
+            for i, f in enumerate(media_files)
+        ]
 
-            media_id = self.media_ids[i] if self.media_ids else str(uuid.uuid1().int)
+        self._process_media_concurrently(paired_files_ids)
 
-            if q_image:
-                # Probed here, off the GUI thread, so sorting/filtering never has to
-                # open a media file from the main thread.
-                metadata = misc_helpers.probe_media_metadata(media_file_path, file_type)
-                # Emit the signal to update GUI
-                self.thumbnail_ready.emit(
-                    media_file_path, q_image, file_type, media_id, metadata
-                )
-            i += 1
         # Show/Hide the placeholder text based on the number of items in ListWidget
         self.main_window.placeholder_update_signal.emit(
             self.main_window.targetVideosList, False
         )
 
-    def load_videos_and_images_from_files_list(self, files_list):
+    def load_videos_and_images_from_files_list(self, files_list: List[str]) -> None:
         self.main_window.placeholder_update_signal.emit(
             self.main_window.targetVideosList, True
         )
@@ -130,28 +117,48 @@ class TargetMediaLoaderWorker(qtc.QThread):
         if self.sort_files_list_by_name:
             paired_files_ids.sort(key=lambda x: os.path.basename(str(x[0])).lower())
 
-        for media_file_path, media_id in paired_files_ids:
-            if not self._running:  # Check if the thread is still running
-                break
-            if not os.path.exists(media_file_path):
-                continue
-            file_type = misc_helpers.get_file_type(media_file_path)
-            q_image = common_widget_actions.extract_frame_as_image(
-                self.main_window,
-                media_file_path,
-                file_type=file_type,
-                cache_thumbnail=True,
-            )
-            if q_image:
-                metadata = misc_helpers.probe_media_metadata(media_file_path, file_type)
-                # Emit the signal to update GUI
-                self.thumbnail_ready.emit(
-                    media_file_path, q_image, file_type, media_id, metadata
-                )
+        self._process_media_concurrently(paired_files_ids)
 
         self.main_window.placeholder_update_signal.emit(
             self.main_window.targetVideosList, False
         )
+
+    def _process_media_concurrently(
+        self, paired_files_ids: List[Tuple[str, str]]
+    ) -> None:
+        """
+        Executes media extraction concurrently to maximize I/O throughput.
+        Maintains order by using executor.map.
+        """
+
+        def extract_task(
+            media_file_path: str, media_id: str
+        ) -> Optional[Tuple[str, QImage, str, str, object]]:
+            if not os.path.exists(media_file_path):
+                return None
+            file_type = misc_helpers.get_file_type(media_file_path)
+            q_image = common_widget_actions.extract_frame_as_image(
+                self.main_window,
+                media_file_path,
+                file_type,
+                cache_thumbnail=True,
+            )
+            if q_image:
+                metadata = misc_helpers.probe_media_metadata(media_file_path, file_type)
+                return (media_file_path, q_image, file_type, media_id, metadata)
+            return None
+
+        # Determine thread count safely, capping at 16 to avoid OS resource exhaustion
+        max_workers = min(16, (os.cpu_count() or 1) + 4)
+
+        with ThreadPoolExecutor(max_workers=max_workers) as executor:
+            for result in executor.map(lambda p: extract_task(*p), paired_files_ids):
+                if not self._running:
+                    executor.shutdown(wait=False, cancel_futures=True)
+                    break
+                if result:
+                    # Thread-safe signal emission to the main GUI thread
+                    self.thumbnail_ready.emit(*result)
 
     def load_webcams(self):
         self.main_window.placeholder_update_signal.emit(
@@ -336,19 +343,21 @@ class InputFacesLoaderWorker(qtc.QThread):
         finally:
             self.finished.emit()
 
-    def load_faces(self, folder_name=False, files_list=None):
+    def load_faces(
+        self, folder_name: bool | str = False, files_list: Optional[List[str]] = None
+    ) -> None:
         # Use the snapshot - thread-safe
         control = self.control_snapshot
         files_list = files_list or []
 
         # OPTIMIZED: Pair the file paths with their correct IDs before any processing
         # This prevents ID shifting if an image fails, and avoids destructive sorting.
-        paired_files_ids = []
+        paired_files_ids: List[Tuple[str, str]] = []
 
-        if folder_name:
+        if folder_name and isinstance(folder_name, str):
             image_files = misc_helpers.get_image_files(
-                self.folder_name,
-                control.get("InputFacesFolderRecursiveToggle", False),
+                folder_name,
+                bool(control.get("InputFacesFolderRecursiveToggle", False)),
             )
             image_files.sort()  # Safe to sort here, IDs are generated fresh
             for path in image_files:
@@ -361,100 +370,115 @@ class InputFacesLoaderWorker(qtc.QThread):
                 f_id = self.face_ids[idx] if self.face_ids else str(uuid.uuid1().int)
                 paired_files_ids.append((path, f_id))
 
-        for image_file_path, face_id in paired_files_ids:
-            if not self._running:  # Check if the thread is still running
-                break
+        def load_image_task(
+            image_path: str, f_id: str
+        ) -> Tuple[str, str, Optional[numpy.ndarray]]:
+            """Background CPU task to read and prepare image bytes."""
+            if not misc_helpers.is_image_file(image_path):
+                return image_path, f_id, None
+            frame = misc_helpers.read_image_file(image_path)
+            if frame is None:
+                return image_path, f_id, None
+            # Swap channels from BGR to RGB concurrently
+            return image_path, f_id, frame[..., ::-1]
 
-            # WORKER SAFETY: Wrap the entire image processing in a try/except block.
-            # If an image is corrupted or causes a tensor shape mismatch, it will gracefully
-            # skip to the next image without crashing the entire loader thread.
-            try:
-                if not misc_helpers.is_image_file(image_file_path):
-                    continue
+        max_workers = min(16, (os.cpu_count() or 1) + 4)
 
-                frame = misc_helpers.read_image_file(image_file_path)
+        with ThreadPoolExecutor(max_workers=max_workers) as executor:
+            for image_file_path, face_id, frame in executor.map(
+                lambda p: load_image_task(*p), paired_files_ids
+            ):
+                if not self._running:  # Check if the thread is still running
+                    executor.shutdown(wait=False, cancel_futures=True)
+                    break
+
                 if frame is None:
-                    print(
-                        f"[WARNING] InputFacesLoaderWorker: Could not read image, skipping {image_file_path}"
-                    )
                     continue
 
-                # Frame must be in RGB format
-                frame = frame[..., ::-1]  # Swap the channels from BGR to RGB
-
-                img = torch.from_numpy(frame.astype("uint8")).to(
-                    self.main_window.models_processor.device
-                )
-                img = img.permute(2, 0, 1)
-
-                _, kpss_5, _ = self.main_window.function_worker.run_detect(
-                    img,
-                    control.get("DetectorModelSelection", "RetinaFace"),
-                    max_num=1,
-                    score=control.get("DetectorScoreSlider", 50) / 100.0,
-                    input_size=(512, 512),
-                    use_landmark_detection=control.get("LandmarkDetectToggle", False),
-                    landmark_detect_mode=control.get(
-                        "LandmarkDetectModelSelection", "203"
-                    ),
-                    landmark_score=control.get("LandmarkDetectScoreSlider", 50) / 100.0,
-                    from_points=control.get("DetectFromPointsToggle", False),
-                    rotation_angles=[0]
-                    if not control.get("AutoRotationToggle", False)
-                    else [0, 90, 180, 270],
-                )
-
-                if kpss_5 is None or len(kpss_5) == 0:
-                    continue
-
-                face_kps = kpss_5[0]
-                if face_kps.any():
-                    # Calculate embedding ONLY for the selected recognition model
-                    selected_recognition_model = control.get(
-                        "RecognitionModelSelection", "Inswapper128ArcFace"
+                # WORKER SAFETY: Wrap the entire GPU image processing in a try/except block.
+                # All CUDA tensor operations MUST execute here synchronously to prevent
+                # Context errors or GPU race conditions.
+                try:
+                    img = torch.from_numpy(frame.astype("uint8")).to(
+                        self.main_window.models_processor.device
                     )
-                    similarity_type = str("Auto")
-                    face_emb, cropped_img = (
-                        self.main_window.function_worker.run_recognize_direct(
-                            img,
-                            face_kps,
-                            similarity_type,
-                            selected_recognition_model,  # Use selected model
+                    img = img.permute(2, 0, 1)
+
+                    _, kpss_5, _ = self.main_window.function_worker.run_detect(
+                        img,
+                        str(control.get("DetectorModelSelection", "RetinaFace")),
+                        max_num=1,
+                        score=float(control.get("DetectorScoreSlider", 50)) / 100.0,
+                        input_size=(512, 512),
+                        use_landmark_detection=bool(
+                            control.get("LandmarkDetectToggle", False)
+                        ),
+                        landmark_detect_mode=str(
+                            control.get("LandmarkDetectModelSelection", "203")
+                        ),
+                        landmark_score=float(
+                            control.get("LandmarkDetectScoreSlider", 50)
                         )
+                        / 100.0,
+                        from_points=bool(control.get("DetectFromPointsToggle", False)),
+                        rotation_angles=[0]
+                        if not bool(control.get("AutoRotationToggle", False))
+                        else [0, 90, 180, 270],
                     )
 
-                    if face_emb is None:  # Check if recognition failed
+                    if kpss_5 is None or len(kpss_5) == 0:
                         continue
 
-                    cropped_img_np = cropped_img.cpu().numpy()
-                    # Swap channels from RGB to BGR for pixmap creation
-                    face_img = numpy.ascontiguousarray(cropped_img_np[..., ::-1])
+                    face_kps = kpss_5[0]
+                    if face_kps.any():
+                        # Calculate embedding ONLY for the selected recognition model
+                        selected_recognition_model = str(
+                            control.get(
+                                "RecognitionModelSelection", "Inswapper128ArcFace"
+                            )
+                        )
+                        similarity_type = str("Auto")
+                        face_emb, cropped_img = (
+                            self.main_window.function_worker.run_recognize_direct(
+                                img,
+                                face_kps,
+                                similarity_type,
+                                selected_recognition_model,  # Use selected model
+                            )
+                        )
 
-                    # QIMAGE THREAD-SAFE
-                    height, width, channel = face_img.shape
-                    bytes_per_line = 3 * width
-                    q_image = QImage(
-                        face_img.data,
-                        width,
-                        height,
-                        bytes_per_line,
-                        QImage.Format_BGR888,
-                    ).copy()
+                        if face_emb is None:  # Check if recognition failed
+                            continue
 
-                    embedding_store: Dict[str, numpy.ndarray] = {
-                        selected_recognition_model: face_emb,
-                        "kps_5": face_kps,
-                    }
+                        cropped_img_np = cropped_img.cpu().numpy()
+                        # Swap channels from RGB to BGR for pixmap creation
+                        face_img = numpy.ascontiguousarray(cropped_img_np[..., ::-1])
 
-                    self.thumbnail_ready.emit(
-                        image_file_path, face_img, embedding_store, q_image, face_id
+                        # QIMAGE THREAD-SAFE
+                        height, width, channel = face_img.shape
+                        bytes_per_line = 3 * width
+                        q_image = QImage(
+                            face_img.data,
+                            width,
+                            height,
+                            bytes_per_line,
+                            QImage.Format_BGR888,
+                        ).copy()
+
+                        embedding_store: Dict[str, numpy.ndarray] = {
+                            selected_recognition_model: face_emb,
+                            "kps_5": face_kps,
+                        }
+
+                        self.thumbnail_ready.emit(
+                            image_file_path, face_img, embedding_store, q_image, face_id
+                        )
+
+                except Exception as e:
+                    print(
+                        f"[ERROR] InputFacesLoaderWorker: Failed to process {image_file_path}. Reason: {e}"
                     )
-
-            except Exception as e:
-                print(
-                    f"[ERROR] InputFacesLoaderWorker: Failed to process {image_file_path}. Reason: {e}"
-                )
-                continue  # Skip this specific corrupt image and continue the loop
+                    continue  # Skip this specific corrupt image and continue the loop
 
     def stop(self):
         # Stop the thread by setting the running flag to False.
