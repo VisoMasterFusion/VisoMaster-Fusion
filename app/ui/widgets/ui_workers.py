@@ -15,6 +15,7 @@ from app.helpers import miscellaneous as misc_helpers
 from app.ui.widgets.actions import common_actions as common_widget_actions
 from app.ui.widgets.actions import filter_actions
 from app.ui.widgets.settings_layout_data import CAMERA_BACKENDS
+from app.processors.video_utils.issue_scanner import IssueScanner
 
 if TYPE_CHECKING:
     from app.ui.main_ui import MainWindow
@@ -208,24 +209,22 @@ class IssueScanWorker(qtc.QThread):
         self._scan_scope_text = main_window.video_processor.describe_issue_scan_scope(
             self._scan_ranges
         )
-        self._base_control = main_window.video_processor._filter_scan_control(
+        self._base_control = IssueScanner._filter_scan_control(
             main_window.control.copy()
         )
-        self._base_params = main_window.video_processor._filter_scan_face_params(
+        self._base_params = IssueScanner._filter_scan_face_params(
             {
                 face_id: params.copy()
                 for face_id, params in main_window.parameters.items()
             },
             getattr(main_window, "target_faces", {}).keys(),
         )
-        self._control_defaults_snapshot = (
-            main_window.video_processor._filter_scan_control(
-                {
-                    widget_name: widget.default_value
-                    for widget_name, widget in main_window.parameter_widgets.items()
-                    if widget_name in main_window.control
-                }
-            )
+        self._control_defaults_snapshot = IssueScanner._filter_scan_control(
+            {
+                widget_name: widget.default_value
+                for widget_name, widget in main_window.parameter_widgets.items()
+                if widget_name in main_window.control
+            }
         )
         self._target_faces_snapshot = (
             main_window.video_processor.prepare_issue_scan_target_faces_snapshot(

@@ -2095,7 +2095,9 @@ def show_graphics_view_context_menu(
         )
 
 
-def enable_zoom_and_pan(main_window: "MainWindow", view: QtWidgets.QGraphicsView):
+def enable_zoom_and_pan(
+    main_window: "MainWindow", view: QtWidgets.QGraphicsView
+) -> None:
     """
     Attaches mouse-wheel zoom, middle-click pan, and context-menu behaviour to a
     QGraphicsView instance.
@@ -2104,76 +2106,186 @@ def enable_zoom_and_pan(main_window: "MainWindow", view: QtWidgets.QGraphicsView
     mouseReleaseEvent, and contextMenuEvent directly onto the view object so no
     subclass is required.
     """
-    SCALE_FACTOR = 1.1
+    SCALE_FACTOR: float = 1.1
     view.zoom_value = 0  # Track zoom level
     view.last_scale_factor = 1.0  # Track the last scale factor (1.0 = no scaling)
     view.is_panning = False  # Track whether panning is active
     view.pan_start_pos = QtCore.QPoint()  # Store the initial mouse position for panning
 
-    def zoom(self: QtWidgets.QGraphicsView, step=False):
+    def zoom(self: QtWidgets.QGraphicsView, step: int | bool = False) -> None:
         """Zoom in or out by a step."""
         if not step:
             factor = self.last_scale_factor
         else:
-            self.zoom_value += step
-            factor = SCALE_FACTOR**step
+            self.zoom_value += int(step)
+            factor = SCALE_FACTOR ** int(step)
             self.last_scale_factor *= factor  # Update the last scale factor
+
         if factor > 0:
             self.scale(factor, factor)
 
-    def wheelEvent(self: QtWidgets.QGraphicsView, event: QtGui.QWheelEvent):
-        """Handle mouse wheel event for zooming."""
-        delta = event.angleDelta().y()
-        if delta != 0:
-            zoom(self, delta // abs(delta))
+    # SHIFT + MOUSE WHEEL EMBEDDING CYCLING
+    def cycle_embedding(direction: int) -> bool:
+        """
+        Select the previous or next merged embedding.
 
-    def reset_zoom(self: QtWidgets.QGraphicsView):
+        direction:
+            -1 = previous embedding
+             1 = next embedding
+        """
+        target_face_button = getattr(
+            main_window,
+            "cur_selected_target_face_button",
+            None,
+        )
+
+        # Embeddings are assigned to the currently selected target face.
+        if target_face_button is None:
+            return False
+
+        embedding_buttons = [
+            button
+            for button in getattr(
+                main_window,
+                "merged_embeddings",
+                {},
+            ).values()
+            if button is not None and button.isEnabled()
+        ]
+
+        if not embedding_buttons:
+            return False
+
+        checked_indices = [
+            index
+            for index, button in enumerate(embedding_buttons)
+            if button.isChecked()
+        ]
+
+        if checked_indices:
+            current_index = checked_indices[0]
+            next_index = (current_index + direction) % len(embedding_buttons)
+        else:
+            # When no embedding is active, start at the appropriate end.
+            next_index = 0 if direction > 0 else len(embedding_buttons) - 1
+
+        next_button = embedding_buttons[next_index]
+
+        # Deactivate the old embedding through its normal click handler.
+        # This allows VisoMaster to update its internal assignment data.
+        for button in embedding_buttons:
+            if button is not next_button and button.isChecked():
+                button.click()
+
+        # Activate the new embedding through its normal click handler.
+        if not next_button.isChecked():
+            next_button.click()
+
+        # KEEP ACTIVE EMBEDDING VISIBLE
+        embeddings_list = getattr(
+            main_window,
+            "inputEmbeddingsList",
+            None,
+        )
+        embedding_list_item = getattr(
+            next_button,
+            "list_item",
+            None,
+        )
+
+        if embeddings_list is not None and embedding_list_item is not None:
+            # Run after the button click has finished updating the UI to prevent Race Conditions.
+            QtCore.QTimer.singleShot(
+                0,
+                lambda: embeddings_list.scrollToItem(
+                    embedding_list_item,
+                    QtWidgets.QAbstractItemView.ScrollHint.EnsureVisible,
+                ),
+            )
+
+        return True
+
+    def wheelEvent(self: QtWidgets.QGraphicsView, event: QtGui.QWheelEvent) -> None:
+        """
+        Mouse wheel controls:
+        Wheel alone: Zoom the displayed video or image.
+        Shift + wheel: Change the selected embedding.
+        """
+        delta = event.angleDelta().y()
+
+        if delta == 0:
+            event.ignore()
+            return
+
+        shift_held = bool(event.modifiers() & QtCore.Qt.KeyboardModifier.ShiftModifier)
+
+        if shift_held:
+            # Wheel up selects the previous embedding.
+            # Wheel down selects the next embedding.
+            direction = -1 if delta > 0 else 1
+
+            if cycle_embedding(direction):
+                event.accept()
+            else:
+                event.ignore()
+            return
+
+        # Original mouse-wheel zoom behavior.
+        zoom(self, delta // abs(delta))
+        event.accept()
+
+    def reset_zoom(self: QtWidgets.QGraphicsView) -> None:
         """Resets the view transform so the scene content fits the viewport exactly."""
         fit_view_to_current_image(main_window)
 
-    def mousePressEvent(self: QtWidgets.QGraphicsView, event: QtGui.QMouseEvent):
+    def mousePressEvent(
+        self: QtWidgets.QGraphicsView, event: QtGui.QMouseEvent
+    ) -> None:
         """Handle mouse press event for panning."""
         if event.button() == QtCore.Qt.MouseButton.MiddleButton:
             self.is_panning = True
             self.pan_start_pos = event.pos()  # Store the initial mouse position
             self.setCursor(
-                QtCore.Qt.ClosedHandCursor
+                QtCore.Qt.CursorShape.ClosedHandCursor
             )  # Change cursor to indicate panning
         else:
             # Explicitly call the base class implementation
             QtWidgets.QGraphicsView.mousePressEvent(self, event)
 
-    def mouseMoveEvent(self: QtWidgets.QGraphicsView, event: QtGui.QMouseEvent):
+    def mouseMoveEvent(self: QtWidgets.QGraphicsView, event: QtGui.QMouseEvent) -> None:
         """Handle mouse move event for panning."""
         if self.is_panning:
             # Calculate the distance moved
             delta = event.pos() - self.pan_start_pos
             self.pan_start_pos = event.pos()  # Update the start position
-            # Translate the view
-            self.horizontalScrollBar().setValue(
-                self.horizontalScrollBar().value() - delta.x()
-            )
-            self.verticalScrollBar().setValue(
-                self.verticalScrollBar().value() - delta.y()
-            )
+
+            # Translate the view safely
+            h_bar = self.horizontalScrollBar()
+            v_bar = self.verticalScrollBar()
+            h_bar.setValue(h_bar.value() - delta.x())
+            v_bar.setValue(v_bar.value() - delta.y())
         else:
             # Explicitly call the base class implementation
             QtWidgets.QGraphicsView.mouseMoveEvent(self, event)
 
-    def mouseReleaseEvent(self: QtWidgets.QGraphicsView, event: QtGui.QMouseEvent):
+    def mouseReleaseEvent(
+        self: QtWidgets.QGraphicsView, event: QtGui.QMouseEvent
+    ) -> None:
         """Handle mouse release event for panning."""
         if event.button() == QtCore.Qt.MouseButton.MiddleButton:
             self.is_panning = False
-            self.setCursor(QtCore.Qt.ArrowCursor)  # Reset the cursor
+            self.setCursor(QtCore.Qt.CursorShape.ArrowCursor)  # Reset the cursor
         else:
             # Explicitly call the base class implementation
             QtWidgets.QGraphicsView.mouseReleaseEvent(self, event)
 
-    def contextMenuEvent(self: QtWidgets.QGraphicsView, event: QtGui.QContextMenuEvent):
+    def contextMenuEvent(
+        self: QtWidgets.QGraphicsView, event: QtGui.QContextMenuEvent
+    ) -> None:
         show_graphics_view_context_menu(main_window, event.globalPos())
         event.accept()
 
-    # Attach methods to the view
+    # Attach methods to the view via partial (Monkey-patching)
     view.zoom = partial(zoom, view)
     view.reset_zoom = partial(reset_zoom, view)
     view.wheelEvent = partial(wheelEvent, view)
@@ -2181,10 +2293,6 @@ def enable_zoom_and_pan(main_window: "MainWindow", view: QtWidgets.QGraphicsView
     view.mouseMoveEvent = partial(mouseMoveEvent, view)
     view.mouseReleaseEvent = partial(mouseReleaseEvent, view)
     view.contextMenuEvent = partial(contextMenuEvent, view)
-
-    # view.zoom = zoom.__get__(view)
-    # view.reset_zoom = reset_zoom.__get__(view)
-    # view.wheelEvent = wheelEvent.__get__(view)
 
     # Set anchors for better interaction
     view.setTransformationAnchor(
@@ -2197,8 +2305,8 @@ def play_video(main_window: "MainWindow", checked: bool):
     """
     Starts or stops video/webcam playback in response to the Play button toggle.
 
-    When *checked* is True: starts playback (or webcam stream) if not already running
-    and the slider is not at the end of the video.
+    When *checked* is True: starts playback (or webcam stream) if not already running.
+    If playback is started at the end of the video, it auto-rewinds to the beginning.
     When *checked* is False: stops any active processing and resets button states.
     """
     video_processor = main_window.video_processor
@@ -2212,16 +2320,27 @@ def play_video(main_window: "MainWindow", checked: bool):
         set_play_button_icon_to_stop(main_window)
         video_processor.process_webcam()
         return
+
     if checked:
-        if (
-            video_processor.processing
-            or video_processor.current_frame_number == video_processor.max_frame_number
-        ):
+        if video_processor.processing:
             print(
                 "[WARN] Video already playing. Stopping the current video before starting a new one."
             )
             video_processor.stop_processing()
             return
+
+        # --- Standard Media Player Auto-Rewind ---
+        # If the user hits play at the absolute end of the file, rewind to 0 automatically.
+        # This bypasses the old restriction and allows process_video to handle loop/segment snapping natively.
+        if video_processor.current_frame_number >= video_processor.max_frame_number:
+            print("[INFO] Play pressed at End of File. Auto-rewinding to start.")
+            # We block signals to prevent triggering a redundant heavy frame read (on_change_video_seek_slider)
+            # since process_video() will immediately read the start frame anyway.
+            main_window.videoSeekSlider.blockSignals(True)
+            main_window.videoSeekSlider.setValue(0)
+            main_window.videoSeekSlider.blockSignals(False)
+            video_processor.current_frame_number = 0
+
         print("[INFO] Starting video processing.")
         set_play_button_icon_to_stop(main_window)
         video_processor.process_video()
