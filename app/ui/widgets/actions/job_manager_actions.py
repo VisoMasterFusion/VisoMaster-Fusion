@@ -285,12 +285,14 @@ def _load_job_target_media(main_window: "MainWindow", data: dict):
     # Validate paths before loading
     valid_target_medias_data = []
     for m in target_medias_data:
-        if "media_path" in m and os.path.exists(m["media_path"]):
+        media_path = m.get("media_path")
+        media_exists, _ = (
+            _path_exists_with_timeout(media_path) if media_path else (False, False)
+        )
+        if media_path and media_exists:
             valid_target_medias_data.append(m)
         else:
-            print(
-                f"[WARN] Target media path not found, skipping: {m.get('media_path')}"
-            )
+            print(f"[WARN] Target media path not found, skipping: {media_path}")
 
     if valid_target_medias_data:
         target_medias_files_list = [m["media_path"] for m in valid_target_medias_data]
@@ -334,12 +336,14 @@ def _load_job_input_faces(main_window: "MainWindow", data: dict):
 
     valid_input_faces_data = {}
     for face_id, f in input_faces_data.items():
-        if "media_path" in f and os.path.exists(f["media_path"]):
+        media_path = f.get("media_path")
+        media_exists, _ = (
+            _path_exists_with_timeout(media_path) if media_path else (False, False)
+        )
+        if media_path and media_exists:
             valid_input_faces_data[face_id] = f
         else:
-            print(
-                f"[WARN] Input face media path not found, skipping: {f.get('media_path')}"
-            )
+            print(f"[WARN] Input face media path not found, skipping: {media_path}")
 
     if valid_input_faces_data:
         input_media_paths = [
@@ -618,6 +622,20 @@ def _restore_state_and_refresh(main_window: "MainWindow", previous_batch_flag: b
     common_widget_actions.refresh_frame(main_window)
 
 
+def _path_exists_with_timeout(path: str, timeout_sec: float = 2.0) -> tuple[bool, bool]:
+    result: list[bool] = []
+
+    def check_path() -> None:
+        result.append(os.path.exists(path))
+
+    checker = threading.Thread(target=check_path, daemon=True)
+    checker.start()
+    checker.join(timeout_sec)
+    if checker.is_alive():
+        return False, True
+    return bool(result[0]) if result else False, False
+
+
 def _validate_job_files_exist(data: dict) -> tuple[bool, str | None]:
     """
     (NEW) Performs a pre-flight check on job data *before* loading.
@@ -644,7 +662,11 @@ def _validate_job_files_exist(data: dict) -> tuple[bool, str | None]:
     # --- SMART PATH RESOLUTION ---
     # Automatically rebuilds paths if folders or sub-folders were moved
     def resolve_path(saved_path: str, is_target: bool) -> str:
-        if not saved_path or os.path.exists(saved_path):
+        if not saved_path:
+            return saved_path
+
+        exists, timed_out = _path_exists_with_timeout(saved_path)
+        if exists or timed_out:
             return saved_path
 
         root_folder = data.get(
@@ -653,15 +675,23 @@ def _validate_job_files_exist(data: dict) -> tuple[bool, str | None]:
             else "last_input_media_folder_path",
             "",
         )
-        if root_folder and os.path.exists(root_folder):
+        root_exists, root_timed_out = (
+            _path_exists_with_timeout(root_folder) if root_folder else (False, False)
+        )
+        if root_exists and not root_timed_out:
             from pathlib import Path
 
             parts = Path(saved_path).parts
             # Try to match the trailing folder structure against the active root folder
             for i in range(1, len(parts)):
                 fallback = os.path.join(root_folder, *parts[-i:])
-                if os.path.exists(fallback):
+                fallback_exists, fallback_timed_out = _path_exists_with_timeout(
+                    fallback
+                )
+                if fallback_exists:
                     return fallback
+                if fallback_timed_out:
+                    break
         return saved_path
 
     # Apply smart resolution in-place to the data payload
@@ -690,9 +720,24 @@ def _validate_job_files_exist(data: dict) -> tuple[bool, str | None]:
                     skip_reason = (
                         f"Selected media ID {job_selected_media_id} has no media path."
                     )
-                elif not os.path.exists(media_path_to_check):
-                    is_job_valid = False
-                    skip_reason = f"Target media file not found: {media_path_to_check}"
+                else:
+                    path_exists, path_timed_out = _path_exists_with_timeout(
+                        media_path_to_check
+                    )
+                    if not path_exists:
+                        is_job_valid = False
+                        if path_timed_out:
+                            skip_reason = (
+                                "Timed out checking target media file: "
+                                f"{media_path_to_check}"
+                            )
+                        else:
+                            skip_reason = (
+                                f"Target media file not found: {media_path_to_check}"
+                            )
+                if not is_job_valid:
+                    found_media = True
+                    break
                 found_media = True
                 break
         if not found_media and is_job_valid:
@@ -722,9 +767,13 @@ def _validate_job_files_exist(data: dict) -> tuple[bool, str | None]:
                 is_job_valid = False
                 skip_reason = f"Input face ID {face_id} has no media path."
                 break
-            if not os.path.exists(face_path):
+            face_exists, face_timed_out = _path_exists_with_timeout(face_path)
+            if not face_exists:
                 is_job_valid = False
-                skip_reason = f"Input face file not found: {face_path}"
+                if face_timed_out:
+                    skip_reason = f"Timed out checking input face file: {face_path}"
+                else:
+                    skip_reason = f"Input face file not found: {face_path}"
                 break
 
         # Check embeddings (just need to exist in the job data)
