@@ -96,7 +96,7 @@ class FrameEnhancers:
                 if hasattr(self.models_processor, "syncvec"):
                     self.models_processor.syncvec.cpu()
 
-            ort_session.run_with_iobinding(io_binding)
+            self.function_worker.run_ort_with_iobinding(ort_session, io_binding)
 
             # POST-INFERENCE SYNC
             if self.models_processor.device_type == "cuda":

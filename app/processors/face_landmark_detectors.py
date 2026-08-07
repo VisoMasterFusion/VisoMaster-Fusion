@@ -475,7 +475,7 @@ class FaceLandmarkDetectors:
                 self.models_processor.syncvec.cpu()
 
             # Run inference
-            model.run_with_iobinding(io_binding)
+            self.function_worker.run_ort_with_iobinding(model, io_binding)
 
             # POST-INFERENCE SYNC : Ensure the GPU has completed all
             # calculations before ONNX Runtime attempts to copy the result back to CPU RAM.

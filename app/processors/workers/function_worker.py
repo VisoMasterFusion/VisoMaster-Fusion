@@ -2,6 +2,7 @@ from typing import TYPE_CHECKING, Any, Dict, List, Optional, Tuple
 
 import numpy as np
 import torch
+import threading
 
 # --- Internal Sub-Processor Imports ---
 from app.processors.face_detectors import FaceDetectors
@@ -40,6 +41,7 @@ class FunctionWorker:
                               so they can request model loading/unloading safely.
         """
         self.mp = models_processor
+        self.ort_inference_lock = threading.RLock()
 
         # Initialize Sub-Processors centrally.
         # We pass `self.mp` for VRAM management, and `self` so they can route calls through this Facade.
@@ -54,6 +56,11 @@ class FunctionWorker:
         self.perform_recast = PerformRecast(self.mp, self)
         self.face_denoiser = FaceDenoiser(self.mp, self)
         self.frame_edits = FrameEdits(self.mp, self)
+
+    def run_ort_with_iobinding(self, session: Any, io_binding: Any) -> None:
+        """Serialize shared ONNX/TensorRT session execution across frame workers."""
+        with self.ort_inference_lock:
+            session.run_with_iobinding(io_binding)
 
     # --- Models Unloaders ---
 

@@ -114,7 +114,7 @@ class FaceMasks:
             elif self.models_processor.device_type != "cpu":
                 self.models_processor.syncvec.cpu()
 
-            ort_session.run_with_iobinding(io)
+            self.function_worker.run_ort_with_iobinding(ort_session, io)
 
         finally:
             if is_lazy_build:
@@ -1254,7 +1254,7 @@ class FaceMasks:
             elif self.models_processor.device_type != "cpu":
                 self.models_processor.syncvec.cpu()
 
-            ort_session.run_with_iobinding(io_binding)
+            self.function_worker.run_ort_with_iobinding(ort_session, io_binding)
 
         finally:
             if is_lazy_build:
@@ -1537,7 +1537,7 @@ class FaceMasks:
             elif self.models_processor.device_type != "cpu":
                 self.models_processor.syncvec.cpu()
 
-            ort_session.run_with_iobinding(io_binding)
+            self.function_worker.run_ort_with_iobinding(ort_session, io_binding)
 
         finally:
             if is_lazy_build:
@@ -1592,7 +1592,7 @@ class FaceMasks:
             elif self.models_processor.device_type != "cpu":
                 self.models_processor.syncvec.cpu()
 
-            sess.run_with_iobinding(io_binding)
+            self.function_worker.run_ort_with_iobinding(sess, io_binding)
 
         finally:
             if is_lazy_build:

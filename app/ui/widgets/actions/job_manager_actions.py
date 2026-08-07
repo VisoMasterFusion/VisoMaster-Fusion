@@ -806,6 +806,26 @@ def _validate_job_data_for_loading(data: dict) -> tuple[bool, str | None]:
     return _validate_job_files_exist(data)
 
 
+def _wait_for_input_faces_loader(
+    main_window: "MainWindow", timeout_sec: float = 180.0
+) -> None:
+    worker = main_window.input_faces_loader_worker
+    if (
+        not isinstance(worker, ui_workers.InputFacesLoaderWorker)
+        or not worker.isRunning()
+    ):
+        return
+
+    wait_start = time.perf_counter()
+    while worker.isRunning():
+        QtWidgets.QApplication.processEvents()
+        if time.perf_counter() - wait_start > timeout_sec:
+            raise TimeoutError(
+                f"InputFacesLoaderWorker did not finish within {timeout_sec:.0f}s."
+            )
+        time.sleep(0.01)
+
+
 def load_job_workspace(main_window: "MainWindow", job_name: str):
     """
     Main function to load a job workspace. (HEAVY LOAD)
@@ -813,7 +833,6 @@ def load_job_workspace(main_window: "MainWindow", job_name: str):
     This is used by the 'Load Job' button.
     """
 
-    print("[INFO] Loading job workspace...")
     jobs_dir = get_jobs_dir(main_window)
     data_filename = jobs_dir / f"{job_name}.json"
 
@@ -879,13 +898,7 @@ def load_job_workspace(main_window: "MainWindow", job_name: str):
 
         progress_dialog.update_progress(3, total_steps, steps[2])
         _load_job_input_faces(main_window, data)
-
-        # Wait for async face loader so assignments can be restored reliably.
-        worker = main_window.input_faces_loader_worker
-        if isinstance(worker, ui_workers.InputFacesLoaderWorker) and worker.isRunning():
-            loop = QEventLoop()
-            worker.finished.connect(loop.quit)
-            loop.exec()
+        _wait_for_input_faces_loader(main_window)
 
         progress_dialog.update_progress(4, total_steps, steps[3])
         _load_job_embeddings(main_window, data)
@@ -1056,12 +1069,7 @@ def _restore_workspace_from_snapshot(main_window: "MainWindow", data: dict):
         progress_dialog.update_progress(3, total_steps, steps[2])
         _load_job_input_faces(main_window, data)
 
-        # If a worker was started, wait for it to finish before proceeding.
-        worker = main_window.input_faces_loader_worker
-        if isinstance(worker, ui_workers.InputFacesLoaderWorker) and worker.isRunning():
-            loop = QEventLoop()
-            worker.finished.connect(loop.quit)
-            loop.exec()  # Block until the worker's finished signal is emitted
+        _wait_for_input_faces_loader(main_window)
 
         progress_dialog.update_progress(4, total_steps, steps[3])
         _load_job_embeddings(main_window, data)
@@ -1611,13 +1619,7 @@ def load_master_assets(main_window: "MainWindow", master_data: dict):
 
         # We must wait for the InputFacesLoaderWorker to finish before proceeding,
         # otherwise the next job_settings_load might clear its required models.
-        worker = main_window.input_faces_loader_worker
-        if isinstance(worker, ui_workers.InputFacesLoaderWorker) and worker.isRunning():
-            print("[INFO] Waiting for InputFacesLoaderWorker to finish...")
-            loop = QEventLoop()
-            worker.finished.connect(loop.quit)
-            loop.exec()  # Block until the worker's finished signal is emitted
-            print("[INFO] InputFacesLoaderWorker finished.")
+        _wait_for_input_faces_loader(main_window)
 
         progress_dialog.update_progress(4, total_steps, steps[3])
         _load_job_embeddings(main_window, master_data)  # Loads all unique embeddings
@@ -2338,6 +2340,13 @@ class JobProcessor(QThread):
         # If the while loop exits, it means self.processing_stopped_event was set.
         if self.cancel_requested_event.is_set():
             print("[INFO] Job stop signal received after cancellation request.")
+            return False
+
+        processing_error = getattr(
+            self.main_window.video_processor, "last_processing_error", None
+        )
+        if processing_error:
+            self.job_failed_signal.emit(job_name, processing_error)
             return False
 
         print("[INFO] JobProcessor received stop signal.")

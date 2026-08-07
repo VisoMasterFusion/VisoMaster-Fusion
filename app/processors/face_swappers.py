@@ -104,7 +104,7 @@ class FaceSwappers:
                 # This handles synchronization for other execution providers (e.g., DirectML)
                 self.models_processor.syncvec.cpu()
 
-            ort_session.run_with_iobinding(io_binding)
+            self.function_worker.run_ort_with_iobinding(ort_session, io_binding)
 
         finally:
             if is_lazy_build:

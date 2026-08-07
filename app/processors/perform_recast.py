@@ -183,7 +183,7 @@ class PerformRecast:
             if hasattr(mp, "syncvec"):
                 mp.syncvec.cpu()
 
-        session.run_with_iobinding(io_binding)
+        self.function_worker.run_ort_with_iobinding(session, io_binding)
 
         return out_buffers
 
