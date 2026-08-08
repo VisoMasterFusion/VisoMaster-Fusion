@@ -74,6 +74,7 @@ class VideoProcessor(QObject):
     processing_started_signal = Signal()  # Unified signal for any processing start
     processing_stopped_signal = Signal()  # Unified signal for any processing stop
     processing_heartbeat_signal = Signal()  # Emits periodically to show liveness
+    fatal_processing_error_signal = Signal(str)
 
     def __init__(self, main_window: "MainWindow", num_threads=2):
         """
@@ -136,6 +137,8 @@ class VideoProcessor(QObject):
             False  # True if "multi-segment" recording is active
         )
         self.triggered_by_job_manager: bool = False  # For multi-segment job integration
+        self._fatal_processing_error_latched: bool = False
+        self.last_processing_error: str | None = None
         self.active_output_folder: str = ""
 
         # --- Subprocesses ---
@@ -219,6 +222,7 @@ class VideoProcessor(QObject):
         self.webcam_frame_processed_signal.connect(self.store_webcam_frame_to_display)
         self.single_frame_processed_signal.connect(self.display_current_frame)
         self.single_frame_processed_signal.connect(self.store_single_frame_to_display)
+        self.fatal_processing_error_signal.connect(self._handle_fatal_processing_error)
 
     @property
     def ui_state_is_dirty(self) -> bool:
@@ -636,6 +640,8 @@ class VideoProcessor(QObject):
         self.stopped_by_error_limit = False  # Reset error limit flag for new processing
         self.tail_pending_stall_start_sec = 0.0
         self.tail_force_finalize_due_to_stall = False
+        self._fatal_processing_error_latched = False
+        self.last_processing_error = None
 
         # Initialize feeder state with the current UI global state
         with self.state_lock:
@@ -1159,6 +1165,14 @@ class VideoProcessor(QObject):
 
         return None
 
+    @Slot(str)
+    def _handle_fatal_processing_error(self, reason: str) -> None:
+        if self._fatal_processing_error_latched:
+            return
+        self._fatal_processing_error_latched = True
+        self.last_processing_error = reason
+        self.stop_processing()
+
     def stop_processing(self) -> bool:
         """
         General Stop / Abort Function.
@@ -1169,7 +1183,7 @@ class VideoProcessor(QObject):
             True if any active processing was stopped or a broken capture was recovered.
         """
         # Step 0: Capture current state for return value and cleanup logic
-        was_active = self.processing or self.is_processing_segments
+        was_active = self.processing or self.is_processing_segments or self.recording
         was_recording_default_style = self.recording
         was_processing_segments = self.is_processing_segments
 

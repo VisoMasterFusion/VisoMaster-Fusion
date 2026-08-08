@@ -183,7 +183,16 @@ class PerformRecast:
             if hasattr(mp, "syncvec"):
                 mp.syncvec.cpu()
 
-        session.run_with_iobinding(io_binding)
+        self.function_worker.run_ort_with_iobinding(session, io_binding)
+
+        # POST-INFERENCE SYNC: out_buffers are pre-allocated PyTorch VRAM tensors, and
+        # ONNX Runtime enqueues its writes asynchronously. Returning them unsynchronized
+        # lets the caller read half-written data.
+        if mp.device_type == "cuda":
+            torch.cuda.current_stream().synchronize()
+        elif mp.device_type != "cpu":
+            if hasattr(mp, "syncvec"):
+                mp.syncvec.cpu()
 
         return out_buffers
 

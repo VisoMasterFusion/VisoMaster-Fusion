@@ -17,7 +17,7 @@ import subprocess
 import json
 
 import torch
-from PIL import Image
+from PIL import Image, PngImagePlugin
 from skimage import transform as trans
 
 # --- Global Scope ---
@@ -68,6 +68,10 @@ class ThumbnailManager:
     managing the thumbnail storage directory, and generating thumbnail images from
     video frames or images.
     """
+
+    _METADATA_KEY = "VisoMasterMediaMetadata"
+    _JPEG_USER_COMMENT_TAG = 0x9286
+    _JPEG_USER_COMMENT_PREFIX = b"ASCII\x00\x00\x00"
 
     def __init__(self, thumbnail_dir: str = ".thumbnails"):
         """
@@ -136,7 +140,89 @@ class ThumbnailManager:
                 return jpg_path
         return None
 
-    def create_thumbnail(self, frame: np.ndarray, file_path: str) -> None:
+    def _build_metadata_payload(self, file_path: str, metadata) -> str | None:
+        if metadata is None:
+            return None
+
+        try:
+            stat = os.stat(file_path)
+        except OSError:
+            return None
+
+        payload = {
+            "version": 1,
+            "source_size": int(stat.st_size),
+            "source_mtime_ns": int(stat.st_mtime_ns),
+            "media": {
+                "width": int(metadata.width),
+                "height": int(metadata.height),
+                "total_frames": int(metadata.total_frames),
+                "frame_rate": float(metadata.frame_rate),
+                "bitrate_kbits": float(metadata.bitrate_kbits),
+            },
+        }
+        return json.dumps(payload, separators=(",", ":"), ensure_ascii=True)
+
+    def _metadata_payload_is_current(self, payload: dict, file_path: str) -> bool:
+        try:
+            stat = os.stat(file_path)
+        except OSError:
+            return False
+
+        return (
+            int(payload.get("source_size", -1)) == int(stat.st_size)
+            and int(payload.get("source_mtime_ns", -1)) == int(stat.st_mtime_ns)
+        )
+
+    def _metadata_from_payload(self, payload: dict, file_path: str):
+        if not self._metadata_payload_is_current(payload, file_path):
+            return None
+
+        media = payload.get("media", {})
+        try:
+            return MediaMetadata(
+                width=max(0, int(media.get("width", 0))),
+                height=max(0, int(media.get("height", 0))),
+                total_frames=max(0, int(media.get("total_frames", 0))),
+                frame_rate=max(0.0, float(media.get("frame_rate", 0.0))),
+                bitrate_kbits=max(0.0, float(media.get("bitrate_kbits", 0.0))),
+            )
+        except (TypeError, ValueError):
+            return None
+
+    def get_thumbnail_metadata(self, thumbnail_path: str, file_path: str):
+        """Read cached media metadata embedded in a thumbnail image."""
+        try:
+            with self._lock:
+                with Image.open(thumbnail_path) as image:
+                    if image.format == "PNG":
+                        raw_payload = image.info.get(self._METADATA_KEY)
+                    elif image.format == "JPEG":
+                        raw_payload = image.getexif().get(self._JPEG_USER_COMMENT_TAG)
+                    else:
+                        raw_payload = None
+        except Exception:
+            return None
+
+        if isinstance(raw_payload, bytes):
+            if raw_payload.startswith(self._JPEG_USER_COMMENT_PREFIX):
+                raw_payload = raw_payload[len(self._JPEG_USER_COMMENT_PREFIX) :]
+            try:
+                raw_payload = raw_payload.decode("ascii")
+            except UnicodeDecodeError:
+                return None
+        if not isinstance(raw_payload, str):
+            return None
+
+        try:
+            payload = json.loads(raw_payload)
+        except json.JSONDecodeError:
+            return None
+        return self._metadata_from_payload(payload, file_path)
+
+    def create_thumbnail(
+        self, frame: np.ndarray, file_path: str, metadata=None
+    ) -> None:
         """
         Saves a given frame as an optimized thumbnail image.
 
@@ -165,23 +251,71 @@ class ThumbnailManager:
             frame, (width, height), interpolation=cv2.INTER_LANCZOS4
         )
 
+        metadata_payload = self._build_metadata_payload(file_path, metadata)
+
+        if not metadata_payload:
+            try:
+                # The write, the size verdict and the cleanup are one atomic
+                # transaction. Readers only hold the lock while they open the file
+                # by path, so releasing it between the imwrite() and the os.remove()
+                # lets the UI thread open an oversized reject or hit a
+                # PermissionError on a thumbnail that is being deleted underneath it.
+                with self._lock:
+                    cv2.imwrite(png_path, resized_frame)
+                    if os.path.getsize(png_path) > 30 * 1024:  # If PNG is > 30KB
+                        os.remove(png_path)
+                        raise Exception("PNG file too large, falling back to JPEG.")
+                    if os.path.exists(jpg_path):
+                        os.remove(jpg_path)
+            except Exception:
+                jpeg_params = [
+                    cv2.IMWRITE_JPEG_QUALITY,
+                    98,
+                    cv2.IMWRITE_JPEG_OPTIMIZE,
+                    1,
+                    cv2.IMWRITE_JPEG_PROGRESSIVE,
+                    1,
+                ]
+                # self._lock is a plain (non-reentrant) Lock; the raise above has
+                # already unwound out of the with-block, so re-acquiring is safe.
+                with self._lock:
+                    cv2.imwrite(jpg_path, resized_frame, jpeg_params)
+                    if os.path.exists(png_path):
+                        os.remove(png_path)
+            return
+
+        rgb_frame = cv2.cvtColor(resized_frame, cv2.COLOR_BGR2RGB)
+        image = Image.fromarray(rgb_frame)
+
         try:
+            pnginfo = PngImagePlugin.PngInfo()
+            pnginfo.add_text(self._METADATA_KEY, metadata_payload)
+            # Same atomic transaction as the metadata-less path above: save,
+            # size verdict and cleanup must not be observable half-done.
             with self._lock:
-                cv2.imwrite(png_path, resized_frame)
-            if os.path.getsize(png_path) > 30 * 1024:  # If PNG is > 30KB
-                os.remove(png_path)
-                raise Exception("PNG file too large, falling back to JPEG.")
+                image.save(png_path, format="PNG", optimize=True, pnginfo=pnginfo)
+                if os.path.getsize(png_path) > 30 * 1024:  # If PNG is > 30KB
+                    os.remove(png_path)
+                    raise Exception("PNG file too large, falling back to JPEG.")
+                if os.path.exists(jpg_path):
+                    os.remove(jpg_path)
         except Exception:
-            jpeg_params = [
-                cv2.IMWRITE_JPEG_QUALITY,
-                98,
-                cv2.IMWRITE_JPEG_OPTIMIZE,
-                1,
-                cv2.IMWRITE_JPEG_PROGRESSIVE,
-                1,
-            ]
+            exif = Image.Exif()
+            exif[self._JPEG_USER_COMMENT_TAG] = (
+                self._JPEG_USER_COMMENT_PREFIX + metadata_payload.encode("ascii")
+            )
+            exif_bytes = exif.tobytes()
+            save_kwargs = {
+                "format": "JPEG",
+                "quality": 98,
+                "optimize": True,
+                "progressive": True,
+                "exif": exif_bytes,
+            }
             with self._lock:
-                cv2.imwrite(jpg_path, resized_frame, jpeg_params)
+                image.save(jpg_path, **save_kwargs)
+                if os.path.exists(png_path):
+                    os.remove(png_path)
 
 
 class DFMModelManager:
@@ -735,20 +869,24 @@ def get_video_rotation(media_path: str) -> int:
             str(media_path),
         ]
 
-        process = subprocess.Popen(
+        # subprocess.run() is used instead of Popen().communicate() because it kills
+        # and reaps the child itself when the timeout fires. A bare Popen leaves
+        # ffprobe running after a TimeoutExpired, leaking a process (and its RAM)
+        # for every unreachable file scanned.
+        process = subprocess.run(
             cmd,
-            stdout=subprocess.PIPE,
-            stderr=subprocess.PIPE,
+            capture_output=True,
             text=True,
             encoding="utf-8",
+            timeout=10,
+            check=False,
         )
-        stdout_data, stderr_data = process.communicate(timeout=10)
 
         if process.returncode != 0:
-            print(f"[ERROR] ffprobe failed. Error: {stderr_data}")
+            print(f"[ERROR] ffprobe failed. Error: {process.stderr}")
             return 0
 
-        data = json.loads(stdout_data)
+        data = json.loads(process.stdout)
 
         # --- Helper: Recursive Search ---
         def find_rotation_value(obj):

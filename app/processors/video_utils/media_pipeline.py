@@ -843,6 +843,29 @@ class MediaPipeline(QObject):
 
         return True
 
+    def _abort_if_pipeline_cannot_produce_frame(
+        self, frame_number_to_display: int
+    ) -> bool:
+        if not (self.vp.recording or self.vp.is_processing_segments):
+            return False
+
+        feeder_alive = bool(self.feeder_thread and self.feeder_thread.is_alive())
+        if feeder_alive or self.vp.frame_queue.qsize() > 0:
+            return False
+
+        workers = list(self.vp.worker_pool_manager.worker_threads)
+        if workers and any(worker.is_alive() for worker in workers):
+            return False
+
+        pending_tasks = self.vp._safe_unfinished_tasks()
+        error_msg = (
+            "Processing pipeline stopped before producing required frame "
+            f"{frame_number_to_display}; pending_tasks={pending_tasks}."
+        )
+        self.vp.last_processing_error = error_msg
+        self.vp.stop_processing()
+        return True
+
     def display_next_frame(self) -> None:
         """
         The Core Consumer Loop.
@@ -978,6 +1001,10 @@ class MediaPipeline(QObject):
                 if draining_tail:
                     if self._handle_tail_drain_wait(frame_number_to_display):
                         return
+                elif self._abort_if_pipeline_cannot_produce_frame(
+                    frame_number_to_display
+                ):
+                    return
                 else:
                     return
 

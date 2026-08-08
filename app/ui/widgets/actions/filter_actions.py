@@ -11,6 +11,12 @@ if TYPE_CHECKING:
 def filter_target_videos(main_window: "MainWindow", *args):
     main_window.target_videos_filter_worker.stop_thread()
 
+    filter_button = getattr(main_window, "targetVideosFilterMenuButton", None)
+    if filter_button is not None and not filter_button.isChecked():
+        for i in range(main_window.targetVideosList.count()):
+            main_window.targetVideosList.item(i).setHidden(False)
+        return
+
     # Capture all Qt widget data in the main thread before starting the worker
     search_text = main_window.targetVideosSearchBox.text().lower()
 

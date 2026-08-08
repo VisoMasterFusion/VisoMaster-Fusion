@@ -7,6 +7,7 @@ from typing import TYPE_CHECKING, Any, Dict, List
 from send2trash import send2trash
 import subprocess
 import sys
+import time
 
 from PySide6 import QtWidgets, QtGui, QtCore
 from PySide6.QtWidgets import QPushButton
@@ -371,9 +372,19 @@ class TargetMediaCardButton(CardButton):
             # Get video rotation metadata before loading
             rotation_angle = get_video_rotation(self.media_path)
             # Check for Variable Frame Rate (VFR) and warn the user
+            vfr_start = time.perf_counter()
             misc_helpers.check_and_warn_vfr(self.media_path)
+            print(
+                f"[PERF] selected media VFR check took "
+                f"{time.perf_counter() - vfr_start:.3f}s: {self.media_path}"
+            )
             main_window.video_processor.media_rotation = rotation_angle
+            open_start = time.perf_counter()
             media_capture = cv2.VideoCapture(self.media_path)
+            print(
+                f"[PERF] selected media VideoCapture open took "
+                f"{time.perf_counter() - open_start:.3f}s: {self.media_path}"
+            )
             # Explicitly enable OpenCV's auto-rotation to let it handle metadata natively
             if hasattr(cv2, "CAP_PROP_ORIENTATION_AUTO"):
                 media_capture.set(cv2.CAP_PROP_ORIENTATION_AUTO, 1)
@@ -383,7 +394,12 @@ class TargetMediaCardButton(CardButton):
 
             media_capture.set(cv2.CAP_PROP_POS_FRAMES, 0)
             max_frames_number = int(media_capture.get(cv2.CAP_PROP_FRAME_COUNT)) - 1
+            read_start = time.perf_counter()
             _, frame = misc_helpers.read_frame(media_capture, rotation_angle)
+            print(
+                f"[PERF] selected media first frame read took "
+                f"{time.perf_counter() - read_start:.3f}s: {self.media_path}"
+            )
             main_window.video_processor.media_capture = media_capture
             self.media_capture = media_capture
             main_window.video_processor.fps = media_capture.get(cv2.CAP_PROP_FPS)

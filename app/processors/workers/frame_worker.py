@@ -456,6 +456,12 @@ class FrameWorker(threading.Thread):
                     "Launcher → Update / Maintenance → switch provider (TensorRT ↔ CUDA) "
                     "or rebuild the TensorRT engines."
                 )
+                try:
+                    self.video_processor.fatal_processing_error_signal.emit(
+                        f"{self.name} frame {self.frame_number}: {e}"
+                    )
+                except Exception:
+                    pass
             else:
                 print(f"[ERROR] Error in {self.name} (frame {self.frame_number}): {e}")
             traceback.print_exc()

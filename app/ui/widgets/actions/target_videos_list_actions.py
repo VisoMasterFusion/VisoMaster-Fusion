@@ -42,6 +42,16 @@ def toggle_target_video_filters_sorting(main_window: "MainWindow") -> None:
     checked = main_window.targetVideosFilterMenuButton.isChecked()
     _set_layout_widgets_visible(main_window.horizontalLayout_9a, checked)
     _set_layout_widgets_visible(main_window.horizontalLayout_9b_gridLayout_3, checked)
+    filter_actions.filter_target_videos(main_window)
+
+
+def current_sort_needs_metadata(main_window: "MainWindow") -> bool:
+    sort_mode = main_window.targetVideosSortComboBox.currentData()
+    return sort_mode in {
+        sortable_widgets.SortingMode.ImageDimension,
+        sortable_widgets.SortingMode.ImagePixels,
+        sortable_widgets.SortingMode.VideoLength,
+    }
 
 
 def sort_target_videos(main_window: "MainWindow", *args, **kwargs) -> None:
