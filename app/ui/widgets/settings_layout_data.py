@@ -1,6 +1,8 @@
-from app.ui.widgets.actions import control_actions
-import cv2
 from typing import Any
+
+import cv2
+
+from app.ui.widgets.actions import control_actions
 
 EXPERIMENTAL_SETTINGS_CONTROL_KEYS = frozenset(
     {
@@ -18,7 +20,7 @@ EXPERIMENTAL_SETTINGS_CONTROL_KEYS = frozenset(
     }
 )
 
-SETTINGS_LAYOUT_DATA: Any = {  # noqa: F811
+SETTINGS_LAYOUT_DATA: Any = {
     "Appearance": {
         "ThemeSelection": {
             "level": 1,
@@ -322,16 +324,36 @@ SETTINGS_LAYOUT_DATA: Any = {  # noqa: F811
         },
         "VR180ModeEnableToggle": {
             "level": 1,
-            "label": "Enable VR180 Mode",
+            "label": "Enable VR Mode",
             "default": False,
-            "help": "Enable VR180 mode. This will treat the input video as an equirectangular VR180 video and apply face swapping within perspective crops.",
+            "help": "Enable VR mode. This will treat the input video as spherical VR footage and apply face swapping within undistorted perspective crops. Set the projection and coverage below to match your video — the defaults are standard VR180.",
         },
         "VR180EyeModeSelection": {
             "level": 1,
-            "label": "VR180 Eye Mode",
+            "label": "VR Eye Mode",
             "options": ["Both Eyes", "Single Eye"],
             "default": "Both Eyes",
-            "help": "Select 'Both Eyes' for standard VR180 video (left+right eye side-by-side). Select 'Single Eye' if the input video already contains only one eye's equirectangular view (full frame = one hemisphere).",
+            "help": "Select 'Both Eyes' for standard stereo VR video (left+right eye side-by-side). Select 'Single Eye' if the input video already contains only one eye's view (full frame = one view).",
+            "parentToggle": "VR180ModeEnableToggle",
+            "requiredToggleValue": True,
+        },
+        "VRProjectionSelection": {
+            "level": 1,
+            "label": "VR Projection",
+            "options": ["Equirectangular", "Fisheye (equidistant)"],
+            "default": "Equirectangular",
+            "help": "How each eye's view is stored in the video frame. 'Equirectangular' is a latitude/longitude grid — the usual output of stitching tools such as Mistika VR or Canon EOS VR Utility, and correct for standard VR180. 'Fisheye (equidistant)' is a circular lens image where distance from the centre is proportional to the angle from the lens axis — used by 200° lens formats (MKX200, VRCA220, Fisheye190) and typical of unstitched single-lens-per-eye footage. Picking the wrong one makes swapped faces land in visibly the wrong place, so if crops look misaligned, try the other.",
+            "parentToggle": "VR180ModeEnableToggle",
+            "requiredToggleValue": True,
+        },
+        "VRCoverageSlider": {
+            "level": 1,
+            "label": "VR Coverage (per eye)",
+            "min_value": "90",
+            "max_value": "360",
+            "default": "180",
+            "step": 5,
+            "help": "How many degrees of the sphere ONE eye's view covers horizontally. 180 = standard VR180 (the default, and identical to previous versions). 200 = 200° lens content such as MKX200. Use lower values for narrower footage, and 360 together with 'Single Eye' for a full monoscopic panorama. Vertical coverage is derived from this and the frame's aspect ratio, assuming square angular pixels, and is capped at 180° for equirectangular content. This is the coverage of the VIDEO, not the field of view you view it at — if your player recommends '110-150 FOV', that is a viewing zoom and does not necessarily mean the file covers 110-150°.",
             "parentToggle": "VR180ModeEnableToggle",
             "requiredToggleValue": True,
         },
@@ -345,7 +367,7 @@ SETTINGS_LAYOUT_DATA: Any = {  # noqa: F811
             # horizontal resolution. Power users can disable for max throughput
             # in scenes that don't need it.
             "default": False,
-            "help": "Run face detection on a grid of 24 undistorted perspective crops to catch faces missed by standard detection (faces near poles, the ±180° seam, head tilted back, or very close to the camera). Default ON — recommended for most VR content. Disable only when you are certain the standard detector finds every face you need.",
+            "help": "Run face detection on a grid of undistorted perspective crops covering the whole sphere your footage spans (24 crops at the default coverage) to catch faces missed by standard detection (faces near the poles, near an eye's edge, head tilted back, or very close to the camera). Recommended for most VR content. Disable only when you are certain the standard detector finds every face you need.",
             "parentToggle": "VR180ModeEnableToggle",
             "requiredToggleValue": True,
         },

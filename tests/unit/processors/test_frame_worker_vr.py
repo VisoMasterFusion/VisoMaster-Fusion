@@ -135,6 +135,10 @@ def _load_frame_worker_module():
 frame_worker_module = _load_frame_worker_module()
 FrameWorker = frame_worker_module.FrameWorker
 
+# The VR pipeline was split out of FrameWorker into its own module, so the
+# converters are patched there rather than on frame_worker.
+vr_module = importlib.import_module("app.processors.workers.frame_worker_vr")
+
 # ---------------------------------------------------------------------------
 # Fixtures
 # ---------------------------------------------------------------------------
@@ -191,6 +195,10 @@ def _make_worker(main_window):
         worker.video_processor = main_window.video_processor
         worker.frame_enhancers = MagicMock()
         worker.frame_edits = MagicMock()
+        # The VR path calls the detector through function_worker, which __init__
+        # would have wired up.
+        worker.function_worker = main_window.function_worker
+        worker.set_scaling_transforms = MagicMock()
         worker.frame_queue = None
         worker.worker_id = -1
         worker.frame = None
@@ -214,12 +222,7 @@ def _make_worker(main_window):
         worker.kernel_lap = None
         worker.kernel_sobel_x = None
         worker.kernel_sobel_y = None
-        worker._vr_converter = None
-        worker._vr_frame_size = None
-        worker._vr_p2e_converter = None  # Improvement K: cached PerspectiveConverter
-        worker._vr_p2e_frame_size = None
         worker._last_scaling_control = None
-        worker._last_vr_scaling_control = None
         worker._resize_cache = {}
         worker._gabor_kernels_cache = OrderedDict()
         # Q-QUAL-01 / Q-QUAL-03: EMA state dicts
@@ -240,6 +243,9 @@ def _make_worker(main_window):
         worker.t512_mask = MagicMock()
         worker.t128_mask = MagicMock()
         worker.t256_near = MagicMock()
+        # The VR pipeline lives on a VRProcessor that delegates back to the worker;
+        # it owns the converter caches that used to hang off FrameWorker directly.
+        worker.vr_processor = vr_module.VRProcessor(worker)
         return worker
 
 
@@ -327,7 +333,7 @@ def test_is_left_eye_is_none_for_single_eye_right():
 
 
 def test_empty_bboxes_returns_original(mock_main_window, small_equirect):
-    """When no faces are detected, _process_frame_vr180 returns the input tensor."""
+    """When no faces are detected, process_frame_vr180 returns the input tensor."""
     # mock run_detect to return empty
     mock_main_window.function_worker.run_detect.return_value = (
         np.empty((0, 5), dtype=np.float32),
@@ -360,11 +366,11 @@ def test_empty_bboxes_returns_original(mock_main_window, small_equirect):
         mock_ec.width = small_equirect.shape[1]
 
         with patch.object(
-            frame_worker_module,
+            vr_module,
             "EquirectangularConverter",
             return_value=mock_ec,
         ):
-            result = worker._process_frame_vr180(
+            result = worker.vr_processor.process_frame_vr180(
                 img_numpy_rgb_uint8=small_equirect,
                 original_equirect_tensor_for_vr=original_tensor,
                 control=control,
@@ -372,6 +378,113 @@ def test_empty_bboxes_returns_original(mock_main_window, small_equirect):
             )
 
     assert result is original_tensor
+
+
+# ---------------------------------------------------------------------------
+# FW-VR-07: the cached converter is keyed on the VR geometry
+# ---------------------------------------------------------------------------
+
+
+def _run_vr_frame(worker, small_equirect, control, converter_cls):
+    original_tensor = torch.from_numpy(small_equirect).permute(2, 0, 1).to(CPU)
+    base_control = {
+        "DetectorModelSelection": "RetinaFace",
+        "MaxFacesToDetectSlider": 10,
+        "DetectorScoreSlider": 50,
+        "LandmarkDetectModelSelection": "2dfan4",
+        "LandmarkDetectScoreSlider": 50,
+        "LandmarkMeanEyesToggle": False,
+        "VR180EyeModeSelection": "Both Eyes",
+    }
+    with patch.object(vr_module, "EquirectangularConverter", converter_cls):
+        worker.vr_processor.process_frame_vr180(
+            img_numpy_rgb_uint8=small_equirect,
+            original_equirect_tensor_for_vr=original_tensor,
+            control={**base_control, **control},
+            stop_event=threading.Event(),
+        )
+
+
+@pytest.mark.parametrize(
+    "changed_control",
+    [
+        {"VRCoverageSlider": 200},
+        {"VRProjectionSelection": "Fisheye (equidistant)"},
+        {"VR180EyeModeSelection": "Single Eye"},
+    ],
+    ids=["coverage", "projection", "eye_mode"],
+)
+def test_converter_is_rebuilt_when_the_geometry_changes(
+    mock_main_window, small_equirect, changed_control
+):
+    """Changing coverage/projection/eye mode must invalidate the cached converter.
+
+    The converter bakes in the pixel→direction mapping, so reusing one built for a
+    different geometry would silently keep rendering with the old settings.
+    """
+    mock_main_window.function_worker.run_detect.return_value = (
+        np.empty((0, 5), dtype=np.float32),
+        None,
+        None,
+    )
+    mock_ec = MagicMock()
+    mock_ec.height = small_equirect.shape[0]
+    mock_ec.width = small_equirect.shape[1]
+
+    with (
+        patch("app.helpers.vr_utils.E2P_Equirectangular", MagicMock()),
+        patch("app.helpers.vr_utils.P2E_Perspective", MagicMock()),
+    ):
+        worker = _make_worker(mock_main_window)
+        converter_cls = MagicMock(return_value=mock_ec)
+
+        _run_vr_frame(worker, small_equirect, {}, converter_cls)
+        assert converter_cls.call_count == 1
+
+        # Same settings again → the cached instance is reused.
+        _run_vr_frame(worker, small_equirect, {}, converter_cls)
+        assert converter_cls.call_count == 1, "converter rebuilt despite no change"
+
+        _run_vr_frame(worker, small_equirect, changed_control, converter_cls)
+        assert converter_cls.call_count == 2, (
+            f"converter not rebuilt after {changed_control}"
+        )
+
+
+def test_converter_receives_the_geometry_from_the_control_dict(
+    mock_main_window, small_equirect
+):
+    mock_main_window.function_worker.run_detect.return_value = (
+        np.empty((0, 5), dtype=np.float32),
+        None,
+        None,
+    )
+    mock_ec = MagicMock()
+    mock_ec.height = small_equirect.shape[0]
+    mock_ec.width = small_equirect.shape[1]
+
+    with (
+        patch("app.helpers.vr_utils.E2P_Equirectangular", MagicMock()),
+        patch("app.helpers.vr_utils.P2E_Perspective", MagicMock()),
+    ):
+        worker = _make_worker(mock_main_window)
+        converter_cls = MagicMock(return_value=mock_ec)
+        _run_vr_frame(
+            worker,
+            small_equirect,
+            {
+                "VRCoverageSlider": 200,
+                "VRProjectionSelection": "Fisheye (equidistant)",
+            },
+            converter_cls,
+        )
+
+    geometry = converter_cls.call_args.kwargs["geometry"]
+    assert geometry.coverage_deg == 200.0
+    assert geometry.is_fisheye is True
+    assert geometry.both_eyes is True
+    assert geometry.frame_height == small_equirect.shape[0]
+    assert geometry.frame_width == small_equirect.shape[1]
 
 
 # ---------------------------------------------------------------------------
@@ -411,13 +524,13 @@ def test_no_crops_skips_perspective_converter(mock_main_window, small_equirect):
 
         with (
             patch.object(
-                frame_worker_module,
+                vr_module,
                 "EquirectangularConverter",
                 return_value=mock_ec,
             ),
-            patch.object(frame_worker_module, "PerspectiveConverter") as mock_pc_cls,
+            patch.object(vr_module, "PerspectiveConverter") as mock_pc_cls,
         ):
-            worker._process_frame_vr180(
+            worker.vr_processor.process_frame_vr180(
                 img_numpy_rgb_uint8=small_equirect,
                 original_equirect_tensor_for_vr=original_tensor,
                 control=control,

@@ -1,7 +1,7 @@
-import math
-import traceback
-import threading
 import gc
+import math
+import threading
+import traceback
 from typing import TYPE_CHECKING, Any, cast
 
 import numpy as np
@@ -9,13 +9,14 @@ import torch
 import torchvision
 from torchvision.transforms import v2
 
-from app.helpers.vr_utils import EquirectangularConverter, PerspectiveConverter
 from app.helpers.miscellaneous import (
     ParametersDict,
     draw_bounding_boxes_on_detected_faces,
-    keypoints_adjustments,
     get_grid_for_pasting,
+    keypoints_adjustments,
 )
+from app.helpers.vr_geometry import VRGeometry, rays_to_frame_pixels
+from app.helpers.vr_utils import EquirectangularConverter, PerspectiveConverter
 
 if TYPE_CHECKING:
     from app.ui.widgets import widget_components
@@ -26,9 +27,13 @@ if TYPE_CHECKING:
 
 class VRProcessor:
     """
-    Handles all VR180/360 specific operations.
+    Handles all VR specific operations.
     Delegates back to the main FrameWorker for standard pipeline operations
     (swap_core, recognition, UI state) to guarantee thread safety.
+
+    The mapping from frame pixels to directions on the viewing sphere is described
+    by a VRGeometry built from the UI controls, so per-eye coverage (90°–360°) and
+    the storage projection (equirectangular or fisheye) are both configurable.
     """
 
     def __init__(self, worker: "FrameWorker"):
@@ -38,12 +43,14 @@ class VRProcessor:
         self.VR_PERSPECTIVE_RENDER_SIZE: int = 512
         self.VR_FOV_SCALE_FACTOR: float = 1.5
 
-        # VR converter caches (VR-08 & Improvement K)
+        # VR converter caches (VR-08 & Improvement K).  Keyed on the geometry, which
+        # carries the frame size as well as the projection and coverage, so a change
+        # to any of them rebuilds the converter.
         self._vr_converter: EquirectangularConverter | None = None
-        self._vr_frame_size: tuple[int, int] | None = None
+        self._vr_geometry: VRGeometry | None = None
 
         self._vr_p2e_converter: PerspectiveConverter | None = None
-        self._vr_p2e_frame_size: tuple[int, int] | None = None
+        self._vr_p2e_geometry: VRGeometry | None = None
 
         # VR tracking state
         self.last_detected_faces_vr: list[dict[str, Any]] = []
@@ -70,33 +77,34 @@ class VRProcessor:
         return np.eye(3) + math.sin(angle) * K + (1.0 - math.cos(angle)) * (K @ K)
 
     @staticmethod
-    def _project_crop_bbox_to_equirect(
+    def _project_crop_bbox_to_frame(
         bbox_crop: np.ndarray,
         theta: float,
         phi: float,
         fov: float,
         crop_size: int,
-        eq_h: int,
-        eq_w: int,
+        geometry: VRGeometry,
+        is_left_eye: "bool | None",
     ) -> "np.ndarray | None":
-        """Project a crop-space bounding box back to equirectangular pixel coordinates.
+        """Project a crop-space bounding box back to frame pixel coordinates.
 
         Samples 9 points (4 corners + 4 edge midpoints + centre) through the same
         forward rotation used by E2P, then takes the axis-aligned bounding box of
         the projected points.
 
-        Returns (x1, y1, x2, y2) float32 in equirect pixel space, or None if the
+        Returns (x1, y1, x2, y2) float32 in frame pixel space, or None if the
         resulting box is degenerate (<2 px on either side).
         """
         y_axis = np.array([0.0, 1.0, 0.0], np.float64)
         z_axis = np.array([0.0, 0.0, 1.0], np.float64)
-        R1 = VRProcessor._rodrigues_np(z_axis * math.radians(theta))
+        # Same longitude convention as E2P: frame-level for equirectangular,
+        # eye-relative for a fisheye.
+        rot_theta = geometry.rotation_theta(theta, is_left_eye)
+        R1 = VRProcessor._rodrigues_np(z_axis * math.radians(rot_theta))
         R2 = VRProcessor._rodrigues_np(np.dot(R1, y_axis) * math.radians(-phi))
         R = R2 @ R1
 
         w_len = math.tan(math.radians(fov / 2.0))
-        equ_cx = (eq_w - 1) / 2.0
-        equ_cy = (eq_h - 1) / 2.0
 
         x1_c, y1_c, x2_c, y2_c = (
             float(bbox_crop[0]),
@@ -119,23 +127,26 @@ class VRProcessor:
             (x2_c, y2_c),
         ]
 
-        lon_pxs: list[float] = []
-        lat_pxs: list[float] = []
-        for u, v in sample_pts:
+        rays: np.ndarray = np.empty((len(sample_pts), 3), dtype=np.float32)
+        for i, (u, v) in enumerate(sample_pts):
             px_norm = 2.0 * u / (crop_size - 1) - 1.0
             py_norm = 2.0 * v / (crop_size - 1) - 1.0
             d = np.array([1.0, w_len * px_norm, -w_len * py_norm], np.float64)
-            d_norm = d / np.linalg.norm(d)
-            d_world = R @ d_norm
-            lon = math.atan2(d_world[1], d_world[0])
-            lat = math.asin(float(np.clip(d_world[2], -1.0, 1.0)))
-            lon_pxs.append((lon / math.pi) * equ_cx + equ_cx)
-            lat_pxs.append((-lat / (math.pi / 2.0)) * equ_cy + equ_cy)
+            rays[i] = R @ (d / np.linalg.norm(d))
 
-        x1_eq = float(np.clip(min(lon_pxs), 0.0, eq_w - 1))
-        y1_eq = float(np.clip(min(lat_pxs), 0.0, eq_h - 1))
-        x2_eq = float(np.clip(max(lon_pxs), 0.0, eq_w - 1))
-        y2_eq = float(np.clip(max(lat_pxs), 0.0, eq_h - 1))
+        # Reuse the shared projection so the tiled detector's bboxes land exactly
+        # where the crop was actually sampled from.
+        x_px_t, y_px_t = rays_to_frame_pixels(
+            torch.from_numpy(rays), geometry, is_left_eye
+        )
+        x_pxs = x_px_t.numpy()
+        y_pxs = y_px_t.numpy()
+
+        eq_w, eq_h = geometry.frame_width, geometry.frame_height
+        x1_eq = float(np.clip(x_pxs.min(), 0.0, eq_w - 1))
+        y1_eq = float(np.clip(y_pxs.min(), 0.0, eq_h - 1))
+        x2_eq = float(np.clip(x_pxs.max(), 0.0, eq_w - 1))
+        y2_eq = float(np.clip(y_pxs.max(), 0.0, eq_h - 1))
 
         if x2_eq - x1_eq < 2.0 or y2_eq - y1_eq < 2.0:
             return None
@@ -145,61 +156,32 @@ class VRProcessor:
         self,
         equirect_converter: EquirectangularConverter,
         control: dict,
-        eq_h: int,
-        eq_w: int,
+        geometry: VRGeometry,
         crop_size: int,
         stop_event: threading.Event | None = None,
     ) -> list:
         """Detect faces in a grid of undistorted perspective crops.
 
-        Catches faces that are invisible to the equirect-domain detector because
-        of projection distortion (high elevation, near the ±180° seam, or very
-        large near-camera faces).
+        Catches faces that are invisible to the frame-domain detector because of
+        projection distortion (high elevation, near an eye's edge, or very large
+        near-camera faces).
 
-        Returns a list of float32 numpy arrays, each (4,) or (5,) in equirect
-        pixel coordinates.
+        Returns a list of float32 numpy arrays, each (4,) or (5,) in frame pixel
+        coordinates.
         """
-        # Full-sphere tile grid: (theta_deg, phi_deg)
-        # 60° horizontal spacing at each latitude band gives ~30° overlap with a 90° FOV tile.
-        TILE_GRID = [
-            # equator band
-            (-150, 0),
-            (-90, 0),
-            (-30, 0),
-            (30, 0),
-            (90, 0),
-            (150, 0),
-            # upper band ~40°
-            (-150, 40),
-            (-90, 40),
-            (-30, 40),
-            (30, 40),
-            (90, 40),
-            (150, 40),
-            # lower band ~-40°
-            (-150, -40),
-            (-90, -40),
-            (-30, -40),
-            (30, -40),
-            (90, -40),
-            (150, -40),
-            # near-pole tiles — 3 per pole is sufficient given the 90° FOV
-            (-90, 70),
-            (0, 70),
-            (90, 70),
-            (-90, -70),
-            (0, -70),
-            (90, -70),
-        ]
         tile_fov = 90.0
+        # The grid is derived from the geometry so it sweeps exactly the sphere the
+        # frame actually covers, rather than a hardcoded full 360°×180°.
+        tile_grid = geometry.tile_grid(tile_fov_deg=tile_fov)
         det_score = control["DetectorScoreSlider"] / 100.0
         found: list = []
 
-        for theta, phi in TILE_GRID:
+        for theta, phi in tile_grid:
             if stop_event is not None and stop_event.is_set():
                 break
+            is_left_eye = geometry.eye_of_theta(theta)
             tile_crop = equirect_converter.get_perspective_crop(
-                tile_fov, theta, phi, crop_size, crop_size
+                tile_fov, theta, phi, crop_size, crop_size, is_left_eye=is_left_eye
             )
             if tile_crop is None or tile_crop.numel() == 0:
                 continue
@@ -226,8 +208,14 @@ class VRProcessor:
                 continue
 
             for bbox_tile in bboxes_tile:
-                eq_bbox = self._project_crop_bbox_to_equirect(
-                    bbox_tile[:4], theta, phi, tile_fov, crop_size, eq_h, eq_w
+                eq_bbox = self._project_crop_bbox_to_frame(
+                    bbox_tile[:4],
+                    theta,
+                    phi,
+                    tile_fov,
+                    crop_size,
+                    geometry,
+                    is_left_eye,
                 )
                 if eq_bbox is None:
                     continue
@@ -542,8 +530,8 @@ class VRProcessor:
         stop_event: threading.Event,
     ) -> torch.Tensor:
         """
-        Handles the specific logic for VR180/360 frames:
-        - Equirectangular detection
+        Handles the specific logic for VR frames:
+        - Whole-frame detection
         - Perspective cropping
         - Processing per crop
         - Stitching back
@@ -556,16 +544,26 @@ class VRProcessor:
             self.worker.main_window.editFacesButton.isChecked()
         )
 
+        # How this frame's pixels map to directions: eye layout, storage projection
+        # and per-eye coverage.  Everything downstream asks the geometry rather than
+        # assuming the VR180 360°×180° special case.
+        geometry = VRGeometry.from_control(
+            control,
+            frame_height=img_numpy_rgb_uint8.shape[0],
+            frame_width=img_numpy_rgb_uint8.shape[1],
+        )
+
         # VR-08: cache the EquirectangularConverter instance at worker level.
-        # When the frame size is unchanged (common for video), reuse the cached
+        # When the geometry is unchanged (common for video), reuse the cached
         # instance and update its image data in-place to avoid redundant Python-side
         # object allocation.
-        _cur_frame_size = (img_numpy_rgb_uint8.shape[0], img_numpy_rgb_uint8.shape[1])
-        if self._vr_converter is None or self._vr_frame_size != _cur_frame_size:
+        if self._vr_converter is None or self._vr_geometry != geometry:
             self._vr_converter = EquirectangularConverter(
-                img_numpy_rgb_uint8, device=self.worker.models_processor.device
+                img_numpy_rgb_uint8,
+                device=self.worker.models_processor.device,
+                geometry=geometry,
             )
-            self._vr_frame_size = _cur_frame_size
+            self._vr_geometry = geometry
         else:
             # VR-MEM-01: update in-place to avoid new GPU allocation per frame.
             self._vr_converter.equirect_tensor_cxhxw_rgb_uint8.copy_(
@@ -615,11 +613,9 @@ class VRProcessor:
         # A standard VR180 SBS equirect is 2:1 (W=2H), so each half is square (H×H).
         # Detecting on each 1:1 half gives the detector 4× more pixels per face vs
         # letterboxing the full 2:1 equirect to 512×256.
-        _eq_h = img_numpy_rgb_uint8.shape[0]
-        _eq_w = img_numpy_rgb_uint8.shape[1]
-        _is_both_eyes = (
-            control.get("VR180EyeModeSelection", "Both Eyes") != "Single Eye"
-        )
+        _eq_h = geometry.frame_height
+        _eq_w = geometry.frame_width
+        _is_both_eyes = geometry.both_eyes
         _aspect = _eq_w / max(_eq_h, 1)
         _do_per_eye_detect = _is_both_eyes and _aspect >= 1.8
 
@@ -695,8 +691,7 @@ class VRProcessor:
             _tile_bboxes = self._detect_faces_vr_tiled(
                 equirect_converter,
                 control,
-                _eq_h,
-                _eq_w,
+                geometry,
                 self.VR_PERSPECTIVE_RENDER_SIZE,
                 stop_event=stop_event,
             )
@@ -832,13 +827,9 @@ class VRProcessor:
         # relative position and size. This prevents one-eye-only swaps when the detector
         # fires on one half but not the other due to marginal confidence or rendering
         # differences between the two stereo views.
-        # Only applies to Both-Eyes VR180 (not Single Eye, not VR360 panoramic).
-        if (
-            control.get("VR180EyeModeSelection", "Both Eyes") != "Single Eye"
-            and bboxes_eq_np.ndim == 2
-            and bboxes_eq_np.shape[0] > 0
-        ):
-            _half_w = equirect_converter.width / 2.0
+        # Only applies to Both-Eyes mode (not to a single-view frame).
+        if geometry.both_eyes and bboxes_eq_np.ndim == 2 and bboxes_eq_np.shape[0] > 0:
+            _half_w = float(geometry.eye_width)
             _cx = (bboxes_eq_np[:, 0] + bboxes_eq_np[:, 2]) / 2.0
             _is_left = _cx < _half_w
             _mirrored_bboxes: list[np.ndarray] = []
@@ -889,44 +880,26 @@ class VRProcessor:
             theta, phi = equirect_converter.calculate_theta_phi_from_bbox(
                 bbox_eq_single
             )
+            _is_left_eye = geometry.eye_of_pixel(
+                (float(bbox_eq_single[0]) + float(bbox_eq_single[2])) / 2.0
+            )
+            # None = the frame holds a single view, so there is no side to name.
             original_eye_side = (
-                "L"
-                if (bbox_eq_single[0] + bbox_eq_single[2]) / 2
-                < equirect_converter.width / 2
-                else "R"
-            )
-            angular_width_deg = (
-                (bbox_eq_single[2] - bbox_eq_single[0])
-                / equirect_converter.width
-                * 360.0
-            )
-            angular_height_deg = (
-                (bbox_eq_single[3] - bbox_eq_single[1])
-                / equirect_converter.height
-                * 180.0
+                "single" if _is_left_eye is None else ("L" if _is_left_eye else "R")
             )
 
             # VR-13: use renamed VR_FOV_SCALE_FACTOR (was VR_DYNAMIC_FOV_PADDING_FACTOR)
-            # VR-02: correct angular_width_deg for latitude compression in equirectangular
-            # projection: true angular width ≈ equirect_width / cos(phi_radians)
-            phi_radians = math.radians(phi)
-            cos_phi = math.cos(phi_radians)
-            # Clamp cos_phi to 0.35 (≈70° latitude) to cap the correction at ~2.9×.
-            # The previous clamp of 0.1 allowed up to ×10 amplification near the poles,
-            # which produced extreme FOVs causing landmark coordinates to be garbage
-            # ("eye sideways, mouth near ear") for faces near the top/bottom of the frame.
-            # Secondary cap: never let the correction exceed 2× the raw angular width,
-            # ensuring continuity with non-corrected detection for near-pole detections.
-            angular_width_deg_corrected = angular_width_deg / max(cos_phi, 0.35)
-            angular_width_deg_corrected = min(
-                angular_width_deg_corrected, angular_width_deg * 2.0
+            # The angular size (including the equirectangular latitude-compression
+            # correction, which a fisheye does not need) is computed by the geometry.
+            angular_width_deg, angular_height_deg = geometry.bbox_angular_size_deg(
+                bbox_eq_single, phi
             )
             # Improvement C: use VR180MaxFOVSlider instead of the previous hard-cap of
             # 100°.  Near-camera faces can subtend >100° and were being clipped.
             _vr_max_fov = float(control.get("VR180MaxFOVSlider", 120))
             dynamic_fov_for_crop = float(
                 np.clip(
-                    max(angular_width_deg_corrected, angular_height_deg)
+                    max(angular_width_deg, angular_height_deg)
                     * self.VR_FOV_SCALE_FACTOR,
                     15.0,
                     _vr_max_fov,
@@ -939,6 +912,7 @@ class VRProcessor:
                 phi,
                 self.VR_PERSPECTIVE_RENDER_SIZE,
                 self.VR_PERSPECTIVE_RENDER_SIZE,
+                is_left_eye=_is_left_eye,
             )
             if face_crop_tensor is None or face_crop_tensor.numel() == 0:
                 continue
@@ -977,6 +951,7 @@ class VRProcessor:
                     "theta": theta,
                     "phi": phi,
                     "original_eye_side": original_eye_side,
+                    "is_left_eye": _is_left_eye,
                     "face_crop_tensor": face_crop_tensor,
                     "fov_used_for_crop": dynamic_fov_for_crop,
                     "kps_on_crop": kpss_5_crop[0] if landmark_ok else None,
@@ -1015,10 +990,11 @@ class VRProcessor:
                 _fd["kps_all_on_crop"] = _rall if len(_rall) > 0 else None
 
         # Step 2: VR-LANDMARK-MIRROR — if a face crop still has no landmarks but the
-        # partner eye view (same face, other VR180 half) succeeded, reuse those
-        # keypoints as a last resort. In the equirectangular projection the partner's
-        # theta is exactly ±180° away (mirrored x-offset = width/2).
-        if control.get("VR180EyeModeSelection", "Both Eyes") != "Single Eye":
+        # partner eye view (same face, other stereo half) succeeded, reuse those
+        # keypoints as a last resort.  Both eyes look the same way, so the partner
+        # sits at the identical eye-relative angle — one coverage width away in
+        # frame-level theta (180° on standard VR180).
+        if geometry.both_eyes:
             _kps_cache: dict[tuple[float, float], tuple] = {}
             for _fd in _crop_landmark_results:
                 if _fd["kps_on_crop"] is not None:
@@ -1028,10 +1004,8 @@ class VRProcessor:
                     )
             for _fd in _crop_landmark_results:
                 if _fd["kps_on_crop"] is None:
-                    _mir_theta = (
-                        _fd["theta"] + 180.0
-                        if "L" in _fd["original_eye_side"]
-                        else _fd["theta"] - 180.0
+                    _mir_theta = geometry.partner_theta(
+                        _fd["theta"], _fd["is_left_eye"]
                     )
                     for (_ct, _cp), _ckps in _kps_cache.items():
                         if abs(_ct - _mir_theta) < 1.0 and abs(_cp - _fd["phi"]) < 0.5:
@@ -1060,7 +1034,7 @@ class VRProcessor:
             phi = _fd["phi"]
             original_eye_side = _fd["original_eye_side"]
             dynamic_fov_for_crop = _fd["fov_used_for_crop"]
-            similarity_type = str("Auto")
+            similarity_type = "Auto"
 
             face_emb_crop, _ = self.worker.function_worker.run_recognize_direct(
                 face_crop_tensor,
@@ -1095,6 +1069,7 @@ class VRProcessor:
                         "theta": theta,
                         "phi": phi,
                         "original_eye_side": original_eye_side,
+                        "is_left_eye": _fd["is_left_eye"],
                         "face_crop_tensor": face_crop_tensor,
                         "kps_on_crop": kps_on_crop,
                         "kps_all_on_crop": kps_all_on_crop,
@@ -1161,10 +1136,10 @@ class VRProcessor:
                     )
                 )
 
-            # VR-07: append (eye_side, tensor, theta, phi, fov) tuple instead of dict entry
+            # VR-07: append (is_left_eye, tensor, theta, phi, fov) tuple instead of dict entry
             processed_perspective_crops_details.append(
                 (
-                    item_data["original_eye_side"],
+                    item_data["is_left_eye"],
                     processed_crop_for_stitching,
                     item_data["theta"],
                     item_data["phi"],
@@ -1189,30 +1164,29 @@ class VRProcessor:
             return _result_no_stitch
 
         final_equirect_torch_cxhxw_rgb_uint8 = original_equirect_tensor_for_vr.clone()
-        vr_single_eye_mode = (
-            control.get("VR180EyeModeSelection", "Both Eyes") == "Single Eye"
-        )
 
         # Improvement K: cache PerspectiveConverter across frames (like E2P converter).
         # PerspectiveConverter only uses img_numpy_rgb_uint8 for its dimensions; the
         # per-frame image content is not stored in the converter itself (stitch_single_perspective
         # receives the target tensor directly).  We can therefore reuse the cached instance
-        # whenever the frame resolution is unchanged, avoiding repeated kernel allocation.
-        # NOTE: deliberately uses _vr_p2e_frame_size (NOT _vr_frame_size) for this check.
-        # _vr_frame_size is updated by the E2P branch above, so by the time we reach this
-        # point it always equals _cur_frame_size.  A separate tracking attribute ensures the
-        # P2E converter is properly recreated when the frame resolution changes.
-        if self._vr_p2e_converter is None or self._vr_p2e_frame_size != _cur_frame_size:
+        # whenever the geometry is unchanged, avoiding repeated kernel allocation.
+        # NOTE: deliberately uses _vr_p2e_geometry (NOT _vr_geometry) for this check.
+        # _vr_geometry is updated by the E2P branch above, so by the time we reach this
+        # point it always equals geometry.  A separate tracking attribute ensures the
+        # P2E converter is properly recreated when the geometry changes.
+        if self._vr_p2e_converter is None or self._vr_p2e_geometry != geometry:
             self._vr_p2e_converter = PerspectiveConverter(
-                img_numpy_rgb_uint8, device=self.worker.models_processor.device
+                img_numpy_rgb_uint8,
+                device=self.worker.models_processor.device,
+                geometry=geometry,
             )
-            self._vr_p2e_frame_size = _cur_frame_size
+            self._vr_p2e_geometry = geometry
         p2e_converter = self._vr_p2e_converter
 
         # VR-15: check stop_event in stitching loop so we can abort early
-        # VR-07: iterate over list of (eye_side, tensor, theta, phi, fov) tuples
+        # VR-07: iterate over list of (is_left_eye, tensor, theta, phi, fov) tuples
         for (
-            _eye_side,
+            _is_left_eye,
             _crop_tensor,
             _theta,
             _phi,
@@ -1226,7 +1200,7 @@ class VRProcessor:
                 theta=_theta,
                 phi=_phi,
                 fov=_fov,
-                is_left_eye=(None if vr_single_eye_mode else ("L" in _eye_side)),
+                is_left_eye=_is_left_eye,
             )
             # FW-MEM-02: release the crop tensor immediately after stitching
             del _crop_tensor
