@@ -1,11 +1,13 @@
 import threading
+from collections import OrderedDict
+from functools import lru_cache
+
 import cv2
 import numpy as np
 import torch
 import torch.nn.functional as F
-from functools import lru_cache
-from collections import OrderedDict
 
+from app.helpers.vr_geometry import VRGeometry, frame_pixel_rays
 
 # P2E-CACHE-01: module-level (grid, mask_out) cache — purely geometric, so the same
 # (theta, phi, fov, crop_h, crop_w, eq_h, eq_w) always produces the same tensors.
@@ -23,35 +25,40 @@ _P2E_GRID_MASK_CACHE_MAX = 4
 _P2E_GRID_MASK_CACHE_LOCK = threading.Lock()
 
 
-# calculates the 3D coordinate grid for an equirectangular output.
+# calculates the 3D coordinate grid for the output frame.
 # It is decorated with @lru_cache to ensure it only runs once for a given
-# height and width, caching the result for all subsequent calls.
+# geometry, caching the result for all subsequent calls.
 # Always stored on CPU — callers move to device as needed, keeping GPU memory free.
-# maxsize=4: caps the cache at 4 unique resolutions (~88 MB each at 4K) to prevent
+# maxsize=8: caps the cache at 8 unique geometries (~88 MB each at 4K) to prevent
 # unbounded CPU RAM growth when multiple video resolutions are processed in a session.
-@lru_cache(maxsize=4)
-def _get_equirect_xyz_grid_cached(height: int, width: int) -> torch.Tensor:
+# Raised from 4 because a Both-Eyes fisheye needs one entry per eye (each eye has
+# its own optical axis), where equirectangular needs only one for the whole frame.
+@lru_cache(maxsize=8)
+def _get_frame_xyz_grid_cached(
+    geometry: VRGeometry, is_left_eye: "bool | None"
+) -> tuple[torch.Tensor, "torch.Tensor | None"]:
     """
     Generates and caches a grid of 3D Cartesian unit vectors corresponding to
-    pixels in an equirectangular projection. Cached on CPU to avoid GPU fragmentation.
+    pixels in the source frame, plus a validity mask (None when every pixel
+    carries a usable direction). Cached on CPU to avoid GPU fragmentation.
     """
-    print(f"[VR Grid Cache] Generating new equirectangular XYZ grid for {width}x{height} on cpu...")
+    print(
+        f"[VR Grid Cache] Generating new {geometry.projection} XYZ grid for "
+        f"{geometry.frame_width}x{geometry.frame_height} "
+        f"at {geometry.coverage_deg:g}° coverage on cpu..."
+    )
+    return frame_pixel_rays(geometry, is_left_eye, torch.device("cpu"))
 
-    # Create equirectangular grid on CPU — caller moves to device
-    equ_lon_coords = torch.linspace(-180, 180, width, dtype=torch.float32)
-    equ_lat_coords = torch.linspace(90, -90, height, dtype=torch.float32)
-    equ_lon_grid, equ_lat_grid = torch.meshgrid(equ_lon_coords, equ_lat_coords, indexing='xy')
 
-    # Convert equirectangular (lon, lat) to 3D Cartesian unit vectors
-    lon_rad = torch.deg2rad(equ_lon_grid)
-    lat_rad = torch.deg2rad(equ_lat_grid)
+def clear_p2e_caches() -> None:
+    """Release the cached pixel→ray grids and (grid, mask) pairs.
 
-    x_3d = torch.cos(lat_rad) * torch.cos(lon_rad)
-    y_3d = torch.cos(lat_rad) * torch.sin(lon_rad)
-    z_3d = torch.sin(lat_rad)
-    xyz_equ_norm = torch.stack((x_3d, y_3d, z_3d), dim=2)  # Shape: H, W, 3
-
-    return xyz_equ_norm
+    Called between jobs so entries built for one video's resolution and VR
+    geometry do not sit on CPU and GPU memory while the next one runs.
+    """
+    _get_frame_xyz_grid_cached.cache_clear()
+    with _P2E_GRID_MASK_CACHE_LOCK:
+        _P2E_GRID_MASK_CACHE.clear()
 
 
 # This function should be at the module level
@@ -84,10 +91,15 @@ def _get_rotation_matrices_cached(THETA_deg: float, PHI_deg: float, device_str: 
     return R1_inv_torch, R2_inv_torch
 
 class Perspective:
-    def __init__(self, img_tensor_cxhxw_rgb_uint8: torch.Tensor, FOV: float, THETA: float, PHI: float):
+    def __init__(self, img_tensor_cxhxw_rgb_uint8: torch.Tensor, FOV: float, THETA: float, PHI: float,
+                 geometry: "VRGeometry | None" = None, is_left_eye: "bool | None" = None):
         """
         Initializes with a perspective image tensor.
         :param img_tensor_cxhxw_rgb_uint8: Torch tensor (C, H, W) in RGB, uint8 format, on GPU.
+        :param geometry: how the target frame's pixels map to directions.  None keeps
+            the historical assumption of a 360°x180° equirect frame (VR180 SBS); the
+            frame size is then filled in by GetEquirec, which is where it is known.
+        :param is_left_eye: which eye this crop belongs to, or None for a single-view frame.
         """
         if not isinstance(img_tensor_cxhxw_rgb_uint8, torch.Tensor):
             raise ValueError("Input must be a PyTorch tensor.")
@@ -97,6 +109,9 @@ class Perspective:
         self._img_tensor_cxhxw_rgb_float = img_tensor_cxhxw_rgb_uint8.float() / 255.0 # Normalize to [0,1]
         self.device = img_tensor_cxhxw_rgb_uint8.device
         self._channels, self._height, self._width = self._img_tensor_cxhxw_rgb_float.shape
+
+        self.geometry = geometry
+        self.is_left_eye = is_left_eye
 
         # Store original THETA, PHI degrees and device string for caching rotation matrices
         self.THETA_deg_for_cache = THETA
@@ -113,9 +128,17 @@ class Perspective:
         self.w_len = torch.tan(torch.deg2rad(torch.tensor(self.wFOV / 2.0, device=self.device)))
         self.h_len = torch.tan(torch.deg2rad(torch.tensor(self.hFOV / 2.0, device=self.device)))
 
+        # Rotation happens in whichever frame the pixel→ray grid is expressed in:
+        # the frame-level sphere for equirectangular, the eye's own camera frame for
+        # a fisheye.  rotation_theta() picks the matching longitude.
+        self.rotation_theta_deg = (
+            THETA if self.geometry is None
+            else self.geometry.rotation_theta(THETA, self.is_left_eye)
+        )
+
         # Call the new module-level cached function
         self.R1, self.R2 = _get_rotation_matrices_cached(
-            self.THETA_deg_for_cache,
+            self.rotation_theta_deg,
             self.PHI_deg_for_cache,
             self.device_str_for_cache
         )
@@ -134,8 +157,21 @@ class Perspective:
         # hit, every frame, on every pool worker — and each upload's sync was
         # spin-waiting on CUDA 13/Windows. The "GPU fragmentation" the original
         # comment worried about is bounded by _P2E_GRID_MASK_CACHE_MAX entries.
+        geometry = self.geometry
+        if geometry is None:
+            geometry = VRGeometry(frame_height=height, frame_width=width)
+        elif (geometry.frame_height, geometry.frame_width) != (height, width):
+            raise ValueError(
+                f"geometry describes a {geometry.frame_width}x{geometry.frame_height} "
+                f"frame but GetEquirec was asked for {width}x{height}"
+            )
+
+        # The grid also depends on the projection, coverage and eye, so the geometry
+        # is part of the key — otherwise switching coverage mid-session would keep
+        # reusing a grid built for the previous one.
         _cache_key = (self.THETA_deg_for_cache, self.PHI_deg_for_cache,
                       self.wFOV, self._height, self._width, height, width,
+                      geometry, self.is_left_eye,
                       str(self.device))
         # Thread-safe cache lookup — hold lock only for the dict read.
         with _P2E_GRID_MASK_CACHE_LOCK:
@@ -146,7 +182,12 @@ class Perspective:
         else:
             # Call the cached function to get the 3D coordinate grid (stored on CPU).
             # Move to device for the matrix multiply and projection.
-            xyz_equ_norm = _get_equirect_xyz_grid_cached(height, width).to(self.device)
+            xyz_equ_norm, pixel_valid = _get_frame_xyz_grid_cached(
+                geometry, self.is_left_eye
+            )
+            xyz_equ_norm = xyz_equ_norm.to(self.device)
+            if pixel_valid is not None:
+                pixel_valid = pixel_valid.to(self.device)
 
             # Rotate these 3D points (from equirect space to perspective camera's view space)
             xyz_flat = xyz_equ_norm.reshape(-1, 3).T  # (3, H*W)
@@ -171,6 +212,10 @@ class Perspective:
                              (v_norm >= -self.h_len) & (v_norm <= self.h_len)
 
             mask = is_in_front & fov_conditions  # H, W boolean tensor
+            if pixel_valid is not None:
+                # Fisheye: pixels outside the lens circle, or belonging to the other
+                # eye, hold no direction at all and must never be written to.
+                mask = mask & pixel_valid
 
             grid_x_persp = u_norm / self.w_len
             grid_y_persp = -(v_norm / self.h_len)  # Invert Y-axis for grid_sample convention
@@ -197,7 +242,7 @@ class Perspective:
             # intermediates are no longer referenced.
             del xyz_equ_norm, xyz_flat, rotated_xyz_flat, rotated_xyz_persp_view
             del depth_val, is_in_front, safe_depth_divisor, u_norm, v_norm
-            del fov_conditions, mask, grid_x_persp, grid_y_persp
+            del fov_conditions, mask, grid_x_persp, grid_y_persp, pixel_valid
 
         # Image-dependent sampling — always executed (image changes every frame)
         equirect_component_float = F.grid_sample(self._img_tensor_cxhxw_rgb_float.unsqueeze(0), grid,

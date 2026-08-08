@@ -154,9 +154,11 @@ class WorkerPoolManager(QObject):
         if clear_module_caches:
             try:
                 from app.processors.external.Equirec2Perspec_vr import clear_persp_cache
+                from app.processors.external.Perspec2Equirec_vr import clear_p2e_caches
                 from app.helpers.vr_utils import clear_feathered_mask_cache
 
                 clear_persp_cache()
+                clear_p2e_caches()
                 clear_feathered_mask_cache()
             except Exception:
                 pass
