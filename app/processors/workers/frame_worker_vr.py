@@ -17,6 +17,7 @@ from app.helpers.miscellaneous import (
 )
 from app.helpers.vr_geometry import VRGeometry, rays_to_frame_pixels
 from app.helpers.vr_utils import EquirectangularConverter, PerspectiveConverter
+from app.processors.utils import platform_support
 
 if TYPE_CHECKING:
     from app.ui.widgets import widget_components
@@ -1233,7 +1234,7 @@ class VRProcessor:
         # Python cyclic garbage that may hold tensor references.
         self._vr_processed_count += 1
         if self._vr_processed_count % 300 == 0:
-            torch.cuda.empty_cache()
+            platform_support.empty_cache()
             gc.collect()
 
         # --- VR Compare/Mask view ---

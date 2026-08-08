@@ -23,6 +23,7 @@ from app.ui.widgets.advanced_embedding_editor import EmbeddingGUI
 import app.ui.widgets.actions.control_actions as control_actions
 from app.processors.video_processor import VideoProcessor
 from app.processors.models_processor import ModelsProcessor
+from app.processors.utils import platform_support
 from app.processors.workers.function_worker import FunctionWorker
 from app.ui.widgets import widget_components
 from app.ui.widgets.event_filters import (
@@ -1050,14 +1051,28 @@ class MainWindow(QtWidgets.QMainWindow, Ui_MainWindow):
                 load_dialog.exec_()
         else:
             # First launch or no workspace: Prompt for execution provider
-            options = ["CUDA", "TensorRT", "TensorRT-Engine", "CPU"]
+            options = platform_support.available_execution_providers()
+            default_index = options.index(
+                platform_support.default_execution_provider()
+            )
+
+            prompt = (
+                "No previous workspace found.\n\n"
+                "Please select your preferred execution provider."
+            )
+            # The TensorRT warning only makes sense where TensorRT is an option.
+            if any(o.startswith("TensorRT") for o in options):
+                prompt += (
+                    "\n(Select 'CUDA' or 'CPU' to avoid generating TensorRT "
+                    "engines on this launch):"
+                )
 
             provider, ok = QtWidgets.QInputDialog.getItem(
                 self,
                 "Initial Setup: Execution Provider",
-                "No previous workspace found.\n\nPlease select your preferred execution provider.\n(Select 'CUDA' or 'CPU' to avoid generating TensorRT engines on this launch):",
+                prompt,
                 options,
-                1,  # Default index (1 = TensorRT)
+                default_index,
                 False,  # Non-editable dropdown
             )
 
