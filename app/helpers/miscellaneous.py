@@ -255,13 +255,18 @@ class ThumbnailManager:
 
         if not metadata_payload:
             try:
+                # The write, the size verdict and the cleanup are one atomic
+                # transaction. Readers only hold the lock while they open the file
+                # by path, so releasing it between the imwrite() and the os.remove()
+                # lets the UI thread open an oversized reject or hit a
+                # PermissionError on a thumbnail that is being deleted underneath it.
                 with self._lock:
                     cv2.imwrite(png_path, resized_frame)
-                if os.path.getsize(png_path) > 30 * 1024:  # If PNG is > 30KB
-                    os.remove(png_path)
-                    raise Exception("PNG file too large, falling back to JPEG.")
-                if os.path.exists(jpg_path):
-                    os.remove(jpg_path)
+                    if os.path.getsize(png_path) > 30 * 1024:  # If PNG is > 30KB
+                        os.remove(png_path)
+                        raise Exception("PNG file too large, falling back to JPEG.")
+                    if os.path.exists(jpg_path):
+                        os.remove(jpg_path)
             except Exception:
                 jpeg_params = [
                     cv2.IMWRITE_JPEG_QUALITY,
@@ -271,10 +276,12 @@ class ThumbnailManager:
                     cv2.IMWRITE_JPEG_PROGRESSIVE,
                     1,
                 ]
+                # self._lock is a plain (non-reentrant) Lock; the raise above has
+                # already unwound out of the with-block, so re-acquiring is safe.
                 with self._lock:
                     cv2.imwrite(jpg_path, resized_frame, jpeg_params)
-                if os.path.exists(png_path):
-                    os.remove(png_path)
+                    if os.path.exists(png_path):
+                        os.remove(png_path)
             return
 
         rgb_frame = cv2.cvtColor(resized_frame, cv2.COLOR_BGR2RGB)
@@ -283,13 +290,15 @@ class ThumbnailManager:
         try:
             pnginfo = PngImagePlugin.PngInfo()
             pnginfo.add_text(self._METADATA_KEY, metadata_payload)
+            # Same atomic transaction as the metadata-less path above: save,
+            # size verdict and cleanup must not be observable half-done.
             with self._lock:
                 image.save(png_path, format="PNG", optimize=True, pnginfo=pnginfo)
-            if os.path.getsize(png_path) > 30 * 1024:  # If PNG is > 30KB
-                os.remove(png_path)
-                raise Exception("PNG file too large, falling back to JPEG.")
-            if os.path.exists(jpg_path):
-                os.remove(jpg_path)
+                if os.path.getsize(png_path) > 30 * 1024:  # If PNG is > 30KB
+                    os.remove(png_path)
+                    raise Exception("PNG file too large, falling back to JPEG.")
+                if os.path.exists(jpg_path):
+                    os.remove(jpg_path)
         except Exception:
             exif = Image.Exif()
             exif[self._JPEG_USER_COMMENT_TAG] = (
@@ -305,8 +314,8 @@ class ThumbnailManager:
             }
             with self._lock:
                 image.save(jpg_path, **save_kwargs)
-            if os.path.exists(png_path):
-                os.remove(png_path)
+                if os.path.exists(png_path):
+                    os.remove(png_path)
 
 
 class DFMModelManager:
@@ -860,20 +869,24 @@ def get_video_rotation(media_path: str) -> int:
             str(media_path),
         ]
 
-        process = subprocess.Popen(
+        # subprocess.run() is used instead of Popen().communicate() because it kills
+        # and reaps the child itself when the timeout fires. A bare Popen leaves
+        # ffprobe running after a TimeoutExpired, leaking a process (and its RAM)
+        # for every unreachable file scanned.
+        process = subprocess.run(
             cmd,
-            stdout=subprocess.PIPE,
-            stderr=subprocess.PIPE,
+            capture_output=True,
             text=True,
             encoding="utf-8",
+            timeout=10,
+            check=False,
         )
-        stdout_data, stderr_data = process.communicate(timeout=10)
 
         if process.returncode != 0:
-            print(f"[ERROR] ffprobe failed. Error: {stderr_data}")
+            print(f"[ERROR] ffprobe failed. Error: {process.stderr}")
             return 0
 
-        data = json.loads(stdout_data)
+        data = json.loads(process.stdout)
 
         # --- Helper: Recursive Search ---
         def find_rotation_value(obj):
