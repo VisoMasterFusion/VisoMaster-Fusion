@@ -9,7 +9,6 @@ import torch
 import torchvision
 from torchvision.transforms import v2
 
-from app.processors.utils import platform_support
 from app.helpers.vr_utils import EquirectangularConverter, PerspectiveConverter
 from app.helpers.miscellaneous import (
     ParametersDict,
@@ -1259,7 +1258,7 @@ class VRProcessor:
         # Python cyclic garbage that may hold tensor references.
         self._vr_processed_count += 1
         if self._vr_processed_count % 300 == 0:
-            platform_support.empty_cache()
+            torch.cuda.empty_cache()
             gc.collect()
 
         # --- VR Compare/Mask view ---
