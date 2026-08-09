@@ -48,32 +48,36 @@ class TargetMediaLoaderWorker(qtc.QThread):
         self.files_list = files_list or []
         self.media_ids = media_ids or []
         self.sort_files_list_by_name = sort_files_list_by_name
-        if metadata_enabled is None:
-            filter_button = getattr(main_window, "targetVideosFilterMenuButton", None)
-            filter_panel_open = (
-                filter_button.isChecked() if filter_button is not None else False
-            )
-            sort_needs_metadata = (
-                target_videos_list_actions.current_sort_needs_metadata(main_window)
-            )
-            metadata_enabled = (
-                filter_panel_open
-                or sort_needs_metadata
-            )
-        else:
-            filter_button = getattr(main_window, "targetVideosFilterMenuButton", None)
-            filter_panel_open = (
-                filter_button.isChecked() if filter_button is not None else False
-            )
-            sort_needs_metadata = (
-                target_videos_list_actions.current_sort_needs_metadata(main_window)
-            )
-        self.metadata_enabled = bool(metadata_enabled)
-        print(
-            "[INFO] target media loader metadata_enabled="
-            f"{self.metadata_enabled} filter_open={filter_panel_open} "
-            f"sort_needs_metadata={sort_needs_metadata}"
+
+        # Safely fetch UI states once to avoid duplication
+        filter_button = getattr(main_window, "targetVideosFilterMenuButton", None)
+        filter_panel_open = (
+            filter_button.isChecked() if filter_button is not None else False
         )
+
+        # Check if the search text box contains active text
+        search_box = getattr(main_window, "targetVideosSearchBox", None)
+        search_text_active = bool(search_box.text().strip()) if search_box else False
+
+        sort_needs_metadata = target_videos_list_actions.current_sort_needs_metadata(
+            main_window
+        )
+
+        # Evaluate metadata requirement including the search text state
+        if metadata_enabled is None:
+            metadata_enabled = (
+                filter_panel_open or search_text_active or sort_needs_metadata
+            )
+
+        self.metadata_enabled = bool(metadata_enabled)
+
+        print(
+            f"[INFO] TargetMediaLoaderWorker initialized. Metadata extraction: "
+            f"{self.metadata_enabled} (Filter panel open: {filter_panel_open}, "
+            f"Search active: {search_text_active}, "
+            f"Sorting requires metadata: {sort_needs_metadata})"
+        )
+
         self.webcam_mode = webcam_mode
         self._running = True  # Flag to control the running state
         self.control_snapshot = (
@@ -118,9 +122,8 @@ class TargetMediaLoaderWorker(qtc.QThread):
             media_count = len(media_files)
 
         print(
-            "[INFO] Preparing target media thumbnails "
-            f"source=folder count={media_count} metadata_enabled={self.metadata_enabled}: "
-            f"{folder_name}"
+            f"[INFO] TargetMediaLoaderWorker: Preparing thumbnails from folder '{folder_name}'. "
+            f"Total media count: {media_count}, Metadata extraction enabled: {self.metadata_enabled}."
         )
 
         paired_files_ids = [
@@ -168,10 +171,15 @@ class TargetMediaLoaderWorker(qtc.QThread):
 
         def extract_task(
             media_file_path: str, media_id: str
-        ) -> Optional[Tuple[str, QImage, str, str, object]]:
+        ) -> Tuple[str, QImage, str, str, Optional[object]]:
+            # Guarantee a return tuple even on failure to maintain 1:1 progress counts
             if not os.path.exists(media_file_path):
-                return None
+                return (media_file_path, QImage(), "error", media_id, None)
+
             file_type = misc_helpers.get_file_type(media_file_path)
+            if not file_type:
+                return (media_file_path, QImage(), "error", media_id, None)
+
             thumbnail_result = common_widget_actions.extract_frame_as_image(
                 self.main_window,
                 media_file_path,
@@ -179,13 +187,17 @@ class TargetMediaLoaderWorker(qtc.QThread):
                 cache_thumbnail=True,
                 return_metadata=self.metadata_enabled,
             )
+
             if self.metadata_enabled:
                 q_image, metadata = thumbnail_result
             else:
                 q_image, metadata = thumbnail_result, None
+
             if q_image:
                 return (media_file_path, q_image, file_type, media_id, metadata)
-            return None
+
+            # Fallback for extraction failure to prevent UI progress bar hanging
+            return (media_file_path, QImage(), "error", media_id, None)
 
         # Determine thread count safely, capping at 16 to avoid OS resource exhaustion
         max_workers = min(16, (os.cpu_count() or 1) + 4)

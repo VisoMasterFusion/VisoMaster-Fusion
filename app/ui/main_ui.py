@@ -393,7 +393,7 @@ class MainWindow(QtWidgets.QMainWindow, Ui_MainWindow):
             partial(video_control_actions.process_batch_images, self, True)
         )
         self.clearMemoryButton.clicked.connect(
-            partial(common_widget_actions.clear_gpu_memory, self)
+            partial(control_actions.clear_gpu_memory, self)
         )
 
         QtCore.QTimer.singleShot(0, self._configure_faces_panel_button_column)

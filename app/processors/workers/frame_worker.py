@@ -3,6 +3,7 @@ import threading
 import queue
 import copy
 import contextlib
+import time
 from collections import OrderedDict
 from typing import TYPE_CHECKING, Any, cast
 
@@ -64,6 +65,7 @@ class FrameWorker(threading.Thread):
         # Pool worker args (frame_queue is a task queue)
         frame_queue: queue.Queue | None = None,
         worker_id: int = -1,
+        worker_stream: torch.cuda.Stream | None = None,
         # Single-frame worker args
         frame: np.ndarray | None = None,
         frame_number: int = -1,
@@ -83,6 +85,7 @@ class FrameWorker(threading.Thread):
                             target faces, and control settings.
             frame_queue:    Shared task queue for pool-mode workers; ``None`` in single-frame mode.
             worker_id:      Integer identifier used to name the thread; ``-1`` in single-frame mode.
+            worker_stream:  Explicitly injected CUDA stream for VRAM pooling and task scheduling.
             frame:          Pre-read frame (RGB ndarray) for single-frame mode; ``None`` in pool mode.
             frame_number:   Frame index corresponding to *frame*; ``-1`` in pool mode.
             is_single_frame: ``True`` when this is a one-shot single-frame worker.
@@ -181,8 +184,17 @@ class FrameWorker(threading.Thread):
         self.precomputed_kpss: list[np.ndarray] | None = None
         self.precomputed_kpss_203: list[np.ndarray] | None = None
 
-        # Do not use local streams here! Onnxruntime handles independent streams internally
-        self.worker_stream: torch.cuda.Stream | None = None
+        # --- ISOLATED CUDA STREAM (VRAM OPTIMIZED) ---
+        # The WorkerPoolManager now explicitly passes the shared stream
+        self.worker_stream = worker_stream
+
+        if (
+            torch.cuda.is_available()
+            and self.is_pool_worker
+            and self.worker_stream is None
+        ):
+            # Failsafe fallback just in case the orchestrator failed to pass one
+            self.worker_stream = torch.cuda.Stream()
 
     def set_scaling_transforms(self, control_params: dict[str, Any]) -> None:
         """Initializes the torchvision transforms based on user interpolation settings."""
@@ -278,8 +290,37 @@ class FrameWorker(threading.Thread):
                     self.parameters = local_params_from_feeder
                     self.local_control_state_from_feeder = local_control_from_feeder
 
-                    # Process the frame
-                    self.process_and_emit_task()
+                    # --- Prevent Unified Memory Thrashing (VRAM Paging) ---
+                    # When thread counts are set too high for a heavy workspace, PyTorch exhausts
+                    # physical VRAM and silently pages to system RAM over PCIe, tanking FPS to near-zero.
+                    # We organically throttle active concurrency by forcing threads to wait if VRAM is >95% full.
+                    if torch.cuda.is_available() and torch.cuda.is_initialized():
+                        device_id = torch.cuda.current_device()
+                        free_vram_os, total_vram = torch.cuda.mem_get_info(device_id)
+
+                        # CACHING ALLOCATOR TRAP: OS reports VRAM as "used" even if PyTorch is just
+                        # caching it for reuse. We MUST add PyTorch's cached memory back to the true free count.
+                        pytorch_cached_free = torch.cuda.memory_reserved(
+                            device_id
+                        ) - torch.cuda.memory_allocated(device_id)
+                        actual_free_vram = free_vram_os + pytorch_cached_free
+
+                        # Reserve 5% of total VRAM or at least 1.2 GB to prevent driver crashes
+                        min_required_vram = max(total_vram * 0.05, 1288490188)
+
+                        while actual_free_vram < min_required_vram:
+                            if self.stop_event.is_set():
+                                break
+                            time.sleep(0.05)
+                            free_vram_os, _ = torch.cuda.mem_get_info(device_id)
+                            pytorch_cached_free = torch.cuda.memory_reserved(
+                                device_id
+                            ) - torch.cuda.memory_allocated(device_id)
+                            actual_free_vram = free_vram_os + pytorch_cached_free
+
+                    if not self.stop_event.is_set():
+                        # Process the frame
+                        self.process_and_emit_task()
 
                 except queue.Empty:
                     # Timeout occurred, just loop again to check stop_event
@@ -308,6 +349,22 @@ class FrameWorker(threading.Thread):
                     self.parameters = {}
                     self.local_control_state_from_feeder = {}
                     task = None
+
+            # --- Break Circular References & Clear Caches ---
+            # We explicitly wipe the heavy PyTorch VRAM caches when the thread dies to ensure
+            # immediate memory release back to the OS.
+            if hasattr(self, "pipeline_processor"):
+                if hasattr(self.pipeline_processor, "_drift_cache"):
+                    self.pipeline_processor._drift_cache.clear()
+                if hasattr(self.pipeline_processor, "_gabor_kernels_cache"):
+                    self.pipeline_processor._gabor_kernels_cache.clear()
+                if hasattr(self.pipeline_processor, "_gabor_kernels_expanded_cache"):
+                    self.pipeline_processor._gabor_kernels_expanded_cache.clear()
+                if hasattr(self.pipeline_processor, "_color_stats_ema"):
+                    self.pipeline_processor._color_stats_ema.clear()
+                self.pipeline_processor._kernel_lap = None
+                self.pipeline_processor._kernel_sobel_x = None
+                self.pipeline_processor._kernel_sobel_y = None
 
         else:
             # --- Single-Frame Mode ---

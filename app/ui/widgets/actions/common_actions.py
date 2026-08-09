@@ -600,17 +600,6 @@ def set_gpu_memory_progressbar_value(
     main_window.vramProgressBar.update()
 
 
-def clear_gpu_memory(main_window: "MainWindow"):
-    main_window.video_processor.stop_processing()
-    main_window.function_worker.clear_gpu_memory()
-    main_window.swapfacesButton.setChecked(False)
-    main_window.editFacesButton.setChecked(False)
-    update_gpu_memory_progressbar(main_window)
-
-    # main_window.videoSeekSlider.markers = set() # Comment this to keep markers visible after vram clear
-    main_window.videoSeekSlider.update()
-
-
 def extract_frame_as_image(
     main_window: "MainWindow",
     media_file_path,

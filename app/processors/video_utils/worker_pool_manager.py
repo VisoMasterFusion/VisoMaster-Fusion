@@ -46,6 +46,10 @@ class WorkerPoolManager(QObject):
         ] = queue.Queue()
         self.worker_threads: List[FrameWorker] = []
 
+        # --- VRAM OPTIMIZATION: Shared Stream Pool ---
+        # Caps PyTorch memory allocations by sharing streams across workers.
+        self.worker_streams: List[torch.cuda.Stream] = []
+
         # --- Single-Frame State (Scrubbing / Image processing) ---
         self.current_single_frame_worker: Optional[FrameWorker] = None
 
@@ -80,11 +84,30 @@ class WorkerPoolManager(QObject):
             f"[INFO] WorkerPoolManager: Starting {num_threads} persistent worker thread(s)..."
         )
         self.worker_threads = []
+
+        # --- Stream Pool Initialization ---
+        if torch.cuda.is_available():
+            self.worker_streams.clear()
+            # Cap the number of streams at 3. This is plenty to overlap PyTorch host-to-device transfers
+            # and tensor prep without exploding the VRAM buffer allocations.
+            num_streams = min(num_threads + 1, 3)
+            self.worker_streams = [torch.cuda.Stream() for _ in range(num_streams)]
+            print(
+                f"[INFO] WorkerPoolManager: Allocated {num_streams} shared CUDA streams to conserve VRAM."
+            )
+
         for i in range(num_threads):
+            # Distribute the streams evenly across the threads using modulo math.
+            # E.g., Thread 0->Stream 0, Thread 1->Stream 1, Thread 3->Stream 0.
+            assigned_stream = None
+            if self.worker_streams:
+                assigned_stream = self.worker_streams[i % len(self.worker_streams)]
+
             worker = FrameWorker(
                 frame_queue=self.frame_queue,
                 main_window=self.main_window,
                 worker_id=i,
+                worker_stream=assigned_stream,  # Inject the stream into the worker
             )
             worker.start()
             self.worker_threads.append(worker)
@@ -139,8 +162,9 @@ class WorkerPoolManager(QObject):
             except Exception as e:
                 print(f"[WARN] Error joining thread {thread.name}: {e}")
 
-        # 4. Clear the worker list
+        # 4. Clear the worker list and streams
         self.worker_threads.clear()
+        self.worker_streams.clear()
 
         # 5. Strict VRAM Garbage Collection
         # Release GPU memory held by the now-dead workers (kernel tensors, etc.).

@@ -117,7 +117,15 @@ def _advance_target_media_progress(main_window: "MainWindow", n: int) -> None:
     bar = getattr(main_window, "targetVideosListProgressBar", None)
     if bar is None:
         return
-    bar.setValue(min(bar.value() + n, bar.maximum()))
+
+    # Qt's QProgressBar.value() returns -1 when in an indeterminate state
+    # (which happens right after bar.reset() is called).
+    # We must clamp current_value to 0, otherwise the first advancement eats +1,
+    # causing the permanent off-by-one hang (e.g., 1/2 or 20/21).
+    current_value = max(0, bar.value())
+
+    bar.setValue(min(current_value + n, bar.maximum()))
+
     if bar.value() >= bar.maximum():
         _reset_target_media_progress(main_window)
 

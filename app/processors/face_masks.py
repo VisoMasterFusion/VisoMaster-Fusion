@@ -108,22 +108,7 @@ class FaceMasks:
             )
 
         try:
-            # PRE-INFERENCE SYNC: Ensure PyTorch memory is ready
-            if self.models_processor.device_type == "cuda":
-                torch.cuda.current_stream().synchronize()
-            elif self.models_processor.device_type != "cpu":
-                self.models_processor.syncvec.cpu()
-
             self.function_worker.run_ort_with_iobinding(ort_session, io)
-
-            # POST-INFERENCE SYNC: ONNX Runtime enqueues its work asynchronously, so
-            # without this the caller's PyTorch ops start reading the pre-allocated
-            # output tensors while the GPU is still writing them.
-            if self.models_processor.device_type == "cuda":
-                torch.cuda.current_stream().synchronize()
-            elif self.models_processor.device_type != "cpu":
-                self.models_processor.syncvec.cpu()
-
         finally:
             if is_lazy_build:
                 self.models_processor.hide_build_dialog.emit()
@@ -1256,22 +1241,7 @@ class FaceMasks:
             )
 
         try:
-            # PRE-INFERENCE SYNC
-            if self.models_processor.device_type == "cuda":
-                torch.cuda.current_stream().synchronize()
-            elif self.models_processor.device_type != "cpu":
-                self.models_processor.syncvec.cpu()
-
             self.function_worker.run_ort_with_iobinding(ort_session, io_binding)
-
-            # POST-INFERENCE SYNC: ONNX Runtime enqueues its work asynchronously, so
-            # without this the caller's PyTorch ops start reading the pre-allocated
-            # output tensors while the GPU is still writing them.
-            if self.models_processor.device_type == "cuda":
-                torch.cuda.current_stream().synchronize()
-            elif self.models_processor.device_type != "cpu":
-                self.models_processor.syncvec.cpu()
-
         finally:
             if is_lazy_build:
                 self.models_processor.hide_build_dialog.emit()
@@ -1547,22 +1517,7 @@ class FaceMasks:
             )
 
         try:
-            # PRE-INFERENCE SYNC
-            if self.models_processor.device_type == "cuda":
-                torch.cuda.current_stream().synchronize()
-            elif self.models_processor.device_type != "cpu":
-                self.models_processor.syncvec.cpu()
-
             self.function_worker.run_ort_with_iobinding(ort_session, io_binding)
-
-            # POST-INFERENCE SYNC: ONNX Runtime enqueues its work asynchronously, so
-            # without this the caller's PyTorch ops start reading the pre-allocated
-            # output tensors while the GPU is still writing them.
-            if self.models_processor.device_type == "cuda":
-                torch.cuda.current_stream().synchronize()
-            elif self.models_processor.device_type != "cpu":
-                self.models_processor.syncvec.cpu()
-
         finally:
             if is_lazy_build:
                 self.models_processor.hide_build_dialog.emit()
@@ -1610,22 +1565,7 @@ class FaceMasks:
             )
 
         try:
-            # PRE-INFERENCE SYNC
-            if self.models_processor.device_type == "cuda":
-                torch.cuda.current_stream().synchronize()
-            elif self.models_processor.device_type != "cpu":
-                self.models_processor.syncvec.cpu()
-
             self.function_worker.run_ort_with_iobinding(sess, io_binding)
-
-            # POST-INFERENCE SYNC: ONNX Runtime enqueues its work asynchronously, so
-            # without this the caller's PyTorch ops start reading the pre-allocated
-            # output tensors while the GPU is still writing them.
-            if self.models_processor.device_type == "cuda":
-                torch.cuda.current_stream().synchronize()
-            elif self.models_processor.device_type != "cpu":
-                self.models_processor.syncvec.cpu()
-
         finally:
             if is_lazy_build:
                 self.models_processor.hide_build_dialog.emit()

@@ -35,6 +35,51 @@ def handle_face_detector_tracking_reset(main_window: "MainWindow", value: bool) 
     common_widget_actions.refresh_frame(main_window)
 
 
+def clear_gpu_memory(main_window: "MainWindow"):
+    """
+    Centralized VRAM management. Stops processing, unloads all backend models,
+    resets UI toggles, and safely reconstructs Denoiser KV maps if required.
+    """
+    main_window.video_processor.stop_processing()
+    main_window.function_worker.clear_gpu_memory()
+    main_window.swapfacesButton.setChecked(False)
+    main_window.editFacesButton.setChecked(False)
+
+    # --- FW-VRAM-RECOVERY: Automatically restore KV maps safely ---
+    # Centralized recovery: restores KV maps if Denoiser is active so the
+    # next frame swap doesn't fail due to missing PyTorch tensor references.
+    denoiser_on = (
+        main_window.control.get("DenoiserUNetEnableBeforeRestorersToggle", False)
+        or main_window.control.get("DenoiserAfterFirstRestorerToggle", False)
+        or main_window.control.get("DenoiserAfterRestorersToggle", False)
+    )
+
+    if (
+        denoiser_on
+        and hasattr(main_window, "target_faces")
+        and main_window.target_faces
+    ):
+        print("[INFO] Denoiser is active. Restoring KV maps after VRAM clear...")
+        for target_face in main_window.target_faces.values():
+            if hasattr(target_face, "calculate_assigned_input_embedding"):
+                target_face.calculate_assigned_input_embedding()
+
+        # Refresh context pointers for the active face so the UI tracks the newly allocated tensors
+        selected_id = getattr(main_window, "selected_target_face_id", None)
+        if selected_id:
+            active_face = main_window.target_faces.get(selected_id)
+            if active_face and hasattr(active_face, "assigned_kv_map"):
+                main_window.current_kv_tensors_map = active_face.assigned_kv_map
+
+    common_widget_actions.update_gpu_memory_progressbar(main_window)
+
+    # main_window.videoSeekSlider.markers = set() # Comment this to keep markers visible after vram clear
+    main_window.videoSeekSlider.update()
+
+    # Push a fresh frame to ensure the UI updates and models are JIT-loaded securely
+    common_widget_actions.refresh_frame(main_window)
+
+
 def change_execution_provider(
     main_window: "MainWindow", new_provider: str | None = None
 ) -> None:
@@ -50,8 +95,10 @@ def change_execution_provider(
 
     main_window.video_processor.stop_processing()
     main_window.function_worker.switch_providers_priority(new_provider)
-    main_window.function_worker.clear_gpu_memory()
-    common_widget_actions.update_gpu_memory_progressbar(main_window)
+
+    # Route directly through the centralized UI memory cleaner
+    # to guarantee VRAM is wiped and all dependent KV maps are safely restored.
+    clear_gpu_memory(main_window)
 
 
 def change_threads_number(main_window: "MainWindow", new_threads_number: int) -> None:

@@ -41,7 +41,10 @@ class FunctionWorker:
                               so they can request model loading/unloading safely.
         """
         self.mp = models_processor
-        self.ort_inference_lock = threading.RLock()
+
+        # --- Granular Locking ---
+        self._session_locks: dict[int, threading.RLock] = {}
+        self._session_locks_mutex = threading.Lock()
 
         # Initialize Sub-Processors centrally.
         # We pass `self.mp` for VRAM management, and `self` so they can route calls through this Facade.
@@ -57,10 +60,38 @@ class FunctionWorker:
         self.face_denoiser = FaceDenoiser(self.mp, self)
         self.frame_edits = FrameEdits(self.mp, self)
 
+    def _get_session_lock(self, session: Any) -> threading.RLock:
+        """Retrieves or creates a dedicated lock for a specific ORT Session."""
+        session_id = id(session)
+        with self._session_locks_mutex:
+            if session_id not in self._session_locks:
+                self._session_locks[session_id] = threading.RLock()
+            return self._session_locks[session_id]
+
     def run_ort_with_iobinding(self, session: Any, io_binding: Any) -> None:
-        """Serialize shared ONNX/TensorRT session execution across frame workers."""
-        with self.ort_inference_lock:
+        """Serialize shared ONNX/TensorRT session execution ACROSS THE SAME MODEL only."""
+        session_lock = self._get_session_lock(session)
+
+        # 1. PRE-INFERENCE SYNC (Outside the lock)
+        # Ensure PyTorch has finished writing inputs to the GPU on the isolated worker_stream.
+        # This occurs outside the lock so other threads aren't blocked during tensor prep.
+        if self.mp.device_type == "cuda":
+            torch.cuda.current_stream().synchronize()
+        elif self.mp.device_type != "cpu":
+            self.mp.syncvec.cpu()
+
+        # 2. INFERENCE AND POST-SYNC (Inside the lock)
+        with session_lock:
+            # Execute ONNX Runtime / TensorRT.
             session.run_with_iobinding(io_binding)
+
+            # 3. POST-INFERENCE SYNC (MUST BE INSIDE THE LOCK)
+            # Create a hard barrier ensuring the TRT context is completely finished
+            # before releasing the lock, preventing the next thread from overwriting activation buffers mid-flight.
+            if self.mp.device_type == "cuda":
+                torch.cuda.current_stream().synchronize()
+            elif self.mp.device_type != "cpu":
+                self.mp.syncvec.cpu()
 
     # --- Models Unloaders ---
 
@@ -114,6 +145,18 @@ class FunctionWorker:
         print("[INFO] Clearing GPU Memory: Unloading all models...")
         # 1. Stop processing to ensure no workers try to access models during unload
         self.mp.main_window.video_processor.stop_processing()
+
+        # --- Clear Global Target Face KV Caches ---
+        # The Denoiser generates massive PyTorch KV cache tensors per face.
+        # Because they are attached to the global UI target_faces dictionary,
+        # they permanently survive "Clear VRAM" unless explicitly deleted here.
+        try:
+            for target_face in self.mp.main_window.target_faces.values():
+                target_face.assigned_kv_map = None
+                if hasattr(target_face, "aged_kv_map"):
+                    target_face.aged_kv_map = None
+        except Exception as e:
+            print(f"[WARN] Could not clear target face KV caches: {e}")
 
         # 2. Bypass KeepModelsAliveToggle
         self.mp.force_unload_in_progress = True

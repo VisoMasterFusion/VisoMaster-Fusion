@@ -150,10 +150,7 @@ class StandardProcessor:
         # They consume perfectly sequenced and EMA-smoothed detections from the Feeder thread.
 
         # FW-ARCH-FIX: Flag to know if faces were vetted by the Sequential Detector
-        is_sequentially_tracked = (
-            self.worker.precomputed_bboxes is not None
-            and self.worker.precomputed_kpss_5 is not None
-        )
+        is_sequentially_tracked = not self.worker.is_single_frame
 
         if is_sequentially_tracked:
             # 1. Primary Path (Video/Webcam): Use the sequentially precomputed detections
