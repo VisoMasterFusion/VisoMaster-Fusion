@@ -12,6 +12,7 @@ import qdarktheme
 
 if TYPE_CHECKING:
     from app.ui.main_ui import MainWindow
+from app.processors.utils import platform_support
 from app.ui.widgets.actions import common_actions as common_widget_actions
 
 #'''
@@ -42,11 +43,31 @@ def change_execution_provider(
     Changes the global execution provider.
     If new_provider is omitted (e.g., during startup initialization), it safely
     falls back to reading the current state from the main_window's control dictionary.
+
+    A provider the current machine cannot supply is downgraded to the best local
+    one rather than raising. Workspaces are portable, so a file saved on an
+    NVIDIA box will ask a Mac for "TensorRT" or "CUDA"; that should not be fatal.
     """
+    supported = platform_support.available_execution_providers()
+    fallback = platform_support.default_execution_provider()
+
     if new_provider is None:
         new_provider = str(
-            main_window.control.get("ProvidersPrioritySelection", "TensorRT")
+            main_window.control.get("ProvidersPrioritySelection", fallback)
         )
+
+    if new_provider not in supported:
+        print(
+            f"[WARN] Execution provider '{new_provider}' is not available on this "
+            f"machine. Falling back to '{fallback}'."
+        )
+        new_provider = fallback
+        main_window.control["ProvidersPrioritySelection"] = new_provider
+        provider_widget = main_window.parameter_widgets.get(
+            "ProvidersPrioritySelection"
+        )
+        if provider_widget and hasattr(provider_widget, "setCurrentText"):
+            provider_widget.setCurrentText(new_provider)
 
     main_window.video_processor.stop_processing()
     main_window.function_worker.switch_providers_priority(new_provider)
@@ -56,7 +77,7 @@ def change_execution_provider(
 
 def change_threads_number(main_window: "MainWindow", new_threads_number: int) -> None:
     main_window.video_processor.set_number_of_threads(new_threads_number)
-    torch.cuda.empty_cache()
+    platform_support.empty_cache()
     common_widget_actions.update_gpu_memory_progressbar(main_window)
 
 

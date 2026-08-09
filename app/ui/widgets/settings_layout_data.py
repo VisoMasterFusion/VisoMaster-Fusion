@@ -1,4 +1,5 @@
 from app.ui.widgets.actions import control_actions
+from app.processors.utils import platform_support
 import cv2
 from typing import Any
 
@@ -47,8 +48,8 @@ SETTINGS_LAYOUT_DATA: Any = {  # noqa: F811
         "ProvidersPrioritySelection": {
             "level": 1,
             "label": "Providers Priority",
-            "options": ["CUDA", "TensorRT", "TensorRT-Engine", "CPU"],
-            "default": "TensorRT",
+            "options": platform_support.available_execution_providers(),
+            "default": platform_support.default_execution_provider(),
             "help": "Select the providers priority to be used with the system.",
             "exec_function": control_actions.change_execution_provider,
             "exec_function_args": [],
