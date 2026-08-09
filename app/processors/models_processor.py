@@ -34,6 +34,7 @@ import onnx
 from torchvision.transforms import v2
 
 from app.processors.utils import faceutil
+from app.processors.utils import platform_support
 
 from PySide6 import QtCore
 
@@ -149,7 +150,7 @@ class ModelsProcessor(QtCore.QObject):
     # Signal to request the GUI thread to hide the build dialog
     hide_build_dialog = QtCore.Signal()
 
-    def __init__(self, main_window: "MainWindow", device: str = "cuda") -> None:
+    def __init__(self, main_window: "MainWindow", device: str = "") -> None:
         """
         Initialises the ModelsProcessor.
 
@@ -158,12 +159,14 @@ class ModelsProcessor(QtCore.QObject):
 
         Args:
             main_window: The application's MainWindow, used to access UI controls and signals.
-            device: Torch/ONNX device string — ``"cuda"`` or ``"cpu"``.
+            device: Torch/ONNX device string — ``"cuda"``, ``"mps"`` or ``"cpu"``.
+                Defaults to the best backend this machine actually has.
         """
         super().__init__()
         self.main_window = main_window
         self.gpu_id = getattr(main_window, "gpu_id", 0)
-        self.provider_name = "TensorRT"
+        device = device or platform_support.default_torch_device()
+        self.provider_name = platform_support.default_execution_provider()
 
         # NOTE: internal_deep_copied_kv_map / internal_kv_map_source_filename were
         # placeholder attributes for a planned per-session KV-map cache.  They are
@@ -174,9 +177,17 @@ class ModelsProcessor(QtCore.QObject):
             None
         )
         self.internal_kv_map_source_filename: str | None = None
-        self.device = f"{device}:{self.gpu_id}" if device != "cpu" else device
-        self.device_type = device
-        if self.gpu_id != 0 and device != "cpu":
+        # `device` may arrive bare ("cuda") from a caller or already indexed
+        # ("cuda:0") from default_torch_device(); normalise before use.
+        # device_type must stay bare: it is handed straight to ONNX Runtime as
+        # io_binding(device_type=...), which rejects "cuda:0".
+        device_type = device.split(":", 1)[0]
+        # Only CUDA has addressable per-index devices; "mps" and "cpu" are bare.
+        self.device = (
+            f"{device_type}:{self.gpu_id}" if device_type == "cuda" else device_type
+        )
+        self.device_type = device_type
+        if self.gpu_id != 0 and device_type == "cuda":
             torch.cuda.set_device(self.gpu_id)
         self.model_lock = threading.RLock()  # Reentrant lock for model access
 
@@ -211,14 +222,27 @@ class ModelsProcessor(QtCore.QObject):
             "trt_builder_optimization_level": 5,
         }
 
+        # Default CoreML options (macOS). MLProgram is the modern model format and
+        # is required for fp16 compute; ALL lets CoreML place ops on the Neural
+        # Engine / GPU / CPU as it sees fit.
+        #
+        # RequireStaticInputShapes is not optional. Several models here (RetinaFace
+        # / det_10g among them) have dynamic dimensions, and CoreML silently
+        # produces wrong-shaped outputs for those subgraphs — inference fails with
+        # "Invalid shape for output feature". Restricting CoreML to statically
+        # shaped subgraphs makes it hand the dynamic ones back to the CPU EP, which
+        # is both correct and, for those specific graphs, no slower.
+        self.coreml_ep_options: Dict[str, Any] = {
+            "ModelFormat": "MLProgram",
+            "MLComputeUnits": "ALL",
+            "RequireStaticInputShapes": "1",
+            "AllowLowPrecisionAccumulationOnGPU": "1",
+        }
+
         # A set to keep track of models that have been loaded but
         # have not had their engine built (lazy build).
         self.models_pending_build: set = set()
-        self.providers: list = [
-            ("TensorrtExecutionProvider", self.trt_ep_options),
-            ("CUDAExecutionProvider", {"device_id": self.gpu_id}),
-            ("CPUExecutionProvider"),
-        ]
+        self.providers: list = self._default_providers()
         self.syncvec = torch.empty((1, 1), dtype=torch.float32, device=self.device)
         self.nThreads = 1
 
@@ -1183,6 +1207,28 @@ class ModelsProcessor(QtCore.QObject):
                 return memory_used, memory_total_val
             return 0, 0
 
+    def _default_providers(self) -> list:
+        """ONNX Runtime provider list matching this machine's best provider."""
+        match platform_support.default_execution_provider():
+            case "TensorRT" | "TensorRT-Engine":
+                return [
+                    ("TensorrtExecutionProvider", self.trt_ep_options),
+                    ("CUDAExecutionProvider", {"device_id": self.gpu_id}),
+                    ("CPUExecutionProvider"),
+                ]
+            case "CUDA":
+                return [
+                    ("CUDAExecutionProvider", {"device_id": self.gpu_id}),
+                    ("CPUExecutionProvider"),
+                ]
+            case "CoreML":
+                return [
+                    ("CoreMLExecutionProvider", self.coreml_ep_options),
+                    ("CPUExecutionProvider"),
+                ]
+            case _:
+                return ["CPUExecutionProvider"]
+
     def update_provider_configuration(self, provider_name: str) -> str:
         """
         Updates the internal device and provider lists.
@@ -1213,7 +1259,30 @@ class ModelsProcessor(QtCore.QObject):
                 self.device = "cpu"
                 self.device_type = "cpu"
 
+            case "CoreML":
+                if not platform_support.has_coreml():
+                    raise RuntimeError(
+                        "CoreML execution provider is not available in this "
+                        "onnxruntime build."
+                    )
+                providers = [
+                    ("CoreMLExecutionProvider", self.coreml_ep_options),
+                    ("CPUExecutionProvider"),
+                ]
+                self.device, self.device_type = platform_support.torch_device_for_provider(
+                    "CoreML", self.gpu_id
+                )
+
             case "CUDA":
+                # A workspace saved on an NVIDIA machine can carry "CUDA" here.
+                # Without this check the device would be set to cuda:N on a host
+                # that has no CUDA, and the failure would surface later as an
+                # opaque crash on the first tensor allocation.
+                if not platform_support.has_cuda():
+                    raise RuntimeError(
+                        "CUDA execution provider requested but no CUDA device is "
+                        "available on this machine."
+                    )
                 providers = [
                     ("CUDAExecutionProvider", {"device_id": self.gpu_id}),
                     ("CPUExecutionProvider"),

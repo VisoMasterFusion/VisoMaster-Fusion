@@ -1,5 +1,6 @@
 import torch
 import threading
+import weakref
 from skimage import transform as trans
 from torchvision.transforms import v2
 from app.processors.utils import faceutil
@@ -22,7 +23,19 @@ class FaceSwappers:
         self.function_worker = function_worker
         self.current_swapper_model = None
         self.current_arcface_model = None
-        self._session_io_name_cache: dict = {}  # FS-PERF-02: cache input/output names keyed by session id
+        # FS-PERF-02: cache input/output names per InferenceSession.
+        #
+        # Keyed by the session object itself, not id(session). Sessions are
+        # unloaded whenever the swapper or provider changes, and CPython reuses
+        # the freed address for the next allocation — so an id() key could hand a
+        # newly loaded model the previous model's IO names. That surfaced as
+        # "Failed to find input name in the mapping: input.1" when GhostArcFace
+        # (input "img") landed on the address of a released Inswapper128ArcFace
+        # (input "input.1"). A weak-keyed map drops entries as soon as the
+        # session is collected, so a stale name can never be read back.
+        self._session_io_name_cache: weakref.WeakKeyDictionary = (
+            weakref.WeakKeyDictionary()
+        )
         self._io_cache_lock = threading.Lock()
         self.resize_112 = v2.Resize(
             (112, 112), interpolation=v2.InterpolationMode.BILINEAR, antialias=False
@@ -205,15 +218,14 @@ class FaceSwappers:
         # --- INFERENCE ---
         img = torch.unsqueeze(img, 0).contiguous()
 
-        session_id = id(ort_session)
         with self._io_cache_lock:
-            if session_id not in self._session_io_name_cache:
-                self._session_io_name_cache[session_id] = {
+            if ort_session not in self._session_io_name_cache:
+                self._session_io_name_cache[ort_session] = {
                     "input": ort_session.get_inputs()[0].name,
                     "outputs": [o.name for o in ort_session.get_outputs()],
                 }
-            input_name = self._session_io_name_cache[session_id]["input"]
-            output_names = self._session_io_name_cache[session_id]["outputs"]
+            input_name = self._session_io_name_cache[ort_session]["input"]
+            output_names = self._session_io_name_cache[ort_session]["outputs"]
 
         io_binding = ort_session.io_binding()
         io_binding.bind_input(
@@ -707,14 +719,13 @@ class FaceSwappers:
             return
 
         # FS-ROBUST-02: introspect output name dynamically instead of hardcoding node IDs
-        session_id = id(ghostfaceswap_model)
         with self._io_cache_lock:
-            if session_id not in self._session_io_name_cache:
-                self._session_io_name_cache[session_id] = {
+            if ghostfaceswap_model not in self._session_io_name_cache:
+                self._session_io_name_cache[ghostfaceswap_model] = {
                     "input": ghostfaceswap_model.get_inputs()[0].name,
                     "outputs": [o.name for o in ghostfaceswap_model.get_outputs()],
                 }
-            output_name = self._session_io_name_cache[session_id]["outputs"][0]
+            output_name = self._session_io_name_cache[ghostfaceswap_model]["outputs"][0]
 
         io_binding = ghostfaceswap_model.io_binding()
         io_binding.bind_input(
