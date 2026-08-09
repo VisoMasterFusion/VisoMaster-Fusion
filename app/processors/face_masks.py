@@ -56,6 +56,7 @@ class FaceMasks:
 
     # --- Inference Helpers ---
 
+    @torch.no_grad()
     def _faceparser_labels(self, img_uint8_3x512x512: torch.Tensor) -> torch.Tensor:
         """
         Runs FaceParser on a 512x512 input.
@@ -119,6 +120,7 @@ class FaceMasks:
 
     # --- Mouth Processing Logic ---
 
+    @torch.no_grad()
     def _enhance_and_align_swapped_mouth(
         self,
         swap_img: torch.Tensor,
@@ -267,6 +269,7 @@ class FaceMasks:
 
         return overlay, final_mask
 
+    @torch.no_grad()
     def _enhance_and_align_original_mouth(
         self,
         img_orig: torch.Tensor,
@@ -617,6 +620,7 @@ class FaceMasks:
                 swap_img, labels_swap, parameters
             )
 
+    @torch.no_grad()
     def _get_obstacle_mask(
         self, img_512: torch.Tensor, parameters: dict
     ) -> torch.Tensor:
@@ -676,6 +680,7 @@ class FaceMasks:
 
     # --- Main Mask Processing Pipeline ---
 
+    @torch.no_grad()
     def process_masks_and_masks(
         self,
         swap_restorecalc: torch.Tensor,
@@ -1116,6 +1121,7 @@ class FaceMasks:
 
     # --- Occluder & XSeg ---
 
+    @torch.no_grad()
     def apply_occlusion(self, img, amount, parameters=None, original_face_512=None):
         """
         Runs the Occluder model to mask out obstacles (hands, microphones, etc.).
@@ -1246,6 +1252,7 @@ class FaceMasks:
             if is_lazy_build:
                 self.models_processor.hide_build_dialog.emit()
 
+    @torch.no_grad()
     def apply_dfl_xseg(
         self,
         img: torch.Tensor,
@@ -1658,6 +1665,7 @@ class FaceMasks:
         )
         return mask
 
+    @torch.no_grad()
     def restore_mouth(
         self,
         img_orig,
@@ -1713,6 +1721,7 @@ class FaceMasks:
         )
         return img_swap
 
+    @torch.no_grad()
     def restore_eyes(
         self,
         img_orig,
@@ -1805,6 +1814,7 @@ class FaceMasks:
 
     # --- Difference & Perceptual Loss ---
 
+    @torch.no_grad()
     def apply_vgg_mask_simple(
         self,
         swapped_face: torch.Tensor,  # [3,512,512] uint8
@@ -1871,6 +1881,7 @@ class FaceMasks:
 
         return x_512.clamp(0, 1), diff_norm_128
 
+    @torch.no_grad()
     def apply_perceptual_diff_onnx(
         self,
         swapped_face: torch.Tensor,

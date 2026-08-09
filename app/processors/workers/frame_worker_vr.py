@@ -522,6 +522,7 @@ class VRProcessor:
 
         return processed_crop_torch_rgb_uint8, vr_swap_mask_for_compare
 
+    @torch.no_grad()
     def process_frame_vr180(
         self,
         original_equirect_tensor_for_vr: torch.Tensor,

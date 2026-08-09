@@ -739,6 +739,7 @@ class FrameWorker(threading.Thread):
             tform.params[0:2] = M
         return tform
 
+    @torch.no_grad()
     def get_transformed_and_scaled_faces(
         self, tform, img, interp_mode: str = "bilinear"
     ):

@@ -441,6 +441,7 @@ class FaceEditors:
 
         return delta
 
+    @torch.no_grad()
     def lp_stitching(
         self,
         kp_source: torch.Tensor,
@@ -566,6 +567,7 @@ class FaceEditors:
         # Call the unified wrapper in FunctionWorker instead of accessing models_processor internals
         return self.function_worker.get_faceparser_labels(img_uint8_3x512x512)
 
+    @torch.no_grad()
     def face_parser_makeup_direct_rgb_masked(
         self,
         img: torch.Tensor,
@@ -621,6 +623,7 @@ class FaceEditors:
         out = (out * 255.0).clamp(0, 255).to(torch.uint8)
         return out
 
+    @torch.no_grad()
     def face_parser_makeup_direct_rgb(
         self,
         img: torch.Tensor,
@@ -666,6 +669,7 @@ class FaceEditors:
             img=img, mask=m, color=color, blend_factor=blend_factor
         )
 
+    @torch.no_grad()
     def apply_face_makeup(
         self, img: torch.Tensor, parameters: dict
     ) -> tuple[torch.Tensor, torch.Tensor]:

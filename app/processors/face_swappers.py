@@ -101,6 +101,7 @@ class FaceSwappers:
             if is_lazy_build:
                 self.models_processor.hide_build_dialog.emit()
 
+    @torch.no_grad()
     def run_recognize_direct(
         self, img, kps, similarity_type="Auto", arcface_model="Inswapper128ArcFace"
     ):
@@ -132,12 +133,14 @@ class FaceSwappers:
 
         return embedding, cropped_image
 
+    @torch.no_grad()
     def run_recognize(
         self, img, kps, similarity_type="Auto", face_swapper_model="Inswapper128"
     ):
         arcface_model = self.function_worker.get_arcface_model(face_swapper_model)
         return self.run_recognize_direct(img, kps, similarity_type, arcface_model)
 
+    @torch.no_grad()
     def recognize(self, arcface_model, img, face_kps, similarity_type=None):
         """
         Generates the face embedding using the specified ArcFace model and alignment strategy.
@@ -233,6 +236,7 @@ class FaceSwappers:
 
         return np.array(io_binding.copy_outputs_to_cpu()).flatten(), cropped_image
 
+    @torch.no_grad()
     def preprocess_image_cscs(self, img, face_kps):
         """
         Preprocesses the image for the CSCS ArcFace models.
@@ -274,6 +278,7 @@ class FaceSwappers:
 
         return torch.unsqueeze(image, 0).contiguous(), cropped_image
 
+    @torch.no_grad()
     def recognize_cscs(self, img, face_kps):
         img, cropped_image = self.preprocess_image_cscs(img, face_kps)
 
@@ -319,6 +324,7 @@ class FaceSwappers:
 
         return embedding, cropped_image
 
+    @torch.no_grad()
     def recognize_cscs_id_adapter(self, img, face_kps):
         model_name = "CSCSIDArcFace"
         model = self.models_processor.models.get(model_name)
@@ -366,6 +372,7 @@ class FaceSwappers:
         latent = source_embedding.reshape((1, -1))
         return latent
 
+    @torch.no_grad()
     def run_swapper_cscs(
         self, image: torch.Tensor, embedding: torch.Tensor, output: torch.Tensor
     ) -> None:
@@ -449,6 +456,7 @@ class FaceSwappers:
 
         return self._calc_emap_latent(source_embedding)
 
+    @torch.no_grad()
     def run_inswapper(
         self, image: torch.Tensor, embedding: torch.Tensor, output: torch.Tensor
     ) -> None:
@@ -503,6 +511,7 @@ class FaceSwappers:
         # Run the model with lazy build handling
         self._run_model_with_lazy_build_check(model_name, model, io_binding)
 
+    @torch.no_grad()
     def run_inswapper_batched(
         self, images: torch.Tensor, embedding: torch.Tensor, output: torch.Tensor
     ) -> None:
@@ -582,6 +591,7 @@ class FaceSwappers:
 
         return self._calc_emap_latent(source_embedding)
 
+    @torch.no_grad()
     def run_iss_swapper(
         self,
         image: torch.Tensor,
@@ -632,6 +642,7 @@ class FaceSwappers:
         latent = latent / np.linalg.norm(latent, axis=1, keepdims=True)
         return latent
 
+    @torch.no_grad()
     def run_swapper_simswap512(
         self, image: torch.Tensor, embedding: torch.Tensor, output: torch.Tensor
     ) -> None:
@@ -670,6 +681,7 @@ class FaceSwappers:
         # Run the model with lazy build handling
         self._run_model_with_lazy_build_check(model_name, model, io_binding)
 
+    @torch.no_grad()
     def run_swapper_ghostface(
         self,
         image: torch.Tensor,

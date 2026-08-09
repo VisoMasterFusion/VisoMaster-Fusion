@@ -30,6 +30,7 @@ class StandardProcessor:
     def __init__(self, worker: "FrameWorker"):
         self.worker = worker
 
+    @torch.no_grad()
     def process_standard_frame(
         self,
         processed_tensor_rgb_uint8: torch.Tensor,
@@ -942,6 +943,7 @@ class StandardProcessor:
             return torch.cat(padded_strips_for_vstack, dim=1)
         return img
 
+    @torch.no_grad()
     def get_cropped_face_using_kps(
         self,
         img: torch.Tensor,

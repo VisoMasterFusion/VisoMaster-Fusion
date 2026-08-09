@@ -108,6 +108,7 @@ class FrameEdits:
 
         return out
 
+    @torch.no_grad()
     def apply_face_expression_restorer(
         self,
         driving: torch.Tensor,
@@ -917,6 +918,7 @@ class FrameEdits:
 
         return out.type(torch.float32)
 
+    @torch.no_grad()
     def apply_perform_recast(
         self,
         driving: torch.Tensor,
@@ -1163,6 +1165,7 @@ class FrameEdits:
 
         return out
 
+    @torch.no_grad()
     def swap_edit_face_core(
         self,
         img: torch.Tensor,
@@ -1439,6 +1442,7 @@ class FrameEdits:
 
         return img
 
+    @torch.no_grad()
     def swap_edit_face_core_makeup(
         self,
         img: torch.Tensor,
