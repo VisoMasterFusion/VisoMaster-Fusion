@@ -177,10 +177,17 @@ class ModelsProcessor(QtCore.QObject):
             None
         )
         self.internal_kv_map_source_filename: str | None = None
+        # `device` may arrive bare ("cuda") from a caller or already indexed
+        # ("cuda:0") from default_torch_device(); normalise before use.
+        # device_type must stay bare: it is handed straight to ONNX Runtime as
+        # io_binding(device_type=...), which rejects "cuda:0".
+        device_type = device.split(":", 1)[0]
         # Only CUDA has addressable per-index devices; "mps" and "cpu" are bare.
-        self.device = f"{device}:{self.gpu_id}" if device == "cuda" else device
-        self.device_type = device
-        if self.gpu_id != 0 and device == "cuda":
+        self.device = (
+            f"{device_type}:{self.gpu_id}" if device_type == "cuda" else device_type
+        )
+        self.device_type = device_type
+        if self.gpu_id != 0 and device_type == "cuda":
             torch.cuda.set_device(self.gpu_id)
         self.model_lock = threading.RLock()  # Reentrant lock for model access
 
