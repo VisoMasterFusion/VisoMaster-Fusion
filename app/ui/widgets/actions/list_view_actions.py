@@ -480,38 +480,25 @@ def initialize_media_list_widgets(main_window: "MainWindow"):
 
 
 def initialize_embeddings_list_widget(main_window: "MainWindow"):
-    """One-time configuration for the inputEmbeddingsList widget."""
     inputEmbeddingsList = main_window.inputEmbeddingsList
-    button_size = QtCore.QSize(*_EMBED_BUTTON_SIZE)
-    grid_size_with_padding = button_size + QtCore.QSize(4, 4)
-
-    inputEmbeddingsList.setGridSize(grid_size_with_padding)
-    inputEmbeddingsList.setWrapping(True)
+    inputEmbeddingsList.setUniformItemSizes(False)      # variable widths
+    inputEmbeddingsList.setWrapping(True)               # wrap into next columns
     inputEmbeddingsList.setFlow(QtWidgets.QListView.TopToBottom)
-    inputEmbeddingsList.setResizeMode(QtWidgets.QListView.Fixed)
-    inputEmbeddingsList.setSpacing(2)
-    inputEmbeddingsList.setUniformItemSizes(True)
+    inputEmbeddingsList.setResizeMode(QtWidgets.QListView.Adjust)
+    inputEmbeddingsList.setSpacing(4)                   # consistent gap between items
     inputEmbeddingsList.setViewMode(QtWidgets.QListView.IconMode)
     inputEmbeddingsList.setMovement(QtWidgets.QListView.Static)
-    # inputEmbeddingsList.setSortingEnabled(True)
 
-    inputEmbeddingsList.setFixedHeight(_EMBED_LIST_HEIGHT)
-
-    col_width = grid_size_with_padding.width()
-    min_width = (3 * col_width) + 16
-    inputEmbeddingsList.setMinimumWidth(min_width)
+    # Exactly 3 rows
+    row_height = 22 + 4
+    inputEmbeddingsList.setFixedHeight(row_height * 3 + 8)
 
     inputEmbeddingsList.setVerticalScrollBarPolicy(QtCore.Qt.ScrollBarAlwaysOff)
     inputEmbeddingsList.setHorizontalScrollBarPolicy(QtCore.Qt.ScrollBarAsNeeded)
-    inputEmbeddingsList.setVerticalScrollMode(
-        QtWidgets.QAbstractItemView.ScrollPerPixel
-    )
-    inputEmbeddingsList.setHorizontalScrollMode(
-        QtWidgets.QAbstractItemView.ScrollPerPixel
-    )
-
+    inputEmbeddingsList.setVerticalScrollMode(QtWidgets.QAbstractItemView.ScrollPerPixel)
+    inputEmbeddingsList.setHorizontalScrollMode(QtWidgets.QAbstractItemView.ScrollPerPixel)
     inputEmbeddingsList.setLayoutDirection(QtCore.Qt.LeftToRight)
-    inputEmbeddingsList.setLayoutMode(QtWidgets.QListView.Batched)
+    inputEmbeddingsList.setLayoutMode(QtWidgets.QListView.SinglePass)
     _set_up_panel_context_menu(main_window, inputEmbeddingsList, "embeddings")
 
 
@@ -528,6 +515,36 @@ def create_and_add_embed_button_to_list(
         embedding_store=embedding_store,
         embedding_id=embedding_id,
     )
+
+    # Consistent button height and padding
+    embed_button.setStyleSheet("""
+        QPushButton {
+            padding: 2px 8px;
+        }
+    """)
+
+    # Calculate the natural width while enforcing a consistent height
+    embed_button.adjustSize()
+    natural_size = embed_button.sizeHint()
+
+    button_height = 28
+    button_width = max(natural_size.width(), 60)
+
+    natural_size.setWidth(button_width)
+    natural_size.setHeight(button_height)
+
+    # Fix every button to exactly the same height and its natural width
+    embed_button.setFixedSize(natural_size)
+
+    list_item = QtWidgets.QListWidgetItem(inputEmbeddingsList)
+    list_item.setSizeHint(natural_size)
+    embed_button.list_item = list_item
+    list_item.setTextAlignment(QtCore.Qt.AlignmentFlag.AlignCenter)
+
+    inputEmbeddingsList.setItemWidget(list_item, embed_button)
+    embed_button.show()
+
+    main_window.merged_embeddings[embed_button.embedding_id] = embed_button
 
     button_size = QtCore.QSize(*_EMBED_BUTTON_SIZE)
     embed_button.setFixedSize(button_size)
