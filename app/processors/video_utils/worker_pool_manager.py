@@ -84,13 +84,14 @@ class WorkerPoolManager(QObject):
             f"[INFO] WorkerPoolManager: Starting {num_threads} persistent worker thread(s)..."
         )
         self.worker_threads = []
+        streamcount: int = int(self.main_window.control.get("nStreamSlider", 1))
 
         # --- Stream Pool Initialization ---
         if torch.cuda.is_available():
             self.worker_streams.clear()
             # Cap the number of streams at 3. This is plenty to overlap PyTorch host-to-device transfers
             # and tensor prep without exploding the VRAM buffer allocations.
-            num_streams = min(num_threads + 1, 3)
+            num_streams = min(num_threads, streamcount)
             self.worker_streams = [torch.cuda.Stream() for _ in range(num_streams)]
             print(
                 f"[INFO] WorkerPoolManager: Allocated {num_streams} shared CUDA streams to conserve VRAM."

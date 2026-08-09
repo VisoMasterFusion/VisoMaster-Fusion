@@ -223,6 +223,7 @@ class FaceDenoiser:
             self.models_processor.unload_model("RefLDMVAEEncoder")
             self.models_processor.unload_model("RefLDMVAEDecoder")
 
+    @torch.no_grad()
     def get_kv_map_for_face(
         self,
         image: Union["Image.Image", torch.Tensor],

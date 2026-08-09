@@ -205,6 +205,7 @@ class FaceLandmarkDetectors:
             },
         }
 
+    @torch.no_grad()
     def run_detect_landmark(
         self,
         img: torch.Tensor,

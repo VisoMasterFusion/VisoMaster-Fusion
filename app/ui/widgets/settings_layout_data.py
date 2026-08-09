@@ -66,6 +66,15 @@ SETTINGS_LAYOUT_DATA: Any = {
             "exec_function": control_actions.change_threads_number,
             "exec_function_args": [],
         },
+        "nStreamSlider": {
+            "level": 1,
+            "label": "Number of Streams (High VRAM usage)",
+            "min_value": "1",
+            "max_value": "15",
+            "default": "1",
+            "step": 1,
+            "help": "Set number of Worker Streams while playing and recording. Depends strongly on GPU VRAM. Will be used on new processing task.",
+        },
         "KeepControlsToggle": {
             "level": 1,
             "label": "Keep Controls Active",

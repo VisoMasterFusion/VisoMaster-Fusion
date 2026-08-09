@@ -494,6 +494,7 @@ class FaceDetectors:
 
         return net_outs
 
+    @torch.no_grad()
     def run_detect(
         self,
         img: torch.Tensor,

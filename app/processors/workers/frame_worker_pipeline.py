@@ -152,6 +152,7 @@ class PipelineProcessor:
         return denoised_image
 
     @staticmethod
+    @torch.no_grad()
     def _apply_likeness(
         source_latent: torch.Tensor, target_latent: torch.Tensor, params: dict
     ) -> torch.Tensor:
@@ -1526,6 +1527,7 @@ class PipelineProcessor:
 
         return _p
 
+    @torch.no_grad()
     def swap_core(
         self,
         img: torch.Tensor,
@@ -3532,6 +3534,7 @@ class PipelineProcessor:
         # Fallback: scalar like before
         return prev_alpha, iteration_blur
 
+    @torch.no_grad()
     def sharpness_score(
         self,
         image: torch.Tensor,
@@ -3602,6 +3605,7 @@ class PipelineProcessor:
 
         return {"var_lap": var_lap, "ttengrad": ttengrad, "combined": combined}
 
+    @torch.no_grad()
     def sharpness_map(
         self,
         image: torch.Tensor,  # [3,H,W], float in [0..255]
@@ -3798,6 +3802,7 @@ class PipelineProcessor:
 
         return warped
 
+    @torch.no_grad()
     def analyze_image(self, image):
         """
         Analyses a CHW uint8 image tensor and returns a dict of quality scores in [0, 1].
