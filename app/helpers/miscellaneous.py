@@ -169,10 +169,9 @@ class ThumbnailManager:
         except OSError:
             return False
 
-        return (
-            int(payload.get("source_size", -1)) == int(stat.st_size)
-            and int(payload.get("source_mtime_ns", -1)) == int(stat.st_mtime_ns)
-        )
+        return int(payload.get("source_size", -1)) == int(stat.st_size) and int(
+            payload.get("source_mtime_ns", -1)
+        ) == int(stat.st_mtime_ns)
 
     def _metadata_from_payload(self, payload: dict, file_path: str):
         if not self._metadata_payload_is_current(payload, file_path):
@@ -305,15 +304,15 @@ class ThumbnailManager:
                 self._JPEG_USER_COMMENT_PREFIX + metadata_payload.encode("ascii")
             )
             exif_bytes = exif.tobytes()
-            save_kwargs = {
-                "format": "JPEG",
-                "quality": 98,
-                "optimize": True,
-                "progressive": True,
-                "exif": exif_bytes,
-            }
             with self._lock:
-                image.save(jpg_path, **save_kwargs)
+                image.save(
+                    jpg_path,
+                    format="JPEG",
+                    quality=98,
+                    optimize=True,
+                    progressive=True,
+                    exif=exif_bytes,
+                )
                 if os.path.exists(png_path):
                     os.remove(png_path)
 
@@ -956,10 +955,12 @@ def _apply_frame_rotation(frame: np.ndarray, angle: int) -> np.ndarray:
     return frame
 
 
-def check_and_warn_vfr(file_path: str) -> bool:
+def check_and_warn_vfr(file_path: str) -> None:
     """
     Samples the first 200 frames using ffprobe to accurately detect Variable Frame Rate (VFR).
     Headers are often inaccurate, so analyzing actual packet durations is the safest method.
+
+    Executes asynchronously in a daemon thread to prevent PySide6 main thread freezing.
 
     Args:
         file_path (str): The absolute path to the video file.
@@ -968,67 +969,75 @@ def check_and_warn_vfr(file_path: str) -> bool:
         bool: True if VFR is detected, False otherwise.
     """
     if not file_path or not os.path.isfile(file_path):
-        return False
+        return
 
-    try:
-        # We read the packet duration of the first 200 frames.
-        # This is virtually instantaneous as it only reads container metadata, not pixel data.
-        args = [
-            "ffprobe",
-            "-v",
-            "error",
-            "-select_streams",
-            "v:0",
-            "-show_entries",
-            "frame=pkt_duration_time",
-            "-read_intervals",
-            "%+#200",  # Read only the first 200 frames
-            "-of",
-            "default=noprint_wrappers=1:nokey=1",
-            file_path,
-        ]
-        result = subprocess.run(args, capture_output=True, text=True, timeout=10)
+    def _vfr_worker(target_path: str) -> None:
+        try:
+            # We read the packet duration of the first 200 frames.
+            # This is virtually instantaneous as it only reads container metadata, not pixel data.
+            args = [
+                "ffprobe",
+                "-v",
+                "error",
+                "-select_streams",
+                "v:0",
+                "-show_entries",
+                "frame=pkt_duration_time",
+                "-read_intervals",
+                "%+#200",  # Read only the first 200 frames
+                "-of",
+                "default=noprint_wrappers=1:nokey=1",
+                target_path,
+            ]
+            result = subprocess.run(args, capture_output=True, text=True, timeout=10)
 
-        if result.returncode != 0:
-            return False
+            if result.returncode != 0:
+                return
 
-        durations = set()
-        for line in result.stdout.strip().split("\n"):
-            line = line.strip()
-            if line and line != "N/A":
-                try:
-                    # Round to 3 decimal places to ignore floating point inaccuracies
-                    durations.add(round(float(line), 3))
-                except ValueError:
-                    pass
+            durations = set()
+            for line in result.stdout.strip().split("\n"):
+                line = line.strip()
+                if line and line != "N/A":
+                    try:
+                        # Round to 3 decimal places to ignore floating point inaccuracies
+                        durations.add(round(float(line), 3))
+                    except ValueError:
+                        pass
 
-        # If we have more than one distinct frame duration, the video is Variable Frame Rate.
-        is_vfr = len(durations) > 1
+            # If we have more than one distinct frame duration, the video is Variable Frame Rate.
+            is_vfr = len(durations) > 1
 
-        if is_vfr:
-            print(
-                "[WARN] -------------------------------------------------------------"
-            )
-            print("[WARN] VARIABLE FRAME RATE (VFR) DETECTED IN SOURCE VIDEO!")
-            print("[WARN] The original media does not maintain a constant framerate.")
-            print(
-                "[WARN] Audio sync drift may occur during long recordings. For flawless"
-            )
-            print("[WARN] results, please transcode your video to Constant Frame Rate")
-            print("[WARN] (CFR) using a tool like Handbrake before processing it here.")
-            print(
-                "[WARN] -------------------------------------------------------------"
-            )
-        else:
-            print(
-                "[INFO] Video framerate is Constant (CFR). Audio sync should be perfect."
-            )
+            if is_vfr:
+                print(
+                    "[WARN] -------------------------------------------------------------"
+                )
+                print("[WARN] VARIABLE FRAME RATE (VFR) DETECTED IN SOURCE VIDEO!")
+                print(
+                    "[WARN] The original media does not maintain a constant framerate."
+                )
+                print(
+                    "[WARN] Audio sync drift may occur during long recordings. For flawless"
+                )
+                print(
+                    "[WARN] results, please transcode your video to Constant Frame Rate"
+                )
+                print(
+                    "[WARN] (CFR) using a tool like Handbrake before processing it here."
+                )
+                print(
+                    "[WARN] -------------------------------------------------------------"
+                )
+            else:
+                print(
+                    "[INFO] Video framerate is Constant (CFR). Audio sync should be perfect."
+                )
 
-        return is_vfr
+        except Exception as e:
+            print(f"[WARN] Could not probe VFR status for {target_path}: {e}")
 
-    except Exception as e:
-        print(f"[WARN] Could not probe VFR status for {file_path}: {e}")
-        return False
+    # Dispatch the blocking I/O task to a background daemon thread
+    vfr_thread = threading.Thread(target=_vfr_worker, args=(file_path,), daemon=True)
+    vfr_thread.start()
 
 
 def benchmark(func):

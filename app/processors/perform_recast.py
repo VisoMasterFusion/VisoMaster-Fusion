@@ -176,23 +176,7 @@ class PerformRecast:
                 buffer_ptr=buf.data_ptr(),
             )
 
-        # 3. Synchronize and Execute (Aligned with other HPC pipelines)
-        if mp.device_type == "cuda":
-            torch.cuda.current_stream().synchronize()
-        elif mp.device_type != "cpu":
-            if hasattr(mp, "syncvec"):
-                mp.syncvec.cpu()
-
         self.function_worker.run_ort_with_iobinding(session, io_binding)
-
-        # POST-INFERENCE SYNC: out_buffers are pre-allocated PyTorch VRAM tensors, and
-        # ONNX Runtime enqueues its writes asynchronously. Returning them unsynchronized
-        # lets the caller read half-written data.
-        if mp.device_type == "cuda":
-            torch.cuda.current_stream().synchronize()
-        elif mp.device_type != "cpu":
-            if hasattr(mp, "syncvec"):
-                mp.syncvec.cpu()
 
         return out_buffers
 

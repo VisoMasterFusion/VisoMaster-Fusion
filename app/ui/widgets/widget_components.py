@@ -375,15 +375,15 @@ class TargetMediaCardButton(CardButton):
             vfr_start = time.perf_counter()
             misc_helpers.check_and_warn_vfr(self.media_path)
             print(
-                f"[PERF] selected media VFR check took "
-                f"{time.perf_counter() - vfr_start:.3f}s: {self.media_path}"
+                f"[INFO] Media Load [1/3]: Variable Frame Rate (VFR) validation completed in "
+                f"{time.perf_counter() - vfr_start:.3f}s for '{self.media_path}'."
             )
             main_window.video_processor.media_rotation = rotation_angle
             open_start = time.perf_counter()
             media_capture = cv2.VideoCapture(self.media_path)
             print(
-                f"[PERF] selected media VideoCapture open took "
-                f"{time.perf_counter() - open_start:.3f}s: {self.media_path}"
+                f"[INFO] Media Load [2/3]: OpenCV VideoCapture initialization completed in "
+                f"{time.perf_counter() - open_start:.3f}s for '{self.media_path}'."
             )
             # Explicitly enable OpenCV's auto-rotation to let it handle metadata natively
             if hasattr(cv2, "CAP_PROP_ORIENTATION_AUTO"):
@@ -397,8 +397,8 @@ class TargetMediaCardButton(CardButton):
             read_start = time.perf_counter()
             _, frame = misc_helpers.read_frame(media_capture, rotation_angle)
             print(
-                f"[PERF] selected media first frame read took "
-                f"{time.perf_counter() - read_start:.3f}s: {self.media_path}"
+                f"[INFO] Media Load [3/3]: First frame decoded and read into memory in "
+                f"{time.perf_counter() - read_start:.3f}s for '{self.media_path}'."
             )
             main_window.video_processor.media_capture = media_capture
             self.media_capture = media_capture
@@ -494,6 +494,17 @@ class TargetMediaCardButton(CardButton):
         ):
             # Re-initialize virtualcam to reset its dimensions with that of the new video
             main_window.video_processor.enable_virtualcam()
+
+        # --- AUTO-START WEBCAM FEED ---
+        # A webcam is a live sensor, so it should stream immediately without waiting for "Play".
+        if self.file_type == "webcam":
+            main_window.buttonMediaPlay.blockSignals(True)
+            main_window.buttonMediaPlay.setChecked(True)
+            main_window.buttonMediaPlay.blockSignals(False)
+            video_control_actions.set_play_button_icon_to_stop(main_window)
+
+            # Start the live stream immediately
+            main_window.video_processor.process_webcam()
 
         # list_view_actions.find_target_faces(main_window)
 
@@ -1212,7 +1223,13 @@ class TargetFaceCardButton(CardButton):
             return
 
         if main_window.video_processor.processing:
-            main_window.video_processor.stop_processing()
+            # --- WEBCAM GUARD ---
+            # Do not kill the live hardware sensor. Just flag the UI state as dirty
+            # so the background threads adapt to the removed face seamlessly.
+            if main_window.video_processor.file_type == "webcam":
+                main_window.video_processor.ui_state_is_dirty = True
+            else:
+                main_window.video_processor.stop_processing()
 
         i = self.get_item_position()
         main_window.targetFacesList.takeItem(i)

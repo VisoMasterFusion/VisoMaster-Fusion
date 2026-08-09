@@ -89,21 +89,7 @@ class FrameEnhancers:
             )
 
         try:
-            # PRE-INFERENCE SYNC
-            if self.models_processor.device_type == "cuda":
-                torch.cuda.current_stream().synchronize()
-            elif self.models_processor.device_type != "cpu":
-                if hasattr(self.models_processor, "syncvec"):
-                    self.models_processor.syncvec.cpu()
-
             self.function_worker.run_ort_with_iobinding(ort_session, io_binding)
-
-            # POST-INFERENCE SYNC
-            if self.models_processor.device_type == "cuda":
-                torch.cuda.current_stream().synchronize()
-            elif self.models_processor.device_type != "cpu":
-                if hasattr(self.models_processor, "syncvec"):
-                    self.models_processor.syncvec.cpu()
         finally:
             # Always hide the dialog, even if the run fails
             if is_lazy_build:

@@ -95,12 +95,12 @@ class VideoProcessor(QObject):
 
         # --- Worker Thread Management ---
         self.num_threads = num_threads
-        self.preroll_target = min(
-            max(20, int(self.num_threads * 1.5)), 40
-        )  # Target number of frames before playback starts
-        # OPTIMIZATION RAM: Reduced the aggressive *4 multiplier to prevent massive RAM
-        # bloat on 4K/8K videos. We only need enough buffer to keep workers busy.
-        self.max_display_buffer_size = self.preroll_target + (self.num_threads * 2)
+        # RAM OPTIMIZATION: Bounded Preroll. We only need 10 frames to ensure smooth UI playback.
+        self.preroll_target = 10
+
+        # RAM OPTIMIZATION: Tightened queue bounds. We only need enough queue depth to hold
+        # the active threads, the preroll requirement, and a tiny 4-frame slack buffer.
+        self.max_display_buffer_size = self.num_threads + self.preroll_target + 4
         self.max_frames_to_display_size = 8  # VP-22: Hard cap on frames_to_display dict
 
         # Instantiate the decoupled thread and VRAM manager
@@ -255,6 +255,14 @@ class VideoProcessor(QObject):
     @feeder_thread.setter
     def feeder_thread(self, value: threading.Thread | None) -> None:
         self.media_pipeline.feeder_thread = value
+
+    @property
+    def detector_thread(self) -> threading.Thread | None:
+        return self.media_pipeline.detector_thread
+
+    @detector_thread.setter
+    def detector_thread(self, value: threading.Thread | None) -> None:
+        self.media_pipeline.detector_thread = value
 
     @property
     def state_lock(self) -> threading.Lock:
@@ -530,8 +538,8 @@ class VideoProcessor(QObject):
 
         self.main_window.models_processor.set_number_of_threads(value)
         self.num_threads = value
-        self.preroll_target = min(max(20, int(self.num_threads * 1.5)), 40)
-        self.max_display_buffer_size = self.preroll_target + (self.num_threads * 2)
+        self.preroll_target = 10
+        self.max_display_buffer_size = self.num_threads + self.preroll_target + 4
 
     def process_video(self):
         """
@@ -983,6 +991,21 @@ class VideoProcessor(QObject):
             suppress_raw_preview: If True, skips displaying the unprocessed raw frame
                                   while waiting for the AI worker. Prevents UI flashing.
         """
+        # --- WEBCAM LIVE GUARD ---
+        # If the webcam is actively streaming, do NOT stop the feed.
+        # Simply mark the UI state as dirty so the background pipeline picks up
+        # the new parameters (Swap/Edit) on the very next live frame.
+        if self.file_type == "webcam" and self.processing:
+            self.ui_state_is_dirty = True
+            if fit_on_complete:
+                from app.ui.widgets.actions import layout_actions
+
+                QTimer.singleShot(
+                    0,
+                    lambda: layout_actions.fit_image_to_view_onchange(self.main_window),
+                )
+            return None
+
         if self.processing or self.is_processing_segments:
             print("[INFO] Stopping active processing to process single frame.")
             if not self.stop_processing():
@@ -1237,14 +1260,22 @@ class VideoProcessor(QObject):
             misc_helpers.release_capture(self.media_capture)
             self.media_capture = None
 
-        # 3b. Wait for the feeder thread to fully exit.
-        print("[INFO] Waiting for feeder thread to complete...")
+        # 3b. Wait for the producer threads to fully exit.
+        print("[INFO] Waiting for producer threads to complete...")
         if self.feeder_thread and self.feeder_thread.is_alive():
             self.feeder_thread.join(timeout=3.0)
             if self.feeder_thread.is_alive():
                 print("[WARN] Feeder thread did not join gracefully within 3s timeout.")
         self.feeder_thread = None
-        print("[INFO] Feeder thread joined.")
+
+        if self.detector_thread and self.detector_thread.is_alive():
+            self.detector_thread.join(timeout=3.0)
+            if self.detector_thread.is_alive():
+                print(
+                    "[WARN] Detector thread did not join gracefully within 3s timeout."
+                )
+        self.detector_thread = None
+        print("[INFO] Producer threads joined.")
 
         # 3c. Clear display buffers and join worker threads.
         # VP-24: We clear the queue and then send poison pills to wake workers
@@ -1262,6 +1293,13 @@ class VideoProcessor(QObject):
                 break
         with self.frame_queue.mutex:
             self.frame_queue.queue.clear()
+
+        # --- Clear the raw frame queue ---
+        if hasattr(self, "media_pipeline") and hasattr(
+            self.media_pipeline, "raw_frame_queue"
+        ):
+            with self.media_pipeline.raw_frame_queue.mutex:
+                self.media_pipeline.raw_frame_queue.queue.clear()
 
         print("[INFO] Waiting for worker threads to complete...")
         self.join_and_clear_threads()
@@ -2256,8 +2294,8 @@ class VideoProcessor(QObject):
                 misc_helpers.release_capture(self.media_capture)
                 self.media_capture = None
 
-            # 3. Wait for the feeder thread to exit fully.
-            print("[INFO] Waiting for feeder thread to complete...")
+            # 3. Wait for the producer threads to exit fully.
+            print("[INFO] Waiting for producer threads to complete...")
             if self.feeder_thread and self.feeder_thread.is_alive():
                 self.feeder_thread.join(timeout=3.0)
                 if self.feeder_thread.is_alive():
@@ -2265,12 +2303,28 @@ class VideoProcessor(QObject):
                         "[WARN] Feeder thread did not exit cleanly during finalization."
                     )
             self.feeder_thread = None
-            print("[INFO] Feeder thread joined.")
+
+            if self.detector_thread and self.detector_thread.is_alive():
+                self.detector_thread.join(timeout=3.0)
+                if self.detector_thread.is_alive():
+                    print(
+                        "[WARN] Detector thread did not exit cleanly during finalization."
+                    )
+            self.detector_thread = None
+            print("[INFO] Producer threads joined.")
 
             # 4. Clear buffers and join worker threads.
             self.frames_to_display.clear()
             with self.frame_queue.mutex:
                 self.frame_queue.queue.clear()
+
+            # --- Clear the raw frame queue ---
+            if hasattr(self, "media_pipeline") and hasattr(
+                self.media_pipeline, "raw_frame_queue"
+            ):
+                with self.media_pipeline.raw_frame_queue.mutex:
+                    self.media_pipeline.raw_frame_queue.queue.clear()
+
             print("[INFO] Waiting for final worker threads...")
             self.join_and_clear_threads()
             print("[INFO] Worker threads joined.")
@@ -2982,8 +3036,8 @@ class VideoProcessor(QObject):
         # 1. Stop timers
         self.gpu_memory_update_timer.stop()
 
-        # 2a. Wait for the feeder thread
-        print(f"[INFO] Waiting for feeder thread from segment {segment_num}...")
+        # 2a. Wait for the producer threads
+        print(f"[INFO] Waiting for producer threads from segment {segment_num}...")
         if self.feeder_thread and self.feeder_thread.is_alive():
             self.feeder_thread.join(timeout=2.0)
 
@@ -2995,20 +3049,33 @@ class VideoProcessor(QObject):
                 self.feeder_thread = None
                 self.stop_processing()
                 return
-            else:
-                print("[INFO] Feeder thread joined.")
 
-        else:
-            # This case is normal if the feeder finished its work very quickly
-            print("[INFO] Feeder thread was already finished.")
+        if self.detector_thread and self.detector_thread.is_alive():
+            self.detector_thread.join(timeout=2.0)
+            if self.detector_thread.is_alive():
+                print(
+                    f"[ERROR] Detector thread from segment {segment_num} did not join within timeout. Aborting segment processing."
+                )
+                self.detector_thread = None
+                self.stop_processing()
+                return
 
+        print("[INFO] Producer threads joined.")
         self.feeder_thread = None
+        self.detector_thread = None
 
         # 2b. Wait for workers
         print(f"[INFO] Waiting for workers from segment {segment_num}...")
         self.join_and_clear_threads()
         print("[INFO] Workers joined.")
         self.frames_to_display.clear()
+
+        # --- Clear raw frame queue ---
+        if hasattr(self, "media_pipeline") and hasattr(
+            self.media_pipeline, "raw_frame_queue"
+        ):
+            with self.media_pipeline.raw_frame_queue.mutex:
+                self.media_pipeline.raw_frame_queue.queue.clear()
 
         # 3. Finalize FFmpeg for this segment
         if self.encoder.is_running():
@@ -3249,6 +3316,13 @@ class VideoProcessor(QObject):
             with self.frame_queue.mutex:
                 self.frame_queue.queue.clear()
 
+            # --- Clear raw frame queue ---
+            if hasattr(self, "media_pipeline") and hasattr(
+                self.media_pipeline, "raw_frame_queue"
+            ):
+                with self.media_pipeline.raw_frame_queue.mutex:
+                    self.media_pipeline.raw_frame_queue.queue.clear()
+
             # 8. Final timing
             self.end_time = time.perf_counter()
             processing_time_sec = self.end_time - self.start_time
@@ -3450,6 +3524,13 @@ class VideoProcessor(QObject):
         self.webcam_frames_to_display.queue.clear()
         with self.frame_queue.mutex:
             self.frame_queue.queue.clear()
+
+        # --- Clear raw frame queue ---
+        if hasattr(self, "media_pipeline") and hasattr(
+            self.media_pipeline, "raw_frame_queue"
+        ):
+            with self.media_pipeline.raw_frame_queue.mutex:
+                self.media_pipeline.raw_frame_queue.queue.clear()
 
         # 7. Start Metronome ET Feeder VIA MEDIAPIPELINE
         fps = self.media_capture.get(cv2.CAP_PROP_FPS)

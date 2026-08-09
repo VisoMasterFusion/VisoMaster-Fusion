@@ -1337,7 +1337,11 @@ def save_job_workspace(
 
 def _is_job_processor_running(main_window: "MainWindow") -> bool:
     job_processor = getattr(main_window, "job_processor", None)
-    return bool(job_processor and hasattr(job_processor, "isRunning") and job_processor.isRunning())
+    return bool(
+        job_processor
+        and hasattr(job_processor, "isRunning")
+        and job_processor.isRunning()
+    )
 
 
 def _update_process_all_button_state(main_window: "MainWindow", job_count: int) -> None:

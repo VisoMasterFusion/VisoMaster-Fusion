@@ -83,6 +83,7 @@ class MediaPipeline(QObject):
 
         # --- Pipeline State ---
         self.feeder_thread: Optional[threading.Thread] = None
+        self.detector_thread: Optional[threading.Thread] = None
 
         # --- Audio State (Native Qt) ---
         self.audio_output: Optional[QAudioOutput] = None
@@ -107,6 +108,12 @@ class MediaPipeline(QObject):
         self.webcam_frames_to_display: queue.Queue[numpy.ndarray] = queue.Queue()
         self.max_frames_to_display_size: int = 8
         self._wrap_frame_target: int = -1  # Used to synchronize seamless looping
+
+        # --- Intermediate Stage 1 to Stage 2 Buffer (Decoder to Detector) ---
+        dynamic_raw_queue_size: int = max(5, self.vp.num_threads // 2)
+        self.raw_frame_queue: queue.Queue[Optional[Tuple[int, numpy.ndarray]]] = (
+            queue.Queue(maxsize=dynamic_raw_queue_size)
+        )
 
         # --- Segment Playback State ---
         self.segment_jumps: Dict[int, int] = {}
@@ -174,19 +181,32 @@ class MediaPipeline(QObject):
 
         draining_tail = self.is_draining_tail()
 
-        # Check if this frame is a "future" looped frame during a wrap transition
-        is_future_wrap_frame = (
-            self._wrap_frame_target != -1 and frame_number < self._wrap_frame_target
-        )
+        # --- PREDICT VALID FUTURE PATH (Lookahead 60 frames) ---
+        # Prevents aggressive buffer eviction during segment loops by explicitly
+        # mapping the playhead's true future path across jumps and seamless loops.
+        valid_future_path = set()
+        if self.vp.file_type == "video" and not draining_tail:
+            with self.state_lock:
+                curr = self.vp.next_frame_to_display
+                wrap_target = self._wrap_frame_target
+                jumps = self.segment_jumps.copy()
 
-        if (
-            self.vp.file_type == "video"
-            and frame_number < self.vp.next_frame_to_display
-            and not draining_tail
-            and not is_future_wrap_frame
-        ):
-            del frame
-            return
+            for _ in range(60):
+                valid_future_path.add(curr)
+                if curr in jumps:
+                    curr = jumps[curr]
+                elif wrap_target != -1 and curr == wrap_target:
+                    curr = 0
+                else:
+                    curr += 1
+
+            # Early discard of stale frames completely outside the upcoming path
+            if (
+                frame_number not in valid_future_path
+                and frame_number < self.vp.next_frame_to_display
+            ):
+                del frame
+                return
 
         self.frames_to_display[frame_number] = frame
 
@@ -195,16 +215,15 @@ class MediaPipeline(QObject):
             if draining_tail:
                 break
 
-            # Safely evict stale frames considering wrap-around overlap
             stale_keys = []
-            for k in list(self.frames_to_display.keys()):
-                if self._wrap_frame_target != -1:
-                    # If wrapping, drop frames older than next_frame but ignore the future loop (0, 1, etc.)
-                    if k < self.vp.next_frame_to_display and (
-                        self.vp.next_frame_to_display - k
-                    ) < (self.vp.max_frame_number / 2):
+
+            if self.vp.file_type == "video" and not draining_tail:
+                # Evict orphaned frames not in the predicted path (e.g., from previous segment runs)
+                for k in list(self.frames_to_display.keys()):
+                    if k not in valid_future_path:
                         stale_keys.append(k)
-                else:
+            else:
+                for k in list(self.frames_to_display.keys()):
                     if k < self.vp.next_frame_to_display:
                         stale_keys.append(k)
 
@@ -229,49 +248,48 @@ class MediaPipeline(QObject):
     # --- PRODUCER (FEEDER THREAD) ---
 
     def start_feeder(self, mode: str, recording: bool) -> None:
-        """Initializes and starts the feeder background thread."""
+        """Initializes and starts the feeder background thread(s)."""
         print(
-            f"[INFO] Starting feeder thread (Mode: {mode}, Recording: {recording})..."
+            f"[INFO] Starting feeder pipeline (Mode: {mode}, Recording: {recording})..."
         )
-        self.feeder_thread = threading.Thread(target=self._feeder_loop, daemon=True)
-        self.feeder_thread.start()
 
-    def _feeder_loop(self) -> None:
-        """Routes the feeder to the correct hardware extraction loop."""
-        print(
-            f"[INFO] Feeder thread started (Mode: {self.vp.file_type}, Segments: {self.vp.is_processing_segments})."
-        )
-        try:
-            if self.vp.file_type == "webcam":
-                self._feed_webcam()
-            else:
-                self._feed_video_loop()
-        except Exception as e:
-            print(f"[ERROR] Unhandled exception in feeder thread: {e}")
-            self.vp.processing = False
-            self.vp.is_processing_segments = False
+        if self.vp.file_type == "webcam":
+            # Single stage for real-time webcam (I/O bound to sensor framerate)
+            self.feeder_thread = threading.Thread(target=self._feed_webcam, daemon=True)
+            self.feeder_thread.start()
+        else:
+            # Decoupled 2-stage pipeline for video/segments
 
-        print("[INFO] Feeder thread finished.")
+            # --- DYNAMIC RAW QUEUE SIZING (RAM OPTIMIZED) ---
+            dynamic_raw_queue_size: int = max(5, self.vp.num_threads // 2)
 
-    def _mark_skipped_frame(self, frame_number: int, reason: str) -> None:
-        """Tracks corrupted/skipped frames to ensure the PostProcessor can perfectly sync the audio later."""
-        self.skipped_frames.add(frame_number)
-        self.total_skipped_frames += 1
+            # Safely reset the intermediate queue AND update its maxsize in-place
+            # This prevents reference-bleeding because we never destroy the original queue object.
+            with self.raw_frame_queue.mutex:
+                self.raw_frame_queue.queue.clear()
+                self.raw_frame_queue.maxsize = dynamic_raw_queue_size
 
-        if reason == "manual_drop":
-            self.manual_dropped_skip_count += 1
-        elif reason == "read_error":
-            self.read_error_skip_count += 1
+                # Unblock any stale threads that might have been waiting during a previous run
+                self.raw_frame_queue.not_empty.notify_all()
+                self.raw_frame_queue.not_full.notify_all()
+                self.raw_frame_queue.all_tasks_done.notify_all()
 
-    def _feed_video_loop(self) -> None:
+            self.detector_thread = threading.Thread(
+                target=self._detector_loop, daemon=True
+            )
+            self.detector_thread.start()
+
+            self.feeder_thread = threading.Thread(target=self._decode_loop, daemon=True)
+            self.feeder_thread.start()
+
+    def _decode_loop(self) -> None:
         """
-        The core Producer Loop. Reads raw frames from the disk/ffmpeg, isolates UI state,
-        and pushes task tuples into the WorkerPool queue.
+        STAGE 1: Dedicated Decoder Thread.
+        Reads raw frames from disk/FFmpeg as fast as possible and pushes them to the raw_frame_queue.
+        Completely decoupled from the heavy AI inference workers and slider thread limits.
         """
         is_segment_mode = self.vp.is_processing_segments
         is_playing_segments = getattr(self.vp, "is_playing_segments", False)
-        last_marker_data = None
-        self.ui_state_is_dirty = True
 
         def stop_flag_check():
             return (
@@ -281,7 +299,7 @@ class MediaPipeline(QObject):
             )
 
         print(
-            f"[INFO] Feeder: Starting video loop (Mode: {'Segment' if is_segment_mode else 'Standard'})."
+            f"[INFO] Decoder Thread: Starting video read loop (Mode: {'Segment' if is_segment_mode else 'Standard'})."
         )
 
         self.consecutive_read_errors = 0
@@ -294,15 +312,9 @@ class MediaPipeline(QObject):
             "GlobalInputResizeToggle", False
         )
         cached_target_height = self.vp._get_target_input_height()
-        current_frame_shape: Optional[Tuple[int, ...]] = None
 
         while stop_flag_check():
             try:
-                # 0. Guard: feeder_parameters must be initialised
-                if self.feeder_parameters is None:
-                    time.sleep(0.005)
-                    continue
-
                 # 1. Mode-specific stop logic
                 if is_segment_mode:
                     if self.vp.current_segment_end_frame is None:
@@ -310,7 +322,7 @@ class MediaPipeline(QObject):
                         continue
                     if self.vp.current_frame_number > self.vp.current_segment_end_frame:
                         print(
-                            f"[INFO] Feeder: Reached end of segment {self.vp.current_segment_index + 1}. Stopping feed."
+                            f"[INFO] Decoder Thread: Reached end of segment {self.vp.current_segment_index + 1}. Stopping feed."
                         )
                         break
                 elif is_playing_segments:
@@ -331,7 +343,7 @@ class MediaPipeline(QObject):
                             next_start, next_end = self.vp.segments_to_process[next_idx]
                         else:
                             print(
-                                "[INFO] Feeder: Reached end of final playback segment. Stopping feed."
+                                "[INFO] Decoder Thread: Reached end of final playback segment. Stopping feed."
                             )
                             break
 
@@ -341,7 +353,7 @@ class MediaPipeline(QObject):
                         with self.state_lock:
                             self.segment_jumps[jump_from] = jump_to
 
-                            # Reuse wrap logic to protect frames from buffer eviction during backward jumps (looping)
+                            # Reuse wrap logic to protect frames from buffer eviction during backward jumps
                             if jump_to < jump_from:
                                 self._wrap_frame_target = jump_from
 
@@ -350,7 +362,7 @@ class MediaPipeline(QObject):
                             self.vp.current_frame_number = jump_to
 
                         print(
-                            f"[INFO] Feeder: Segment jump registered ({jump_from} -> {jump_to})."
+                            f"[INFO] Decoder Thread: Segment jump registered ({jump_from} -> {jump_to})."
                         )
                         misc_helpers.seek_frame(self.vp.media_capture, jump_to)
                         self.consecutive_read_errors = 0
@@ -362,7 +374,7 @@ class MediaPipeline(QObject):
                         )
                         if is_playback_loop_enabled and not self.vp.recording:
                             print(
-                                "[INFO] Feeder: End of media, flowing seamlessly back to start."
+                                "[INFO] Decoder Thread: End of media, flowing seamlessly back to start."
                             )
                             with self.state_lock:
                                 self._wrap_frame_target = (
@@ -374,41 +386,7 @@ class MediaPipeline(QObject):
                         else:
                             break
 
-                # 2. Buffer control (Adaptive VRAM & RAM Safety Net)
-                in_flight_frames: int = (
-                    len(self.frames_to_display) + self.vp.frame_queue.qsize()
-                )
-
-                # Compute resolution-aware dynamic buffer limit (Adapts to 1080p, 4K, 8K, VR180)
-                dynamic_buffer_limit: int = self._get_dynamic_max_buffer_size(
-                    current_frame_shape
-                )
-
-                # OS RAM Emergency Guard: Pause buffering if system available RAM drops below 2.5 GB
-                MIN_FREE_RAM_BYTES: int = 2500 * 1024 * 1024  # 2.5 GB
-                min_safe_buffer: int = max(self.vp.num_threads * 2, 6)
-
-                if (
-                    in_flight_frames > min_safe_buffer
-                    and psutil.virtual_memory().available < MIN_FREE_RAM_BYTES
-                ):
-                    time.sleep(0.02)
-                    continue
-
-                # VRAM Emergency Guard: Pause buffering if GPU free memory is dangerously low (< 1.0 GB)
-                if torch.cuda.is_available() and torch.cuda.is_initialized():
-                    free_vram, _ = torch.cuda.mem_get_info()
-                    if (
-                        in_flight_frames > min_safe_buffer and free_vram < 1073741824
-                    ):  # 1.0 GB
-                        time.sleep(0.02)
-                        continue
-
-                # Enforce resolution-aware adaptive queue limit
-                if in_flight_frames >= dynamic_buffer_limit:
-                    time.sleep(0.005)
-                    continue
-
+                # 2. Handle Manual Frame Drops
                 if (
                     (is_segment_mode or self.vp.recording)
                     and not self.vp.ffmpeg_input_sp
@@ -432,6 +410,7 @@ class MediaPipeline(QObject):
                     cached_target_height = self.vp._get_target_input_height()
                 target_height = cached_target_height
 
+                # 4. Read Frame
                 if self.vp.ffmpeg_input_sp:
                     ret, frame_bgr = self.vp._read_frame_from_ffmpeg_input_stream()
                 else:
@@ -441,6 +420,7 @@ class MediaPipeline(QObject):
                         preview_target_height=target_height,
                     )
 
+                # 5. Handle Read Errors and EOF
                 if not ret:
                     if self.vp.ffmpeg_input_sp:
                         remaining_frames = (
@@ -452,7 +432,9 @@ class MediaPipeline(QObject):
                             or remaining_frames <= MAX_CONSECUTIVE_ERRORS
                         )
                         if eof_like:
-                            print("[INFO] Feeder: FFmpeg input stream EOF reached.")
+                            print(
+                                "[INFO] Decoder Thread: FFmpeg input stream EOF reached."
+                            )
                         else:
                             self.consecutive_read_errors += 1
                             self._mark_skipped_frame(
@@ -460,7 +442,7 @@ class MediaPipeline(QObject):
                             )
                             self.stopped_by_error_limit = True
                             print(
-                                f"[WARN] Feeder: FFmpeg input stream terminated early at {self.vp.current_frame_number}. Treating as corrupted input."
+                                f"[WARN] Decoder Thread: FFmpeg input stream terminated early at {self.vp.current_frame_number}. Treating as corrupted input."
                             )
                         with self.state_lock:
                             self.vp.next_frame_to_display = self.vp.max_frame_number + 1
@@ -473,7 +455,7 @@ class MediaPipeline(QObject):
                         if fn >= self.vp.current_segment_end_frame - TAIL_TOLERANCE:
                             if is_playing_segments:
                                 print(
-                                    f"[INFO] Feeder: Read failure near playback segment tail (frame={fn}). Forcing segment jump."
+                                    f"[INFO] Decoder Thread: Read failure near playback segment tail (frame={fn}). Forcing segment jump."
                                 )
                                 with self.state_lock:
                                     self.vp.current_frame_number = (
@@ -489,7 +471,7 @@ class MediaPipeline(QObject):
                                         self.vp.current_segment_end_frame + 1
                                     )
                                 print(
-                                    f"[INFO] Feeder: Treat read failure near segment tail as EOF (frame={fn})."
+                                    f"[INFO] Decoder Thread: Treat read failure near segment tail as EOF (frame={fn})."
                                 )
                                 break
 
@@ -502,19 +484,17 @@ class MediaPipeline(QObject):
                         )
                         if is_playback_loop_enabled and not self.vp.recording:
                             print(
-                                f"[INFO] Feeder: Read failure near file end (frame={fn}/{self.vp.max_frame_number}), flowing seamlessly to start."
+                                f"[INFO] Decoder Thread: Read failure near file end (frame={fn}/{self.vp.max_frame_number}), flowing seamlessly to start."
                             )
                             with self.state_lock:
                                 self._wrap_frame_target = fn - 1
                             self.vp.current_frame_number = 0
                             misc_helpers.seek_frame(self.vp.media_capture, 0)
-                            self.consecutive_read_errors = (
-                                0  # Clear skip tracking to prevent abort
-                            )
+                            self.consecutive_read_errors = 0
                             continue
                         else:
                             print(
-                                f"[INFO] Feeder: Read failure near file end (frame={fn}/{self.vp.max_frame_number}), treating as EOF."
+                                f"[INFO] Decoder Thread: Read failure near file end (frame={fn}/{self.vp.max_frame_number}), treating as EOF."
                             )
                             with self.state_lock:
                                 self.vp.next_frame_to_display = (
@@ -527,7 +507,7 @@ class MediaPipeline(QObject):
 
                     if self.consecutive_read_errors > MAX_CONSECUTIVE_ERRORS:
                         print(
-                            f"[INFO] Feeder: Too many consecutive read errors ({self.consecutive_read_errors}), likely reached EOF. Stopping."
+                            f"[INFO] Decoder Thread: Too many consecutive read errors ({self.consecutive_read_errors}). Stopping."
                         )
                         try:
                             near_eof = fn >= self.vp.max_frame_number - TAIL_TOLERANCE
@@ -545,7 +525,7 @@ class MediaPipeline(QObject):
                         break
 
                     print(
-                        f"[WARN] Feeder: Skipping unreadable frame {self.vp.current_frame_number} (Total skipped: {self.total_skipped_frames})."
+                        f"[WARN] Decoder Thread: Skipping unreadable frame {self.vp.current_frame_number}."
                     )
                     self.vp.current_frame_number += 1
                     misc_helpers.seek_frame(
@@ -553,22 +533,162 @@ class MediaPipeline(QObject):
                     )
                     continue
 
-                # Explicit Mypy guard to narrow type from Optional[numpy.ndarray] to numpy.ndarray
                 if frame_bgr is None:
                     continue
 
-                # Update the dynamic shape after a successful read
-                current_frame_shape = frame_bgr.shape
-
                 self.consecutive_read_errors = 0
                 frame_num_to_process = self.vp.current_frame_number
-                marker_data = self.main_window.markers.get(frame_num_to_process)
+
+                # 6. Push to Intermediate Queue
+                # We use a loop with timeout so the thread can gracefully exit if stop_flag_check() becomes False
+                while stop_flag_check():
+                    try:
+                        self.raw_frame_queue.put(
+                            (frame_num_to_process, frame_bgr), timeout=0.5
+                        )
+                        self.vp.current_frame_number += 1
+                        break
+                    except queue.Full:
+                        continue
+
+            except Exception as e:
+                print(
+                    f"[ERROR] Error in _decode_loop (Mode: {'Segment' if is_segment_mode else 'Standard'}): {e}"
+                )
+                if is_segment_mode:
+                    self.vp.is_processing_segments = False
+                else:
+                    self.vp.processing = False
+                break
+
+        # --- SHUTDOWN & CLEANUP ---
+        print("[INFO] Decoder Thread finished.")
+
+        if self.total_skipped_frames > 0:
+            print(
+                f"[INFO] Decoder Thread skipped a total of {self.total_skipped_frames} frames."
+            )
+
+        # Emit Poison Pill to safely shut down the Detector Thread
+        while True:
+            # If the user pressed stop, immediately purge the queue to push the poison pill instantly,
+            # bypassing the natural backpressure mechanism.
+            if not stop_flag_check():
+                with self.raw_frame_queue.mutex:
+                    self.raw_frame_queue.queue.clear()
+
+            try:
+                self.raw_frame_queue.put(None, timeout=0.5)
+                break
+            except queue.Full:
+                continue
+
+    def _mark_skipped_frame(self, frame_number: int, reason: str) -> None:
+        """Tracks corrupted/skipped frames to ensure the PostProcessor can perfectly sync the audio later."""
+        self.skipped_frames.add(frame_number)
+        self.total_skipped_frames += 1
+
+        if reason == "manual_drop":
+            self.manual_dropped_skip_count += 1
+        elif reason == "read_error":
+            self.read_error_skip_count += 1
+
+    def _detector_loop(self) -> None:
+        """
+        STAGE 2: Dedicated Detector Thread.
+        Pulls raw frames from the raw_frame_queue, checks RAM/VRAM safety limits,
+        isolates UI state, runs Sequential Detection, and feeds the WorkerPool.
+        This isolates GPU-bound detection from I/O-bound decoding.
+        """
+        is_segment_mode = self.vp.is_processing_segments
+
+        def stop_flag_check():
+            return (
+                self.vp.is_processing_segments
+                if is_segment_mode
+                else self.vp.processing
+            )
+
+        print(
+            f"[INFO] Detector Thread: Starting detection loop (Mode: {'Segment' if is_segment_mode else 'Standard'})."
+        )
+
+        # --- ISOLATED CUDA STREAM ---
+        if torch.cuda.is_available():
+            detector_stream = torch.cuda.Stream()
+            torch.cuda.set_stream(detector_stream)
+
+        last_marker_data = None
+        self.ui_state_is_dirty = True
+        current_frame_shape: Optional[Tuple[int, ...]] = None
+
+        while stop_flag_check():
+            try:
+                # 0. Guard: feeder_parameters must be initialised
+                if self.feeder_parameters is None:
+                    time.sleep(0.005)
+                    continue
+
+                # 1. Pull from Stage 1 (Decoder)
+                try:
+                    raw_item = self.raw_frame_queue.get(timeout=0.2)
+                except queue.Empty:
+                    continue
+
+                # Poison Pill from Decoder indicates EOF or Stop
+                if raw_item is None:
+                    print("[INFO] Detector Thread: Received poison pill. Exiting loop.")
+                    break
+
+                frame_num_to_process, frame_bgr = raw_item
+                current_frame_shape = frame_bgr.shape
+
+                # 2. Buffer control (Adaptive VRAM & RAM Safety Net)
+                while stop_flag_check():
+                    in_flight_frames: int = (
+                        len(self.frames_to_display) + self.vp.frame_queue.qsize()
+                    )
+                    dynamic_buffer_limit: int = self._get_dynamic_max_buffer_size(
+                        current_frame_shape
+                    )
+
+                    MIN_FREE_RAM_BYTES: int = 2500 * 1024 * 1024  # 2.5 GB
+                    min_safe_buffer: int = max(self.vp.num_threads * 2, 6)
+
+                    # OS RAM Emergency Guard
+                    if (
+                        in_flight_frames > min_safe_buffer
+                        and psutil.virtual_memory().available < MIN_FREE_RAM_BYTES
+                    ):
+                        time.sleep(0.02)
+                        continue
+
+                    # VRAM Emergency Guard (< 1.0 GB)
+                    if torch.cuda.is_available() and torch.cuda.is_initialized():
+                        free_vram, _ = torch.cuda.mem_get_info()
+                        if (
+                            in_flight_frames > min_safe_buffer
+                            and free_vram < 1073741824
+                        ):
+                            time.sleep(0.02)
+                            continue
+
+                    # Dynamic Enqueue limit
+                    if in_flight_frames >= dynamic_buffer_limit:
+                        time.sleep(0.005)
+                        continue
+
+                    break  # Safe to proceed
+
+                if not stop_flag_check():
+                    break
 
                 local_params_for_worker: FacesParametersTypes
                 local_control_for_worker: ControlTypes
 
-                # 4. State Isolation (Preventing Thread Bleed)
+                # 3. State Isolation (Preventing Thread Bleed)
                 with self.state_lock:
+                    marker_data = self.main_window.markers.get(frame_num_to_process)
                     if marker_data and marker_data != last_marker_data:
                         print(
                             f"[INFO] Frame {frame_num_to_process} is a marker. Updating feeder state."
@@ -576,8 +696,6 @@ class MediaPipeline(QObject):
                         self.feeder_parameters = copy.deepcopy(
                             marker_data["parameters"]
                         )
-
-                        # Properly cast the dictionary to prevent Mypy index errors
                         new_control = cast(ControlTypes, {})
                         for (
                             widget_name,
@@ -606,8 +724,6 @@ class MediaPipeline(QObject):
 
                     local_params_for_worker = fast_state_copy(self._cached_params)
                     local_control_for_worker = fast_state_copy(self._cached_control)
-
-                    # Fix Mypy assignment error by typing the dictionary correctly
                     local_params_for_worker = cast(FacesParametersTypes, {})
 
                     if self._cached_params is not None:
@@ -619,10 +735,15 @@ class MediaPipeline(QObject):
                             else:
                                 local_params_for_worker[face_id] = face_data
 
-                frame_rgb = numpy.ascontiguousarray(frame_bgr[..., ::-1])
+                frame_rgb = cv2.cvtColor(frame_bgr, cv2.COLOR_BGR2RGB)
 
-                # 5. Sequential Detection Check
-                if len(self.main_window.target_faces) > 0:
+                # 4. Sequential Detection Check
+                is_swap_active = self.main_window.swapfacesButton.isChecked()
+                is_edit_active = self.main_window.editFacesButton.isChecked()
+
+                if len(self.main_window.target_faces) > 0 and (
+                    is_swap_active or is_edit_active
+                ):
                     self.vp._video_had_targets = True
                     is_master_edit_active = self.main_window.editFacesButton.isChecked()
                     bboxes, kpss_5, kpss, kpss_203 = self.vp.sequential_detector.run(
@@ -630,7 +751,7 @@ class MediaPipeline(QObject):
                         local_control_for_worker=local_control_for_worker,
                         local_params_for_worker=local_params_for_worker,
                         is_master_edit_active=is_master_edit_active,
-                        frame_number=self.vp.current_frame_number,
+                        frame_number=frame_num_to_process,
                     )
                 else:
                     bboxes = numpy.empty((0, 4), dtype=numpy.float32)
@@ -653,28 +774,49 @@ class MediaPipeline(QObject):
                     kpss_203,
                 )
 
-                self.vp.frame_queue.put(task)
-                self.vp.current_frame_number += 1
+                # 5. Feed WorkerPool
+                # Wrapped in a timeout loop to allow thread shutdown during queue backpressure
+                while stop_flag_check():
+                    try:
+                        self.vp.frame_queue.put(task, timeout=0.5)
+                        break
+                    except queue.Full:
+                        continue
 
             except Exception as e:
                 print(
-                    f"[ERROR] Error in _feed_video_loop (Mode: {'Segment' if is_segment_mode else 'Standard'}): {e}"
+                    f"[ERROR] Error in _detector_loop (Mode: {'Segment' if is_segment_mode else 'Standard'}): {e}"
                 )
                 if is_segment_mode:
                     self.vp.is_processing_segments = False
                 else:
                     self.vp.processing = False
-                # Send poison pills to unblock WorkerPool immediately.
-                for _ in self.vp.worker_pool_manager.worker_threads:
-                    try:
-                        self.vp.frame_queue.put(None, block=False)
-                    except queue.Full:
-                        pass
+                break
 
-        if self.total_skipped_frames > 0:
-            print(
-                f"[INFO] Feeder loop finished. Total frames skipped: {self.total_skipped_frames}"
-            )
+        # --- Reliable End-of-Loop Cleanup (Unblock workers) ---
+        for _ in self.vp.worker_pool_manager.worker_threads:
+            while True:
+                # If forcefully stopped, purge the queue so pills go through instantly,
+                # overriding the backpressure bottleneck.
+                if not stop_flag_check():
+                    with self.vp.frame_queue.mutex:
+                        self.vp.frame_queue.queue.clear()
+
+                try:
+                    self.vp.frame_queue.put(None, timeout=0.5)
+                    break
+                except queue.Full:
+                    # If natural EOF, wait patiently for workers to drain valid frames
+                    # before pushing the poison pill, preventing dropped signals.
+                    continue
+
+        # --- Release the Custom CUDA Stream ---
+        if torch.cuda.is_available() and "detector_stream" in locals():
+            detector_stream.synchronize()
+            torch.cuda.set_stream(torch.cuda.default_stream())
+            del detector_stream
+
+        print("[INFO] Detector Thread finished.")
 
     def _feed_webcam(self) -> None:
         """Continuous extraction loop for Live Webcam hardware."""
@@ -698,7 +840,40 @@ class MediaPipeline(QObject):
                     print("[WARN] Feeder: Failed to read webcam frame.")
                     continue
 
-                frame_rgb = numpy.ascontiguousarray(frame_bgr[..., ::-1])
+                # --- ZERO-COPY PINNED RING BUFFER (BGR -> RGB) ---
+                current_shape = frame_bgr.shape
+                if (
+                    not hasattr(self, "_webcam_pinned_ring_buffer")
+                    or getattr(self, "_webcam_pinned_ring_shape", None) != current_shape
+                ):
+                    self._webcam_pinned_ring_shape = current_shape
+                    buffer_count = self.vp.max_display_buffer_size + 5
+                    self._webcam_pinned_ring_buffer = []
+                    is_cuda = torch.cuda.is_available()
+                    for _ in range(buffer_count):
+                        if is_cuda:
+                            t = torch.empty(
+                                current_shape, dtype=torch.uint8
+                            ).pin_memory()
+                            self._webcam_pinned_ring_buffer.append(t.numpy())
+                        else:
+                            self._webcam_pinned_ring_buffer.append(
+                                numpy.empty(current_shape, dtype=numpy.uint8)
+                            )
+                    self._webcam_pinned_ring_idx = 0
+                    print(
+                        f"[INFO] Webcam: Initialized Zero-Copy RGB Ring Buffer for shape {current_shape} ({buffer_count} frames)"
+                    )
+
+                pinned_dst = self._webcam_pinned_ring_buffer[
+                    self._webcam_pinned_ring_idx
+                ]
+                self._webcam_pinned_ring_idx = (self._webcam_pinned_ring_idx + 1) % len(
+                    self._webcam_pinned_ring_buffer
+                )
+
+                cv2.cvtColor(frame_bgr, cv2.COLOR_BGR2RGB, dst=pinned_dst)
+                frame_rgb = pinned_dst
 
                 with self.main_window.models_processor.model_lock:
                     if getattr(self, "ui_state_is_dirty", True) or not hasattr(
@@ -720,7 +895,13 @@ class MediaPipeline(QObject):
                         self._webcam_cached_control
                     )
 
-                if len(self.main_window.target_faces) > 0:
+                # 5. Sequential Detection Check
+                is_swap_active = self.main_window.swapfacesButton.isChecked()
+                is_edit_active = self.main_window.editFacesButton.isChecked()
+
+                if len(self.main_window.target_faces) > 0 and (
+                    is_swap_active or is_edit_active
+                ):
                     self.vp._webcam_had_targets = True
                     is_master_edit_active = self.main_window.editFacesButton.isChecked()
                     bboxes, kpss_5, kpss, kpss_203 = self.vp.sequential_detector.run(
@@ -789,8 +970,8 @@ class MediaPipeline(QObject):
             return
 
         is_feeder_done = (
-            not self.feeder_thread.is_alive() if self.feeder_thread else False
-        )
+            not self.feeder_thread.is_alive() if self.feeder_thread else True
+        ) and (not self.detector_thread.is_alive() if self.detector_thread else True)
 
         # Query the dynamic target directly from the VideoProcessor
         if len(self.frames_to_display) >= self.vp.preroll_target or is_feeder_done:
@@ -807,11 +988,15 @@ class MediaPipeline(QObject):
 
     def is_draining_tail(self) -> bool:
         """Checks if the file is finished reading and we are just waiting for the final worker threads to finish encoding."""
+        if not (self.vp.recording or self.vp.is_processing_segments):
+            return False
+
+        # The pipeline is draining if the producers have completely shut down,
+        # meaning no new frames will arrive, and we must flush whatever is left.
         return (
-            bool(self.vp.recording)
-            and (self.vp.next_frame_to_display > self.vp.max_frame_number)
-            and (self.feeder_thread is not None)
+            (self.feeder_thread is not None)
             and (not self.feeder_thread.is_alive())
+            and (not self.detector_thread.is_alive() if self.detector_thread else True)
         )
 
     def _handle_tail_drain_wait(self, frame_number_to_display: int) -> bool:
@@ -850,7 +1035,9 @@ class MediaPipeline(QObject):
             return False
 
         feeder_alive = bool(self.feeder_thread and self.feeder_thread.is_alive())
-        if feeder_alive or self.vp.frame_queue.qsize() > 0:
+        detector_alive = bool(self.detector_thread and self.detector_thread.is_alive())
+
+        if feeder_alive or detector_alive or self.vp.frame_queue.qsize() > 0:
             return False
 
         workers = list(self.vp.worker_pool_manager.worker_threads)
@@ -881,20 +1068,16 @@ class MediaPipeline(QObject):
 
         # 0. Check End-of-Media First
         if self.vp.file_type == "video":
-            if self.vp.is_processing_segments:
-                if (
-                    self.vp.current_segment_end_frame is not None
-                    and self.vp.next_frame_to_display
-                    > self.vp.current_segment_end_frame
-                ):
-                    print(
-                        f"[INFO] Segment {self.vp.current_segment_index + 1} end frame ({self.vp.current_segment_end_frame}) reached."
-                    )
-                    self.vp.stop_current_segment()
-                    return
-            else:
-                hit_eof = False
-                with self.state_lock:
+            hit_eof = False
+            with self.state_lock:
+                if self.vp.is_processing_segments:
+                    if (
+                        self.vp.current_segment_end_frame is not None
+                        and self.vp.next_frame_to_display
+                        > self.vp.current_segment_end_frame
+                    ):
+                        hit_eof = True
+                else:
                     if (
                         self._wrap_frame_target != -1
                         and self.vp.next_frame_to_display > self._wrap_frame_target
@@ -907,13 +1090,24 @@ class MediaPipeline(QObject):
                         if self.vp.next_frame_to_display > final_segment_end:
                             hit_eof = True
 
-                if hit_eof:
+            if hit_eof:
+                # Check worker pool state to prevent premature truncation
+                pending_tasks = self.vp._safe_unfinished_tasks()
+                is_drain_complete = not self.frames_to_display and (
+                    pending_tasks == 0 or self.vp.tail_force_finalize_due_to_stall
+                )
+
+                if self.vp.is_processing_segments:
+                    if is_drain_complete:
+                        print(
+                            f"[INFO] Segment {self.vp.current_segment_index + 1} end frame ({self.vp.current_segment_end_frame}) reached."
+                        )
+                        self.vp.stop_current_segment()
+                        return
+                    # If drain is not complete, the loop bypasses this block and safely continues to pull min(self.frames_to_display) below.
+                else:
                     if self.vp.recording:
-                        pending_tasks = self.vp._safe_unfinished_tasks()
-                        if not self.frames_to_display and (
-                            pending_tasks == 0
-                            or self.vp.tail_force_finalize_due_to_stall
-                        ):
+                        if is_drain_complete:
                             print("[INFO] End of media reached.")
                             should_finalize_default_recording = True
                     elif is_playback_loop_enabled:
