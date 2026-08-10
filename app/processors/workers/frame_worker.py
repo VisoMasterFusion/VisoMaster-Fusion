@@ -258,6 +258,10 @@ class FrameWorker(threading.Thread):
                 "Pool worker initialized without a frame_queue."
             )
 
+            # VRAM check throttling state
+            vram_check_counter: int = 0
+            was_vram_throttled: bool = False
+
             while not self.stop_event.is_set():
                 task = None  # Ensure task is defined for 'finally'
                 try:
@@ -291,10 +295,17 @@ class FrameWorker(threading.Thread):
                     self.local_control_state_from_feeder = local_control_from_feeder
 
                     # --- Prevent Unified Memory Thrashing (VRAM Paging) ---
-                    # When thread counts are set too high for a heavy workspace, PyTorch exhausts
-                    # physical VRAM and silently pages to system RAM over PCIe, tanking FPS to near-zero.
-                    # We organically throttle active concurrency by forcing threads to wait if VRAM is >95% full.
-                    if torch.cuda.is_available() and torch.cuda.is_initialized():
+                    # Throttled VRAM Probe: Query driver every 8th frame or if recently throttled
+                    vram_check_counter += 1
+                    should_check_vram: bool = (
+                        vram_check_counter % 8 == 0
+                    ) or was_vram_throttled
+
+                    if (
+                        should_check_vram
+                        and torch.cuda.is_available()
+                        and torch.cuda.is_initialized()
+                    ):
                         device_id = torch.cuda.current_device()
                         free_vram_os, total_vram = torch.cuda.mem_get_info(device_id)
 
@@ -308,15 +319,23 @@ class FrameWorker(threading.Thread):
                         # Reserve 5% of total VRAM or at least 1.2 GB to prevent driver crashes
                         min_required_vram = max(total_vram * 0.05, 1288490188)
 
-                        while actual_free_vram < min_required_vram:
-                            if self.stop_event.is_set():
-                                break
-                            time.sleep(0.05)
-                            free_vram_os, _ = torch.cuda.mem_get_info(device_id)
-                            pytorch_cached_free = torch.cuda.memory_reserved(
-                                device_id
-                            ) - torch.cuda.memory_allocated(device_id)
-                            actual_free_vram = free_vram_os + pytorch_cached_free
+                        if actual_free_vram < min_required_vram:
+                            was_vram_throttled = True
+                            backoff_delay: float = 0.05
+                            while actual_free_vram < min_required_vram:
+                                if self.stop_event.is_set():
+                                    break
+                                time.sleep(backoff_delay)
+                                # Progressive backoff up to 200ms to reduce polling pressure
+                                backoff_delay = min(0.2, backoff_delay * 1.5)
+
+                                free_vram_os, _ = torch.cuda.mem_get_info(device_id)
+                                pytorch_cached_free = torch.cuda.memory_reserved(
+                                    device_id
+                                ) - torch.cuda.memory_allocated(device_id)
+                                actual_free_vram = free_vram_os + pytorch_cached_free
+                        else:
+                            was_vram_throttled = False
 
                     if not self.stop_event.is_set():
                         # Process the frame

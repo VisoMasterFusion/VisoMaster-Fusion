@@ -179,60 +179,80 @@ class MediaPipeline(QObject):
             self.store_webcam_frame_to_display(frame)
             return
 
-        draining_tail = self.is_draining_tail()
+        draining_tail: bool = self.is_draining_tail()
 
         # --- PREDICT VALID FUTURE PATH (Lookahead 60 frames) ---
         # Prevents aggressive buffer eviction during segment loops by explicitly
         # mapping the playhead's true future path across jumps and seamless loops.
-        valid_future_path = set()
+        valid_future_path: set[int] = set()
+
         if self.vp.file_type == "video" and not draining_tail:
             with self.state_lock:
-                curr = self.vp.next_frame_to_display
-                wrap_target = self._wrap_frame_target
-                jumps = self.segment_jumps.copy()
+                curr: int = self.vp.next_frame_to_display
+                wrap_target: int = self._wrap_frame_target
+                jumps: dict[int, int] = self.segment_jumps.copy()
 
-            for _ in range(60):
-                valid_future_path.add(curr)
-                if curr in jumps:
-                    curr = jumps[curr]
-                elif wrap_target != -1 and curr == wrap_target:
-                    curr = 0
-                else:
-                    curr += 1
+            # Cache evaluation: only recompute the 60-frame lookahead if the state shifted
+            if (
+                not hasattr(self, "_cached_valid_future_path")
+                or getattr(self, "_cached_path_next_frame", -1) != curr
+                or getattr(self, "_cached_path_wrap", -1) != wrap_target
+                or getattr(self, "_cached_path_jumps", None) != jumps
+            ):
+                new_path: set[int] = set()
+                sim_curr: int = curr
+                for _ in range(60):
+                    new_path.add(sim_curr)
+                    if sim_curr in jumps:
+                        sim_curr = jumps[sim_curr]
+                    elif wrap_target != -1 and sim_curr == wrap_target:
+                        sim_curr = 0
+                    else:
+                        sim_curr += 1
+
+                self._cached_valid_future_path = new_path
+                self._cached_path_next_frame = curr
+                self._cached_path_wrap = wrap_target
+                self._cached_path_jumps = jumps
+
+            valid_future_path = self._cached_valid_future_path
 
             # Early discard of stale frames completely outside the upcoming path
-            if (
-                frame_number not in valid_future_path
-                and frame_number < self.vp.next_frame_to_display
-            ):
+            if frame_number not in valid_future_path and frame_number < curr:
                 del frame
                 return
 
         self.frames_to_display[frame_number] = frame
 
         # Evict stale frames when the buffer exceeds the soft cap.
-        while len(self.frames_to_display) > self.max_frames_to_display_size:
-            if draining_tail:
-                break
-
-            stale_keys = []
-
-            if self.vp.file_type == "video" and not draining_tail:
-                # Evict orphaned frames not in the predicted path (e.g., from previous segment runs)
-                for k in list(self.frames_to_display.keys()):
-                    if k not in valid_future_path:
-                        stale_keys.append(k)
+        if (
+            len(self.frames_to_display) > self.max_frames_to_display_size
+            and not draining_tail
+        ):
+            # Phase 4c: Compute stale keys ONCE outside the eviction loop to achieve O(N) removal
+            stale_keys: list[int] = []
+            if self.vp.file_type == "video":
+                stale_keys = [
+                    k
+                    for k in self.frames_to_display.keys()
+                    if k not in valid_future_path
+                ]
             else:
-                for k in list(self.frames_to_display.keys()):
-                    if k < self.vp.next_frame_to_display:
-                        stale_keys.append(k)
+                stale_keys = [
+                    k
+                    for k in self.frames_to_display.keys()
+                    if k < self.vp.next_frame_to_display
+                ]
 
-            if not stale_keys:
-                break
-
-            oldest = min(stale_keys)
-            arr = self.frames_to_display.pop(oldest)
-            del arr
+            while (
+                len(self.frames_to_display) > self.max_frames_to_display_size
+                and stale_keys
+            ):
+                oldest: int = min(stale_keys)
+                stale_keys.remove(oldest)
+                if oldest in self.frames_to_display:
+                    arr: numpy.ndarray = self.frames_to_display.pop(oldest)
+                    del arr
 
     def store_webcam_frame_to_display(self, frame: numpy.ndarray) -> None:
         """Stores a processed webcam frame. Overwrites stale frames so the UI is always real-time."""
@@ -644,39 +664,51 @@ class MediaPipeline(QObject):
                 current_frame_shape = frame_bgr.shape
 
                 # 2. Buffer control (Adaptive VRAM & RAM Safety Net)
+                # Hoist loop-invariant calculations out of the polling loop
+                dynamic_buffer_limit: int = self._get_dynamic_max_buffer_size(
+                    current_frame_shape
+                )
+                min_safe_buffer: int = max(self.vp.num_threads * 2, 6)
+                MIN_FREE_RAM_BYTES: int = 2500 * 1024 * 1024  # 2.5 GB
+
+                last_mem_check_time: float = 0.0
+                is_ram_safe: bool = True
+                is_vram_safe: bool = True
+
                 while stop_flag_check():
                     in_flight_frames: int = (
                         len(self.frames_to_display) + self.vp.frame_queue.qsize()
                     )
-                    dynamic_buffer_limit: int = self._get_dynamic_max_buffer_size(
-                        current_frame_shape
-                    )
 
-                    MIN_FREE_RAM_BYTES: int = 2500 * 1024 * 1024  # 2.5 GB
-                    min_safe_buffer: int = max(self.vp.num_threads * 2, 6)
-
-                    # OS RAM Emergency Guard
-                    if (
-                        in_flight_frames > min_safe_buffer
-                        and psutil.virtual_memory().available < MIN_FREE_RAM_BYTES
-                    ):
-                        time.sleep(0.02)
-                        continue
-
-                    # VRAM Emergency Guard (< 1.0 GB)
-                    if torch.cuda.is_available() and torch.cuda.is_initialized():
-                        free_vram, _ = torch.cuda.mem_get_info()
-                        if (
-                            in_flight_frames > min_safe_buffer
-                            and free_vram < 1073741824
-                        ):
-                            time.sleep(0.02)
-                            continue
-
-                    # Dynamic Enqueue limit
+                    # Dynamic Enqueue limit (Lightweight integer comparison, checked every 20ms)
                     if in_flight_frames >= dynamic_buffer_limit:
                         time.sleep(0.02)
                         continue
+
+                    # Memory Emergency Guards (Heavyweight OS/Driver calls, throttled to 2Hz)
+                    if in_flight_frames > min_safe_buffer:
+                        current_time = time.perf_counter()
+
+                        # Only query psutil and CUDA driver every 0.5 seconds
+                        if current_time - last_mem_check_time > 0.5:
+                            is_ram_safe = (
+                                psutil.virtual_memory().available >= MIN_FREE_RAM_BYTES
+                            )
+
+                            if (
+                                torch.cuda.is_available()
+                                and torch.cuda.is_initialized()
+                            ):
+                                free_vram, _ = torch.cuda.mem_get_info()
+                                is_vram_safe = free_vram >= 1073741824
+
+                            last_mem_check_time = current_time
+
+                        if not is_ram_safe or not is_vram_safe:
+                            time.sleep(
+                                0.05
+                            )  # Back off slightly longer (50ms) under memory pressure
+                            continue
 
                     break  # Safe to proceed
 

@@ -4,6 +4,7 @@ import numpy as np
 import torch
 import threading
 
+
 # --- Internal Sub-Processor Imports ---
 from app.processors.face_detectors import FaceDetectors
 from app.processors.face_landmark_detectors import FaceLandmarkDetectors
@@ -20,6 +21,10 @@ from app.processors.models_data import arcface_mapping_model_dict
 
 if TYPE_CHECKING:
     from app.processors.models_processor import ModelsProcessor
+
+
+# --- Thread-Local Storage for CUDA Events ---
+_TLS = threading.local()
 
 
 class FunctionWorker:
@@ -68,6 +73,21 @@ class FunctionWorker:
                 self._session_locks[session_id] = threading.RLock()
             return self._session_locks[session_id]
 
+    @staticmethod
+    def _blocking_stream_sync() -> None:
+        """
+        Host-wait for the current CUDA stream without burning a CPU core.
+
+        torch.cuda.current_stream().synchronize() spin-waits under the default
+        cudaDeviceScheduleAuto policy. A blocking event yields to the OS instead.
+        """
+        ev = getattr(_TLS, "sync_event", None)
+        if ev is None:
+            ev = torch.cuda.Event(blocking=True)
+            _TLS.sync_event = ev
+        ev.record()
+        ev.synchronize()
+
     def run_ort_with_iobinding(self, session: Any, io_binding: Any) -> None:
         """Serialize shared ONNX/TensorRT session execution ACROSS THE SAME MODEL only."""
         session_lock = self._get_session_lock(session)
@@ -76,22 +96,21 @@ class FunctionWorker:
         # Ensure PyTorch has finished writing inputs to the GPU on the isolated worker_stream.
         # This occurs outside the lock so other threads aren't blocked during tensor prep.
         if self.mp.device_type == "cuda":
-            torch.cuda.current_stream().synchronize()
+            self._blocking_stream_sync()
         elif self.mp.device_type != "cpu":
             self.mp.syncvec.cpu()
 
-        # 2. INFERENCE AND POST-SYNC (Inside the lock)
+        # 2. INFERENCE AND CORRECT POST-SYNC (Inside the lock)
         with session_lock:
             # Execute ONNX Runtime / TensorRT.
             session.run_with_iobinding(io_binding)
 
             # 3. POST-INFERENCE SYNC (MUST BE INSIDE THE LOCK)
-            # Create a hard barrier ensuring the TRT context is completely finished
-            # before releasing the lock, preventing the next thread from overwriting activation buffers mid-flight.
-            if self.mp.device_type == "cuda":
-                torch.cuda.current_stream().synchronize()
-            elif self.mp.device_type != "cpu":
-                self.mp.syncvec.cpu()
+            # We use ORT's native synchronization instead of PyTorch's stream sync.
+            # PyTorch stream sync does not order ORT's internal stream.
+            # This guarantees ORT is completely finished writing the pre-allocated output tensors
+            # before we release the lock to the next worker thread.
+            io_binding.synchronize_outputs()
 
     # --- Models Unloaders ---
 

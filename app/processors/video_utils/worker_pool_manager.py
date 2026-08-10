@@ -66,6 +66,14 @@ class WorkerPoolManager(QObject):
         self.single_frame_handoff_timer.timeout.connect(
             self._try_start_pending_single_frame_worker
         )
+        # --- VRAM OPTIMIZATION: Debounced Idle Cleanup ---
+        self._single_frame_scrub_count: int = 0
+        self._vram_idle_cleanup_timer = QTimer(self)
+        self._vram_idle_cleanup_timer.setSingleShot(True)
+        self._vram_idle_cleanup_timer.setInterval(300)  # 300ms idle delay
+        self._vram_idle_cleanup_timer.timeout.connect(
+            self._perform_debounced_vram_cleanup
+        )
 
     def recreate_queue(self, maxsize: int) -> None:
         """
@@ -188,6 +196,31 @@ class WorkerPoolManager(QObject):
             except Exception:
                 pass
 
+    def _trigger_smart_single_frame_gc(self) -> None:
+        """
+        Manages VRAM cleanup during timeline scrubbing without causing frame stutter.
+
+        - During active slider dragging: Postpones GC/empty_cache until scrubbing pauses for 300ms.
+        - Safety Valve: If continuous dragging exceeds 25 frames without a pause, triggers a cleanup
+          pass to prevent Out-Of-Memory (OOM) accumulation.
+        """
+        self._single_frame_scrub_count += 1
+
+        # Safety Valve: Force cleanup every 25 continuous scrubs if the user doesn't pause
+        if self._single_frame_scrub_count >= 25:
+            self._perform_debounced_vram_cleanup()
+        else:
+            # Debounce: Restart the 300ms idle timer
+            self._vram_idle_cleanup_timer.start(300)
+
+    def _perform_debounced_vram_cleanup(self) -> None:
+        """Executes full Python garbage collection and flushes the PyTorch CUDA memory cache."""
+        self._vram_idle_cleanup_timer.stop()
+        self._single_frame_scrub_count = 0
+        gc.collect()
+        if torch.cuda.is_available() and torch.cuda.is_initialized():
+            torch.cuda.empty_cache()
+
     def _launch_async_single_frame_worker(
         self, frame_number: int, frame: numpy.ndarray, generation: int
     ) -> FrameWorker:
@@ -218,12 +251,16 @@ class WorkerPoolManager(QObject):
         request = self.pending_single_frame_request
         self.pending_single_frame_request = None
         self.single_frame_handoff_timer.stop()
+
+        # Explicitly release references on the finished worker instance before dropping it
+        if current_worker is not None:
+            current_worker.frame = None
+            current_worker.parameters = {}
+
         self.current_single_frame_worker = None
 
-        # --- Explicit GC for Single-Frame Transitions ---
-        gc.collect()
-        if torch.cuda.is_available() and torch.cuda.is_initialized():
-            torch.cuda.empty_cache()
+        # Smart VRAM Management: Replace heavy synchronous GC with debounced idle cleanup
+        self._trigger_smart_single_frame_gc()
 
         self._launch_async_single_frame_worker(
             request["frame_number"],
@@ -242,20 +279,22 @@ class WorkerPoolManager(QObject):
         self.fit_on_single_frame_request_generation = None
 
         worker = self.current_single_frame_worker
-        if worker is not None and worker.is_alive():
-            worker.stop_event.set()
-            worker.join(timeout=2.0)
+        if worker is not None:
             if worker.is_alive():
-                print("[WARN] Single-frame preview worker did not join gracefully.")
-                self.current_single_frame_worker = None
-                return
+                worker.stop_event.set()
+                worker.join(timeout=2.0)
+                if worker.is_alive():
+                    print("[WARN] Single-frame preview worker did not join gracefully.")
+                    self.current_single_frame_worker = None
+                    return
+            # Explicitly wipe heavy references to allow fast Python ref-count deletion
+            worker.frame = None
+            worker.parameters = {}
 
         self.current_single_frame_worker = None
 
-        # --- Explicit GC for Single-Frame Transitions ---
-        gc.collect()
-        if torch.cuda.is_available() and torch.cuda.is_initialized():
-            torch.cuda.empty_cache()
+        # Smart VRAM Management: Replace heavy synchronous GC with debounced idle cleanup
+        self._trigger_smart_single_frame_gc()
 
     def start_single_frame_worker(
         self,
