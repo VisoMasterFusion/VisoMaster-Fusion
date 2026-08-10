@@ -199,37 +199,49 @@ class StandardProcessor:
                         requires_203 = True
                         break
 
-            # --- STEP 1: Standard detection (Respect UI Toggle) ---
-            # We pass 'use_landmark_detection=use_landmark' to allow run_detect
-            # to attempt an initial extraction. If Auto-Rotation is enabled,
-            # run_detect may bypass dense landmark extraction if the angle is too extreme.
-            bboxes, kpss_5, kpss = self.worker.function_worker.run_detect(
-                img,
-                control.get("DetectorModelSelection", "RetinaFace"),
-                max_num=control.get("MaxFacesToDetectSlider", 1),
-                score=control.get("DetectorScoreSlider", 50) / 100.0,
-                input_size=(512, 512),
-                use_landmark_detection=use_landmark,
-                landmark_detect_mode=landmark_mode,
-                landmark_score=control.get("LandmarkDetectScoreSlider", 50) / 100.0,
-                from_points=from_points,
-                rotation_angles=[0]
-                if not control.get("AutoRotationToggle", False)
-                else [0, 90, 180, 270],
-                use_mean_eyes=control.get("LandmarkMeanEyesToggle", False),
-                previous_detections=None,
-                bypass_bytetrack=True,
-            )
+            # --- Strict Early Exit (No Targets in Single-Frame) ---
+            show_bboxes = control.get(
+                "ShowAllDetectedFacesBBoxToggle", False
+            ) or control.get("ShowByteTrackBBoxToggle", False)
 
-            # FW-LOGIC-FIX: Validate if Step 1 returned actual dense landmarks (> 5 points).
-            # If run_detect aborted dense extraction due to an extreme rotation angle,
-            # 'kpss' will merely contain a fallback copy of the sparse 'kpss_5'.
-            has_valid_dense_kpss = (
-                kpss is not None
-                and len(kpss) == len(bboxes)
-                and len(bboxes) > 0
-                and kpss[0].shape[0] > 5
-            )
+            if len(target_faces_snapshot) == 0 and not show_bboxes:
+                bboxes = np.empty((0, 4), dtype=np.float32)
+                kpss_5 = np.empty((0, 5, 2), dtype=np.float32)
+                kpss = np.empty((0, 68, 2), dtype=np.float32)
+                kpss_203 = np.empty((0, 203, 2), dtype=np.float32)
+                has_valid_dense_kpss = False
+            else:
+                # --- STEP 1: Standard detection (Respect UI Toggle) ---
+                # We pass 'use_landmark_detection=use_landmark' to allow run_detect
+                # to attempt an initial extraction. If Auto-Rotation is enabled,
+                # run_detect may bypass dense landmark extraction if the angle is too extreme.
+                bboxes, kpss_5, kpss = self.worker.function_worker.run_detect(
+                    img,
+                    control.get("DetectorModelSelection", "RetinaFace"),
+                    max_num=control.get("MaxFacesToDetectSlider", 1),
+                    score=control.get("DetectorScoreSlider", 50) / 100.0,
+                    input_size=(512, 512),
+                    use_landmark_detection=use_landmark,
+                    landmark_detect_mode=landmark_mode,
+                    landmark_score=control.get("LandmarkDetectScoreSlider", 50) / 100.0,
+                    from_points=from_points,
+                    rotation_angles=[0]
+                    if not control.get("AutoRotationToggle", False)
+                    else [0, 90, 180, 270],
+                    use_mean_eyes=control.get("LandmarkMeanEyesToggle", False),
+                    previous_detections=None,
+                    bypass_bytetrack=True,
+                )
+
+                # FW-LOGIC-FIX: Validate if Step 1 returned actual dense landmarks (> 5 points).
+                # If run_detect aborted dense extraction due to an extreme rotation angle,
+                # 'kpss' will merely contain a fallback copy of the sparse 'kpss_5'.
+                has_valid_dense_kpss = (
+                    kpss is not None
+                    and len(kpss) == len(bboxes)
+                    and len(bboxes) > 0
+                    and kpss[0].shape[0] > 5
+                )
 
             # --- STEP 2: 203-Landmark Extraction (Expression Restorer / Face Editor) ---
             kpss_203 = None
@@ -471,6 +483,18 @@ class StandardProcessor:
                             if s_e is not None and np.isnan(s_e).any():
                                 s_e = None
 
+                        # --- Early Exit for No-Op Swaps ---
+                        # Respect the user's explicit ForceSwapToggle to process blank targets
+                        _is_dfm = params["SwapModelSelection"] == "DeepFaceLive (DFM)"
+                        _has_input = (s_e is not None) or _is_dfm
+                        _force_swap = control.get("ForceSwapToggle", True)
+                        if (
+                            not _has_input
+                            and not edit_button_is_checked_global
+                            and not _force_swap
+                        ):
+                            continue
+
                         _aged_kv = getattr(target_face, "aged_kv_map", None)
                         _reaging_kv = (
                             _aged_kv
@@ -604,6 +628,19 @@ class StandardProcessor:
                                 )
                             if s_e is not None and np.isnan(s_e).any():
                                 s_e = None
+
+                        # --- Early Exit for No-Op Swaps ---
+                        # Respect the user's explicit ForceSwapToggle to process blank targets
+                        _is_dfm = params["SwapModelSelection"] == "DeepFaceLive (DFM)"
+                        _has_input = (s_e is not None) or _is_dfm
+                        _force_swap = control.get("ForceSwapToggle", True)
+
+                        if (
+                            not _has_input
+                            and not edit_button_is_checked_global
+                            and not _force_swap
+                        ):
+                            continue
 
                         _aged_kv_bt = getattr(best_target, "aged_kv_map", None)
                         _reaging_kv = (

@@ -1269,8 +1269,8 @@ class ModelsProcessor(QtCore.QObject):
                     ("CoreMLExecutionProvider", self.coreml_ep_options),
                     ("CPUExecutionProvider"),
                 ]
-                self.device, self.device_type = platform_support.torch_device_for_provider(
-                    "CoreML", self.gpu_id
+                self.device, self.device_type = (
+                    platform_support.torch_device_for_provider("CoreML", self.gpu_id)
                 )
 
             case "CUDA":

@@ -314,6 +314,12 @@ SETTINGS_LAYOUT_DATA: Any = {
         },
     },
     "Swap settings": {
+        "ForceSwapToggle": {
+            "level": 1,
+            "label": "Swap Original Faces",
+            "default": True,
+            "help": "Allow Swap Pipeline to run on Original Faces (Blank Target faces).",
+        },
         "AutoSwapToggle": {
             "level": 1,
             "label": "Auto Swap",

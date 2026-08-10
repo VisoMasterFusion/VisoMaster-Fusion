@@ -416,6 +416,10 @@ def _load_job_embeddings(main_window: "MainWindow", data: dict):
 def _load_job_target_faces_and_params(main_window: "MainWindow", data: dict):
     """Loads detected target faces, their parameters, and assignments."""
     loaded_target_faces_data = data.get("target_faces_data", {})
+
+    # --- Pull the default schema to sanitize against old job files ---
+    default_params = main_window.default_parameters.data
+
     for face_id_str, target_face_data in loaded_target_faces_data.items():
         face_id = face_id_str  # Use string ID directly
         # Convert list back to numpy array
@@ -431,13 +435,19 @@ def _load_job_target_faces_and_params(main_window: "MainWindow", data: dict):
             main_window, cropped_face, embedding_store, pixmap, face_id
         )
 
-        # Convert the loaded parameters dict into a ParametersDict object
+        # --- Sanitize parameters before injecting them into the UI state ---
+        raw_params = target_face_data.get("parameters", {})
+        sanitized_params = save_load_actions.sanitize_state_dictionary(
+            raw_params, default_params
+        )
+
+        # Convert the sanitized parameters dict into a ParametersDict object
         cast(dict[str, ParametersTypes], main_window.parameters)[cast(str, face_id)] = (
             cast(
                 ParametersTypes,
                 convert_parameters_to_job_type(
                     main_window,
-                    target_face_data.get("parameters", {}),
+                    sanitized_params,
                     misc_helpers.ParametersDict,
                 ),
             )
@@ -493,19 +503,6 @@ def _load_job_controls_and_state(
     # Ensure AutoSwap is off after loading a job
     main_window.control["AutoSwapToggle"] = False
 
-    # Restore swap faces button state
-    swap_faces_state = data.get("swap_faces_enabled", True)
-    main_window.swapfacesButton.setChecked(swap_faces_state)
-    edit_faces_state = data.get("edit_faces_enabled", False)
-    main_window.editFacesButton.setChecked(edit_faces_state)
-    # Keep LivePortrait model lifecycle in sync when restoring button state.
-    control_actions.handle_face_editor_button_click(main_window)
-    # On a batch load, this is harmful and breaks the logic.
-    if swap_faces_state and not is_batch_load:
-        # This will trigger a frame refresh via its own logic
-        video_control_actions.process_swap_faces(main_window)
-    print(f"[INFO] Swap Faces button state restored: {swap_faces_state}")
-
     # Restore misc paths and settings
     main_window.last_target_media_folder_path = data.get(
         "last_target_media_folder_path", ""
@@ -525,7 +522,8 @@ def _load_job_controls_and_state(
     )
     main_window.loaded_embedding_filename = data.get("loaded_embedding_filename", "")
 
-    # Update all control widgets in the "Settings" tab
+    # Update all control widgets in the "Settings" tab FIRST
+    # (This triggers clear_gpu_memory)
     common_widget_actions.set_control_widgets_values(main_window)
 
     # Ensure output folder is set correctly
@@ -539,6 +537,21 @@ def _load_job_controls_and_state(
     common_widget_actions.set_widgets_values_using_face_id_parameters(
         main_window, face_id=None
     )
+
+    # Restore swap faces button state LAST so it is not overwritten by VRAM clears
+    swap_faces_state = data.get("swap_faces_enabled", True)
+    main_window.swapfacesButton.setChecked(swap_faces_state)
+    edit_faces_state = data.get("edit_faces_enabled", False)
+    main_window.editFacesButton.setChecked(edit_faces_state)
+
+    # Keep LivePortrait model lifecycle in sync when restoring button state.
+    control_actions.handle_face_editor_button_click(main_window)
+
+    # On a batch load, this is harmful and breaks the logic.
+    if swap_faces_state and not is_batch_load:
+        # This will trigger a frame refresh via its own logic
+        video_control_actions.process_swap_faces(main_window)
+    print(f"[INFO] Swap Faces button state restored: {swap_faces_state}")
 
     if not is_batch_load:
         layout_actions.fit_image_to_view_onchange(main_window)
