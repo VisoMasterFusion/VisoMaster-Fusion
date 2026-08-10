@@ -2266,6 +2266,35 @@ class VideoProcessor(QObject):
                     f"[WARN] Failed to auto-save last_workspace.json after recording: {e}"
                 )
 
+    def _purge_queues_and_buffers(self) -> None:
+        """
+        Explicitly destroys heavy numpy arrays in display buffers and queues.
+        Relying solely on .clear() can delay Garbage Collection in CPython,
+        leading to RAM spikes during segment transitions or video finalization.
+        """
+        # 1. Explicitly purge the Display Dictionary
+        for key in list(self.frames_to_display.keys()):
+            arr = self.frames_to_display.pop(key)
+            del arr
+        self.frames_to_display.clear()
+
+        # 2. Explicitly purge the Worker Frame Queue
+        with self.frame_queue.mutex:
+            while len(self.frame_queue.queue) > 0:
+                item = self.frame_queue.queue.popleft()
+                del item
+            self.frame_queue.queue.clear()
+
+        # 3. Explicitly purge the Decoder Raw Queue
+        if hasattr(self, "media_pipeline") and hasattr(
+            self.media_pipeline, "raw_frame_queue"
+        ):
+            with self.media_pipeline.raw_frame_queue.mutex:
+                while len(self.media_pipeline.raw_frame_queue.queue) > 0:
+                    item = self.media_pipeline.raw_frame_queue.queue.popleft()
+                    del item
+                self.media_pipeline.raw_frame_queue.queue.clear()
+
     def _finalize_default_style_recording(self):
         """Finalizes a successful default-style recording (adds audio, cleans up)."""
         print("[INFO] Finalizing default-style recording...")
@@ -2314,22 +2343,13 @@ class VideoProcessor(QObject):
             print("[INFO] Producer threads joined.")
 
             # 4. Clear buffers and join worker threads.
-            self.frames_to_display.clear()
-            with self.frame_queue.mutex:
-                self.frame_queue.queue.clear()
-
-            # --- Clear the raw frame queue ---
-            if hasattr(self, "media_pipeline") and hasattr(
-                self.media_pipeline, "raw_frame_queue"
-            ):
-                with self.media_pipeline.raw_frame_queue.mutex:
-                    self.media_pipeline.raw_frame_queue.queue.clear()
+            self._purge_queues_and_buffers()
 
             print("[INFO] Waiting for final worker threads...")
             self.join_and_clear_threads()
             print("[INFO] Worker threads joined.")
 
-            # 6. Finalize FFmpeg (close stdin, wait for file to be written)
+            # 5. Finalize FFmpeg (close stdin, wait for file to be written)
             if self.encoder.is_running():
                 print("[INFO] Closing FFmpeg encoder...")
                 # VP-29: Mark recording stopped early.
@@ -2342,7 +2362,7 @@ class VideoProcessor(QObject):
                 # support for HEVC outputs. Default codec is hevc_nvenc / libx265.
                 self._log_hevc_thumbnail_hint_once()
 
-            # 7. Calculate audio segment times.
+            # 6. Calculate audio segment times.
             self.play_end_time, end_frame_for_calc, _, duration_probed = (
                 self._compute_play_end()
             )
@@ -2397,7 +2417,7 @@ class VideoProcessor(QObject):
                 "temp_video_probe=unavailable"
             )
 
-            # 8. Audio Merging
+            # 7a. Audio Merging
             if self.play_end_time <= self.play_start_time:
                 print("[WARN] Recording produced no frames. Skipping audio merge.")
                 if self.temp_file and os.path.exists(self.temp_file):
@@ -2475,7 +2495,7 @@ class VideoProcessor(QObject):
                     except OSError:
                         pass
 
-                # 5b. Run FFmpeg audio merge command
+                # 7b. Run FFmpeg audio merge command
                 print("[INFO] Adding audio (default-style merge)...")
                 try:
                     if self.total_skipped_frames > 0:
@@ -2614,7 +2634,7 @@ class VideoProcessor(QObject):
                             pass
                     temp_audio_dir = None
 
-            # 6. Final Timing and Logging
+            # 8a. Final Timing and Logging
             self.end_time = time.perf_counter()
             processing_time_sec = self.end_time - self.start_time
 
@@ -3068,14 +3088,9 @@ class VideoProcessor(QObject):
         print(f"[INFO] Waiting for workers from segment {segment_num}...")
         self.join_and_clear_threads()
         print("[INFO] Workers joined.")
-        self.frames_to_display.clear()
 
         # --- Clear raw frame queue ---
-        if hasattr(self, "media_pipeline") and hasattr(
-            self.media_pipeline, "raw_frame_queue"
-        ):
-            with self.media_pipeline.raw_frame_queue.mutex:
-                self.media_pipeline.raw_frame_queue.queue.clear()
+        self._purge_queues_and_buffers()
 
         # 3. Finalize FFmpeg for this segment
         if self.encoder.is_running():
@@ -3312,16 +3327,10 @@ class VideoProcessor(QObject):
             self.current_segment_end_frame = None
             self.triggered_by_job_manager = False
             self.active_output_folder = ""
-            print("[INFO] Clearing frame queue of residual pills...")
-            with self.frame_queue.mutex:
-                self.frame_queue.queue.clear()
+            print("[INFO] Purging residual frames and pills from queues...")
 
             # --- Clear raw frame queue ---
-            if hasattr(self, "media_pipeline") and hasattr(
-                self.media_pipeline, "raw_frame_queue"
-            ):
-                with self.media_pipeline.raw_frame_queue.mutex:
-                    self.media_pipeline.raw_frame_queue.queue.clear()
+            self._purge_queues_and_buffers()
 
             # 8. Final timing
             self.end_time = time.perf_counter()

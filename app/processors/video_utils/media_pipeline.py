@@ -675,7 +675,7 @@ class MediaPipeline(QObject):
 
                     # Dynamic Enqueue limit
                     if in_flight_frames >= dynamic_buffer_limit:
-                        time.sleep(0.005)
+                        time.sleep(0.02)
                         continue
 
                     break  # Safe to proceed
@@ -828,7 +828,7 @@ class MediaPipeline(QObject):
                     + self.vp.frame_queue.qsize()
                 )
                 if in_flight_frames >= self.vp.max_display_buffer_size:
-                    time.sleep(0.005)
+                    time.sleep(0.02)  # Increased to 20ms to drop CPU spin usage
                     continue
 
                 ret, frame_bgr = misc_helpers.read_frame(

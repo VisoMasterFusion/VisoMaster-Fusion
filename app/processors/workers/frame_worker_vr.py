@@ -232,7 +232,7 @@ class VRProcessor:
     def _process_single_vr_perspective_crop_multi(
         self,
         perspective_crop_torch_rgb_uint8: torch.Tensor,
-        target_face_button: "widget_components.TargetFaceCardButton",
+        target_face_button: "widget_components.TargetFaceCardButton | None",
         parameters_for_face: ParametersDict,
         control_global: dict[str, Any],
         kps_5_on_crop_param: np.ndarray,
@@ -269,7 +269,7 @@ class VRProcessor:
             parameters_for_face["SwapModelSelection"]
         )
         s_e_for_swap_np = None
-        if swap_button_is_checked_global:
+        if swap_button_is_checked_global and target_face_button is not None:
             _vr_reaging_on = parameters_for_face.get("FaceReagingEnableToggle", False)
             _vr_aged_emb = getattr(target_face_button, "aged_input_embedding", {})
             if _vr_reaging_on and _vr_aged_emb:
@@ -287,7 +287,11 @@ class VRProcessor:
             ):
                 s_e_for_swap_np = None
 
-        t_e_for_swap_np = target_face_button.get_embedding(arcface_model_for_swap)
+        t_e_for_swap_np = (
+            target_face_button.get_embedding(arcface_model_for_swap)
+            if target_face_button
+            else None
+        )
         dfm_model_instance_local = None
         if parameters_for_face["SwapModelSelection"] == "DeepFaceLive (DFM)":
             dfm_model_name = parameters_for_face["DFMModelSelection"]
@@ -299,16 +303,18 @@ class VRProcessor:
         s_e_for_swap_core = s_e_for_swap_np if swap_button_is_checked_global else None
         vr_swap_mask_for_compare: torch.Tensor | None = None
 
-        if (
-            swap_button_is_checked_global
-            and (
-                s_e_for_swap_core is not None
-                or (
-                    parameters_for_face["SwapModelSelection"] == "DeepFaceLive (DFM)"
-                    and dfm_model_instance_local is not None
-                )
-            )
-        ) or edit_button_is_checked_global:
+        # --- Early Exit for No-Op Swaps ---
+        _is_dfm = parameters_for_face["SwapModelSelection"] == "DeepFaceLive (DFM)"
+        _has_input = (s_e_for_swap_core is not None) or (
+            _is_dfm and dfm_model_instance_local is not None
+        )
+        _force_swap = control_global.get("ForceSwapToggle", True)
+
+        _should_run_pipeline = (
+            swap_button_is_checked_global and (_has_input or _force_swap)
+        ) or edit_button_is_checked_global
+
+        if _should_run_pipeline:
             source_kps = None
             if target_face_button:
                 # 1. Prioritize assigned Input Faces
@@ -650,140 +656,156 @@ class VRProcessor:
                 arr = arr.reshape(1, -1)
             return arr
 
-        if _do_per_eye_detect:
-            _half_w = original_equirect_tensor_for_vr.shape[2] // 2
-            _left_tensor = original_equirect_tensor_for_vr[:, :, :_half_w]
-            _right_tensor = original_equirect_tensor_for_vr[:, :, _half_w:]
+        # --- Strict Early Exit (No Targets in VR) ---
+        with self.worker.lock:
+            target_faces_snapshot = dict(self.worker.main_window.target_faces)
 
-            # bypass_bytetrack=True: per-eye detection uses half-width coordinate spaces,
-            # which would corrupt the tracker's Kalman state if ByteTrack ran on both halves.
-            _bboxes_left = _norm_bboxes(
-                _run_det(_left_tensor, bypass_bytetrack=True)[0]
-            )
-            _bboxes_right = _norm_bboxes(
-                _run_det(_right_tensor, bypass_bytetrack=True)[0]
-            )
+        show_bboxes = control.get(
+            "ShowAllDetectedFacesBBoxToggle", False
+        ) or control.get("ShowByteTrackBBoxToggle", False)
 
-            # Offset right-half x-coordinates into full-equirect space
-            if _bboxes_right.ndim == 2 and _bboxes_right.shape[0] > 0:
-                _bboxes_right = _bboxes_right.copy()
-                _bboxes_right[:, 0] += _half_w
-                _bboxes_right[:, 2] += _half_w
-
-            _pieces = []
-            if _bboxes_left.ndim == 2 and _bboxes_left.shape[0] > 0:
-                _pieces.append(_bboxes_left)
-            if _bboxes_right.ndim == 2 and _bboxes_right.shape[0] > 0:
-                _pieces.append(_bboxes_right)
-            bboxes_eq_np = np.vstack(_pieces) if _pieces else np.array([])
+        # The entire detection phase (including tiles) must be sealed inside the 'else' branch.
+        if len(target_faces_snapshot) == 0 and not show_bboxes:
+            bboxes_eq_np = np.array([])
         else:
-            # Single Eye or non-2:1 equirect — detect on the full frame as before.
-            # Use the standard (512, 512) input size — TRT engines are compiled for this shape.
-            bboxes_eq_np = _norm_bboxes(_run_det(original_equirect_tensor_for_vr)[0])
+            if _do_per_eye_detect:
+                _half_w = original_equirect_tensor_for_vr.shape[2] // 2
+                _left_tensor = original_equirect_tensor_for_vr[:, :, :_half_w]
+                _right_tensor = original_equirect_tensor_for_vr[:, :, _half_w:]
 
-        if not isinstance(bboxes_eq_np, np.ndarray):
-            bboxes_eq_np = np.array(bboxes_eq_np)
+                # bypass_bytetrack=True: per-eye detection uses half-width coordinate spaces,
+                # which would corrupt the tracker's Kalman state if ByteTrack ran on both halves.
+                _bboxes_left = _norm_bboxes(
+                    _run_det(_left_tensor, bypass_bytetrack=True)[0]
+                )
+                _bboxes_right = _norm_bboxes(
+                    _run_det(_right_tensor, bypass_bytetrack=True)[0]
+                )
 
-        # FW-ROBUST-07: reshape 1-D bbox (e.g. single face returned as shape (4,) or (5,))
-        if bboxes_eq_np.ndim == 1 and bboxes_eq_np.shape[0] in (4, 5):
-            bboxes_eq_np = bboxes_eq_np.reshape(1, -1)
+                # Offset right-half x-coordinates into full-equirect space
+                if _bboxes_right.ndim == 2 and _bboxes_right.shape[0] > 0:
+                    _bboxes_right = _bboxes_right.copy()
+                    _bboxes_right[:, 0] += _half_w
+                    _bboxes_right[:, 2] += _half_w
 
-        # Improvement A: tiled perspective detection — catch faces missed by equirect
-        if control.get("VR180TileDetectionToggle", False):
-            _tile_bboxes = self._detect_faces_vr_tiled(
-                equirect_converter,
-                control,
-                geometry,
-                self.VR_PERSPECTIVE_RENDER_SIZE,
-                stop_event=stop_event,
-            )
-            if _tile_bboxes:
-                _tile_arr = np.array(_tile_bboxes, dtype=np.float32)
-                if _tile_arr.ndim == 1 and _tile_arr.shape[0] in (4, 5):
-                    _tile_arr = _tile_arr.reshape(1, -1)
-                if _tile_arr.ndim == 2 and _tile_arr.shape[0] > 0:
-                    _dev = self.worker.models_processor.device
-                    _tile_boxes_t = torch.from_numpy(
-                        _tile_arr[:, :4].astype(np.float32)
-                    ).to(_dev)
+                _pieces = []
+                if _bboxes_left.ndim == 2 and _bboxes_left.shape[0] > 0:
+                    _pieces.append(_bboxes_left)
+                if _bboxes_right.ndim == 2 and _bboxes_right.shape[0] > 0:
+                    _pieces.append(_bboxes_right)
+                bboxes_eq_np = np.vstack(_pieces) if _pieces else np.array([])
+            else:
+                # Single Eye or non-2:1 equirect — detect on the full frame as before.
+                # Use the standard (512, 512) input size — TRT engines are compiled for this shape.
+                bboxes_eq_np = _norm_bboxes(
+                    _run_det(original_equirect_tensor_for_vr)[0]
+                )
 
-                    # Step 1 — intra-tile NMS: the same face is often detected by
-                    # multiple overlapping tiles (90° FOV with 60° spacing gives 30°
-                    # of overlap).  Run a tight NMS to merge these near-duplicates
-                    # before comparing against the equirect detections.
-                    if _tile_arr.shape[0] > 1:
-                        _t_scores = (
-                            torch.from_numpy(_tile_arr[:, 4].astype(np.float32))
-                            .to(_dev)
-                            .clamp(min=1e-6)
-                            if _tile_arr.shape[1] >= 5
-                            else (
-                                (_tile_boxes_t[:, 2] - _tile_boxes_t[:, 0])
-                                * (_tile_boxes_t[:, 3] - _tile_boxes_t[:, 1])
-                            ).clamp(min=0.0)
-                        )
-                        _t_keep = torchvision.ops.nms(
-                            _tile_boxes_t, _t_scores, iou_threshold=0.3
-                        )
-                        _tile_arr = _tile_arr[_t_keep.cpu().numpy()]
+            if not isinstance(bboxes_eq_np, np.ndarray):
+                bboxes_eq_np = np.array(bboxes_eq_np)
+
+            # FW-ROBUST-07: reshape 1-D bbox (e.g. single face returned as shape (4,) or (5,))
+            if bboxes_eq_np.ndim == 1 and bboxes_eq_np.shape[0] in (4, 5):
+                bboxes_eq_np = bboxes_eq_np.reshape(1, -1)
+
+            # Improvement A: tiled perspective detection — catch faces missed by equirect
+            if control.get("VR180TileDetectionToggle", False):
+                _tile_bboxes = self._detect_faces_vr_tiled(
+                    equirect_converter,
+                    control,
+                    geometry,
+                    self.VR_PERSPECTIVE_RENDER_SIZE,
+                    stop_event=stop_event,
+                )
+                if _tile_bboxes:
+                    _tile_arr = np.array(_tile_bboxes, dtype=np.float32)
+                    if _tile_arr.ndim == 1 and _tile_arr.shape[0] in (4, 5):
+                        _tile_arr = _tile_arr.reshape(1, -1)
+                    if _tile_arr.ndim == 2 and _tile_arr.shape[0] > 0:
+                        _dev = self.worker.models_processor.device
                         _tile_boxes_t = torch.from_numpy(
                             _tile_arr[:, :4].astype(np.float32)
                         ).to(_dev)
 
-                    # Step 2 — suppress tile detections that already have a
-                    # corresponding equirect detection.  If a tile bbox overlaps any
-                    # equirect bbox by IoU ≥ 0.3, it represents the same face and
-                    # adding it would cause double-processing (two swaps stitched on
-                    # top of each other → artifacts, wrong size, colour shift).
-                    # Only genuinely NEW detections (IoU < 0.3 with all equirect
-                    # bboxes) are merged into the candidate list.
-                    if bboxes_eq_np.ndim == 2 and bboxes_eq_np.shape[0] > 0:
-                        _eq_boxes_t = torch.from_numpy(
-                            bboxes_eq_np[:, :4].astype(np.float32)
-                        ).to(_dev)
-                        # pairwise IoU matrix: shape (N_tile, N_equirect)
-                        _iou_tile_vs_eq = torchvision.ops.box_iou(
-                            _tile_boxes_t, _eq_boxes_t
-                        )
-                        _novel_mask = (
-                            (_iou_tile_vs_eq.max(dim=1).values < 0.3).cpu().numpy()
-                        )
-                        _novel_tile = _tile_arr[_novel_mask]
-                        if _novel_tile.shape[0] > 0:
-                            # Pad score column with 0.9 default where missing
-                            _n_cols = max(bboxes_eq_np.shape[1], _novel_tile.shape[1])
-                            if bboxes_eq_np.shape[1] < _n_cols:
-                                bboxes_eq_np = np.hstack(
-                                    [
-                                        bboxes_eq_np,
-                                        np.full(
-                                            (
-                                                bboxes_eq_np.shape[0],
-                                                _n_cols - bboxes_eq_np.shape[1],
-                                            ),
-                                            0.9,
-                                            dtype=np.float32,
-                                        ),
-                                    ]
+                        # Step 1 — intra-tile NMS: the same face is often detected by
+                        # multiple overlapping tiles (90° FOV with 60° spacing gives 30°
+                        # of overlap).  Run a tight NMS to merge these near-duplicates
+                        # before comparing against the equirect detections.
+                        if _tile_arr.shape[0] > 1:
+                            _t_scores = (
+                                torch.from_numpy(_tile_arr[:, 4].astype(np.float32))
+                                .to(_dev)
+                                .clamp(min=1e-6)
+                                if _tile_arr.shape[1] >= 5
+                                else (
+                                    (_tile_boxes_t[:, 2] - _tile_boxes_t[:, 0])
+                                    * (_tile_boxes_t[:, 3] - _tile_boxes_t[:, 1])
+                                ).clamp(min=0.0)
+                            )
+                            _t_keep = torchvision.ops.nms(
+                                _tile_boxes_t, _t_scores, iou_threshold=0.3
+                            )
+                            _tile_arr = _tile_arr[_t_keep.cpu().numpy()]
+                            _tile_boxes_t = torch.from_numpy(
+                                _tile_arr[:, :4].astype(np.float32)
+                            ).to(_dev)
+
+                        # Step 2 — suppress tile detections that already have a
+                        # corresponding equirect detection.  If a tile bbox overlaps any
+                        # equirect bbox by IoU ≥ 0.3, it represents the same face and
+                        # adding it would cause double-processing (two swaps stitched on
+                        # top of each other → artifacts, wrong size, colour shift).
+                        # Only genuinely NEW detections (IoU < 0.3 with all equirect
+                        # bboxes) are merged into the candidate list.
+                        if bboxes_eq_np.ndim == 2 and bboxes_eq_np.shape[0] > 0:
+                            _eq_boxes_t = torch.from_numpy(
+                                bboxes_eq_np[:, :4].astype(np.float32)
+                            ).to(_dev)
+                            # pairwise IoU matrix: shape (N_tile, N_equirect)
+                            _iou_tile_vs_eq = torchvision.ops.box_iou(
+                                _tile_boxes_t, _eq_boxes_t
+                            )
+                            _novel_mask = (
+                                (_iou_tile_vs_eq.max(dim=1).values < 0.3).cpu().numpy()
+                            )
+                            _novel_tile = _tile_arr[_novel_mask]
+                            if _novel_tile.shape[0] > 0:
+                                # Pad score column with 0.9 default where missing
+                                _n_cols = max(
+                                    bboxes_eq_np.shape[1], _novel_tile.shape[1]
                                 )
-                            if _novel_tile.shape[1] < _n_cols:
-                                _novel_tile = np.hstack(
-                                    [
-                                        _novel_tile,
-                                        np.full(
-                                            (
-                                                _novel_tile.shape[0],
-                                                _n_cols - _novel_tile.shape[1],
+                                if bboxes_eq_np.shape[1] < _n_cols:
+                                    bboxes_eq_np = np.hstack(
+                                        [
+                                            bboxes_eq_np,
+                                            np.full(
+                                                (
+                                                    bboxes_eq_np.shape[0],
+                                                    _n_cols - bboxes_eq_np.shape[1],
+                                                ),
+                                                0.9,
+                                                dtype=np.float32,
                                             ),
-                                            0.9,
-                                            dtype=np.float32,
-                                        ),
-                                    ]
-                                )
-                            bboxes_eq_np = np.vstack([bboxes_eq_np, _novel_tile])
-                    else:
-                        # No equirect detections at all — use all (intra-NMS'd) tile bboxes
-                        bboxes_eq_np = _tile_arr
+                                        ]
+                                    )
+                                if _novel_tile.shape[1] < _n_cols:
+                                    _novel_tile = np.hstack(
+                                        [
+                                            _novel_tile,
+                                            np.full(
+                                                (
+                                                    _novel_tile.shape[0],
+                                                    _n_cols - _novel_tile.shape[1],
+                                                ),
+                                                0.9,
+                                                dtype=np.float32,
+                                            ),
+                                        ]
+                                    )
+                                bboxes_eq_np = np.vstack([bboxes_eq_np, _novel_tile])
+                        else:
+                            # No equirect detections at all — use all (intra-NMS'd) tile bboxes
+                            bboxes_eq_np = _tile_arr
 
         # VR-03 / Bug 2 fix: IoU-NMS using detector confidence score when available,
         # falling back to bbox area only when scores are not present.
@@ -1049,7 +1071,20 @@ class VRProcessor:
                 self.worker._find_best_target_match(face_emb_crop, control)
             )
 
-            if best_target_button_vr:
+            # Force Swap Toggle validation
+            _force_swap = control.get("ForceSwapToggle", True)
+
+            if best_target_button_vr or _force_swap:
+                # If no target but force swap is on, we ensure default dummy parameters are loaded
+                if not best_target_button_vr:
+                    with self.worker.lock:
+                        _default_params = dict(
+                            self.worker.main_window.default_parameters.data
+                        )
+                    best_params_for_target_vr = ParametersDict(
+                        _default_params, _default_params
+                    )
+
                 denoiser_on = (
                     control.get("DenoiserUNetEnableBeforeRestorersToggle", False)
                     or control.get("DenoiserAfterFirstRestorerToggle", False)
@@ -1057,6 +1092,7 @@ class VRProcessor:
                 )
                 if (
                     denoiser_on
+                    and best_target_button_vr
                     and best_target_button_vr.assigned_kv_map is None
                     and best_target_button_vr.assigned_input_faces
                 ):
@@ -1121,7 +1157,9 @@ class VRProcessor:
                             if item_data["params"].get("FaceReagingEnableToggle", False)
                             and getattr(item_data["target_button"], "aged_kv_map", None)
                             is not None
-                            else item_data["target_button"].assigned_kv_map
+                            else getattr(
+                                item_data["target_button"], "assigned_kv_map", None
+                            )
                         ),
                     )
                 )

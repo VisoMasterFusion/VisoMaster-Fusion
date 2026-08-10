@@ -220,6 +220,11 @@ class WorkerPoolManager(QObject):
         self.single_frame_handoff_timer.stop()
         self.current_single_frame_worker = None
 
+        # --- Explicit GC for Single-Frame Transitions ---
+        gc.collect()
+        if torch.cuda.is_available() and torch.cuda.is_initialized():
+            torch.cuda.empty_cache()
+
         self._launch_async_single_frame_worker(
             request["frame_number"],
             request["frame"],
@@ -246,6 +251,11 @@ class WorkerPoolManager(QObject):
                 return
 
         self.current_single_frame_worker = None
+
+        # --- Explicit GC for Single-Frame Transitions ---
+        gc.collect()
+        if torch.cuda.is_available() and torch.cuda.is_initialized():
+            torch.cuda.empty_cache()
 
     def start_single_frame_worker(
         self,

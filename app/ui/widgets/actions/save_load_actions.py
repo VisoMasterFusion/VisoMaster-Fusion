@@ -1474,6 +1474,9 @@ def save_current_job(main_window: "MainWindow"):
             main_window.selected_video_button, widget_components.TargetMediaCardButton
         )
         else None,
+        # --- Explicitly save button states for jobs ---
+        "swap_faces_enabled": main_window.swapfacesButton.isChecked(),
+        "edit_faces_enabled": main_window.editFacesButton.isChecked(),
         "input_faces_data": input_faces_data,
         "target_faces_data": {},
         "embeddings_data": embeddings_data,

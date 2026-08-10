@@ -1052,9 +1052,7 @@ class MainWindow(QtWidgets.QMainWindow, Ui_MainWindow):
         else:
             # First launch or no workspace: Prompt for execution provider
             options = platform_support.available_execution_providers()
-            default_index = options.index(
-                platform_support.default_execution_provider()
-            )
+            default_index = options.index(platform_support.default_execution_provider())
 
             prompt = (
                 "No previous workspace found.\n\n"
