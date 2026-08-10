@@ -948,3 +948,14 @@ def handle_ff_auto_quality_toggle(main_window: "MainWindow", new_value: bool) ->
         quality_widget.reset_default_button.setEnabled(manual_enabled)
     if hasattr(quality_widget, "line_edit") and quality_widget.line_edit:
         quality_widget.line_edit.setEnabled(manual_enabled)
+
+def handle_sort_embeddings_az_toggle(main_window: "MainWindow", new_value: bool, *args) -> None:
+    if not new_value:
+        return
+    try:
+        from app.ui.widgets.actions import list_view_actions
+        list_view_actions.sort_embeddings_list_az(main_window)
+    except Exception as e:
+        print(f"[ERROR] sort embeddings: {e}")
+        import traceback
+        traceback.print_exc()   

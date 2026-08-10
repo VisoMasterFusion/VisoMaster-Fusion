@@ -785,6 +785,14 @@ SETTINGS_LAYOUT_DATA: Any = {
             "step": 1,
             "help": "Maximum number of frames visible in the timeline at Max Zoom level.",
         },
+        "SortEmbeddingsAZToggle": {
+            "level": 1,
+            "label": "Sort A-Z for new Embeddings",
+            "default": False,
+            "help": "ONLY APPLIES WHEN CREATING NEW EMBEDDINGS. When enabled, new embeddings are sorted alphabetically by name (A-Z).",
+            "exec_function": control_actions.handle_sort_embeddings_az_toggle,
+            "exec_function_args": [],
+        },
     },
 }
 
