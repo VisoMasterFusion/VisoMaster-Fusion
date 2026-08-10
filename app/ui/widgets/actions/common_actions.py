@@ -8,6 +8,7 @@ from PySide6 import QtWidgets, QtCore, QtGui
 from app.ui.widgets import widget_components
 from app.ui.widgets.settings_layout_data import SETTINGS_LAYOUT_DATA
 from app.ui.widgets.common_layout_data import COMMON_LAYOUT_DATA
+from app.ui.widgets.denoiser_layout_data import DENOISER_LAYOUT_DATA
 import app.helpers.miscellaneous as misc_helpers
 from app.helpers.miscellaneous import get_video_rotation
 from app.helpers.typing_helper import ControlTypes
@@ -17,7 +18,7 @@ if TYPE_CHECKING:
 
 # PERF-01: Module-level constant built once from layout data, reused in set_control_widgets_values
 _ALL_CONTROL_WIDGET_OPTIONS: dict = {}
-for _layout_source in [SETTINGS_LAYOUT_DATA, COMMON_LAYOUT_DATA]:
+for _layout_source in [SETTINGS_LAYOUT_DATA, COMMON_LAYOUT_DATA, DENOISER_LAYOUT_DATA]:
     for _group_data in _layout_source.values():
         for _widget_key, _widget_data in _group_data.items():
             _ALL_CONTROL_WIDGET_OPTIONS[_widget_key] = _widget_data
@@ -75,8 +76,9 @@ def update_control(
     current_position = main_window.videoSeekSlider.value()
 
     # Update marker control too
-    # Do not update values of control with exec_function (like max threads count) as it would slow down the app heavily
-    if main_window.markers.get(current_position) and not exec_function:
+    # FIX: We MUST update the dictionary value regardless of the exec_function,
+    # otherwise marker data becomes stale and reverts user changes on seek.
+    if main_window.markers.get(current_position):
         main_window.markers[current_position]["control"][control_name] = control_value
 
     if exec_function:
@@ -85,10 +87,11 @@ def update_control(
             # By default an exec function definition should have atleast one parameter : MainWindow
             exec_function_args = [main_window, control_value] + exec_function_args
             exec_function(*exec_function_args)
+
     main_window.control[control_name] = control_value
+
     # Also update the feeder's state if it's running
     # BUG-16 / THREAD-03: feeder_control None check moved inside the lock to prevent TOCTOU race
-    main_window.control[control_name] = control_value
     if hasattr(main_window, "video_processor") and main_window.video_processor:
         # --- DIRTY FLAG ---
         main_window.video_processor.ui_state_is_dirty = True
@@ -100,6 +103,7 @@ def update_control(
                 cast(ControlTypes, main_window.video_processor.feeder_control)[
                     control_name
                 ] = control_value
+
     refresh_frame(main_window)
 
 
@@ -364,16 +368,24 @@ def show_hide_related_widgets(
                 current_widget = main_window.parameter_widgets.get(widget_name)
                 layout_info = group_layout_data[widget_name]
 
+                # Normalize parent selections and required values into lists
+                parent_selections = layout_info.get("parentSelection", [])
+                if isinstance(parent_selections, str):
+                    parent_selections = [parent_selections]
+
+                required_values = layout_info.get("requiredSelectionValue", [])
+                if isinstance(required_values, str):
+                    required_values = [required_values]
+
                 # Only process widgets that depend on THIS selection box
-                if (
-                    layout_info.get("parentSelection", "") == parent_widget_name
-                    and current_widget
-                ):
-                    # 1. Check Selection Condition
-                    selection_condition_met = (
-                        layout_info.get("requiredSelectionValue")
-                        == parent_widget.currentText()
-                    )
+                if parent_widget_name in parent_selections and current_widget:
+                    # 1. Check Selection Condition (ALL parent selections must be met)
+                    selection_condition_met = True
+                    for p_sel, req_val in zip(parent_selections, required_values):
+                        sel_widget = main_window.parameter_widgets.get(p_sel)
+                        if not sel_widget or sel_widget.currentText() != req_val:
+                            selection_condition_met = False
+                            break
 
                     # 2. Check Toggle Condition (Cross-Check)
                     # Even if selection matches, we must check if the parent toggles are ON
@@ -422,15 +434,24 @@ def show_hide_related_widgets(
                 # Only process widgets that depend on THIS toggle (or have it in their chain)
                 if parent_widget_name in parentToggles:
                     # 1. Check Selection Condition (Cross-Check)
-                    # Before evaluating toggles, check if the parent Selection is valid
+                    # Before evaluating toggles, check if ALL parent Selections are valid
                     selection_condition_met = True
-                    parentSelection = layout_info.get("parentSelection", "")
-                    if parentSelection:
-                        sel_widget = main_window.parameter_widgets.get(parentSelection)
-                        if sel_widget and sel_widget.currentText() != layout_info.get(
-                            "requiredSelectionValue"
-                        ):
-                            selection_condition_met = False
+
+                    # Normalize to handle multi-selections
+                    parent_selections = layout_info.get("parentSelection", [])
+                    if isinstance(parent_selections, str):
+                        parent_selections = [parent_selections]
+
+                    required_values = layout_info.get("requiredSelectionValue", [])
+                    if isinstance(required_values, str):
+                        required_values = [required_values]
+
+                    if parent_selections:
+                        for p_sel, req_val in zip(parent_selections, required_values):
+                            sel_widget = main_window.parameter_widgets.get(p_sel)
+                            if sel_widget and sel_widget.currentText() != req_val:
+                                selection_condition_met = False
+                                break
 
                     # 2. Check Toggle Condition
                     toggle_condition_met = False
@@ -579,17 +600,6 @@ def set_gpu_memory_progressbar_value(
     main_window.vramProgressBar.update()
 
 
-def clear_gpu_memory(main_window: "MainWindow"):
-    main_window.video_processor.stop_processing()
-    main_window.models_processor.clear_gpu_memory()
-    main_window.swapfacesButton.setChecked(False)
-    main_window.editFacesButton.setChecked(False)
-    update_gpu_memory_progressbar(main_window)
-
-    # main_window.videoSeekSlider.markers = set() # Comment this to keep markers visible after vram clear
-    main_window.videoSeekSlider.update()
-
-
 def extract_frame_as_image(
     main_window: "MainWindow",
     media_file_path,
@@ -597,6 +607,8 @@ def extract_frame_as_image(
     webcam_index=False,
     webcam_backend=False,
     cache_thumbnail=True,
+    scale: tuple[int, int] | None = (70, 70),
+    return_metadata=False,
 ):
     """
     Extracts a frame from a media file and converts it to a QImage for thumbnails.
@@ -615,8 +627,12 @@ def extract_frame_as_image(
             frame.data, width, height, bytes_per_line, QtGui.QImage.Format.Format_RGB888
         ).rgbSwapped()
 
+        if scale is None:
+            # .copy() decouples the QImage from the numpy array memory, which
+            # .scaled() would otherwise have done for us.
+            return q_img.copy()
         # .scaled() returns a deep copy, completely decoupling from the numpy array memory!
-        return q_img.scaled(70, 70, QtCore.Qt.AspectRatioMode.KeepAspectRatio)
+        return q_img.scaled(*scale, QtCore.Qt.AspectRatioMode.KeepAspectRatio)
 
     # For images and videos, first check for a cached thumbnail.
     if file_type in ["image", "video"]:
@@ -643,12 +659,36 @@ def extract_frame_as_image(
         if thumbnail_path:
             frame = misc_helpers.read_image_file(thumbnail_path)
             if frame is not None:
-                return convert_frame_to_image(frame)
+                q_image = convert_frame_to_image(frame)
+                if return_metadata:
+                    metadata = main_window.thumbnail_manager.get_thumbnail_metadata(
+                        thumbnail_path, media_file_path
+                    )
+                    if metadata is not None:
+                        return q_image, metadata
+                    if file_type == "image":
+                        metadata = misc_helpers.probe_media_metadata(
+                            media_file_path, file_type
+                        )
+                        if metadata is not None:
+                            main_window.thumbnail_manager.create_thumbnail(
+                                frame, media_file_path, metadata=metadata
+                            )
+                            return q_image, metadata
+                    thumbnail_path = None
+                else:
+                    return q_image
 
     # If no cache is found, or for webcams, generate the frame from source.
     frame = None
+    metadata = None
     if file_type == "image":
         frame = misc_helpers.read_image_file(media_file_path)
+        if isinstance(frame, np.ndarray):
+            height, width = frame.shape[:2]
+            metadata = misc_helpers.MediaMetadata(
+                width=int(width), height=int(height), total_frames=1
+            )
     elif file_type == "video":
         # Get rotation for thumbnail
         rotation_angle = get_video_rotation(media_file_path)
@@ -664,7 +704,20 @@ def extract_frame_as_image(
                 # Explicitly enable OpenCV's auto-rotation
                 if hasattr(cv2, "CAP_PROP_ORIENTATION_AUTO"):
                     cap.set(cv2.CAP_PROP_ORIENTATION_AUTO, 1)
+                width = int(cap.get(cv2.CAP_PROP_FRAME_WIDTH))
+                height = int(cap.get(cv2.CAP_PROP_FRAME_HEIGHT))
                 total_frames = int(cap.get(cv2.CAP_PROP_FRAME_COUNT))
+                frame_rate = float(cap.get(cv2.CAP_PROP_FPS))
+                bitrate_kbits = float(cap.get(cv2.CAP_PROP_BITRATE))
+                if rotation_angle in (90, 270):
+                    width, height = height, width
+                metadata = misc_helpers.MediaMetadata(
+                    width=max(0, width),
+                    height=max(0, height),
+                    total_frames=max(0, total_frames),
+                    frame_rate=max(0.0, frame_rate),
+                    bitrate_kbits=max(0.0, bitrate_kbits),
+                )
                 if total_frames > 0:
                     middle_frame_no = total_frames // 2
                     cap.set(cv2.CAP_PROP_POS_FRAMES, middle_frame_no)
@@ -690,11 +743,17 @@ def extract_frame_as_image(
     if isinstance(frame, np.ndarray):
         # Create a new thumbnail in the cache for next time.
         if file_type != "webcam" and cache_thumbnail:
-            main_window.thumbnail_manager.create_thumbnail(frame, media_file_path)
+            main_window.thumbnail_manager.create_thumbnail(
+                frame, media_file_path, metadata=metadata
+            )
 
-        # Return the generated thread-safe QImage.
-        return convert_frame_to_image(frame)
+        q_image = convert_frame_to_image(frame)
+        if return_metadata:
+            return q_image, metadata
+        return q_image
 
+    if return_metadata:
+        return None, metadata
     return None  # Return None if everything failed.
 
 

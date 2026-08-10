@@ -4,6 +4,7 @@ import cv2
 import time
 from bisect import bisect_left, bisect_right
 from collections import UserDict, OrderedDict
+from dataclasses import dataclass
 import hashlib
 import numpy as np
 from functools import wraps
@@ -16,7 +17,7 @@ import subprocess
 import json
 
 import torch
-from PIL import Image
+from PIL import Image, PngImagePlugin
 from skimage import transform as trans
 
 # --- Global Scope ---
@@ -67,6 +68,10 @@ class ThumbnailManager:
     managing the thumbnail storage directory, and generating thumbnail images from
     video frames or images.
     """
+
+    _METADATA_KEY = "VisoMasterMediaMetadata"
+    _JPEG_USER_COMMENT_TAG = 0x9286
+    _JPEG_USER_COMMENT_PREFIX = b"ASCII\x00\x00\x00"
 
     def __init__(self, thumbnail_dir: str = ".thumbnails"):
         """
@@ -135,7 +140,88 @@ class ThumbnailManager:
                 return jpg_path
         return None
 
-    def create_thumbnail(self, frame: np.ndarray, file_path: str) -> None:
+    def _build_metadata_payload(self, file_path: str, metadata) -> str | None:
+        if metadata is None:
+            return None
+
+        try:
+            stat = os.stat(file_path)
+        except OSError:
+            return None
+
+        payload = {
+            "version": 1,
+            "source_size": int(stat.st_size),
+            "source_mtime_ns": int(stat.st_mtime_ns),
+            "media": {
+                "width": int(metadata.width),
+                "height": int(metadata.height),
+                "total_frames": int(metadata.total_frames),
+                "frame_rate": float(metadata.frame_rate),
+                "bitrate_kbits": float(metadata.bitrate_kbits),
+            },
+        }
+        return json.dumps(payload, separators=(",", ":"), ensure_ascii=True)
+
+    def _metadata_payload_is_current(self, payload: dict, file_path: str) -> bool:
+        try:
+            stat = os.stat(file_path)
+        except OSError:
+            return False
+
+        return int(payload.get("source_size", -1)) == int(stat.st_size) and int(
+            payload.get("source_mtime_ns", -1)
+        ) == int(stat.st_mtime_ns)
+
+    def _metadata_from_payload(self, payload: dict, file_path: str):
+        if not self._metadata_payload_is_current(payload, file_path):
+            return None
+
+        media = payload.get("media", {})
+        try:
+            return MediaMetadata(
+                width=max(0, int(media.get("width", 0))),
+                height=max(0, int(media.get("height", 0))),
+                total_frames=max(0, int(media.get("total_frames", 0))),
+                frame_rate=max(0.0, float(media.get("frame_rate", 0.0))),
+                bitrate_kbits=max(0.0, float(media.get("bitrate_kbits", 0.0))),
+            )
+        except (TypeError, ValueError):
+            return None
+
+    def get_thumbnail_metadata(self, thumbnail_path: str, file_path: str):
+        """Read cached media metadata embedded in a thumbnail image."""
+        try:
+            with self._lock:
+                with Image.open(thumbnail_path) as image:
+                    if image.format == "PNG":
+                        raw_payload = image.info.get(self._METADATA_KEY)
+                    elif image.format == "JPEG":
+                        raw_payload = image.getexif().get(self._JPEG_USER_COMMENT_TAG)
+                    else:
+                        raw_payload = None
+        except Exception:
+            return None
+
+        if isinstance(raw_payload, bytes):
+            if raw_payload.startswith(self._JPEG_USER_COMMENT_PREFIX):
+                raw_payload = raw_payload[len(self._JPEG_USER_COMMENT_PREFIX) :]
+            try:
+                raw_payload = raw_payload.decode("ascii")
+            except UnicodeDecodeError:
+                return None
+        if not isinstance(raw_payload, str):
+            return None
+
+        try:
+            payload = json.loads(raw_payload)
+        except json.JSONDecodeError:
+            return None
+        return self._metadata_from_payload(payload, file_path)
+
+    def create_thumbnail(
+        self, frame: np.ndarray, file_path: str, metadata=None
+    ) -> None:
         """
         Saves a given frame as an optimized thumbnail image.
 
@@ -164,23 +250,71 @@ class ThumbnailManager:
             frame, (width, height), interpolation=cv2.INTER_LANCZOS4
         )
 
+        metadata_payload = self._build_metadata_payload(file_path, metadata)
+
+        if not metadata_payload:
+            try:
+                # The write, the size verdict and the cleanup are one atomic
+                # transaction. Readers only hold the lock while they open the file
+                # by path, so releasing it between the imwrite() and the os.remove()
+                # lets the UI thread open an oversized reject or hit a
+                # PermissionError on a thumbnail that is being deleted underneath it.
+                with self._lock:
+                    cv2.imwrite(png_path, resized_frame)
+                    if os.path.getsize(png_path) > 30 * 1024:  # If PNG is > 30KB
+                        os.remove(png_path)
+                        raise Exception("PNG file too large, falling back to JPEG.")
+                    if os.path.exists(jpg_path):
+                        os.remove(jpg_path)
+            except Exception:
+                jpeg_params = [
+                    cv2.IMWRITE_JPEG_QUALITY,
+                    98,
+                    cv2.IMWRITE_JPEG_OPTIMIZE,
+                    1,
+                    cv2.IMWRITE_JPEG_PROGRESSIVE,
+                    1,
+                ]
+                # self._lock is a plain (non-reentrant) Lock; the raise above has
+                # already unwound out of the with-block, so re-acquiring is safe.
+                with self._lock:
+                    cv2.imwrite(jpg_path, resized_frame, jpeg_params)
+                    if os.path.exists(png_path):
+                        os.remove(png_path)
+            return
+
+        rgb_frame = cv2.cvtColor(resized_frame, cv2.COLOR_BGR2RGB)
+        image = Image.fromarray(rgb_frame)
+
         try:
+            pnginfo = PngImagePlugin.PngInfo()
+            pnginfo.add_text(self._METADATA_KEY, metadata_payload)
+            # Same atomic transaction as the metadata-less path above: save,
+            # size verdict and cleanup must not be observable half-done.
             with self._lock:
-                cv2.imwrite(png_path, resized_frame)
-            if os.path.getsize(png_path) > 30 * 1024:  # If PNG is > 30KB
-                os.remove(png_path)
-                raise Exception("PNG file too large, falling back to JPEG.")
+                image.save(png_path, format="PNG", optimize=True, pnginfo=pnginfo)
+                if os.path.getsize(png_path) > 30 * 1024:  # If PNG is > 30KB
+                    os.remove(png_path)
+                    raise Exception("PNG file too large, falling back to JPEG.")
+                if os.path.exists(jpg_path):
+                    os.remove(jpg_path)
         except Exception:
-            jpeg_params = [
-                cv2.IMWRITE_JPEG_QUALITY,
-                98,
-                cv2.IMWRITE_JPEG_OPTIMIZE,
-                1,
-                cv2.IMWRITE_JPEG_PROGRESSIVE,
-                1,
-            ]
+            exif = Image.Exif()
+            exif[self._JPEG_USER_COMMENT_TAG] = (
+                self._JPEG_USER_COMMENT_PREFIX + metadata_payload.encode("ascii")
+            )
+            exif_bytes = exif.tobytes()
             with self._lock:
-                cv2.imwrite(jpg_path, resized_frame, jpeg_params)
+                image.save(
+                    jpg_path,
+                    format="JPEG",
+                    quality=98,
+                    optimize=True,
+                    progressive=True,
+                    exif=exif_bytes,
+                )
+                if os.path.exists(png_path):
+                    os.remove(png_path)
 
 
 class DFMModelManager:
@@ -280,7 +414,7 @@ def is_detected_face_eligible_for_matching(
 
 def find_best_target_match(
     detected_embedding: np.ndarray,
-    models_processor: Any,
+    function_worker: Any,
     target_faces: Mapping[object, Any],
     face_parameters: Mapping[str, object],
     default_params: Mapping[str, Any],
@@ -305,7 +439,7 @@ def find_best_target_match(
         if not isinstance(target_embedding, np.ndarray) or target_embedding.size == 0:
             continue
 
-        sim = models_processor.findCosineDistance(detected_embedding, target_embedding)
+        sim = function_worker.findCosineDistance(detected_embedding, target_embedding)
         if sim >= current_params_pd["SimilarityThresholdSlider"] and sim > highest_sim:
             highest_sim = sim
             best_target = target_face
@@ -560,6 +694,76 @@ def get_file_type(file_name):
     return None
 
 
+@dataclass(frozen=True)
+class MediaMetadata:
+    """Metadata used to sort and filter the target media list.
+
+    Populated by probe_media_metadata() in the loader thread so the GUI thread
+    never has to open a media file just to sort the list.
+    """
+
+    width: int = 0
+    height: int = 0
+    total_frames: int = 0
+    frame_rate: float = 0.0
+    bitrate_kbits: float = 0.0
+
+    @property
+    def pixels(self) -> int:
+        return self.width * self.height
+
+
+def probe_media_metadata(media_file_path, file_type) -> Optional[MediaMetadata]:
+    """Read dimensions/length of a media file without decoding its pixels.
+
+    Images are read header-only via PIL and videos are queried through OpenCV
+    properties, so this stays cheap enough to run once per file while scanning a
+    folder.  Returns None for webcams and for anything that cannot be probed.
+    """
+    if file_type == "image":
+        try:
+            with Image.open(media_file_path) as img:
+                width, height = img.size
+        except Exception as e:
+            print(f"[WARN] Could not read image metadata for {media_file_path}: {e}")
+            return None
+        # A still image is one frame; that keeps images sortable by length too.
+        return MediaMetadata(width=int(width), height=int(height), total_frames=1)
+
+    if file_type != "video":
+        return None
+
+    cap = None
+    try:
+        cap = cv2.VideoCapture(str(media_file_path))
+        if not cap.isOpened():
+            return None
+        width = int(cap.get(cv2.CAP_PROP_FRAME_WIDTH))
+        height = int(cap.get(cv2.CAP_PROP_FRAME_HEIGHT))
+        total_frames = int(cap.get(cv2.CAP_PROP_FRAME_COUNT))
+        frame_rate = float(cap.get(cv2.CAP_PROP_FPS))
+        bitrate_kbits = float(cap.get(cv2.CAP_PROP_BITRATE))
+    except Exception as e:
+        print(f"[WARN] Could not read video metadata for {media_file_path}: {e}")
+        return None
+    finally:
+        if cap is not None:
+            cap.release()
+
+    # CAP_PROP_FRAME_* reports the stored frame size, so a rotated video needs its
+    # dimensions swapped to match what the user actually sees.
+    if get_video_rotation(str(media_file_path)) in (90, 270):
+        width, height = height, width
+
+    return MediaMetadata(
+        width=max(0, width),
+        height=max(0, height),
+        total_frames=max(0, total_frames),
+        frame_rate=max(0.0, frame_rate),
+        bitrate_kbits=max(0.0, bitrate_kbits),
+    )
+
+
 def get_scaled_resolution(
     media_width: Optional[int] = None,
     media_height: Optional[int] = None,
@@ -664,20 +868,24 @@ def get_video_rotation(media_path: str) -> int:
             str(media_path),
         ]
 
-        process = subprocess.Popen(
+        # subprocess.run() is used instead of Popen().communicate() because it kills
+        # and reaps the child itself when the timeout fires. A bare Popen leaves
+        # ffprobe running after a TimeoutExpired, leaking a process (and its RAM)
+        # for every unreachable file scanned.
+        process = subprocess.run(
             cmd,
-            stdout=subprocess.PIPE,
-            stderr=subprocess.PIPE,
+            capture_output=True,
             text=True,
             encoding="utf-8",
+            timeout=10,
+            check=False,
         )
-        stdout_data, stderr_data = process.communicate(timeout=10)
 
         if process.returncode != 0:
-            print(f"[ERROR] ffprobe failed. Error: {stderr_data}")
+            print(f"[ERROR] ffprobe failed. Error: {process.stderr}")
             return 0
 
-        data = json.loads(stdout_data)
+        data = json.loads(process.stdout)
 
         # --- Helper: Recursive Search ---
         def find_rotation_value(obj):
@@ -747,10 +955,12 @@ def _apply_frame_rotation(frame: np.ndarray, angle: int) -> np.ndarray:
     return frame
 
 
-def check_and_warn_vfr(file_path: str) -> bool:
+def check_and_warn_vfr(file_path: str) -> None:
     """
     Samples the first 200 frames using ffprobe to accurately detect Variable Frame Rate (VFR).
     Headers are often inaccurate, so analyzing actual packet durations is the safest method.
+
+    Executes asynchronously in a daemon thread to prevent PySide6 main thread freezing.
 
     Args:
         file_path (str): The absolute path to the video file.
@@ -759,67 +969,75 @@ def check_and_warn_vfr(file_path: str) -> bool:
         bool: True if VFR is detected, False otherwise.
     """
     if not file_path or not os.path.isfile(file_path):
-        return False
+        return
 
-    try:
-        # We read the packet duration of the first 200 frames.
-        # This is virtually instantaneous as it only reads container metadata, not pixel data.
-        args = [
-            "ffprobe",
-            "-v",
-            "error",
-            "-select_streams",
-            "v:0",
-            "-show_entries",
-            "frame=pkt_duration_time",
-            "-read_intervals",
-            "%+#200",  # Read only the first 200 frames
-            "-of",
-            "default=noprint_wrappers=1:nokey=1",
-            file_path,
-        ]
-        result = subprocess.run(args, capture_output=True, text=True, timeout=10)
+    def _vfr_worker(target_path: str) -> None:
+        try:
+            # We read the packet duration of the first 200 frames.
+            # This is virtually instantaneous as it only reads container metadata, not pixel data.
+            args = [
+                "ffprobe",
+                "-v",
+                "error",
+                "-select_streams",
+                "v:0",
+                "-show_entries",
+                "frame=pkt_duration_time",
+                "-read_intervals",
+                "%+#200",  # Read only the first 200 frames
+                "-of",
+                "default=noprint_wrappers=1:nokey=1",
+                target_path,
+            ]
+            result = subprocess.run(args, capture_output=True, text=True, timeout=10)
 
-        if result.returncode != 0:
-            return False
+            if result.returncode != 0:
+                return
 
-        durations = set()
-        for line in result.stdout.strip().split("\n"):
-            line = line.strip()
-            if line and line != "N/A":
-                try:
-                    # Round to 3 decimal places to ignore floating point inaccuracies
-                    durations.add(round(float(line), 3))
-                except ValueError:
-                    pass
+            durations = set()
+            for line in result.stdout.strip().split("\n"):
+                line = line.strip()
+                if line and line != "N/A":
+                    try:
+                        # Round to 3 decimal places to ignore floating point inaccuracies
+                        durations.add(round(float(line), 3))
+                    except ValueError:
+                        pass
 
-        # If we have more than one distinct frame duration, the video is Variable Frame Rate.
-        is_vfr = len(durations) > 1
+            # If we have more than one distinct frame duration, the video is Variable Frame Rate.
+            is_vfr = len(durations) > 1
 
-        if is_vfr:
-            print(
-                "[WARN] -------------------------------------------------------------"
-            )
-            print("[WARN] VARIABLE FRAME RATE (VFR) DETECTED IN SOURCE VIDEO!")
-            print("[WARN] The original media does not maintain a constant framerate.")
-            print(
-                "[WARN] Audio sync drift may occur during long recordings. For flawless"
-            )
-            print("[WARN] results, please transcode your video to Constant Frame Rate")
-            print("[WARN] (CFR) using a tool like Handbrake before processing it here.")
-            print(
-                "[WARN] -------------------------------------------------------------"
-            )
-        else:
-            print(
-                "[INFO] Video framerate is Constant (CFR). Audio sync should be perfect."
-            )
+            if is_vfr:
+                print(
+                    "[WARN] -------------------------------------------------------------"
+                )
+                print("[WARN] VARIABLE FRAME RATE (VFR) DETECTED IN SOURCE VIDEO!")
+                print(
+                    "[WARN] The original media does not maintain a constant framerate."
+                )
+                print(
+                    "[WARN] Audio sync drift may occur during long recordings. For flawless"
+                )
+                print(
+                    "[WARN] results, please transcode your video to Constant Frame Rate"
+                )
+                print(
+                    "[WARN] (CFR) using a tool like Handbrake before processing it here."
+                )
+                print(
+                    "[WARN] -------------------------------------------------------------"
+                )
+            else:
+                print(
+                    "[INFO] Video framerate is Constant (CFR). Audio sync should be perfect."
+                )
 
-        return is_vfr
+        except Exception as e:
+            print(f"[WARN] Could not probe VFR status for {target_path}: {e}")
 
-    except Exception as e:
-        print(f"[WARN] Could not probe VFR status for {file_path}: {e}")
-        return False
+    # Dispatch the blocking I/O task to a background daemon thread
+    vfr_thread = threading.Thread(target=_vfr_worker, args=(file_path,), daemon=True)
+    vfr_thread.start()
 
 
 def benchmark(func):
@@ -1070,6 +1288,77 @@ def tensor_to_pil(tensor: torch.Tensor) -> Image.Image:
     return Image.fromarray(tensor)
 
 
+def calculate_pose_disparity_weight(src_kps: np.ndarray, tgt_kps: np.ndarray) -> float:
+    """
+    Estimates the 3D pose mismatch (Yaw and Pitch) using 2D distance proxies.
+    Returns a weight between 0.0 (extreme mismatch) and 1.0 (perfect match).
+
+    Refactored to include a 'Safe Zone' to prevent penalizing natural facial
+    asymmetries, slight head turns, or mouth movements (speaking).
+    """
+    eps = 1e-5
+
+    def get_proxies(kps: np.ndarray) -> tuple[float, float]:
+        left_eye, right_eye, nose = kps[0], kps[1], kps[2]
+        left_mouth, right_mouth = kps[3], kps[4]
+
+        # Yaw Proxy: Difference in distance from nose to each eye
+        dist_left = float(np.linalg.norm(nose - left_eye))
+        dist_right = float(np.linalg.norm(nose - right_eye))
+        yaw_proxy = abs(dist_left - dist_right) / (dist_left + dist_right + eps)
+
+        # Pitch Proxy: Ratio of upper face vs lower face
+        eye_mid = (left_eye + right_eye) / 2.0
+        mouth_mid = (left_mouth + right_mouth) / 2.0
+        dist_upper = float(np.linalg.norm(nose - eye_mid))
+        dist_lower = float(np.linalg.norm(mouth_mid - nose))
+        pitch_proxy = dist_upper / (dist_lower + eps)
+
+        return yaw_proxy, pitch_proxy
+
+    src_yaw, src_pitch = get_proxies(src_kps)
+    tgt_yaw, tgt_pitch = get_proxies(tgt_kps)
+
+    yaw_diff = abs(tgt_yaw - src_yaw)
+    # Pitch is highly volatile due to mouth opening/closing.
+    # We use a relative difference to normalize it.
+    pitch_diff = abs(tgt_pitch - src_pitch) / (max(tgt_pitch, src_pitch) + eps)
+
+    # --- YAW SAFE ZONE CALCULATION ---
+    # 0.0 to 0.35: Perfectly safe (allows slight turns and natural asymmetry)
+    # 0.65+: Severe profile (kills the morph completely)
+    yaw_safe_zone = 0.35
+    yaw_max_tolerance = 0.65
+
+    if yaw_diff <= yaw_safe_zone:
+        yaw_weight = 1.0
+    else:
+        # Smooth linear decay from 1.0 to 0.0 outside the safe zone
+        yaw_weight = 1.0 - (
+            (yaw_diff - yaw_safe_zone) / (yaw_max_tolerance - yaw_safe_zone)
+        )
+
+    yaw_weight = float(np.clip(yaw_weight, 0.0, 1.0))
+
+    # --- PITCH SAFE ZONE CALCULATION ---
+    # 0.0 to 0.40: Perfectly safe (forgives mouth movements and minor nods)
+    # 0.80+: Severe vertical tilt
+    pitch_safe_zone = 0.40
+    pitch_max_tolerance = 0.80
+
+    if pitch_diff <= pitch_safe_zone:
+        pitch_weight = 1.0
+    else:
+        pitch_weight = 1.0 - (
+            (pitch_diff - pitch_safe_zone) / (pitch_max_tolerance - pitch_safe_zone)
+        )
+
+    pitch_weight = float(np.clip(pitch_weight, 0.0, 1.0))
+
+    # Return the strictest penalty to ensure structural safety of the crop
+    return min(yaw_weight, pitch_weight)
+
+
 def keypoints_adjustments(
     kps_5: np.ndarray,
     parameters: Mapping[str, Any],
@@ -1078,19 +1367,24 @@ def keypoints_adjustments(
     """
     Adjusts facial keypoints for morphing and manual alignments.
     Uses a Local Anisotropic Alignment strategy based on the eye-line.
-    Includes a safety clamp to prevent extreme axial collapse (the 'small face' bug)
-    while allowing enough natural perspective compression to prevent shoulder-bleed.
+    Includes a dynamic 3D pose-penalty to prevent affine stretching on profile shots.
     """
+    # Create a fresh copy to prevent mutating the original array in shared memory
     kps_5_adj = kps_5.copy()
 
     if (
         parameters.get("FaceKeypointsReplaceEnableToggle", False)
         and source_kps is not None
     ):
-        morph_amount = parameters.get("FaceKeypointsReplaceDecimalSlider", 0.0)
+        base_morph_amount = parameters.get("FaceKeypointsReplaceDecimalSlider", 0.0)
 
-        if morph_amount > 0.0:
-            try:
+        # Only run the complex math if the user actually requested morphing
+        if base_morph_amount > 0.0:
+            # Dynamically reduce the morph amount based on 3D pose mismatch
+            pose_weight = calculate_pose_disparity_weight(source_kps, kps_5_adj)
+            morph_amount = base_morph_amount * pose_weight
+
+            if morph_amount > 0.0:
                 # 1. Isolate Translation: Center the keypoints
                 tgt_centroid = np.mean(kps_5_adj, axis=0)
                 src_centroid = np.mean(source_kps, axis=0)
@@ -1109,16 +1403,20 @@ def keypoints_adjustments(
 
                 # 3. Rotate both faces to be perfectly upright/horizontal (Roll = 0)
                 cos_tgt, sin_tgt = np.cos(-angle_tgt), np.sin(-angle_tgt)
-                R_flat_tgt = np.array([[cos_tgt, -sin_tgt], [sin_tgt, cos_tgt]])
+                R_flat_tgt = np.array(
+                    [[cos_tgt, -sin_tgt], [sin_tgt, cos_tgt]], dtype=np.float32
+                )
                 tgt_flat = tgt_centered @ R_flat_tgt.T
 
                 cos_src, sin_src = np.cos(-angle_src), np.sin(-angle_src)
-                R_flat_src = np.array([[cos_src, -sin_src], [sin_src, cos_src]])
+                R_flat_src = np.array(
+                    [[cos_src, -sin_src], [sin_src, cos_src]], dtype=np.float32
+                )
                 src_flat = src_centered @ R_flat_src.T
 
                 # 4. Local Anisotropic Scale (Independent X and Y)
-                eps = 1e-6
-                std_tgt = np.std(tgt_flat, axis=0) + eps
+                eps = 1e-5
+                std_tgt = np.std(tgt_flat, axis=0)
                 std_src = np.std(src_flat, axis=0) + eps
 
                 scale_x = std_tgt[0] / std_src[0]
@@ -1126,18 +1424,22 @@ def keypoints_adjustments(
 
                 # Calculate the average scale to get a baseline reference for the overall face size.
                 base_scale = (scale_x + scale_y) / 2.0
+                base_scale = max(base_scale, eps)
 
-                # We allow the axis to compress (down to 30% of the baseline scale)
-                # However, we prevent it from dropping below this threshold, avoiding the "miniature face" bug.
-                scale_x = np.clip(scale_x, base_scale * 0.3, base_scale * 2.5)
-                scale_y = np.clip(scale_y, base_scale * 0.3, base_scale * 2.5)
+                # Clamp scaling strictly between 30% and 250% of the baseline to prevent collapse
+                scale_x = float(np.clip(scale_x, base_scale * 0.3, base_scale * 2.5))
+                scale_y = float(np.clip(scale_y, base_scale * 0.3, base_scale * 2.5))
 
                 # 5. Apply Independent Scaling
-                src_flat_scaled = src_flat * np.array([scale_x, scale_y])
+                src_flat_scaled = src_flat * np.array(
+                    [scale_x, scale_y], dtype=np.float32
+                )
 
                 # 6. Rotate back to the Target's original Roll angle
                 cos_inv, sin_inv = np.cos(angle_tgt), np.sin(angle_tgt)
-                R_unflat = np.array([[cos_inv, -sin_inv], [sin_inv, cos_inv]])
+                R_unflat = np.array(
+                    [[cos_inv, -sin_inv], [sin_inv, cos_inv]], dtype=np.float32
+                )
 
                 src_aligned = src_flat_scaled @ R_unflat.T
 
@@ -1149,46 +1451,51 @@ def keypoints_adjustments(
                     kps_5_adj + morph_amount * (source_kps_aligned - kps_5_adj)
                 ).astype(np.float32)
 
-            except Exception as e:
-                print(f"[WARNING] Face Keypoints Morphing bypassed: {e}")
-
     # --- MANUAL ALIGNMENTS (Sliders) ---
     if parameters.get("FaceAdjEnableToggle", False):
         # 1. Apply spatial translations (X / Y Axis)
-        # Adjusts the facial keypoints position based on user-defined offsets.
         kps_5_adj[:, 0] += parameters.get("KpsXSlider", 0.0)
         kps_5_adj[:, 1] += parameters.get("KpsYSlider", 0.0)
 
         # 2. Apply spatial scaling
-        # Resizes the face representation while maintaining its relative geometry.
         scale_val = parameters.get("KpsScaleSlider", 0.0)
         if scale_val != 0.0:
             scale_factor = 1.0 + (scale_val / 100.0)
-
-            # FW-BUG-FIX: Dynamic Centroid Calculation.
-            # Replaced the hardcoded '255' center with the actual barycenter
-            # of the face keypoints. This prevents unwanted translation (drift)
-            # when resizing faces that are not perfectly centered at (255, 255).
-            centroid = np.mean(kps_5_adj, axis=0)  # Returns array([mean_x, mean_y])
-
-            # Vectorized scaling: (Point - Centroid) * Scale + Centroid
-            # Computes both X and Y axes simultaneously for optimal NumPy performance.
+            centroid = np.mean(kps_5_adj, axis=0)
             kps_5_adj = (kps_5_adj - centroid) * scale_factor + centroid
 
+    # 3. Micro-adjustments for individual keypoints
     if (
         parameters.get("LandmarksPositionAdjEnableToggle", False)
         and kps_5_adj.shape[0] >= 5
     ):
-        kps_5_adj[0][0] += parameters["EyeLeftXAmountSlider"]
-        kps_5_adj[0][1] += parameters["EyeLeftYAmountSlider"]
-        kps_5_adj[1][0] += parameters["EyeRightXAmountSlider"]
-        kps_5_adj[1][1] += parameters["EyeRightYAmountSlider"]
-        kps_5_adj[2][0] += parameters["NoseXAmountSlider"]
-        kps_5_adj[2][1] += parameters["NoseYAmountSlider"]
-        kps_5_adj[3][0] += parameters["MouthLeftXAmountSlider"]
-        kps_5_adj[3][1] += parameters["MouthLeftYAmountSlider"]
-        kps_5_adj[4][0] += parameters["MouthRightXAmountSlider"]
-        kps_5_adj[4][1] += parameters["MouthRightYAmountSlider"]
+        offsets = np.array(
+            [
+                [
+                    parameters.get("EyeLeftXAmountSlider", 0.0),
+                    parameters.get("EyeLeftYAmountSlider", 0.0),
+                ],
+                [
+                    parameters.get("EyeRightXAmountSlider", 0.0),
+                    parameters.get("EyeRightYAmountSlider", 0.0),
+                ],
+                [
+                    parameters.get("NoseXAmountSlider", 0.0),
+                    parameters.get("NoseYAmountSlider", 0.0),
+                ],
+                [
+                    parameters.get("MouthLeftXAmountSlider", 0.0),
+                    parameters.get("MouthLeftYAmountSlider", 0.0),
+                ],
+                [
+                    parameters.get("MouthRightXAmountSlider", 0.0),
+                    parameters.get("MouthRightYAmountSlider", 0.0),
+                ],
+            ],
+            dtype=np.float32,
+        )
+
+        kps_5_adj[:5] += offsets
 
     return kps_5_adj
 

@@ -2,63 +2,71 @@ from typing import TYPE_CHECKING
 
 from PySide6 import QtCore, QtWidgets
 
+from app.ui.widgets.sortable_widgets import SortableListWidgetItem
+
 if TYPE_CHECKING:
     from app.ui.main_ui import MainWindow
-
-
-def _get_target_video_filter_checked(
-    main_window: "MainWindow", action_name: str, checkbox_name: str, default: bool
-) -> bool:
-    checkbox = getattr(main_window, checkbox_name, None)
-    if checkbox is not None:
-        return checkbox.isChecked()
-
-    action = getattr(main_window, action_name, None)
-    if action is not None:
-        return action.isChecked()
-
-    return default
 
 
 def filter_target_videos(main_window: "MainWindow", *args):
     main_window.target_videos_filter_worker.stop_thread()
 
-    # Capture all Qt widget data in the main thread before starting the worker
-    search_text = main_window.targetVideosSearchBox.text().lower()
+    # Capture search text immediately
+    search_text = main_window.targetVideosSearchBox.text().lower().strip()
+
+    filter_button = getattr(main_window, "targetVideosFilterMenuButton", None)
+    filter_panel_open = filter_button is not None and filter_button.isChecked()
+
+    # Early exit ONLY if both the panel is closed AND there is no search text
+    if not filter_panel_open and not search_text:
+        for i in range(main_window.targetVideosList.count()):
+            main_window.targetVideosList.item(i).setHidden(False)
+        return
 
     include_file_types = []
-    if _get_target_video_filter_checked(
-        main_window,
-        "targetVideosFilterImagesAction",
-        "targetVideosFilterImagesCheckBox",
-        True,
-    ):
-        include_file_types.append("image")
-    if _get_target_video_filter_checked(
-        main_window,
-        "targetVideosFilterVideosAction",
-        "targetVideosFilterVideosCheckBox",
-        True,
-    ):
-        include_file_types.append("video")
-    if _get_target_video_filter_checked(
-        main_window,
-        "targetVideosFilterWebcamsAction",
-        "targetVideosFilterWebcamsCheckBox",
-        False,
-    ):
-        include_file_types.append("webcam")
+    min_width = 0
+    min_height = 0
 
+    # Only apply advanced filters if the panel is open
+    if filter_panel_open:
+        if main_window.targetVideosFilterImagesCheckBox.isChecked():
+            include_file_types.append("image")
+        if main_window.targetVideosFilterVideosCheckBox.isChecked():
+            include_file_types.append("video")
+        if main_window.targetVideosFilterWebcamsCheckBox.isChecked():
+            include_file_types.append("webcam")
+
+        min_dimension = main_window.targetVideosList.minImageDimension()
+        min_width = min_dimension.width if min_dimension else 0
+        min_height = min_dimension.height if min_dimension else 0
+    else:
+        # If panel is closed, allow all types and sizes so ONLY the search text applies
+        include_file_types = ["image", "video", "webcam"]
+
+    # Capture all Qt widget data in the main thread before starting the worker
     items_snapshot = []
     for i in range(main_window.targetVideosList.count()):
         item = main_window.targetVideosList.item(i)
         item_widget = main_window.targetVideosList.itemWidget(item)
-        if item_widget is not None:
-            items_snapshot.append((i, item_widget.media_path, item_widget.file_type))
+        if item_widget is None:
+            continue
+        imgdim = (
+            item.imageDimension() if isinstance(item, SortableListWidgetItem) else None
+        )
+        items_snapshot.append(
+            (
+                i,
+                str(item_widget.media_path),
+                item_widget.file_type,
+                imgdim.width if imgdim else 0,
+                imgdim.height if imgdim else 0,
+            )
+        )
 
     worker = main_window.target_videos_filter_worker
     worker.search_text = search_text
     worker.include_file_types = include_file_types
+    worker.min_image_size = (min_width, min_height)
     worker.items_snapshot = items_snapshot
     worker.start()
 

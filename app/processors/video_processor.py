@@ -1,7 +1,7 @@
 import threading
 import queue
 from collections.abc import Iterable, Mapping
-from typing import TYPE_CHECKING, Any, Dict, Tuple, Optional, cast, List
+from typing import TYPE_CHECKING, Any, Tuple, Optional, List
 import time
 import subprocess
 from pathlib import Path
@@ -12,7 +12,6 @@ import shutil
 import uuid
 from datetime import datetime
 import cv2
-import psutil
 import numpy
 import torch
 import pyvirtualcam
@@ -22,6 +21,12 @@ from PySide6.QtCore import QObject, QTimer, Signal, Slot
 # Internal project imports
 from app.processors.workers.frame_worker import FrameWorker
 from app.processors.video_utils.sequential_detector import SequentialDetector
+from app.processors.video_utils.worker_pool_manager import WorkerPoolManager
+from app.processors.video_utils.media_pipeline import (
+    MediaPipeline,
+    TAIL_TOLERANCE,
+    MAX_CONSECUTIVE_ERRORS,
+)
 from app.ui.widgets.actions import graphics_view_actions
 from app.ui.widgets.actions import common_actions as common_widget_actions
 from app.ui.widgets.actions import video_control_actions
@@ -30,84 +35,18 @@ from app.ui.widgets.actions import list_view_actions
 from app.ui.widgets.actions import save_load_actions
 from app.ui.widgets.settings_layout_data import CAMERA_BACKENDS
 from app.processors.video_utils.video_encoding import FFmpegEncoder, FFmpegPostProcessor
+from app.processors.video_utils.issue_scanner import (
+    IssueScanner,
+    IssueScanTargetSnapshot,
+)
 import app.helpers.miscellaneous as misc_helpers
 from app.helpers.typing_helper import (
     ControlTypes,
     FacesParametersTypes,
-    ParametersTypes,
 )
 
 if TYPE_CHECKING:
     from app.ui.main_ui import MainWindow
-
-IssueScanTargetEmbeddings = dict[str, dict[str, numpy.ndarray]]
-IssueScanTargetSnapshot = dict[str, dict[str, Any]]
-
-SCAN_CONTROL_ALLOWLIST = frozenset(
-    {
-        "GlobalInputResizeToggle",
-        "GlobalInputResizeSizeSelection",
-        "DetectorModelSelection",
-        "MaxFacesToDetectSlider",
-        "DetectorScoreSlider",
-        "LandmarkDetectToggle",
-        "LandmarkDetectModelSelection",
-        "LandmarkDetectScoreSlider",
-        "DetectFromPointsToggle",
-        "AutoRotationToggle",
-        "LandmarkMeanEyesToggle",
-        "FaceTrackingEnableToggle",
-        "ByteTrackTrackThreshSlider",
-        "ByteTrackMatchThreshSlider",
-        "ByteTrackTrackBufferSlider",
-        "KPSSmoothingEnableToggle",
-        "KPSEmaAlphaSlider",
-        "RecognitionModelSelection",
-    }
-)
-SCAN_FACE_PARAM_ALLOWLIST = frozenset({"SimilarityThresholdSlider"})
-
-TAIL_TOLERANCE = 30  # BUG-07: 10 was too tight — codec trailing B-frames can cause read
-# failures in the last ~10 frames on H.264/H.265 content, dropping valid end frames.
-MAX_CONSECUTIVE_ERRORS = (
-    300  # Stop reading after this many consecutive frame read failures
-)
-TAIL_PENDING_STALL_TIMEOUT_SEC = 8.0  # Fallback for stuck unfinished_tasks at tail
-
-# Audio-Video Sync: Always use segmented extraction when frames are skipped (perfect sync)
-# Simple extraction used when no frames are skipped (no sync issues)
-
-
-def fast_state_copy(obj):
-    """
-    Custom fast deepcopy for HPC video pipelines.
-    Isolates dictionaries and lists to guarantee temporal independence for each frame worker,
-    but strictly passes heavy arrays (PyTorch Tensors, NumPy arrays) by reference
-    to prevent RAM and VRAM memory leaks.
-    """
-    if isinstance(obj, dict):
-        # Preserve the exact dictionary type (e.g., ParametersDict)
-        new_dict = type(obj)()
-        for k, v in obj.items():
-            new_dict[k] = fast_state_copy(v)
-        return new_dict
-    elif isinstance(obj, list):
-        return [fast_state_copy(v) for v in obj]
-    elif isinstance(obj, tuple):
-        return tuple(fast_state_copy(v) for v in obj)
-    elif isinstance(obj, set):
-        return {fast_state_copy(v) for v in obj}
-    elif isinstance(obj, (numpy.ndarray, torch.Tensor)):
-        # Do NOT duplicate heavy machine learning tensors. Pass by reference.
-        return obj
-    else:
-        # Pass immutable basic types as-is
-        if isinstance(obj, (int, float, str, bool, bytes, type(None))):
-            return obj
-        # Fallback for custom objects
-        import copy
-
-        return copy.copy(obj)
 
 
 class VideoProcessor(QObject):
@@ -135,6 +74,7 @@ class VideoProcessor(QObject):
     processing_started_signal = Signal()  # Unified signal for any processing start
     processing_stopped_signal = Signal()  # Unified signal for any processing stop
     processing_heartbeat_signal = Signal()  # Emits periodically to show liveness
+    fatal_processing_error_signal = Signal(str)
 
     def __init__(self, main_window: "MainWindow", num_threads=2):
         """
@@ -153,38 +93,22 @@ class VideoProcessor(QObject):
         super().__init__()
         self.main_window = main_window
 
-        self.state_lock = threading.Lock()  # Lock for feeder state
-        self.feeder_parameters: FacesParametersTypes | None = None
-        self.feeder_control: ControlTypes | None = None
-
         # --- Worker Thread Management ---
         self.num_threads = num_threads
-        self.preroll_target = min(
-            max(20, int(self.num_threads * 1.5)), 40
-        )  # Target number of frames before playback starts
-        # OPTIMIZATION RAM: Reduced the aggressive *4 multiplier to prevent massive RAM
-        # bloat on 4K/8K videos. We only need enough buffer to keep workers busy.
-        self.max_display_buffer_size = self.preroll_target + (self.num_threads * 2)
+        # RAM OPTIMIZATION: Bounded Preroll. We only need 10 frames to ensure smooth UI playback.
+        self.preroll_target = 10
+
+        # RAM OPTIMIZATION: Tightened queue bounds. We only need enough queue depth to hold
+        # the active threads, the preroll requirement, and a tiny 4-frame slack buffer.
+        self.max_display_buffer_size = self.num_threads + self.preroll_target + 4
         self.max_frames_to_display_size = 8  # VP-22: Hard cap on frames_to_display dict
 
-        # This queue will hold tasks: (frame_number, frame_rgb_data, params, control) or None (poison pill)
-        self.frame_queue: queue.Queue[
-            Tuple[int, numpy.ndarray, FacesParametersTypes, ControlTypes] | None
-        ] = queue.Queue(maxsize=self.max_display_buffer_size)
-        # This list will hold our *persistent* worker threads
-        self.worker_threads: List[threading.Thread] = []
-        # Single-frame (scrubbing) worker — tracked so a new seek can stop the old one
-        # before starting a fresh worker, preventing concurrent model inference crashes.
-        self._current_single_frame_worker: "FrameWorker | None" = None
-        self._single_frame_request_generation: int = 0
-        self._active_single_frame_request_generation: int = 0
-        self._fit_on_single_frame_request_generation: int | None = None
-        self._pending_single_frame_request: dict | None = None
-        self._single_frame_handoff_timer = QTimer(self)
-        self._single_frame_handoff_timer.setInterval(15)
-        self._single_frame_handoff_timer.timeout.connect(
-            self._try_start_pending_single_frame_worker
-        )
+        # Instantiate the decoupled thread and VRAM manager
+        self.worker_pool_manager = WorkerPoolManager(self.main_window)
+        self.worker_pool_manager.recreate_queue(self.max_display_buffer_size)
+
+        # Instantiate the decoupled Producer/Consumer pipeline
+        self.media_pipeline = MediaPipeline(self, self.main_window)
 
         # --- Media State ---
         self.media_capture: cv2.VideoCapture | None = None
@@ -213,15 +137,14 @@ class VideoProcessor(QObject):
             False  # True if "multi-segment" recording is active
         )
         self.triggered_by_job_manager: bool = False  # For multi-segment job integration
+        self._fatal_processing_error_latched: bool = False
+        self.last_processing_error: str | None = None
         self.active_output_folder: str = ""
-        self.ui_state_is_dirty = True  # For state changes
 
         # --- Subprocesses ---
         self.virtcam: pyvirtualcam.Camera | None = None
+        self._virtcam_error_latch: bool = False
         self.encoder = FFmpegEncoder()
-        self.ffplay_sound_sp: subprocess.Popen | None = (
-            None  # ffplay process for live audio
-        )
         self.ffmpeg_input_sp: subprocess.Popen | None = (
             None  # ffmpeg process that feeds raw frames for recording FPS cap mode
         )
@@ -241,23 +164,10 @@ class VideoProcessor(QObject):
         self.processing_start_frame: int = (
             0  # The frame number where processing started
         )
-        self.last_display_schedule_time_sec: float = (
-            0.0  # Used by metronome to prevent drift
-        )
-        self.target_delay_sec: float = 1.0 / 30.0  # Time between frames for metronome
-        self.preroll_timer = QTimer(self)
-        self.feeder_thread: threading.Thread | None = (
-            None  # The dedicated thread that reads frames and "feeds" the workers
-        )
-        self.playback_started: bool = False
-        self.heartbeat_frame_counter: int = 0  # Counter for heartbeat signal
 
         # --- Performance Timing ---
         self.start_time = 0.0
         self.end_time = 0.0
-        self.playback_display_start_time = (
-            0.0  # Time when frames *actually* started displaying
-        )
         self.play_start_time = 0.0  # Used by default style for audio segmenting
         self.play_end_time = 0.0  # Used by default style for audio segmenting
 
@@ -274,21 +184,6 @@ class VideoProcessor(QObject):
             None  # Last frame number that was displayed/written
         )
 
-        # --- Frame Skip Tracking ---
-        self.skipped_frames: set[int] = (
-            set()
-        )  # Track which frames were skipped during recording/segment processing
-        self.consecutive_read_errors: int = 0  # Count consecutive read failures
-        self.max_consecutive_errors: int = (
-            MAX_CONSECUTIVE_ERRORS  # Stop after this many consecutive errors
-        )
-        self.total_skipped_frames: int = 0  # Counter for skipped frames
-        self.stopped_by_error_limit: bool = (
-            False  # Track if processing stopped due to error limit
-        )
-        self.manual_dropped_skip_count: int = 0
-        self.read_error_skip_count: int = 0
-
         # --- Multi-Segment Recording State ---
         self.segments_to_process: List[Tuple[int, int]] = []
         self.current_segment_index: int = -1
@@ -304,14 +199,13 @@ class VideoProcessor(QObject):
 
         # --- Frame Display/Storage ---
         self.next_frame_to_display = 0  # The next frame number the UI should display
-        # Changed to store ONLY numpy arrays to prevent VRAM memory bloat
-        self.frames_to_display: Dict[int, numpy.ndarray] = {}  # Processed video frames
+
         # Fallback frame cached during slider seek preview so process_current_frame()
         # can use it when the near-EOF re-read fails (OpenCV seek unreliability).
         self._seek_cached_frame: Optional[Tuple[int, numpy.ndarray]] = None
-        self.webcam_frames_to_display: queue.Queue[numpy.ndarray] = (
-            queue.Queue()
-        )  # Processed webcam frames
+
+        # Note: frames_to_display and webcam_frames_to_display are now managed
+        # dynamically via @property decorators routing to self.media_pipeline.
 
         # Frame cache
         self._last_requested_frame_num: int | None = None
@@ -328,97 +222,175 @@ class VideoProcessor(QObject):
         self.webcam_frame_processed_signal.connect(self.store_webcam_frame_to_display)
         self.single_frame_processed_signal.connect(self.display_current_frame)
         self.single_frame_processed_signal.connect(self.store_single_frame_to_display)
+        self.fatal_processing_error_signal.connect(self._handle_fatal_processing_error)
 
-    @Slot(int, numpy.ndarray)
-    def store_frame_to_display(self, frame_number, frame):
-        """Slot to store a processed video/image frame from a worker."""
+    @property
+    def ui_state_is_dirty(self) -> bool:
+        return self.media_pipeline.ui_state_is_dirty
 
-        if not self.processing and not self.is_processing_segments:
-            del frame
-            return
+    @ui_state_is_dirty.setter
+    def ui_state_is_dirty(self, value: bool) -> None:
+        self.media_pipeline.ui_state_is_dirty = value
 
-        # Intercept wrongly arriving frames from the webcam feed
-        if self.file_type == "webcam":
-            self.store_webcam_frame_to_display(frame)
-            return
+    @property
+    def feeder_parameters(self) -> FacesParametersTypes | None:
+        return self.media_pipeline.feeder_parameters
 
-        # Drop stale frames arriving late from slower threads if we already scrubbed or played past them.
-        # This prevents RAM bloat and keeps the metronome buffer clean.
-        draining_tail = self._is_draining_tail()
+    @feeder_parameters.setter
+    def feeder_parameters(self, value: FacesParametersTypes | None) -> None:
+        self.media_pipeline.feeder_parameters = value
 
-        if (
-            self.file_type == "video"
-            and frame_number < self.next_frame_to_display
-            and not draining_tail
-        ):
-            del frame
-            return
+    @property
+    def feeder_control(self) -> ControlTypes | None:
+        return self.media_pipeline.feeder_control
 
-        self.frames_to_display[frame_number] = frame
-        # VP-22: Evict stale frames (already past next_frame_to_display) when the
-        # buffer exceeds the soft cap. NEVER evict frames that the metronome still
-        # needs — doing so causes a permanent stall.
-        while len(self.frames_to_display) > self.max_frames_to_display_size:
-            if draining_tail:
-                # During tail drain, all remaining frames can still be needed.
-                break
-            oldest = min(self.frames_to_display)
-            if oldest >= self.next_frame_to_display:
-                # All stored frames are still needed; cannot evict safely.
-                break
-            arr = self.frames_to_display.pop(oldest)
-            del arr
+    @feeder_control.setter
+    def feeder_control(self, value: ControlTypes | None) -> None:
+        self.media_pipeline.feeder_control = value
 
-    @Slot(numpy.ndarray)
-    def store_webcam_frame_to_display(self, frame):
-        """
-        Slot to store a processed webcam frame from a worker.
-        For live webcam, we only want the *latest* frame.
-        """
-        # Clear all pending (old) frames from the queue
-        while not self.webcam_frames_to_display.empty():
-            try:
-                stale_frame = self.webcam_frames_to_display.get_nowait()
-                del stale_frame
-            except queue.Empty:
-                break
+    @property
+    def feeder_thread(self) -> threading.Thread | None:
+        return self.media_pipeline.feeder_thread
 
-        # Put the new, latest frame in the now-empty queue
-        self.webcam_frames_to_display.put(frame)
+    @feeder_thread.setter
+    def feeder_thread(self, value: threading.Thread | None) -> None:
+        self.media_pipeline.feeder_thread = value
+
+    @property
+    def detector_thread(self) -> threading.Thread | None:
+        return self.media_pipeline.detector_thread
+
+    @detector_thread.setter
+    def detector_thread(self, value: threading.Thread | None) -> None:
+        self.media_pipeline.detector_thread = value
+
+    @property
+    def state_lock(self) -> threading.Lock:
+        return self.media_pipeline.state_lock
+
+    @property
+    def preroll_timer(self) -> QTimer:
+        return self.media_pipeline.preroll_timer
+
+    @property
+    def playback_started(self) -> bool:
+        return self.media_pipeline.playback_started
+
+    @playback_started.setter
+    def playback_started(self, value: bool) -> None:
+        self.media_pipeline.playback_started = value
+
+    @property
+    def playback_display_start_time(self) -> float:
+        return self.media_pipeline.playback_display_start_time
+
+    @playback_display_start_time.setter
+    def playback_display_start_time(self, value: float) -> None:
+        self.media_pipeline.playback_display_start_time = value
+
+    @property
+    def skipped_frames(self) -> set[int]:
+        return self.media_pipeline.skipped_frames
+
+    @property
+    def consecutive_read_errors(self) -> int:
+        return self.media_pipeline.consecutive_read_errors
+
+    @consecutive_read_errors.setter
+    def consecutive_read_errors(self, value: int) -> None:
+        self.media_pipeline.consecutive_read_errors = value
+
+    @property
+    def max_consecutive_errors(self) -> int:
+        return MAX_CONSECUTIVE_ERRORS
+
+    @property
+    def total_skipped_frames(self) -> int:
+        return self.media_pipeline.total_skipped_frames
+
+    @total_skipped_frames.setter
+    def total_skipped_frames(self, value: int) -> None:
+        self.media_pipeline.total_skipped_frames = value
+
+    @property
+    def stopped_by_error_limit(self) -> bool:
+        return self.media_pipeline.stopped_by_error_limit
+
+    @stopped_by_error_limit.setter
+    def stopped_by_error_limit(self, value: bool) -> None:
+        self.media_pipeline.stopped_by_error_limit = value
+
+    @property
+    def manual_dropped_skip_count(self) -> int:
+        return self.media_pipeline.manual_dropped_skip_count
+
+    @manual_dropped_skip_count.setter
+    def manual_dropped_skip_count(self, value: int) -> None:
+        self.media_pipeline.manual_dropped_skip_count = value
+
+    @property
+    def read_error_skip_count(self) -> int:
+        return self.media_pipeline.read_error_skip_count
+
+    @read_error_skip_count.setter
+    def read_error_skip_count(self, value: int) -> None:
+        self.media_pipeline.read_error_skip_count = value
+
+    @property
+    def frame_queue(self) -> queue.Queue:
+        """Facade Property: Dynamically forwards queue operations to the Manager."""
+        return self.worker_pool_manager.frame_queue
+
+    @property
+    def frames_to_display(self) -> dict:
+        """Facade Property: Routes buffer access to the MediaPipeline."""
+        return self.media_pipeline.frames_to_display
+
+    @property
+    def webcam_frames_to_display(self) -> queue.Queue:
+        """Facade Property: Routes webcam buffer access to the MediaPipeline."""
+        return self.media_pipeline.webcam_frames_to_display
+
+    def store_frame_to_display(self, frame_number: int, frame: numpy.ndarray) -> None:
+        """Facade: Routes finished frames to the MediaPipeline."""
+        self.media_pipeline.store_frame_to_display(frame_number, frame)
+
+    def store_webcam_frame_to_display(self, frame: numpy.ndarray) -> None:
+        """Facade: Routes finished webcam frames to the MediaPipeline."""
+        self.media_pipeline.store_webcam_frame_to_display(frame)
+
+    def stop_live_sound(self) -> None:
+        """Facade: Stops audio via MediaPipeline."""
+        self.media_pipeline.stop_live_sound()
 
     @Slot(int, int, numpy.ndarray, object)
-    def store_single_frame_to_display(
-        self, generation, frame_number, frame, _preview_cache
-    ):
-        if (
-            generation != 0
-            and generation != self._active_single_frame_request_generation
-        ):
-            return
-        self.store_frame_to_display(frame_number, frame)
-
-    @Slot(int, int, numpy.ndarray, object)
-    def display_current_frame(self, generation, frame_number, frame, preview_cache):
+    def display_current_frame(
+        self,
+        generation: int,
+        frame_number: int,
+        frame: numpy.ndarray,
+        preview_cache: object = None,
+    ) -> None:
         """
         Slot to display a single, specific frame.
         Used after seeking or loading new media. NOT part of the metronome loop.
         """
+        # Validate against WorkerPoolManager's generation state to drop out-of-order ghost frames
         if (
             generation != 0
-            and generation != self._active_single_frame_request_generation
+            and generation
+            != self.worker_pool_manager.active_single_frame_request_generation
         ):
             return
 
-        # During fast scrubbing with AI workers enabled, an older thread might finish processing
-        # a frame AFTER the user has already seeked to a newer frame.
-        # We must reject these "ghost" frames to prevent the UI from jumping backward.
+        # Reject "ghost" frames from older threads during fast UI scrubbing
         if self.file_type == "video" and frame_number != self.next_frame_to_display:
             del frame
             return
 
         pixmap = common_widget_actions.get_pixmap_from_frame(self.main_window, frame)
 
-        if self.main_window.loading_new_media:
+        if getattr(self.main_window, "loading_new_media", False):
             graphics_view_actions.update_graphics_view(
                 self.main_window, pixmap, frame_number, reset_fit=True
             )
@@ -427,106 +399,38 @@ class VideoProcessor(QObject):
             graphics_view_actions.update_graphics_view(
                 self.main_window, pixmap, frame_number
             )
+
         self.current_frame = frame
         common_widget_actions.update_gpu_memory_progressbar(self.main_window)
+
+        # Check if auto-fit was requested for this generation in the WorkerPoolManager
         if (
-            self._fit_on_single_frame_request_generation is not None
-            and generation == self._fit_on_single_frame_request_generation
+            self.worker_pool_manager.fit_on_single_frame_request_generation is not None
+            and generation
+            == self.worker_pool_manager.fit_on_single_frame_request_generation
         ):
-            self._fit_on_single_frame_request_generation = None
+            self.worker_pool_manager.fit_on_single_frame_request_generation = None
             QTimer.singleShot(
                 0,
                 lambda: layout_actions.fit_image_to_view_onchange(self.main_window),
             )
 
-    def _start_metronome(self, target_fps: float, is_first_start: bool = True):
-        """
-        Unified metronome starter.
-        This function configures and starts the metronome loop for all processing types.
-
-        :param target_fps: The target FPS. Use > 9000 for max speed (recording).
-        :param is_first_start: True if this is the very first start (e.g., not a new segment).
-        """
-
-        # Determine timer interval
-        if target_fps <= 0:
-            target_fps = 30.0  # Fallback
-
-        if target_fps > 9000:  # Convention for "max speed"
-            self.target_delay_sec = 0.005
-        else:
-            self.target_delay_sec = 1.0 / target_fps
-
-        # Start utility timers and emit signal
-        self.gpu_memory_update_timer.start(5000)
-
-        if is_first_start:
-            self.processing_started_signal.emit()  # Emit unified signal
-            # Record the time when the display *actually* starts
-            self.playback_display_start_time = time.perf_counter()
-
-        # Start the metronome loop
-        self.last_display_schedule_time_sec = time.perf_counter()
-        self.heartbeat_frame_counter = 0  # Reset heartbeat counter
-        self.display_next_frame()  # Start the loop
-
-    def _check_preroll_and_start_playback(self):
-        """
-        Called by preroll_timer.
-        Checks if the display buffer is full enough to start playback.
-        """
-        if not self.processing:
-            self.preroll_timer.stop()
+    @Slot(int, int, numpy.ndarray, object)
+    def store_single_frame_to_display(
+        self,
+        generation: int,
+        frame_number: int,
+        frame: numpy.ndarray,
+        preview_cache: object = None,
+    ) -> None:
+        """Stores a single preview frame directly to the display buffer, respecting generation order."""
+        if (
+            generation != 0
+            and generation
+            != self.worker_pool_manager.active_single_frame_request_generation
+        ):
             return
-
-        # If playback has already started, stop this timer and exit.
-        if self.playback_started:
-            self.preroll_timer.stop()
-            return
-
-        is_feeder_done = (
-            not self.feeder_thread.is_alive() if self.feeder_thread else False
-        )
-
-        # Check if the buffer is filled OR if we reached EOF
-        if len(self.frames_to_display) >= self.preroll_target or is_feeder_done:
-            self.preroll_timer.stop()
-            self.playback_started = True
-            print(
-                f"[INFO] Preroll buffer ready ({len(self.frames_to_display)} frames). Starting playback components..."
-            )
-
-            # Call the dedicated playback start function
-            self._start_synchronized_playback()
-
-        else:
-            # Not ready yet, keep waiting
-            print(
-                f"[INFO] Buffering... {len(self.frames_to_display)} / {self.preroll_target}"
-            )
-
-    def _feeder_loop(self):
-        """
-        This function runs in a separate thread (self.feeder_thread).
-        Its only job is to read frames from the source and send them to the workers.
-        """
-        print(
-            f"[INFO] Feeder thread started (Mode: {self.file_type}, Segments: {self.is_processing_segments})."
-        )
-        # Dispatch to the appropriate feeder implementation and surface errors.
-        try:
-            if self.file_type == "webcam":
-                self._feed_webcam()
-            else:
-                # Default to video feeder for non-webcam sources.
-                self._feed_video_loop()
-        except Exception as e:
-            print(f"[ERROR] Unhandled exception in feeder thread: {e}")
-            # Ensure processing loops terminate so the application does not hang.
-            self.processing = False
-            self.is_processing_segments = False
-
-        print("[INFO] Feeder thread finished.")
+        self.store_frame_to_display(frame_number, frame)
 
     def _get_target_input_height(self) -> Optional[int]:
         """
@@ -563,820 +467,26 @@ class VideoProcessor(QObject):
             )
             return None
 
-    @staticmethod
-    def _filter_scan_control(control: Mapping[str, Any] | None) -> ControlTypes:
-        if not isinstance(control, Mapping):
-            return cast(ControlTypes, {})
-        return cast(
-            ControlTypes,
-            {
-                str(key): copy.deepcopy(value)
-                for key, value in control.items()
-                if str(key) in SCAN_CONTROL_ALLOWLIST
-            },
+    def _get_issue_scanner_instance(self) -> IssueScanner:
+        """Helper to instantiate the decoupled IssueScanner with current media state."""
+        return IssueScanner(
+            main_window=self.main_window,
+            sequential_detector=self.sequential_detector,
+            media_path=self.media_path,
+            max_frame_number=self.max_frame_number,
+            media_rotation=self.media_rotation,
         )
 
-    @staticmethod
-    def _filter_scan_face_params(
-        params: Mapping[str, Any] | None,
-        target_face_ids: Iterable[str] | None = None,
-    ) -> FacesParametersTypes:
-        if not isinstance(params, Mapping):
-            return cast(FacesParametersTypes, {})
-
-        allowed_face_ids = (
-            {str(face_id) for face_id in target_face_ids}
-            if target_face_ids is not None
-            else None
-        )
-        filtered: FacesParametersTypes = cast(FacesParametersTypes, {})
-
-        for face_id, raw_face_params in params.items():
-            face_id_str = str(face_id)
-            if allowed_face_ids is not None and face_id_str not in allowed_face_ids:
-                continue
-            if not isinstance(raw_face_params, Mapping):
-                filtered[face_id_str] = cast(ParametersTypes, {})
-                continue
-            filtered_face_params = {
-                str(key): copy.deepcopy(value)
-                for key, value in raw_face_params.items()
-                if str(key) in SCAN_FACE_PARAM_ALLOWLIST
-            }
-            filtered[face_id_str] = cast(ParametersTypes, filtered_face_params)
-
-        return filtered
-
-    @staticmethod
-    def _marker_control_data_for_position(
-        markers: Mapping[Any, Any] | None, frame_number: int
-    ) -> Mapping[str, Any] | None:
-        if not isinstance(markers, Mapping) or not markers:
-            return None
-
-        latest_key: Any = None
-        latest_frame = None
-        for raw_key in markers.keys():
-            try:
-                marker_frame = int(raw_key)
-            except (TypeError, ValueError):
-                continue
-            if marker_frame > frame_number:
-                continue
-            if latest_frame is None or marker_frame > latest_frame:
-                latest_frame = marker_frame
-                latest_key = raw_key
-
-        if latest_key is None:
-            return None
-
-        marker_data = markers.get(latest_key)
-        if not isinstance(marker_data, Mapping):
-            return None
-        control_data = marker_data.get("control")
-        return control_data if isinstance(control_data, Mapping) else None
-
-    @staticmethod
-    def _issue_scan_vr180_enabled(control: Mapping[str, Any] | None) -> bool:
-        return isinstance(control, Mapping) and bool(
-            control.get("VR180ModeEnableToggle")
-        )
-
-    @staticmethod
     def get_issue_scan_unavailable_reason(
+        self,
         control: Mapping[str, Any] | None,
         scan_ranges: Iterable[tuple[int, int]] | None = None,
         markers: Mapping[Any, Any] | None = None,
         fallback_control: Mapping[str, Any] | None = None,
     ) -> str | None:
-        if scan_ranges is None:
-            if VideoProcessor._issue_scan_vr180_enabled(control) or (
-                fallback_control is not control
-                and VideoProcessor._issue_scan_vr180_enabled(fallback_control)
-            ):
-                return "Issue scans are not supported while VR180 mode is enabled."
-            return None
-
-        if not isinstance(markers, Mapping):
-            if VideoProcessor._issue_scan_vr180_enabled(control):
-                return "Issue scans are not supported while VR180 mode is enabled."
-            return None
-
-        if not markers:
-            if VideoProcessor._issue_scan_vr180_enabled(control):
-                return "Issue scans are not supported while VR180 mode is enabled."
-            return None
-
-        normalized_marker_frames: list[tuple[Any, int]] = []
-        for raw_key in markers.keys():
-            try:
-                normalized_marker_frames.append((raw_key, int(raw_key)))
-            except (TypeError, ValueError):
-                continue
-        normalized_marker_frames.sort(key=lambda item: item[1])
-
-        for start_frame, end_frame in scan_ranges:
-            if end_frame < start_frame:
-                continue
-
-            if VideoProcessor._issue_scan_vr180_enabled(
-                VideoProcessor._marker_control_data_for_position(
-                    markers, int(start_frame)
-                )
-                or control
-            ):
-                return "Issue scans are not supported while VR180 mode is enabled."
-
-            for raw_key, marker_frame in normalized_marker_frames:
-                if marker_frame < start_frame:
-                    continue
-                if marker_frame > end_frame:
-                    break
-                marker_data = markers.get(raw_key)
-                if not isinstance(marker_data, Mapping):
-                    continue
-                if VideoProcessor._issue_scan_vr180_enabled(
-                    cast(Mapping[str, Any] | None, marker_data.get("control"))
-                ):
-                    return "Issue scans are not supported while VR180 mode is enabled."
-        return None
-
-    def _feed_video_loop(self):
-        """
-        Unified feeder logic for standard video playback AND segment recording.
-        Reads frames as long as processing is active and within the limits.
-        Now supports skipping unreadable or manually dropped frames instead of stopping.
-        """
-
-        # Determine the mode at startup
-        is_segment_mode = self.is_processing_segments
-
-        # The feeder's state is initialized in process_video()
-        # We just need to track the last marker
-        last_marker_data = None
-        self.ui_state_is_dirty = True
-
-        # Determine the stop condition (control variable)
-        def stop_flag_check():
-            return self.is_processing_segments if is_segment_mode else self.processing
-
-        print(
-            f"[INFO] Feeder: Starting video loop (Mode: {'Segment' if is_segment_mode else 'Standard'})."
+        return self._get_issue_scanner_instance().get_issue_scan_unavailable_reason(
+            control, scan_ranges, markers, fallback_control
         )
-
-        # Reset skip tracking at start
-        self.consecutive_read_errors = 0
-        self.skipped_frames.clear()
-        self.total_skipped_frames = 0
-        self.manual_dropped_skip_count = 0
-        self.read_error_skip_count = 0
-
-        # VP-19: Cache target input height outside the loop; only re-read on detected change.
-        cached_resize_toggle = self.main_window.control.get(
-            "GlobalInputResizeToggle", False
-        )
-        cached_target_height = self._get_target_input_height()
-
-        while stop_flag_check():
-            try:
-                # 0. Guard: feeder_parameters must be initialised before we can process.
-                if self.feeder_parameters is None:
-                    time.sleep(0.005)
-                    continue
-
-                # 1. Mode-specific stop logic
-                if is_segment_mode:
-                    if self.current_segment_end_frame is None:
-                        time.sleep(0.01)  # Wait for the segment to be configured
-                        continue
-                    if self.current_frame_number > self.current_segment_end_frame:
-                        # This segment is finished, the feeder's job is done.
-                        print(
-                            f"[INFO] Feeder: Reached end of segment {self.current_segment_index + 1}. Stopping feed."
-                        )
-                        break
-                else:  # Standard mode
-                    if self.current_frame_number > self.max_frame_number:
-                        break  # End of video
-
-                # 2. Buffer control
-                # VP-22: Enforce hard cap on frames_to_display to bound memory usage.
-                if len(self.frames_to_display) >= self.max_frames_to_display_size:
-                    time.sleep(0.005)  # Wait 5ms (display dict full)
-                    continue
-
-                in_flight_frames = (
-                    len(self.frames_to_display) + self.frame_queue.qsize()
-                )
-
-                # OPTIMIZATION RAM: Absolute Available Memory Safety Net.
-                # we throttle the buffer to the bare minimum needed to keep workers busy, preventing an OS crash.
-                MIN_FREE_RAM_BYTES = 2.5 * 1024 * 1024 * 1024  # 2.5 Go
-                min_safe_buffer = min(self.num_threads * 2, 8)
-
-                if (
-                    in_flight_frames > min_safe_buffer
-                    and psutil.virtual_memory().available < MIN_FREE_RAM_BYTES
-                ):
-                    time.sleep(0.05)  # Throttle to let workers and GC catch up
-                    continue
-
-                if in_flight_frames >= self.max_display_buffer_size:
-                    time.sleep(0.005)  # Wait 5ms (buffer full)
-                    continue
-
-                if (
-                    (is_segment_mode or self.recording)
-                    and not self.ffmpeg_input_sp
-                    and self.current_frame_number in self.main_window.dropped_frames
-                ):
-                    self._mark_skipped_frame(self.current_frame_number, "manual_drop")
-                    self.current_frame_number += 1
-                    misc_helpers.seek_frame(
-                        self.media_capture, self.current_frame_number
-                    )
-                    continue
-
-                # 3. Determine Input Resolution (Global Resize)
-                # VP-19: Use cached value; only re-read when the toggle changes.
-                current_resize_toggle = self.main_window.control.get(
-                    "GlobalInputResizeToggle", False
-                )
-                if current_resize_toggle != cached_resize_toggle:
-                    cached_resize_toggle = current_resize_toggle
-                    cached_target_height = self._get_target_input_height()
-                target_height = cached_target_height
-
-                if self.ffmpeg_input_sp:
-                    ret, frame_bgr = self._read_frame_from_ffmpeg_input_stream()
-                else:
-                    ret, frame_bgr = misc_helpers.read_frame(
-                        self.media_capture,
-                        self.media_rotation,
-                        preview_target_height=target_height,
-                    )
-                if not ret:
-                    if self.ffmpeg_input_sp:
-                        # All frame numbers are in output frame space.
-                        remaining_frames = self.max_frame_number - self.current_frame_number
-                        eof_like = (
-                            self.current_frame_number >= self.max_frame_number - TAIL_TOLERANCE
-                            or remaining_frames <= self.max_consecutive_errors
-                        )
-                        if eof_like:
-                            print("[INFO] Feeder: FFmpeg input stream EOF reached.")
-                        else:
-                            self.consecutive_read_errors += 1
-                            self._mark_skipped_frame(
-                                self.current_frame_number, "read_error"
-                            )
-                            self.stopped_by_error_limit = True
-                            print(
-                                "[WARN] Feeder: FFmpeg input stream terminated early "
-                                f"at output frame {self.current_frame_number}/{self.max_frame_number}. "
-                                "Treating this as corrupted input / read-error stop."
-                            )
-                        with self.state_lock:
-                            self.next_frame_to_display = self.max_frame_number + 1
-                        break
-
-                    fn = self.current_frame_number
-
-                    # 1) Segment mode: read failure near segment end -> treat as segment EOF/stop
-                    if (
-                        self.is_processing_segments
-                        and self.current_segment_end_frame is not None
-                    ):
-                        if fn >= self.current_segment_end_frame - TAIL_TOLERANCE:
-                            with self.state_lock:
-                                # Advance past the segment end to trigger display_next_frame()'s segment-end branch
-                                self.next_frame_to_display = (
-                                    self.current_segment_end_frame + 1
-                                )
-                                # Optional: also advance the feeder's own frame counter to avoid other logic misinterpreting state
-                                self.current_frame_number = (
-                                    self.current_segment_end_frame + 1
-                                )
-                            print(
-                                f"[INFO] Feeder: Treat read failure near segment tail as EOF (frame={fn})."
-                            )
-                            break
-
-                    # 2) Standard mode: read failure near file end -> treat as EOF
-                    if (
-                        not is_segment_mode
-                        and fn >= self.max_frame_number - TAIL_TOLERANCE
-                    ):
-                        print(
-                            f"[INFO] Feeder: Read failure near file end (frame={fn}/{self.max_frame_number}), treating as EOF."
-                        )
-                        with self.state_lock:
-                            self.next_frame_to_display = self.max_frame_number + 1
-                        break
-
-                    # 3) Standard mode: unified read-failure skip logic (no longer
-                    # depends on potentially inaccurate max_frame_number). Skip the
-                    # unreadable frame and continue, but stop if too many
-                    # consecutive failures suggest we actually reached EOF.
-                    self.consecutive_read_errors += 1
-                    self._mark_skipped_frame(self.current_frame_number, "read_error")
-
-                    # Check if too many consecutive errors (likely reached actual EOF)
-                    if self.consecutive_read_errors > self.max_consecutive_errors:
-                        print(
-                            f"[INFO] Feeder: Too many consecutive read errors ({self.consecutive_read_errors}), likely reached EOF. Stopping."
-                        )
-                        # If we are very close to the declared max_frame_number, treat this as EOF
-                        # instead of an error stop to avoid marking outputs as incomplete when
-                        # the read failures are simply due to end-of-file conditions.
-                        try:
-                            near_eof = (
-                                fn >= self.max_frame_number - TAIL_TOLERANCE
-                            )
-                        except Exception:
-                            near_eof = False
-
-                        if near_eof:
-                            print("[INFO] Feeder: Consecutive read errors occurred near EOF; treating as EOF.")
-                        else:
-                            self.stopped_by_error_limit = True
-
-                        with self.state_lock:
-                            self.next_frame_to_display = self.max_frame_number + 1
-
-                        if is_segment_mode:
-                            self.is_processing_segments = False
-                        break
-
-                    # Log skip and move to next frame
-                    print(
-                        f"[WARN] Feeder: Skipping unreadable frame {self.current_frame_number} "
-                        f"(Total skipped: {self.total_skipped_frames}, Consecutive read errors: {self.consecutive_read_errors})."
-                    )
-                    self.current_frame_number += 1
-                    misc_helpers.seek_frame(
-                        self.media_capture, self.current_frame_number
-                    )
-                    continue  # Skip this frame and try the next one
-
-                # Successfully read a frame, reset consecutive error counter
-                self.consecutive_read_errors = 0
-
-                frame_num_to_process = self.current_frame_number
-
-                # Get marker data *only* for the exact frame
-                marker_data = self.main_window.markers.get(frame_num_to_process)
-
-                local_params_for_worker: FacesParametersTypes
-                local_control_for_worker: ControlTypes
-
-                # Lock the state while reading/writing
-                with self.state_lock:
-                    if marker_data and marker_data != last_marker_data:
-                        # This frame IS a marker, update the feeder's state
-                        print(
-                            f"[INFO] Frame {frame_num_to_process} is a marker. Updating feeder state."
-                        )
-
-                        self.feeder_parameters = copy.deepcopy(
-                            marker_data["parameters"]
-                        )
-
-                        # Reset controls to default first
-                        self.feeder_control = {}
-                        for (
-                            widget_name,
-                            widget,
-                        ) in self.main_window.parameter_widgets.items():
-                            if widget_name in self.main_window.control:
-                                self.feeder_control[widget_name] = widget.default_value
-
-                        if "control" in marker_data and isinstance(
-                            marker_data["control"], dict
-                        ):
-                            self.feeder_control.update(
-                                cast(ControlTypes, marker_data["control"]).copy()
-                            )
-
-                        last_marker_data = marker_data
-                        self.ui_state_is_dirty = True
-
-                    # 1. MASTER CACHE (Dirty Flag)
-                    # Update the master blueprint only if the UI or a marker changed.
-                    # This saves CPU cycles by not locking the UI state 30 times a second.
-                    if getattr(self, "ui_state_is_dirty", True) or not hasattr(
-                        self, "_cached_params"
-                    ):
-                        self._cached_params = fast_state_copy(self.feeder_parameters)
-                        self._cached_control = fast_state_copy(self.feeder_control)
-                        self.ui_state_is_dirty = False
-                        print("[INFO] Global State changed : Dirty flag cleared")
-
-                    # 2. PER-FRAME ISOLATION (Fast State Copy)
-                    # Spawn a fresh, isolated state for the current frame worker.
-                    # This prevents thread bleed (workers mutating each other's dictionaries)
-                    # while passing heavy tensors by reference to keep RAM flat and FPS high.
-                    local_params_for_worker = fast_state_copy(self._cached_params)
-                    local_control_for_worker = fast_state_copy(self._cached_control)
-
-                    local_params_for_worker = {}
-                    for face_id, face_data in self._cached_params.items():
-                        if isinstance(face_data, dict):
-                            local_params_for_worker[face_id] = face_data.copy()
-                        else:
-                            local_params_for_worker[face_id] = face_data
-
-                frame_rgb = numpy.ascontiguousarray(frame_bgr[..., ::-1])
-
-                if len(self.main_window.target_faces) > 0:
-                    # If Faces present run detect
-                    self._video_had_targets = True
-                    is_master_edit_active = self.main_window.editFacesButton.isChecked()
-                    bboxes, kpss_5, kpss, kpss_203 = self.sequential_detector.run(
-                        frame_rgb=frame_rgb,
-                        local_control_for_worker=local_control_for_worker,
-                        local_params_for_worker=local_params_for_worker,
-                        is_master_edit_active=is_master_edit_active,
-                        frame_number=self.current_frame_number,
-                    )
-                else:
-                    # Bypass : No Faces present, skip with empty arrays
-                    bboxes = numpy.empty((0, 4), dtype=numpy.float32)
-                    kpss_5 = numpy.empty((0, 5, 2), dtype=numpy.float32)
-                    kpss = numpy.empty((0, 68, 2), dtype=numpy.float32)
-                    kpss_203 = numpy.empty((0, 203, 2), dtype=numpy.float32)
-
-                    # Reset tracker only on the transition from "had targets" → "no targets".
-                    # Calling reset_state() on every frame reinitialised ByteTrack continuously,
-                    # wasting CPU and preventing stable tracking when faces reappeared.
-                    if self._video_had_targets:
-                        self.sequential_detector.reset_state()
-                        self._video_had_targets = False
-
-                # The worker will use the feeder's state *from this exact moment*
-                task = (
-                    frame_num_to_process,
-                    frame_rgb,
-                    local_params_for_worker,
-                    local_control_for_worker,
-                    bboxes,
-                    kpss_5,
-                    kpss,
-                    kpss_203,
-                )
-
-                # Put the task in the queue for the worker pool
-                self.frame_queue.put(task)
-
-                # DO NOT START A WORKER HERE
-                self.current_frame_number += 1
-
-            except Exception as e:
-                print(
-                    f"[ERROR] Error in _feed_video_loop (Mode: {'Segment' if is_segment_mode else 'Standard'}): {e}"
-                )
-                if is_segment_mode:
-                    self.is_processing_segments = False
-                else:
-                    self.processing = False  # Stop the loop
-                # Send poison pills to unblock all waiting worker threads immediately.
-                for _ in self.worker_threads:
-                    try:
-                        # Use block=False instead of false timeout
-                        self.frame_queue.put(None, block=False)
-                    except queue.Full:
-                        pass
-
-        # Log summary of skipped frames at end
-        if self.total_skipped_frames > 0:
-            print(
-                f"[INFO] Feeder loop finished. Total frames skipped: {self.total_skipped_frames}"
-            )
-            print(
-                f"[INFO] Skip reasons: manual dropped frames={self.manual_dropped_skip_count}, read errors={self.read_error_skip_count}"
-            )
-            print(
-                f"[INFO] Skipped frame numbers: {sorted(list(self.skipped_frames)[:100])}{'...' if len(self.skipped_frames) > 100 else ''}"
-            )
-
-    def _feed_webcam(self):
-        """Feeder logic for webcam streaming."""
-        self.ui_state_is_dirty = True
-        while self.processing:
-            try:
-                in_flight_frames = (
-                    len(self.webcam_frames_to_display.queue) + self.frame_queue.qsize()
-                )
-                if in_flight_frames >= self.max_display_buffer_size:
-                    time.sleep(0.005)  # Wait 5ms (buffer full)
-                    continue
-
-                ret, frame_bgr = misc_helpers.read_frame(
-                    self.media_capture, 0, preview_target_height=None
-                )
-                if not ret:
-                    print("[WARN] Feeder: Failed to read webcam frame.")
-                    continue  # Try again
-
-                frame_rgb = numpy.ascontiguousarray(frame_bgr[..., ::-1])
-
-                # The worker pool expects a task.
-                # For webcam, we must read the *current* global parameters.
-                # We use the same pattern as the video feeder to prevent Thread Bleed
-                # on nested dictionaries while keeping CPU usage low and RAM flat.
-                with self.main_window.models_processor.model_lock:
-                    # 1. Update master cache only if UI changed
-                    if getattr(self, "ui_state_is_dirty", True) or not hasattr(
-                        self, "_webcam_cached_params"
-                    ):
-                        self._webcam_cached_params = fast_state_copy(
-                            self.main_window.parameters
-                        )
-                        self._webcam_cached_control = fast_state_copy(
-                            self.main_window.control
-                        )
-                        self.ui_state_is_dirty = False
-                        print("[INFO] Global State changed : Dirty flag cleared")
-
-                    # 2. Spawn isolated state for this specific webcam frame
-                    local_params_for_worker = fast_state_copy(
-                        self._webcam_cached_params
-                    )
-                    local_control_for_worker = fast_state_copy(
-                        self._webcam_cached_control
-                    )
-
-                # --- Inject Sequential Detection ---
-                if len(self.main_window.target_faces) > 0:
-                    self._webcam_had_targets = True
-                    is_master_edit_active = self.main_window.editFacesButton.isChecked()
-                    bboxes, kpss_5, kpss, kpss_203 = self.sequential_detector.run(
-                        frame_rgb=frame_rgb,
-                        local_control_for_worker=local_control_for_worker,
-                        local_params_for_worker=local_params_for_worker,
-                        is_master_edit_active=is_master_edit_active,
-                        frame_number=0,  # Webcam doesn't have frame numbers
-                    )
-                else:
-                    # Bypass
-                    bboxes = numpy.empty((0, 4), dtype=numpy.float32)
-                    kpss_5 = numpy.empty((0, 5, 2), dtype=numpy.float32)
-                    kpss = numpy.empty((0, 68, 2), dtype=numpy.float32)
-                    kpss_203 = numpy.empty((0, 203, 2), dtype=numpy.float32)
-
-                    # Reset tracker only on the transition from "had targets" → "no targets".
-                    # Resetting ByteTrack on every frame without targets was causing webcam FPS
-                    # degradation by reinitialising the tracker's internal state structures
-                    # on every captured frame.
-                    if self._webcam_had_targets:
-                        self.sequential_detector.reset_state()
-                        self._webcam_had_targets = False
-
-                # Create the 8-tuple task
-                task = (
-                    0,  # frame_number is always 0 for webcam
-                    frame_rgb,
-                    local_params_for_worker,
-                    local_control_for_worker,
-                    bboxes,
-                    kpss_5,
-                    kpss,
-                    kpss_203,
-                )
-
-                # Put the task in the queue for the worker pool
-                self.frame_queue.put(task)
-
-            except Exception as e:
-                print(f"[ERROR] Error in _feed_webcam loop: {e}")
-                self.processing = False
-
-    def _mark_skipped_frame(self, frame_number: int, reason: str) -> None:
-        """Track skipped-frame reasons for later audio-rebuild diagnostics."""
-        self.skipped_frames.add(frame_number)
-        self.total_skipped_frames += 1
-
-        if reason == "manual_drop":
-            self.manual_dropped_skip_count += 1
-        elif reason == "read_error":
-            self.read_error_skip_count += 1
-
-    def display_next_frame(self):
-        """
-        The core metronome loop.
-        This function is called repeatedly via QTimer.singleShot.
-        """
-
-        # 0. Check for end-of-media FIRST (before processing flag check)
-        # This ensures we finalize even if feeder stopped due to errors
-        is_playback_loop_enabled = self.main_window.control["VideoPlaybackLoopToggle"]
-        should_stop_playback = False
-        should_finalize_default_recording = False
-
-        if self.file_type == "video":
-            if self.is_processing_segments:
-                # --- Segment Recording Stop Logic ---
-                if (
-                    self.current_segment_end_frame is not None
-                    and self.next_frame_to_display > self.current_segment_end_frame
-                ):
-                    print(
-                        f"[INFO] Segment {self.current_segment_index + 1} end frame ({self.current_segment_end_frame}) reached."
-                    )
-                    self.stop_current_segment()  # Segment logic handles its own stop
-                    return
-            elif self.next_frame_to_display > self.max_frame_number:
-                # --- Default Playback/Recording Stop Logic ---
-                if self.recording:
-                    pending_tasks = int(
-                        max(0, getattr(self.frame_queue, "unfinished_tasks", 0))
-                    )
-                    # In recording mode, drain any late-arriving tail frames before finalization.
-                    if not self.frames_to_display and (
-                        pending_tasks == 0 or self.tail_force_finalize_due_to_stall
-                    ):
-                        print("[INFO] End of media reached.")
-                        should_finalize_default_recording = True
-                elif is_playback_loop_enabled:
-                    print("[INFO] End of media reached.")
-                    self.next_frame_to_display = 1
-                    self.main_window.videoSeekSlider.blockSignals(True)
-                    self.main_window.videoSeekSlider.setValue(
-                        self.next_frame_to_display
-                    )
-                    self.main_window.videoSeekSlider.blockSignals(False)
-                    should_stop_playback = True
-                else:
-                    print("[INFO] End of media reached.")
-                    should_stop_playback = True
-
-            if should_finalize_default_recording:
-                self._finalize_default_style_recording()
-                return
-            elif should_stop_playback:
-                self.stop_processing()
-                if is_playback_loop_enabled:
-                    self.process_video()
-                return
-
-        # 1. Stop check (after end-of-media check)
-        if not self.processing:  # General check (if stop_processing was called)
-            return
-
-        # --- 2. METRONOME TIMING LOGIC ---
-        now_sec = time.perf_counter()
-
-        # Calculate next tick time (based on *last* scheduled time to prevent drift)
-        self.last_display_schedule_time_sec += self.target_delay_sec
-
-        # Catch up if we are late
-        if self.last_display_schedule_time_sec < now_sec:
-            self.last_display_schedule_time_sec = now_sec + 0.001
-
-        # Calculate actual wait time
-        wait_time_sec = self.last_display_schedule_time_sec - now_sec
-        wait_ms = int(wait_time_sec * 1000)
-
-        if wait_ms <= 0:
-            wait_ms = 1  # Just in case, wait at least 1ms
-
-        # --- 4. Schedule the *next* call IMMEDIATELY ---
-        if self.processing:
-            from PySide6.QtCore import Qt, QTimer
-
-            # OPTIMIZED: Reusable PreciseTimer to eliminate micro-stuttering.
-            # Avoids PySide6 singleShot signature limitations and saves memory.
-            if not hasattr(self, "precise_metronome"):
-                self.precise_metronome = QTimer(self)
-                self.precise_metronome.setTimerType(Qt.TimerType.PreciseTimer)
-                self.precise_metronome.setSingleShot(True)
-                self.precise_metronome.timeout.connect(self.display_next_frame)
-
-            self.precise_metronome.start(wait_ms)
-
-        # --- 6. Get the frame to display (if ready) ---
-        frame = None
-        frame_number_to_display = 0  # Used for UI update
-
-        if self.file_type == "webcam":
-            # --- Webcam Logic (Queue) ---
-            if self.webcam_frames_to_display.empty():
-                return  # Frame not ready, skip display
-            frame = self.webcam_frames_to_display.get()
-            frame_number_to_display = 0  # Not relevant for webcam
-
-        else:
-            # --- Video/Image Logic (Dictionary) ---
-            draining_tail = self._is_draining_tail()
-
-            if draining_tail and self.frames_to_display:
-                # During tail drain, consume remaining frames in chronological order.
-                frame_number_to_display = min(self.frames_to_display)
-            else:
-                frame_number_to_display = self.next_frame_to_display
-
-            # Skip frames that were corrupted/skipped during processing
-            # Find the next non-skipped frame to display
-            original_frame = frame_number_to_display
-            while (
-                frame_number_to_display in self.skipped_frames
-                and frame_number_to_display <= self.max_frame_number
-            ):
-                frame_number_to_display += 1
-
-            # Update next_frame_to_display to skip all consecutive skipped frames
-            if frame_number_to_display > original_frame:
-                skipped_count = frame_number_to_display - original_frame
-                print(
-                    f"[INFO] Display: Advancing past {skipped_count} skipped frame(s), jumping to frame {frame_number_to_display}"
-                )
-                self.next_frame_to_display = frame_number_to_display
-
-            if frame_number_to_display not in self.frames_to_display:
-                # Frame not ready.
-                if draining_tail:
-                    if self._handle_tail_drain_wait(frame_number_to_display):
-                        return
-                else:
-                    return
-            frame = self.frames_to_display.pop(frame_number_to_display)
-            self.tail_pending_stall_start_sec = 0.0
-
-        # --- 7. Frame is ready: Process and Display ---
-        self.current_frame = frame  # Update current frame state
-
-        # Emit a signal every 500 frames to notify JobProcessor we are still alive
-        if self.file_type != "webcam":  # Don't spam on webcam
-            self.heartbeat_frame_counter += 1
-            if self.heartbeat_frame_counter >= 500:
-                self.heartbeat_frame_counter = 0
-                self.processing_heartbeat_signal.emit()
-
-        # Send to Virtual Cam
-        self.send_frame_to_virtualcam(frame)
-
-        # Write to FFmpeg
-        if self.is_processing_segments or self.recording:
-            if self.encoder.is_running():
-                if self.encoder.write_frame(frame):
-                    # update counters for duration calculation
-                    self.frames_written += 1
-                    self.last_displayed_frame = frame_number_to_display
-                else:
-                    log_prefix = (
-                        f"segment {self.current_segment_index + 1}"
-                        if self.is_processing_segments
-                        else "recording"
-                    )
-                    print(
-                        f"[WARN] Error writing frame {frame_number_to_display} to FFmpeg encoder during {log_prefix}."
-                    )
-            else:
-                log_prefix = (
-                    f"segment {self.current_segment_index + 1}"
-                    if self.is_processing_segments
-                    else "recording"
-                )
-                print(
-                    f"[WARN] FFmpeg encoder not available for {log_prefix} when trying to write frame {frame_number_to_display}."
-                )
-
-        # Update UI
-        # This is the metronome tick.
-        if self.file_type != "webcam":
-            if frame_number_to_display in self.main_window.markers:
-                # Acquire lock to safely modify parameters and controls
-                with self.main_window.models_processor.model_lock:
-                    # 1. Load data from marker into main_window.parameters/control
-                    video_control_actions.update_parameters_and_control_from_marker(
-                        self.main_window, frame_number_to_display
-                    )
-                    # 2. Update all UI widgets to reflect the new state
-                    video_control_actions.update_widget_values_from_markers(
-                        self.main_window, frame_number_to_display
-                    )
-        # CREATE QPIXMAP JUST-IN-TIME (GUI Thread)
-        pixmap = common_widget_actions.get_pixmap_from_frame(self.main_window, frame)
-        # Map output frame to source frame for slider/line-edit when FPS-cap recording is active.
-        slider_display_frame = frame_number_to_display
-        if self._used_ffmpeg_cap and self.fps > 0 and self.recording_source_fps > 0:
-            src_slider_max = self.main_window.videoSeekSlider.maximum()
-            slider_display_frame = min(
-                self.output_to_source_frame(frame_number_to_display),
-                src_slider_max,
-            )
-        graphics_view_actions.update_graphics_view(
-            self.main_window, pixmap, slider_display_frame
-        )
-
-        # Notify ModelsProcessor of the frame that was just displayed to trigger pending unloads
-        self.main_window.models_processor.check_deferred_unloads(
-            frame_number_to_display
-        )
-        # --- 8. Clean up and Increment ---
-        if self.file_type != "webcam":
-            # Increment for next frame
-            self.next_frame_to_display += 1
 
     def send_frame_to_virtualcam(self, frame: numpy.ndarray):
         """
@@ -1384,27 +494,34 @@ class VideoProcessor(QObject):
         Removed sleep_until_next_frame() to prevent blocking the Main GUI Thread.
         The UI metronome (QTimer) already handles perfect timing and synchronization.
         """
-        if self.main_window.control["SendVirtCamFramesEnableToggle"] and self.virtcam:
-            height, width, _ = frame.shape
-            if self.virtcam.height != height or self.virtcam.width != width:
-                # Resolution changed (e.g. source swap / restorer output differs).
-                # Avoid hammering OBS with rapid close/reopen cycles — schedule a
-                # single deferred restart so the driver gets adequate settling time.
-                # We skip this frame rather than sending one with the wrong size.
-                print(
-                    f"[INFO] VirtCam resolution changed ({self.virtcam.width}x{self.virtcam.height} -> {width}x{height}). Restarting virtual camera."
-                )
+        if self.main_window.control.get("SendVirtCamFramesEnableToggle", False):
+            # JIT Initialization: Ensure VirtCam is spun up if toggle is active but uninitialized.
+            # We use a Circuit Breaker (_virtcam_error_latch) to prevent infinite loops if initialization completely fails.
+            if not self.virtcam and not getattr(self, "_virtcam_error_latch", False):
                 self.enable_virtualcam()
-                return  # Frame already consumed; next tick will send at the new size.
 
-            # Need to check again if virtcam was successfully re-enabled
+            # Need to check again if virtcam was successfully enabled
             if self.virtcam:
-                try:
-                    self.virtcam.send(frame)
-                    # REMOVED: self.virtcam.sleep_until_next_frame()
-                    # It forces the UI thread to freeze and fights the metronome.
-                except Exception as e:
-                    print(f"[WARN] Failed sending frame to virtualcam: {e}")
+                height, width, _ = frame.shape
+                if self.virtcam.height != height or self.virtcam.width != width:
+                    # Resolution changed (e.g. source swap / restorer output differs).
+                    # Avoid hammering OBS with rapid close/reopen cycles
+                    print(
+                        f"[INFO] VirtCam resolution changed ({self.virtcam.width}x{self.virtcam.height} -> {width}x{height}). Restarting virtual camera."
+                    )
+                    self.enable_virtualcam()
+                    return  # Frame already consumed; next tick will send at the new size.
+
+                if self.virtcam:
+                    try:
+                        self.virtcam.send(frame)
+                    except Exception as e:
+                        print(
+                            f"[WARN] Catastrophic failure sending frame to virtualcam: {e}"
+                        )
+                        # If the driver crashes midway, trip the circuit breaker and disable to prevent spam.
+                        self._virtcam_error_latch = True
+                        self.disable_virtualcam()
 
     def set_number_of_threads(self, value):
         """Updates the thread count for the *next* worker pool."""
@@ -1421,8 +538,8 @@ class VideoProcessor(QObject):
 
         self.main_window.models_processor.set_number_of_threads(value)
         self.num_threads = value
-        self.preroll_target = min(max(20, int(self.num_threads * 1.5)), 40)
-        self.max_display_buffer_size = self.preroll_target + (self.num_threads * 2)
+        self.preroll_target = 10
+        self.max_display_buffer_size = self.num_threads + self.preroll_target + 4
 
     def process_video(self):
         """
@@ -1526,10 +643,13 @@ class VideoProcessor(QObject):
         # 3. Set State Flags
         self.processing = True  # General flag ON
         self.is_processing_segments = False
+        self.is_playing_segments = False  # Flag for segmented playback via UI toggle
         self.playback_started = False
         self.stopped_by_error_limit = False  # Reset error limit flag for new processing
         self.tail_pending_stall_start_sec = 0.0
         self.tail_force_finalize_due_to_stall = False
+        self._fatal_processing_error_latched = False
+        self.last_processing_error = None
 
         # Initialize feeder state with the current UI global state
         with self.state_lock:
@@ -1579,33 +699,68 @@ class VideoProcessor(QObject):
         # 6b. START WORKER POOL
         print(f"[INFO] Starting {self.num_threads} persistent worker thread(s)...")
         # Ensure old workers are cleared (from a previous run).
-        # Pass clear_module_caches=False so the warm VR caches (perspective grids,
-        # rotation matrices, feathered masks) survive the pool restart — they are
-        # geometric data independent of the previous job and rebuilding them on the
-        # first new frame is wasted work.
         self.join_and_clear_threads(clear_module_caches=False)
-        self.worker_threads = []
-        # Clear any stale tasks or poison pills left from the previous session.
-        # join_and_clear_threads() returns early when worker_threads is empty,
-        # so pills from workers that exited via stop_event (not pill consumption)
-        # can remain in the queue and kill new workers immediately.
-        with self.frame_queue.mutex:
-            self.frame_queue.queue.clear()
-            self.frame_queue.all_tasks_done.notify_all()
-            self.frame_queue.not_full.notify_all()
-        for i in range(self.num_threads):
-            worker = FrameWorker(
-                frame_queue=self.frame_queue,  # Pass the task queue
-                main_window=self.main_window,
-                worker_id=i,
-            )
-            worker.start()
-            self.worker_threads.append(worker)
+        self.worker_pool_manager.recreate_queue(self.max_display_buffer_size)
+        self.worker_pool_manager.start_persistent_pool(self.num_threads)
 
         # --- 7. AUDIO/VIDEO SYNC LOGIC ---
 
         # 7a. Get the target frame (slider is in SOURCE-frame space under Approach 2)
         actual_start_frame = self.main_window.videoSeekSlider.value()
+
+        # --- Segmented Playback Snap Logic ---
+        if not self.recording and self.main_window.control.get(
+            "VideoPlaybackSegmentsToggle", False
+        ):
+            raw_markers = getattr(self.main_window, "job_marker_pairs", [])
+            valid_pairs = []
+            for pair in raw_markers:
+                if pair[1] is not None and pair[0] < pair[1]:
+                    valid_pairs.append((int(pair[0]), int(pair[1])))
+
+            if valid_pairs:
+                self.segments_to_process = sorted(valid_pairs)
+                self.is_playing_segments = True
+
+                found_segment = False
+                for i, (start_f, end_f) in enumerate(self.segments_to_process):
+                    if actual_start_frame < start_f:
+                        # Slider is before this segment; snap forward to its start
+                        actual_start_frame = start_f
+                        self.current_segment_index = i
+                        self.current_segment_end_frame = end_f
+                        found_segment = True
+                        break
+                    elif start_f <= actual_start_frame < end_f:
+                        # Slider is actively inside this segment
+                        self.current_segment_index = i
+                        self.current_segment_end_frame = end_f
+                        found_segment = True
+                        break
+
+                if not found_segment:
+                    # Slider is at the exact end of the last segment or past it.
+                    # Loop seamlessly back to the first segment so it doesn't instantly EOF.
+                    actual_start_frame = self.segments_to_process[0][0]
+                    self.current_segment_index = 0
+                    self.current_segment_end_frame = self.segments_to_process[0][1]
+
+                print(
+                    f"[INFO] Sync: Segment Playback Active. Snapping to frame {actual_start_frame} (Segment {self.current_segment_index + 1}/{len(self.segments_to_process)})."
+                )
+
+        elif not self.recording and self.main_window.control.get(
+            "VideoPlaybackLoopToggle", False
+        ):
+            # --- EOF Playback Loop Snap Logic ---
+            # If the user clicks play exactly at (or very near) the end of the file, immediately
+            # snap to 0. This prevents the initial capture read from failing and locking the state.
+            if actual_start_frame >= self.max_frame_number - 1:
+                actual_start_frame = 0
+                print(
+                    "[INFO] Sync: EOF reached with loop enabled. Snapping to frame 0 for playback."
+                )
+
         print(f"[INFO] Sync: Seeking directly to source-frame {actual_start_frame}...")
 
         # 7b/7c. Read the first frame (OpenCV path or FFmpeg FPS-cap path).
@@ -1627,7 +782,9 @@ class VideoProcessor(QObject):
                 self.stop_processing()
                 return
 
-            print("[INFO] Sync: Reading first frame from FFmpeg recording input stream...")
+            print(
+                "[INFO] Sync: Reading first frame from FFmpeg recording input stream..."
+            )
             ret, frame_bgr = self._read_frame_from_ffmpeg_input_stream()
             print(f"[INFO] Sync: Initial FFmpeg stream read complete (Result: {ret}).")
 
@@ -1751,24 +908,25 @@ class VideoProcessor(QObject):
         self.main_window.videoSeekSlider.setValue(actual_start_frame)
         self.main_window.videoSeekSlider.blockSignals(False)
 
-        # --- 8. STARTING THE FEEDER THREAD AND METRONOME ---
-        # VP-34: Initialize timing BEFORE starting the metronome to ensure immediate execution.
-        self.last_display_schedule_time_sec = time.perf_counter()
+        # --- 8. STARTING THE FEEDER THREAD AND METRONOME VIA MEDIAPIPELINE ---
+        # Initialize timing BEFORE starting the metronome to ensure immediate execution.
+        self.media_pipeline.last_display_schedule_time_sec = time.perf_counter()
 
         print(
-            f"[INFO] Starting feeder thread (Mode: video, Recording: {self.recording})..."
+            f"[INFO] Starting feeder thread via Pipeline (Mode: video, Recording: {self.recording})..."
         )
-        self.feeder_thread = threading.Thread(target=self._feeder_loop, daemon=True)
-        self.feeder_thread.start()
+        self.media_pipeline.start_feeder(mode="video", recording=self.recording)
 
         if self.recording:
-            self.max_frames_to_display_size = 8
+            self.media_pipeline.max_frames_to_display_size = 8
             # Recording: start the display metronome immediately
             print("[INFO] Recording mode: Starting metronome immediately.")
-            self._start_metronome(9999.0, is_first_start=True)
+            self.media_pipeline.start_metronome(9999.0, is_first_start=True)
         else:
             if self.main_window.control.get("VideoPlaybackBufferingToggle", False):
-                self.max_frames_to_display_size = self.preroll_target + 10
+                self.media_pipeline.max_frames_to_display_size = (
+                    self.preroll_target + 10
+                )
                 # Playback: start the preroll monitor
                 print(
                     f"[INFO] Playback mode: Waiting for preroll buffer (target: {self.preroll_target} frames)..."
@@ -1776,76 +934,22 @@ class VideoProcessor(QObject):
 
                 # Ensure the connection is clean
                 try:
-                    self.preroll_timer.timeout.disconnect(
-                        self._check_preroll_and_start_playback
-                    )
+                    self.media_pipeline.preroll_timer.timeout.disconnect()
                 except RuntimeError:
                     pass  # Disconnection failed, which is normal the first time
 
-                self.preroll_timer.timeout.connect(
-                    self._check_preroll_and_start_playback
+                self.media_pipeline.preroll_timer.timeout.connect(
+                    self.media_pipeline._check_preroll_and_start_playback
                 )
-                self.preroll_timer.start(100)
+                self.media_pipeline.preroll_timer.start(100)
             else:
-                self.max_frames_to_display_size = 8
-                # Recording: start the display metronome immediately
-                print("[INFO] Playback mode.")
-                self._start_synchronized_playback()
-
-    def _launch_async_single_frame_worker(
-        self, frame_number: int, frame: numpy.ndarray, generation: int
-    ):
-        worker = FrameWorker(
-            frame=frame,
-            main_window=self.main_window,
-            frame_number=frame_number,
-            frame_queue=None,
-            is_single_frame=True,
-            worker_id=-1,
-        )
-        worker.preview_generation = generation
-        self._current_single_frame_worker = worker
-        worker.start()
-        return worker
-
-    def _try_start_pending_single_frame_worker(self):
-        if self._pending_single_frame_request is None:
-            self._single_frame_handoff_timer.stop()
-            return
-
-        current_worker = self._current_single_frame_worker
-        if current_worker is not None and current_worker.is_alive():
-            return
-
-        request = self._pending_single_frame_request
-        self._pending_single_frame_request = None
-        self._single_frame_handoff_timer.stop()
-        self._current_single_frame_worker = None
-        self._launch_async_single_frame_worker(
-            request["frame_number"],
-            request["frame"],
-            request["generation"],
-        )
+                self.media_pipeline.max_frames_to_display_size = 8
+                print("[INFO] Playback mode. Starting playback.")
+                self.media_pipeline._start_synchronized_playback()
 
     def _cancel_single_frame_preview_state(self):
-        self._single_frame_request_generation += 1
-        self._active_single_frame_request_generation = (
-            self._single_frame_request_generation
-        )
-        self._pending_single_frame_request = None
-        self._single_frame_handoff_timer.stop()
-        self._fit_on_single_frame_request_generation = None
-
-        worker = self._current_single_frame_worker
-        if worker is not None and worker.is_alive():
-            worker.stop_event.set()
-            worker.join(timeout=2.0)
-            if worker.is_alive():
-                print("[WARN] Single-frame preview worker did not join gracefully.")
-                self._current_single_frame_worker = None
-                return
-
-        self._current_single_frame_worker = None
+        """Facade: Forwards single-frame cancellation to the WorkerPoolManager."""
+        self.worker_pool_manager.cancel_single_frame_preview_state()
 
     def _clear_single_frame_preview_caches(self):
         self._last_requested_frame_num = None
@@ -1866,70 +970,10 @@ class VideoProcessor(QObject):
         synchronous=False,
         fit_on_complete: bool = False,
     ):
-        """
-        Starts a one-shot FrameWorker for a *single frame*.
-        This is NOT used by the video pool.
-        """
-        # Stop any previous single-frame worker before starting a new one.
-        # Without this, fast scrubbing spawns concurrent workers that share the same
-        # model sessions — TRT inference is not thread-safe and crashes under concurrent
-        # calls.  VR180 workers are especially vulnerable because they run for several
-        # seconds (multiple face detections + landmark detection + stitching per frame).
-        prev = self._current_single_frame_worker
-
-        if synchronous:
-            self._pending_single_frame_request = None
-            self._single_frame_handoff_timer.stop()
-            if prev is not None and prev.is_alive():
-                prev.stop_event.set()
-                prev.join()
-            self._current_single_frame_worker = None
-            worker = FrameWorker(
-                frame=frame,  # Pass frame directly
-                main_window=self.main_window,
-                frame_number=frame_number,
-                frame_queue=None,  # No queue for single frame
-                is_single_frame=is_single_frame,
-                worker_id=-1,  # Indicates single-frame mode
-            )
-            if fit_on_complete:
-                self._fit_on_single_frame_request_generation = 0
-            else:
-                self._fit_on_single_frame_request_generation = None
-            worker.preview_generation = 0
-            worker.run()
-            return worker
-        else:
-            self._single_frame_request_generation += 1
-            self._active_single_frame_request_generation = (
-                self._single_frame_request_generation
-            )
-            if fit_on_complete:
-                self._fit_on_single_frame_request_generation = (
-                    self._single_frame_request_generation
-                )
-            else:
-                self._fit_on_single_frame_request_generation = None
-            request = {
-                "frame_number": frame_number,
-                "frame": frame,
-                "generation": self._single_frame_request_generation,
-            }
-            if prev is not None and prev.is_alive():
-                prev.stop_event.set()
-
-            self._pending_single_frame_request = request
-            frameworker_delay = max(
-                int(
-                    self.main_window.control.get("FrameWorkerDelayDecimalSlider", 0.3)
-                    * 1000
-                ),
-                15,
-            )
-            self._single_frame_handoff_timer.setInterval(frameworker_delay)
-            self._single_frame_handoff_timer.start()
-
-            return prev
+        """Facade: Forwards single-frame UI processing to the WorkerPoolManager."""
+        return self.worker_pool_manager.start_single_frame_worker(
+            frame_number, frame, is_single_frame, synchronous, fit_on_complete
+        )
 
     def process_current_frame(
         self,
@@ -1947,6 +991,21 @@ class VideoProcessor(QObject):
             suppress_raw_preview: If True, skips displaying the unprocessed raw frame
                                   while waiting for the AI worker. Prevents UI flashing.
         """
+        # --- WEBCAM LIVE GUARD ---
+        # If the webcam is actively streaming, do NOT stop the feed.
+        # Simply mark the UI state as dirty so the background pipeline picks up
+        # the new parameters (Swap/Edit) on the very next live frame.
+        if self.file_type == "webcam" and self.processing:
+            self.ui_state_is_dirty = True
+            if fit_on_complete:
+                from app.ui.widgets.actions import layout_actions
+
+                QTimer.singleShot(
+                    0,
+                    lambda: layout_actions.fit_image_to_view_onchange(self.main_window),
+                )
+            return None
+
         if self.processing or self.is_processing_segments:
             print("[INFO] Stopping active processing to process single frame.")
             if not self.stop_processing():
@@ -1957,7 +1016,8 @@ class VideoProcessor(QObject):
             self.main_window.control.get("DenoiserBaseSeedSlider", 220)
         )
         torch.manual_seed(_denoiser_seed)
-        if torch.cuda.is_available():
+        # PROTECTED: Prevent a 2GB VRAM spike when scrubbing an idle timeline.
+        if torch.cuda.is_available() and torch.cuda.is_initialized():
             torch.cuda.manual_seed(_denoiser_seed)
 
         # Set frame number for processing
@@ -2128,6 +1188,14 @@ class VideoProcessor(QObject):
 
         return None
 
+    @Slot(str)
+    def _handle_fatal_processing_error(self, reason: str) -> None:
+        if self._fatal_processing_error_latched:
+            return
+        self._fatal_processing_error_latched = True
+        self.last_processing_error = reason
+        self.stop_processing()
+
     def stop_processing(self) -> bool:
         """
         General Stop / Abort Function.
@@ -2138,7 +1206,7 @@ class VideoProcessor(QObject):
             True if any active processing was stopped or a broken capture was recovered.
         """
         # Step 0: Capture current state for return value and cleanup logic
-        was_active = self.processing or self.is_processing_segments
+        was_active = self.processing or self.is_processing_segments or self.recording
         was_recording_default_style = self.recording
         was_processing_segments = self.is_processing_segments
 
@@ -2192,14 +1260,22 @@ class VideoProcessor(QObject):
             misc_helpers.release_capture(self.media_capture)
             self.media_capture = None
 
-        # 3b. Wait for the feeder thread to fully exit.
-        print("[INFO] Waiting for feeder thread to complete...")
+        # 3b. Wait for the producer threads to fully exit.
+        print("[INFO] Waiting for producer threads to complete...")
         if self.feeder_thread and self.feeder_thread.is_alive():
             self.feeder_thread.join(timeout=3.0)
             if self.feeder_thread.is_alive():
                 print("[WARN] Feeder thread did not join gracefully within 3s timeout.")
         self.feeder_thread = None
-        print("[INFO] Feeder thread joined.")
+
+        if self.detector_thread and self.detector_thread.is_alive():
+            self.detector_thread.join(timeout=3.0)
+            if self.detector_thread.is_alive():
+                print(
+                    "[WARN] Detector thread did not join gracefully within 3s timeout."
+                )
+        self.detector_thread = None
+        print("[INFO] Producer threads joined.")
 
         # 3c. Clear display buffers and join worker threads.
         # VP-24: We clear the queue and then send poison pills to wake workers
@@ -2217,6 +1293,13 @@ class VideoProcessor(QObject):
                 break
         with self.frame_queue.mutex:
             self.frame_queue.queue.clear()
+
+        # --- Clear the raw frame queue ---
+        if hasattr(self, "media_pipeline") and hasattr(
+            self.media_pipeline, "raw_frame_queue"
+        ):
+            with self.media_pipeline.raw_frame_queue.mutex:
+                self.media_pipeline.raw_frame_queue.queue.clear()
 
         print("[INFO] Waiting for worker threads to complete...")
         self.join_and_clear_threads()
@@ -2262,7 +1345,15 @@ class VideoProcessor(QObject):
             start_frame = getattr(self, "processing_start_frame", 0)
             if self._used_ffmpeg_cap and self.fps > 0 and self.recording_source_fps > 0:
                 last_processed = self.output_to_source_frame(last_processed)
-            current_slider_pos = max(start_frame, last_processed)
+
+            # --- Stop Revert Bug ---
+            # Do NOT use max(start_frame, last_processed) as it breaks seamless looping.
+            # Only revert to start_frame if absolutely no frames were displayed.
+            if self.next_frame_to_display == getattr(self, "processing_start_frame", 0):
+                current_slider_pos = start_frame
+            else:
+                current_slider_pos = max(0, last_processed)
+
             # Slider stays in source frame space (approach 2).
             # If FPS-cap recording was active, map output frame -> source frame before seek.
             src_slider_max = self.main_window.videoSeekSlider.maximum()
@@ -2321,7 +1412,7 @@ class VideoProcessor(QObject):
 
         print("[INFO] Clearing GPU Cache and running garbage collection.")
         try:
-            if torch.cuda.is_available():
+            if torch.cuda.is_available() and torch.cuda.is_initialized():
                 torch.cuda.empty_cache()
         except ImportError:
             pass
@@ -2353,12 +1444,11 @@ class VideoProcessor(QObject):
         processing_time_sec = self.end_time - self.start_time
 
         try:
-            start_frame_num = getattr(
-                self, "processing_start_frame", end_frame_for_calc
+            # We now fetch the absolute frames from the media pipeline
+            # to guarantee accurate FPS during looping and segment jumps.
+            num_frames_processed = getattr(
+                self.media_pipeline, "absolute_frames_processed", 0
             )
-            num_frames_processed = end_frame_for_calc - start_frame_num
-            if num_frames_processed < 0:
-                num_frames_processed = 0
         except Exception:
             num_frames_processed = 0
 
@@ -2383,85 +1473,8 @@ class VideoProcessor(QObject):
         return True  # Processing was stopped
 
     def join_and_clear_threads(self, clear_module_caches: bool = True):
-        """
-        Stops and waits for all pool worker threads to finish.
-        This function's *only* job is to set events, send pills, and join.
-        It does NOT clear the queue.
-
-        Args:
-            clear_module_caches: When True (default — used at job stop), also clear
-                module-level VR caches (perspective grids, rotation matrices,
-                feathered masks). Pass False at job *start* (`process_video()` calls
-                this before launching a new pool) so the warm caches built up by
-                previous workers survive the pool restart.
-        """
-        active_threads = self.worker_threads
-        if not active_threads:
-            return  # Nothing to do
-
-        print(f"[INFO] Signaling {len(active_threads)} active worker(s) to stop...")
-
-        # 1. Set stop event for all workers in the pool
-        for thread in active_threads:
-            if hasattr(thread, "stop_event") and not thread.stop_event.is_set():
-                try:
-                    thread.stop_event.set()
-                except Exception as e:
-                    print(
-                        f"[WARN] Error setting stop_event on thread {thread.name}: {e}"
-                    )
-
-        # 2. Wake up any workers blocked on queue.get() by sending a "poison pill" (None).
-        # VP-24: Clear the queue first so pills are never lost when the queue is full,
-        # then put one pill per worker unconditionally.
-        with self.frame_queue.mutex:
-            self.frame_queue.queue.clear()
-        for _ in active_threads:
-            try:
-                self.frame_queue.put(None, block=False)
-            except queue.Full:
-                # Should not happen after the clear above, but guard anyway.
-                pass
-            except Exception as e:
-                print(f"[WARN] Error putting poison pill in queue: {e}")
-
-        # 3. Join all threads
-        for thread in active_threads:
-            try:
-                if thread.is_alive():
-                    thread.join(timeout=2.0)
-                    if thread.is_alive():
-                        print(f"[WARN] Thread {thread.name} did not join gracefully.")
-            except Exception as e:
-                print(f"[WARN] Error joining thread {thread.name}: {e}")
-
-        # 4. Clear the worker list
-        self.worker_threads.clear()
-
-        # 5. Release GPU memory held by the now-dead workers (kernel tensors,
-        #    FrameEnhancers/FrameEdits helpers, etc.).  CPython's reference-counting
-        #    will free them eventually, but calling GC + empty_cache here ensures
-        #    VRAM is reclaimed before the next session allocates new workers.
-        import gc as _gc
-
-        _gc.collect()
-        if torch.cuda.is_available():
-            torch.cuda.empty_cache()
-
-        # 6. Release module-level VR caches that hold CPU/GPU tensors across jobs.
-        #    Without this, equirect perspective grids and feathered stitch masks
-        #    accumulate in RAM across multiple recording sessions (memory leak).
-        #    Skipped when called from process_video() at session start, so the warm
-        #    caches built up by the previous pool survive the worker-pool restart.
-        if clear_module_caches:
-            try:
-                from app.processors.external.Equirec2Perspec_vr import clear_persp_cache
-                from app.helpers.vr_utils import clear_feathered_mask_cache
-
-                clear_persp_cache()
-                clear_feathered_mask_cache()
-            except Exception:
-                pass  # Non-fatal — VR caches simply persist until next GC cycle
+        """Facade: Delegates thread synchronization and VRAM cleanup to WorkerPoolManager."""
+        self.worker_pool_manager.join_and_clear_threads(clear_module_caches)
 
     def _log_hevc_thumbnail_hint_once(self) -> None:
         """Print a one-time hint about HEVC thumbnail rendering on Windows 10.
@@ -2660,7 +1673,9 @@ class VideoProcessor(QObject):
             self._used_ffmpeg_cap = False
             return False
 
-    def _read_frame_from_ffmpeg_input_stream(self) -> tuple[bool, Optional[numpy.ndarray]]:
+    def _read_frame_from_ffmpeg_input_stream(
+        self,
+    ) -> tuple[bool, Optional[numpy.ndarray]]:
         """Read one BGR frame from FFmpeg rawvideo stdout."""
         if self.ffmpeg_input_prefetched_frame is not None:
             frame = self.ffmpeg_input_prefetched_frame
@@ -2738,7 +1753,12 @@ class VideoProcessor(QObject):
         except Exception:
             pass
 
-    def source_to_output_frame(self, source_frame: int, src_fps: float | None = None, out_fps: float | None = None) -> int:
+    def source_to_output_frame(
+        self,
+        source_frame: int,
+        src_fps: float | None = None,
+        out_fps: float | None = None,
+    ) -> int:
         """Map a source-frame index to output-frame index using fps values.
 
         Falls back to `self.recording_source_fps` and `self.fps` when fps args
@@ -2748,13 +1768,22 @@ class VideoProcessor(QObject):
             sf = int(source_frame)
         except Exception:
             return 0
-        src = float(src_fps) if src_fps is not None else float(self.recording_source_fps or 0)
+        src = (
+            float(src_fps)
+            if src_fps is not None
+            else float(self.recording_source_fps or 0)
+        )
         out = float(out_fps) if out_fps is not None else float(self.fps or 0)
         if src <= 0 or out <= 0:
             return sf
         return max(0, round(float(sf) * out / src))
 
-    def output_to_source_frame(self, output_frame: int, src_fps: float | None = None, out_fps: float | None = None) -> int:
+    def output_to_source_frame(
+        self,
+        output_frame: int,
+        src_fps: float | None = None,
+        out_fps: float | None = None,
+    ) -> int:
         """Map an output-frame index back to source-frame index using fps values.
 
         Falls back to `self.recording_source_fps` and `self.fps` when fps args
@@ -2764,22 +1793,15 @@ class VideoProcessor(QObject):
             of = int(output_frame)
         except Exception:
             return 0
-        src = float(src_fps) if src_fps is not None else float(self.recording_source_fps or 0)
+        src = (
+            float(src_fps)
+            if src_fps is not None
+            else float(self.recording_source_fps or 0)
+        )
         out = float(out_fps) if out_fps is not None else float(self.fps or 0)
         if src <= 0 or out <= 0:
             return of
         return max(0, round(float(of) * src / out))
-
-    def _is_draining_tail(self) -> bool:
-        """Return True when we are in the tail-drain phase: recording ended
-        (next_frame_to_display beyond max) and feeder thread has exited.
-        """
-        return (
-            bool(self.recording)
-            and (self.next_frame_to_display > self.max_frame_number)
-            and (self.feeder_thread is not None)
-            and (not self.feeder_thread.is_alive())
-        )
 
     def _safe_unfinished_tasks(self) -> int:
         """Return a safe estimate of unfinished tasks on the frame_queue.
@@ -2790,47 +1812,6 @@ class VideoProcessor(QObject):
             return int(max(0, getattr(self.frame_queue, "unfinished_tasks", 0)))
         except Exception:
             return 0
-
-    def _handle_tail_drain_wait(self, frame_number_to_display: int) -> bool:
-        """Handle waiting logic when draining tail and the desired frame is not yet
-        available in `frames_to_display`.
-
-        Returns True if caller should return early (i.e. still waiting or forced
-        finalize triggered), False if processing should continue because the
-        frame is available.
-        """
-        # If the frame is already available, reset stall timer and continue.
-        if frame_number_to_display in self.frames_to_display:
-            self.tail_pending_stall_start_sec = 0.0
-            return False
-
-        pending_tasks = self._safe_unfinished_tasks()
-        if pending_tasks == 0:
-            # Nothing left in-flight but frame hasn't appeared: reset timer
-            # and return early to allow other event loop work.
-            self.tail_pending_stall_start_sec = 0.0
-            return True
-
-        now_sec = time.perf_counter()
-        if self.tail_pending_stall_start_sec <= 0.0:
-            # Start stall timer
-            self.tail_pending_stall_start_sec = now_sec
-            return True
-
-        if now_sec - self.tail_pending_stall_start_sec >= TAIL_PENDING_STALL_TIMEOUT_SEC:
-            # Stall exceeded timeout: force finalize to avoid hang.
-            # Do not mark read-error/incomplete here; this path is a queue-drain
-            # safeguard and can happen even when encoded output is otherwise valid.
-            self.tail_force_finalize_due_to_stall = True
-            self.tail_pending_stall_start_sec = 0.0
-            print(
-                "[WARN] Tail-drain pending tasks stalled for too long "
-                f"({TAIL_PENDING_STALL_TIMEOUT_SEC:.1f}s). Forcing finalization."
-            )
-            return True
-
-        # Still within stall window — keep waiting.
-        return True
 
     # --- Utility Methods ---
 
@@ -3031,338 +2012,19 @@ class VideoProcessor(QObject):
         return segments
 
     def _get_issue_scan_ranges(self) -> List[Tuple[int, int]]:
-        """Return the frame ranges that a scan should inspect."""
-        max_frame = int(self.max_frame_number)
-        scan_ranges: List[Tuple[int, int]] = []
-        open_start_frame: Optional[int] = None
-
-        for start_frame, end_frame in self.main_window.job_marker_pairs:
-            if start_frame is None:
-                continue
-            normalized_start = int(start_frame)
-            if end_frame is None:
-                open_start_frame = normalized_start
-                continue
-
-            normalized_end = int(end_frame)
-            if normalized_end >= normalized_start:
-                scan_ranges.append((normalized_start, normalized_end))
-
-        if open_start_frame is not None and open_start_frame <= max_frame:
-            scan_ranges.append((open_start_frame, max_frame))
-
-        if scan_ranges:
-            return misc_helpers.normalize_issue_scan_ranges(scan_ranges)
-
-        return [(0, max_frame)]
+        """Facade: Forwards scan range calculation to the decoupled IssueScanner."""
+        return self._get_issue_scanner_instance()._get_issue_scan_ranges()
 
     def describe_issue_scan_scope(
         self, scan_ranges: Optional[List[Tuple[int, int]]] = None
     ) -> str:
-        """Return a short human-readable description of the current scan scope."""
-        scan_ranges = scan_ranges or self._get_issue_scan_ranges()
-        max_frame = int(self.max_frame_number)
-        if not getattr(self.main_window, "job_marker_pairs", []):
-            return "Scanning full clip"
-        if scan_ranges == [(0, max_frame)]:
-            return "Scanning full clip"
-
-        open_start_frames = [
-            int(start_frame)
-            for start_frame, end_frame in self.main_window.job_marker_pairs
-            if start_frame is not None and end_frame is None
-        ]
-        has_open_start = bool(open_start_frames)
-        open_start_frame = min(open_start_frames) if open_start_frames else None
-
-        if len(scan_ranges) == 1:
-            start_frame, end_frame = scan_ranges[0]
-            if (
-                has_open_start
-                and end_frame == max_frame
-                and open_start_frame is not None
-            ):
-                if start_frame < open_start_frame:
-                    return f"Scanning 1 marked range and record start frame {open_start_frame} to end"
-                if open_start_frame > 0:
-                    return f"Scanning from record start frame {open_start_frame}"
-            return "Scanning 1 marked range"
-
-        effective_complete_segments = len(scan_ranges)
-        effective_open_start_frame: Optional[int] = None
-        if (
-            has_open_start
-            and scan_ranges[-1][1] == max_frame
-            and open_start_frame is not None
-        ):
-            effective_open_start_frame = open_start_frame
-            effective_complete_segments -= 1
-
-        if effective_complete_segments and effective_open_start_frame is not None:
-            range_label = "range" if effective_complete_segments == 1 else "ranges"
-            return (
-                f"Scanning {effective_complete_segments} marked {range_label} "
-                f"and record start frame {effective_open_start_frame} to end"
-            )
-        if effective_complete_segments:
-            range_label = "range" if effective_complete_segments == 1 else "ranges"
-            return f"Scanning {effective_complete_segments} marked {range_label}"
-        if effective_open_start_frame is not None:
-            return f"Scanning from record start frame {effective_open_start_frame}"
-        return "Scanning full clip"
+        """Facade: Forwards scope description to the decoupled IssueScanner."""
+        return self._get_issue_scanner_instance().describe_issue_scan_scope(scan_ranges)
 
     @staticmethod
     def _compute_longest_issue_run(issue_frames: list[int]) -> int:
-        longest_issue_run = 0
-        current_run = 0
-        previous_frame = None
-        for frame_number in sorted(set(issue_frames)):
-            if previous_frame is not None and frame_number == previous_frame + 1:
-                current_run += 1
-            else:
-                current_run = 1
-            longest_issue_run = max(longest_issue_run, current_run)
-            previous_frame = frame_number
-        return longest_issue_run
-
-    def _get_issue_scan_bytetrack_config(
-        self,
-        control: Mapping[str, Any] | None,
-    ) -> tuple[bool, int, int, int]:
-        if not isinstance(control, Mapping):
-            return (False, 40, 80, 30)
-
-        return (
-            bool(control.get("FaceTrackingEnableToggle", False)),
-            int(control.get("ByteTrackTrackThreshSlider", 40)),
-            int(control.get("ByteTrackMatchThreshSlider", 80)),
-            int(control.get("ByteTrackTrackBufferSlider", 30)),
-        )
-
-    def _resolve_scan_state_for_frame(
-        self,
-        frame_number: int,
-        base_control: ControlTypes,
-        base_params: FacesParametersTypes,
-        target_faces_snapshot: Optional[dict] = None,
-        control_defaults_snapshot: Optional[ControlTypes] = None,
-    ) -> tuple[ControlTypes, FacesParametersTypes]:
-        """Resolve the effective control/parameter state for a scan frame.
-
-        This mirrors playback/render marker semantics: if a marker exists at or
-        before the frame, its parameter/control payload becomes the active state
-        for that frame; otherwise the scan-start state remains active.
-        """
-        marker_data = video_control_actions._get_marker_data_for_position(  # type: ignore[attr-defined]
-            self.main_window, frame_number
-        )
-        if not marker_data:
-            return (
-                self._filter_scan_control(copy.deepcopy(base_control)),
-                self._filter_scan_face_params(copy.deepcopy(base_params)),
-            )
-
-        local_params = self._filter_scan_face_params(
-            cast(FacesParametersTypes, marker_data.get("parameters", {}))
-        )
-        local_control: ControlTypes = cast(ControlTypes, {})
-        local_control.update(
-            self._filter_scan_control(
-                cast(
-                    ControlTypes,
-                    control_defaults_snapshot
-                    if control_defaults_snapshot is not None
-                    else {},
-                )
-            )
-        )
-
-        control_data = marker_data.get("control")
-        if isinstance(control_data, dict):
-            local_control.update(
-                self._filter_scan_control(cast(ControlTypes, control_data).copy())
-            )
-
-        # Mirror the playback helper behavior by ensuring every current target
-        # face has a parameter dict, falling back to defaults when missing.
-        active_target_faces = (
-            target_faces_snapshot
-            if target_faces_snapshot is not None
-            else self.main_window.target_faces
-        )
-        default_scan_face_params = cast(
-            ParametersTypes,
-            self._filter_scan_face_params(
-                {"__default__": self.main_window.default_parameters.data}
-            ).get("__default__", {}),
-        )
-        for face_id in active_target_faces.keys():
-            face_id_str = str(face_id)
-            if face_id_str not in local_params:
-                local_params[face_id_str] = cast(
-                    ParametersTypes,
-                    copy.deepcopy(default_scan_face_params),
-                )
-
-        return self._filter_scan_control(local_control), self._filter_scan_face_params(
-            local_params, active_target_faces.keys()
-        )
-
-    def _build_issue_scan_state_segments(
-        self,
-        scan_ranges: List[Tuple[int, int]],
-        base_control: ControlTypes,
-        base_params: FacesParametersTypes,
-        target_faces_snapshot: dict,
-        control_defaults_snapshot: Optional[ControlTypes] = None,
-    ) -> list[tuple[int, int, ControlTypes, FacesParametersTypes]]:
-        """Group scan ranges into marker-stable segments."""
-        marker_positions = sorted(
-            int(frame_number)
-            for frame_number in getattr(self.main_window, "markers", {}).keys()
-        )
-        segments: list[tuple[int, int, ControlTypes, FacesParametersTypes]] = []
-
-        for start_frame, end_frame in scan_ranges:
-            range_markers = [
-                marker_frame
-                for marker_frame in marker_positions
-                if start_frame < marker_frame <= end_frame
-            ]
-            segment_start = start_frame
-            local_control, local_params = self._resolve_scan_state_for_frame(
-                start_frame,
-                base_control,
-                base_params,
-                target_faces_snapshot,
-                control_defaults_snapshot,
-            )
-
-            for next_marker_frame in range_markers + [end_frame + 1]:
-                segment_end = next_marker_frame - 1
-                if segment_end >= segment_start:
-                    segments.append(
-                        (segment_start, segment_end, local_control, local_params)
-                    )
-                if next_marker_frame <= end_frame:
-                    segment_start = next_marker_frame
-                    local_control, local_params = self._resolve_scan_state_for_frame(
-                        next_marker_frame,
-                        base_control,
-                        base_params,
-                        target_faces_snapshot,
-                        control_defaults_snapshot,
-                    )
-
-        return segments
-
-    def _reset_issue_scan_sequential_state(self) -> None:
-        """Clear scan-local sequential detection state at tracking boundaries."""
-        self.sequential_detector.reset_state()
-
-    def _prepare_issue_scan_match_context(
-        self,
-        local_control: ControlTypes,
-        local_params: FacesParametersTypes,
-        target_faces_snapshot: IssueScanTargetSnapshot,
-    ) -> dict[str, Any]:
-        """Precompute target embeddings and thresholds for a stable scan segment."""
-        recognition_model = str(
-            local_control.get("RecognitionModelSelection", "arcface_128")
-        )
-        similarity_type = str("Auto")
-        default_params = dict(self.main_window.default_parameters.data)
-        prepared_targets: list[tuple[str, float, numpy.ndarray]] = []
-
-        for target_id, target_face_snapshot in target_faces_snapshot.items():
-            face_id_str = str(target_face_snapshot.get("face_id", target_id))
-            face_specific_params = misc_helpers.copy_mapping_data(
-                local_params.get(face_id_str)
-            )
-            params_pd = misc_helpers.ParametersDict(
-                face_specific_params, default_params
-            )
-            target_embeddings = cast(
-                IssueScanTargetEmbeddings,
-                target_face_snapshot.get("embeddings_by_model", {}),
-            )
-            target_embedding = target_embeddings.get(recognition_model, {}).get(
-                similarity_type
-            )
-            if (
-                not isinstance(target_embedding, numpy.ndarray)
-                or target_embedding.size == 0
-            ):
-                continue
-            prepared_targets.append(
-                (
-                    face_id_str,
-                    float(params_pd["SimilarityThresholdSlider"]),
-                    target_embedding,
-                )
-            )
-
-        return {
-            "recognition_model": recognition_model,
-            "similarity_type": similarity_type,
-            "prepared_targets": prepared_targets,
-        }
-
-    def _find_best_target_match_for_scan(
-        self,
-        detected_embedding: numpy.ndarray,
-        prepared_targets: list[tuple[str, float, numpy.ndarray]],
-    ) -> str | None:
-        """Return the best target face using a precomputed scan match context."""
-        best_target = None
-        highest_sim = -1.0
-
-        for target_face_id, threshold, target_embedding in prepared_targets:
-            sim = self.main_window.models_processor.findCosineDistance(
-                detected_embedding, target_embedding
-            )
-            if sim >= threshold and sim > highest_sim:
-                highest_sim = sim
-                best_target = target_face_id
-
-        return best_target
-
-    def _build_issue_scan_target_embedding(
-        self,
-        target_face: Any,
-        recognition_model: str,
-        similarity_type: str,
-    ) -> numpy.ndarray:
-        cropped_face = getattr(target_face, "cropped_face", None)
-        if not isinstance(cropped_face, numpy.ndarray) or cropped_face.size == 0:
-            return numpy.array([])
-        image = numpy.ascontiguousarray(cropped_face)
-        image_uint8 = (
-            image if image.dtype == numpy.uint8 else image.astype("uint8", copy=False)
-        )
-        image_tensor = (
-            torch.from_numpy(image_uint8)
-            .to(self.main_window.models_processor.device, non_blocking=True)
-            .permute(2, 0, 1)
-        )
-        height, width = image_uint8.shape[:2]
-        full_face_kps = numpy.array(
-            [
-                [0.3 * width, 0.35 * height],
-                [0.7 * width, 0.35 * height],
-                [0.5 * width, 0.55 * height],
-                [0.35 * width, 0.75 * height],
-                [0.65 * width, 0.75 * height],
-            ],
-            dtype=numpy.float32,
-        )
-        face_emb, _ = self.main_window.models_processor.run_recognize_direct(
-            image_tensor,
-            full_face_kps,
-            similarity_type,
-            recognition_model,
-        )
-        return face_emb if isinstance(face_emb, numpy.ndarray) else numpy.array([])
+        """Facade: Forwards calculation to the decoupled IssueScanner."""
+        return IssueScanner._compute_longest_issue_run(issue_frames)
 
     def prepare_issue_scan_target_faces_snapshot(
         self,
@@ -3371,47 +2033,11 @@ class VideoProcessor(QObject):
         base_params: FacesParametersTypes,
         control_defaults_snapshot: Optional[ControlTypes] = None,
     ) -> IssueScanTargetSnapshot:
-        """Build a worker-safe target-face snapshot for issue scans."""
-        live_target_faces = dict(self.main_window.target_faces)
-        if not live_target_faces:
-            return {}
-
-        scan_segments = self._build_issue_scan_state_segments(
-            scan_ranges,
-            base_control,
-            base_params,
-            live_target_faces,
-            control_defaults_snapshot,
-        )
-        required_embedding_modes = {
-            (
-                str(local_control.get("RecognitionModelSelection", "arcface_128")),
-                str("Auto"),
+        return (
+            self._get_issue_scanner_instance().prepare_issue_scan_target_faces_snapshot(
+                scan_ranges, base_control, base_params, control_defaults_snapshot
             )
-            for _start_frame, _end_frame, local_control, _local_params in scan_segments
-        }
-        if not required_embedding_modes:
-            required_embedding_modes = {("arcface_128", "Auto")}
-
-        target_faces_snapshot: IssueScanTargetSnapshot = {}
-        for target_id, target_face in live_target_faces.items():
-            embeddings_by_model: IssueScanTargetEmbeddings = {}
-            for recognition_model, similarity_type in sorted(required_embedding_modes):
-                model_embeddings = embeddings_by_model.setdefault(recognition_model, {})
-                model_embeddings[similarity_type] = (
-                    self._build_issue_scan_target_embedding(
-                        target_face,
-                        recognition_model,
-                        similarity_type,
-                    )
-                )
-
-            target_faces_snapshot[str(target_id)] = {
-                "face_id": str(getattr(target_face, "face_id", target_id)),
-                "embeddings_by_model": embeddings_by_model,
-            }
-
-        return target_faces_snapshot
+        )
 
     def scan_issue_frames(
         self,
@@ -3426,292 +2052,18 @@ class VideoProcessor(QObject):
         control_defaults_snapshot: Optional[dict] = None,
         reset_frame_number: Optional[int] = None,
     ) -> Optional[dict]:
-        """Run a full-frame detection scan and return issue-frame results."""
-        scan_ranges = scan_ranges or self._get_issue_scan_ranges()
-        unsupported_reason = self.get_issue_scan_unavailable_reason(
-            base_control if base_control is not None else self.main_window.control,
-            scan_ranges=scan_ranges,
-            markers=getattr(self.main_window, "markers", None),
-            fallback_control=getattr(self.main_window, "control", None),
+        return self._get_issue_scanner_instance().scan_issue_frames(
+            progress_callback,
+            issue_found_callback,
+            is_cancelled,
+            scan_ranges,
+            target_height,
+            base_control,
+            base_params,
+            target_faces_snapshot,
+            control_defaults_snapshot,
+            reset_frame_number,
         )
-        if unsupported_reason:
-            raise RuntimeError(unsupported_reason)
-
-        capture = cv2.VideoCapture(self.media_path)
-        if not capture or not capture.isOpened():
-            raise RuntimeError("Could not open the selected video for scanning.")
-
-        dropped_frames_snapshot = {
-            int(frame) for frame in getattr(self.main_window, "dropped_frames", set())
-        }
-        total_frames = misc_helpers.count_issue_scan_frames(
-            scan_ranges, dropped_frames_snapshot
-        )
-        base_control = cast(
-            ControlTypes,
-            self._filter_scan_control(
-                copy.deepcopy(
-                    base_control
-                    if base_control is not None
-                    else self.main_window.control
-                )
-            ),
-        )
-        base_params = cast(
-            FacesParametersTypes,
-            self._filter_scan_face_params(
-                copy.deepcopy(
-                    base_params
-                    if base_params is not None
-                    else self.main_window.parameters
-                )
-            ),
-        )
-        initial_target_height = (
-            target_height
-            if target_height is not None
-            else self._get_target_input_height_for_control(base_control)
-        )
-        if target_faces_snapshot is None:
-            target_faces_snapshot = self.prepare_issue_scan_target_faces_snapshot(
-                scan_ranges,
-                base_control,
-                base_params,
-                cast(Optional[ControlTypes], control_defaults_snapshot),
-            )
-        else:
-            target_faces_snapshot = cast(
-                IssueScanTargetSnapshot,
-                dict(target_faces_snapshot),
-            )
-
-        # Snapshot current detector state to restore it safely after the scan
-        previous_last_detected_faces = copy.deepcopy(
-            self.sequential_detector.last_detected_faces
-        )
-        previous_smoothed_kps = copy.deepcopy(self.sequential_detector._smoothed_kps)
-        previous_smoothed_dense_kps = copy.deepcopy(
-            self.sequential_detector._smoothed_dense_kps
-        )
-        previous_smoothed_dense_kps_203 = copy.deepcopy(
-            self.sequential_detector._smoothed_dense_kps_203
-        )
-        is_master_edit_snapshot = self.main_window.editFacesButton.isChecked()
-
-        total_frames_scanned = 0
-        tracking_enabled = False
-        issue_frames_by_face: dict[str, set[int]] = {
-            str(face_id): set() for face_id in target_faces_snapshot.keys()
-        }
-
-        try:
-            self._reset_issue_scan_sequential_state()
-            scan_segments = self._build_issue_scan_state_segments(
-                scan_ranges,
-                base_control,
-                base_params,
-                target_faces_snapshot,
-                cast(Optional[ControlTypes], control_defaults_snapshot),
-            )
-            tracking_enabled = any(
-                bool(local_control.get("FaceTrackingEnableToggle", False))
-                for _start_frame, _end_frame, local_control, _local_params in scan_segments
-            )
-            if tracking_enabled:
-                self.main_window.models_processor.face_detectors.reset_tracker()
-            previous_segment_tracking_enabled: Optional[bool] = None
-            previous_segment_bytetrack_config = None
-
-            def emit_progress(frame_number: int) -> None:
-                if progress_callback:
-                    progress_callback(total_frames_scanned, total_frames, frame_number)
-
-            def emit_issue(face_id: str, frame_number: int) -> None:
-                normalized_face_id = str(face_id)
-                face_frames = issue_frames_by_face.setdefault(normalized_face_id, set())
-                normalized_frame = int(frame_number)
-                if normalized_frame in face_frames:
-                    return
-                face_frames.add(normalized_frame)
-                if issue_found_callback:
-                    issue_found_callback(normalized_face_id, normalized_frame)
-
-            def build_result(cancelled: bool) -> dict[str, Any]:
-                faces_with_issues = sum(
-                    1 for frames in issue_frames_by_face.values() if frames
-                )
-                return {
-                    "issue_frames_by_face": {
-                        face_id: sorted(frames)
-                        for face_id, frames in issue_frames_by_face.items()
-                    },
-                    "frames_scanned": total_frames_scanned,
-                    "faces_with_issues": faces_with_issues,
-                    "cancelled": cancelled,
-                }
-
-            for start_frame, end_frame, local_control, local_params in scan_segments:
-                segment_has_resize_state = any(
-                    key in local_control
-                    for key in (
-                        "GlobalInputResizeToggle",
-                        "GlobalInputResizeSizeSelection",
-                    )
-                )
-                segment_target_height = (
-                    self._get_target_input_height_for_control(local_control)
-                    if segment_has_resize_state
-                    else None
-                )
-                if not segment_has_resize_state and segment_target_height is None:
-                    segment_target_height = initial_target_height
-                current_segment_tracking_enabled = bool(
-                    local_control.get("FaceTrackingEnableToggle", False)
-                )
-                current_segment_bytetrack_config = (
-                    self._get_issue_scan_bytetrack_config(local_control)
-                )
-                if (
-                    current_segment_tracking_enabled
-                    and previous_segment_tracking_enabled is False
-                ) or (
-                    current_segment_tracking_enabled
-                    and previous_segment_bytetrack_config is not None
-                    and previous_segment_bytetrack_config[0]
-                    and current_segment_bytetrack_config
-                    != previous_segment_bytetrack_config
-                ):
-                    self.main_window.models_processor.face_detectors.reset_tracker()
-                    self._reset_issue_scan_sequential_state()
-                match_context = self._prepare_issue_scan_match_context(
-                    local_control, local_params, target_faces_snapshot
-                )
-                misc_helpers.seek_frame(capture, start_frame)
-                self.current_frame_number = start_frame
-                frame_number = start_frame
-
-                while frame_number <= end_frame:
-                    if is_cancelled and is_cancelled():
-                        return build_result(True)
-                    if frame_number in dropped_frames_snapshot:
-                        next_frame = frame_number + 1
-                        while (
-                            next_frame <= end_frame
-                            and next_frame in dropped_frames_snapshot
-                        ):
-                            next_frame += 1
-                        self.current_frame_number = next_frame
-                        misc_helpers.seek_frame(capture, self.current_frame_number)
-                        frame_number = next_frame
-                        continue
-
-                    ret, frame_bgr = misc_helpers.read_frame(
-                        capture,
-                        self.media_rotation,
-                        preview_target_height=segment_target_height,
-                    )
-                    if not ret or not isinstance(frame_bgr, numpy.ndarray):
-                        for face_id in issue_frames_by_face:
-                            emit_issue(face_id, frame_number)
-                        self.current_frame_number = frame_number + 1
-                        misc_helpers.seek_frame(capture, self.current_frame_number)
-                        total_frames_scanned += 1
-                        emit_progress(frame_number)
-                        frame_number += 1
-                        continue
-
-                    frame_rgb = numpy.ascontiguousarray(frame_bgr[..., ::-1])
-                    frame_rgb_uint8 = (
-                        frame_rgb
-                        if frame_rgb.dtype == numpy.uint8
-                        else frame_rgb.astype("uint8", copy=False)
-                    )
-                    frame_tensor = (
-                        torch.from_numpy(frame_rgb_uint8)
-                        .to(self.main_window.models_processor.device, non_blocking=True)
-                        .permute(2, 0, 1)
-                    )
-                    self.current_frame_number = frame_number
-
-                    bboxes, kpss_5, _, _ = self.sequential_detector.run(
-                        frame_rgb=frame_rgb,
-                        local_control_for_worker=local_control,
-                        local_params_for_worker=local_params,
-                        is_master_edit_active=is_master_edit_snapshot,
-                        frame_tensor=frame_tensor,
-                        detector_control_override=local_control,
-                        frame_number=frame_number,
-                    )
-                    detected_embeddings: list[numpy.ndarray] = []
-                    if (
-                        isinstance(bboxes, numpy.ndarray)
-                        and bboxes.shape[0] > 0
-                        and isinstance(kpss_5, numpy.ndarray)
-                        and kpss_5.shape[0] > 0
-                    ):
-                        max_faces = min(bboxes.shape[0], kpss_5.shape[0])
-                        recognition_model = match_context["recognition_model"]
-                        similarity_type = match_context["similarity_type"]
-                        for face_index in range(max_faces):
-                            face_kps = kpss_5[face_index]
-                            face_bbox = bboxes[face_index]
-                            if not misc_helpers.is_detected_face_eligible_for_matching(
-                                face_kps,
-                                face_bbox,
-                                FrameWorker._MIN_FACE_PIXELS,
-                            ):
-                                continue
-                            face_emb, _ = (
-                                self.main_window.models_processor.run_recognize_direct(
-                                    frame_tensor,
-                                    face_kps,
-                                    similarity_type,
-                                    recognition_model,
-                                )
-                            )
-                            if (
-                                isinstance(face_emb, numpy.ndarray)
-                                and face_emb.size > 0
-                            ):
-                                detected_embeddings.append(face_emb)
-                    del frame_tensor
-
-                    matched_face_ids: set[str] = set()
-                    prepared_targets = match_context["prepared_targets"]
-                    for detected_embedding in detected_embeddings:
-                        best_target_face_id = self._find_best_target_match_for_scan(
-                            detected_embedding, prepared_targets
-                        )
-                        if best_target_face_id is not None:
-                            matched_face_ids.add(best_target_face_id)
-
-                    for face_id in issue_frames_by_face:
-                        if face_id not in matched_face_ids:
-                            emit_issue(face_id, frame_number)
-                    total_frames_scanned += 1
-                    emit_progress(frame_number)
-                    frame_number += 1
-                previous_segment_tracking_enabled = current_segment_tracking_enabled
-                previous_segment_bytetrack_config = current_segment_bytetrack_config
-
-            return build_result(False)
-        finally:
-            # Safely restore the original detector state
-            self.sequential_detector.last_detected_faces = previous_last_detected_faces
-            self.sequential_detector._smoothed_kps = previous_smoothed_kps
-            self.sequential_detector._smoothed_dense_kps = previous_smoothed_dense_kps
-            self.sequential_detector._smoothed_dense_kps_203 = (
-                previous_smoothed_dense_kps_203
-            )
-
-            if tracking_enabled:
-                self.main_window.models_processor.face_detectors.reset_tracker()
-            self.current_frame_number = (
-                reset_frame_number
-                if reset_frame_number is not None
-                else int(self.main_window.videoSeekSlider.value())
-            )
-            misc_helpers.release_capture(capture)
 
     def _probe_video_duration(self, file_path: str) -> float | None:
         """
@@ -3893,17 +2245,26 @@ class VideoProcessor(QObject):
             shutil.rmtree(temp_audio_dir, ignore_errors=True)
 
     def _auto_save_workspace_for_output(self, final_file_path: str) -> None:
-        if not self.main_window.control.get("AutoSaveWorkspaceToggle"):
-            return
         if not final_file_path:
             return
 
-        try:
-            save_load_actions.save_current_workspace(
-                self.main_window, f"{final_file_path}.json"
-            )
-        except Exception as e:
-            print(f"[WARN] Failed to auto-save workspace after recording: {e}")
+        if self.main_window.control.get("AutoSaveWorkspaceToggle"):
+            try:
+                save_load_actions.save_current_workspace(
+                    self.main_window, f"{final_file_path}.json"
+                )
+            except Exception as e:
+                print(f"[WARN] Failed to auto-save workspace after recording: {e}")
+
+        if self.main_window.control.get("AutoSaveLastWorkspaceToggle"):
+            try:
+                save_load_actions.save_current_workspace(
+                    self.main_window, str(self.main_window.last_workspace_path)
+                )
+            except Exception as e:
+                print(
+                    f"[WARN] Failed to auto-save last_workspace.json after recording: {e}"
+                )
 
     def _finalize_default_style_recording(self):
         """Finalizes a successful default-style recording (adds audio, cleans up)."""
@@ -3933,8 +2294,8 @@ class VideoProcessor(QObject):
                 misc_helpers.release_capture(self.media_capture)
                 self.media_capture = None
 
-            # 3. Wait for the feeder thread to exit fully.
-            print("[INFO] Waiting for feeder thread to complete...")
+            # 3. Wait for the producer threads to exit fully.
+            print("[INFO] Waiting for producer threads to complete...")
             if self.feeder_thread and self.feeder_thread.is_alive():
                 self.feeder_thread.join(timeout=3.0)
                 if self.feeder_thread.is_alive():
@@ -3942,12 +2303,28 @@ class VideoProcessor(QObject):
                         "[WARN] Feeder thread did not exit cleanly during finalization."
                     )
             self.feeder_thread = None
-            print("[INFO] Feeder thread joined.")
+
+            if self.detector_thread and self.detector_thread.is_alive():
+                self.detector_thread.join(timeout=3.0)
+                if self.detector_thread.is_alive():
+                    print(
+                        "[WARN] Detector thread did not exit cleanly during finalization."
+                    )
+            self.detector_thread = None
+            print("[INFO] Producer threads joined.")
 
             # 4. Clear buffers and join worker threads.
             self.frames_to_display.clear()
             with self.frame_queue.mutex:
                 self.frame_queue.queue.clear()
+
+            # --- Clear the raw frame queue ---
+            if hasattr(self, "media_pipeline") and hasattr(
+                self.media_pipeline, "raw_frame_queue"
+            ):
+                with self.media_pipeline.raw_frame_queue.mutex:
+                    self.media_pipeline.raw_frame_queue.queue.clear()
+
             print("[INFO] Waiting for final worker threads...")
             self.join_and_clear_threads()
             print("[INFO] Worker threads joined.")
@@ -3979,7 +2356,10 @@ class VideoProcessor(QObject):
                 source_end_frame = self.output_to_source_frame(end_frame_for_calc)
                 source_span_duration = max(
                     0.0,
-                    float((source_end_frame - processing_start_src) / float(self.recording_source_fps)),
+                    float(
+                        (source_end_frame - processing_start_src)
+                        / float(self.recording_source_fps)
+                    ),
                 )
             else:
                 source_span_duration = (
@@ -3996,7 +2376,9 @@ class VideoProcessor(QObject):
                     else 0.0
                 )
             encoded_duration = (
-                float(actual_frames_processed / float(self.fps)) if self.fps > 0 else 0.0
+                float(actual_frames_processed / float(self.fps))
+                if self.fps > 0
+                else 0.0
             )
             print(
                 f"[INFO] Calculated recording end time: {self.play_end_time:.3f}s "
@@ -4235,15 +2617,15 @@ class VideoProcessor(QObject):
             # 6. Final Timing and Logging
             self.end_time = time.perf_counter()
             processing_time_sec = self.end_time - self.start_time
+
             try:
-                start_frame_num = getattr(
-                    self, "processing_start_frame", end_frame_for_calc
+                # Fetch the absolute frames from the media pipeline for accurate FPS math
+                num_frames_processed = getattr(
+                    self.media_pipeline, "absolute_frames_processed", 0
                 )
-                num_frames_processed = end_frame_for_calc - start_frame_num
-                if num_frames_processed < 0:
-                    num_frames_processed = 0
             except Exception:
                 num_frames_processed = 0
+
             self._log_processing_summary(processing_time_sec, num_frames_processed)
 
             self._auto_save_workspace_for_output(final_file_path)
@@ -4252,7 +2634,11 @@ class VideoProcessor(QObject):
             if self.file_type == "video" and self.media_path:
                 last_processed = self.next_frame_to_display - 1
                 start_frame = getattr(self, "processing_start_frame", 0)
-                if self._used_ffmpeg_cap and self.fps > 0 and self.recording_source_fps > 0:
+                if (
+                    self._used_ffmpeg_cap
+                    and self.fps > 0
+                    and self.recording_source_fps > 0
+                ):
                     last_processed = self.output_to_source_frame(last_processed)
                 reset_frame = max(start_frame, last_processed)
                 # Slider stays in source frame space (approach 2).
@@ -4286,7 +2672,7 @@ class VideoProcessor(QObject):
 
             print("[INFO] Clearing GPU Cache.")
             try:
-                if torch.cuda.is_available():
+                if torch.cuda.is_available() and torch.cuda.is_initialized():
                     torch.cuda.empty_cache()
             except Exception:
                 pass
@@ -4313,6 +2699,9 @@ class VideoProcessor(QObject):
 
     def enable_virtualcam(self, backend=False):
         """Starts the pyvirtualcam device."""
+
+        # Reset the circuit breaker latch when an explicit start is requested
+        self._virtcam_error_latch = False
 
         # Guard: Only run if the user has actually enabled the virtual cam
         if not self.main_window.control.get("SendVirtCamFramesEnableToggle", False):
@@ -4378,15 +2767,22 @@ class VideoProcessor(QObject):
             except Exception as e:
                 if attempt == 0:
                     # First attempt failed (driver may still be releasing the handle).
-                    # Wait longer and try once more before giving up.
-                    print(f"[WARN] Virtual camera open failed (attempt 1): {e}. Retrying in 500 ms")
+                    print(
+                        f"[WARN] Virtual camera open failed (attempt 1): {e}. Retrying in 500 ms"
+                    )
                     time.sleep(0.5)
                 else:
+                    # Second attempt failed. Trip the circuit breaker to prevent infinite loop.
                     print(f"[ERROR] Failed to enable virtual camera: {e}")
                     self.virtcam = None
+                    self._virtcam_error_latch = True
 
     def disable_virtualcam(self):
         """Stops the pyvirtualcam device."""
+        # Also reset the error latch when explicitly turning it off,
+        # allowing a fresh try next time the user turns it on.
+        self._virtcam_error_latch = False
+
         if self.virtcam:
             print(f"[INFO] Disabling virtual camera '{self.virtcam.device}'.")
             try:
@@ -4514,14 +2910,14 @@ class VideoProcessor(QObject):
         print(f"[INFO] Seeking to start frame {start_frame}...")
         misc_helpers.seek_frame(self.media_capture, start_frame)
 
-        # --- CRITICAL CHANGE: Apply Global Resize here too ---
+        # --- Apply Global Resize here too ---
         target_height = self._get_target_input_height()
         # -----------------------------------------------------
 
         ret, frame_bgr = misc_helpers.read_frame(
             self.media_capture,
             self.media_rotation,
-            preview_target_height=target_height,  # <--- Used to be None
+            preview_target_height=target_height,
         )
         if ret:
             self.current_frame = numpy.ascontiguousarray(
@@ -4544,23 +2940,13 @@ class VideoProcessor(QObject):
 
         # 5. Clear containers AND START WORKER POOL for the new segment
         self.frames_to_display.clear()
-        with self.frame_queue.mutex:
-            self.frame_queue.queue.clear()
-
         print(
             f"[INFO] Starting {self.num_threads} persistent worker thread(s) for segment..."
         )
         # Ensure old workers are cleaned up (if present)
         self.join_and_clear_threads()
-        self.worker_threads = []
-        for i in range(self.num_threads):
-            worker = FrameWorker(
-                frame_queue=self.frame_queue,  # Pass the task queue
-                main_window=self.main_window,
-                worker_id=i,
-            )
-            worker.start()
-            self.worker_threads.append(worker)
+        self.worker_pool_manager.recreate_queue(self.max_display_buffer_size)
+        self.worker_pool_manager.start_persistent_pool(self.num_threads)
 
         # 6. Setup FFmpeg subprocess for this segment
         temp_segment_filename = f"segment_{self.current_segment_index:03d}.mp4"
@@ -4616,22 +3002,24 @@ class VideoProcessor(QObject):
         # We must increment it so the *next* read is correct (e.g., 101)
         self.current_frame_number += 1
 
-        # 9. Start Metronome ET Feeder
+        # 9. Start Metronome ET Feeder VIA MEDIAPIPELINE
         target_fps = 9999.0  # Always max speed for segments
         is_first = self.current_segment_index == 0
 
-        # Start the feeder thread
+        # Push the UI state into the pipeline before starting the thread
         with self.state_lock:
-            self.feeder_parameters = self.main_window.parameters.copy()
-            self.feeder_control = self.main_window.control.copy()
+            self.feeder_parameters = copy.deepcopy(self.main_window.parameters)
+            self.feeder_control = copy.deepcopy(self.main_window.control)
+
         print(
-            f"[INFO] Starting feeder thread (Mode: segment {self.current_segment_index})..."
+            f"[INFO] Starting feeder thread via Pipeline (Mode: segment {self.current_segment_index})..."
         )
-        self.feeder_thread = threading.Thread(target=self._feeder_loop, daemon=True)
-        self.feeder_thread.start()
+        self.media_pipeline.start_feeder(
+            mode=f"segment {self.current_segment_index}", recording=True
+        )
 
         # Start the display metronome
-        self._start_metronome(target_fps, is_first_start=is_first)
+        self.media_pipeline.start_metronome(target_fps, is_first_start=is_first)
 
     def stop_current_segment(self):
         """
@@ -4648,8 +3036,8 @@ class VideoProcessor(QObject):
         # 1. Stop timers
         self.gpu_memory_update_timer.stop()
 
-        # 2a. Wait for the feeder thread
-        print(f"[INFO] Waiting for feeder thread from segment {segment_num}...")
+        # 2a. Wait for the producer threads
+        print(f"[INFO] Waiting for producer threads from segment {segment_num}...")
         if self.feeder_thread and self.feeder_thread.is_alive():
             self.feeder_thread.join(timeout=2.0)
 
@@ -4661,20 +3049,33 @@ class VideoProcessor(QObject):
                 self.feeder_thread = None
                 self.stop_processing()
                 return
-            else:
-                print("[INFO] Feeder thread joined.")
 
-        else:
-            # This case is normal if the feeder finished its work very quickly
-            print("[INFO] Feeder thread was already finished.")
+        if self.detector_thread and self.detector_thread.is_alive():
+            self.detector_thread.join(timeout=2.0)
+            if self.detector_thread.is_alive():
+                print(
+                    f"[ERROR] Detector thread from segment {segment_num} did not join within timeout. Aborting segment processing."
+                )
+                self.detector_thread = None
+                self.stop_processing()
+                return
 
+        print("[INFO] Producer threads joined.")
         self.feeder_thread = None
+        self.detector_thread = None
 
         # 2b. Wait for workers
         print(f"[INFO] Waiting for workers from segment {segment_num}...")
         self.join_and_clear_threads()
         print("[INFO] Workers joined.")
         self.frames_to_display.clear()
+
+        # --- Clear raw frame queue ---
+        if hasattr(self, "media_pipeline") and hasattr(
+            self.media_pipeline, "raw_frame_queue"
+        ):
+            with self.media_pipeline.raw_frame_queue.mutex:
+                self.media_pipeline.raw_frame_queue.queue.clear()
 
         # 3. Finalize FFmpeg for this segment
         if self.encoder.is_running():
@@ -4779,8 +3180,7 @@ class VideoProcessor(QObject):
 
         # Add suffix only for real read-error stops.
         has_real_read_errors = (
-            int(self.read_error_skip_count) > 0
-            or int(self.consecutive_read_errors) > 0
+            int(self.read_error_skip_count) > 0 or int(self.consecutive_read_errors) > 0
         )
         if self.stopped_by_error_limit and has_real_read_errors:
             path_obj = Path(final_file_path)
@@ -4916,6 +3316,13 @@ class VideoProcessor(QObject):
             with self.frame_queue.mutex:
                 self.frame_queue.queue.clear()
 
+            # --- Clear raw frame queue ---
+            if hasattr(self, "media_pipeline") and hasattr(
+                self.media_pipeline, "raw_frame_queue"
+            ):
+                with self.media_pipeline.raw_frame_queue.mutex:
+                    self.media_pipeline.raw_frame_queue.queue.clear()
+
             # 8. Final timing
             self.end_time = time.perf_counter()
             processing_time_sec = self.end_time - self.start_time
@@ -4932,12 +3339,22 @@ class VideoProcessor(QObject):
                     f"[WARN] Segment processing/concatenation failed after {formatted_duration}."
                 )
 
+            # --- Inject the absolute FPS summary for multi-segment jobs ---
+            try:
+                num_frames_processed = getattr(
+                    self.media_pipeline, "absolute_frames_processed", 0
+                )
+            except Exception:
+                num_frames_processed = 0
+
+            self._log_processing_summary(processing_time_sec, num_frames_processed)
+
             # 9. Final cleanup and UI reset
             print(
                 "[INFO] Clearing GPU Cache and running garbage collection post-concatenation."
             )
             try:
-                if torch.cuda.is_available():
+                if torch.cuda.is_available() and torch.cuda.is_initialized():
                     torch.cuda.empty_cache()
             except ImportError:
                 pass
@@ -4985,123 +3402,6 @@ class VideoProcessor(QObject):
                 )
         self.segment_temp_dir = None
 
-    # --- Audio Methods ---
-
-    def start_live_sound(self):
-        """Starts ffplay subprocess to play audio synced to the current frame."""
-        # VP-13: Guard against a None media_capture (e.g. called after stop_processing).
-        if not self.media_capture:
-            print("[WARN] start_live_sound: media_capture is None, cannot start audio.")
-            return
-
-        # Calculate seek time based on the *next* frame to be displayed
-        seek_time = (self.next_frame_to_display) / self.media_capture.get(
-            cv2.CAP_PROP_FPS
-        )
-
-        # Adjust audio speed if custom FPS is used
-        fpsdiv = 1.0
-        if (
-            self.main_window.control["VideoPlaybackCustomFpsToggle"]
-            and not self.recording
-        ):
-            fpsorig = self.media_capture.get(cv2.CAP_PROP_FPS)
-            fpscust = self.main_window.control["VideoPlaybackCustomFpsSlider"]
-            if fpsorig > 0 and fpscust > 0:
-                fpsdiv = fpscust / fpsorig
-        if fpsdiv < 0.5:
-            fpsdiv = 0.5  # Don't allow less than 0.5x speed
-
-        args = [
-            "ffplay",
-            "-vn",  # No video
-            "-nodisp",
-            "-stats",
-            "-loglevel",
-            "quiet",
-            "-sync",
-            "audio",
-            "-af",
-            f"volume={self.main_window.control['LiveSoundVolumeDecimalSlider']}, atempo={fpsdiv}",
-            "-i",  # Specify the input...
-            self.media_path,
-            "-ss",  # ... THEN specify the seek time for a precise seek
-            str(seek_time),
-        ]
-
-        self.ffplay_sound_sp = subprocess.Popen(
-            args, stdout=subprocess.PIPE, stderr=subprocess.STDOUT
-        )
-
-    def _start_synchronized_playback(self):
-        """
-        Starts the playback components (audio and video) in a synchronized manner.
-        Called once the preroll buffer is filled.
-        """
-        # 1. Start audio (ffplay) *first*
-        if self.main_window.liveSoundButton.isChecked() and not self.recording:
-            print("[INFO] Starting audio subprocess (ffplay)...")
-            self.start_live_sound()
-
-            # 2. Start video (metronome) AFTER a delay
-            # This is to allow ffplay time to initialize.
-            AUDIO_STARTUP_LATENCY_MS = (
-                self.main_window.control.get("LiveSoundDelayDecimalSlider") * 1000
-            )
-            print(
-                f"[INFO] Waiting {AUDIO_STARTUP_LATENCY_MS}ms for audio to initialize..."
-            )
-
-            # Use the function with the clarified name
-            QTimer.singleShot(
-                int(AUDIO_STARTUP_LATENCY_MS),
-                self._start_video_metronome_after_audio_delay,
-            )
-
-        else:
-            # No audio, start video immediately
-            print("[INFO] No audio. Starting video metronome immediately.")
-            self._start_metronome(self.fps, is_first_start=True)
-
-    def _start_video_metronome_after_audio_delay(self):
-        """
-        Slot for QTimer.singleShot.
-        Starts the video metronome *after* the audio initialization delay has passed.
-        """
-        if not self.processing:  # Check in case the user stopped processing
-            return
-        print("[INFO] Audio startup delay complete. Starting video metronome.")
-        self._start_metronome(self.fps, is_first_start=True)
-
-    def stop_live_sound(self):
-        """Stops the ffplay audio subprocess."""
-        if self.ffplay_sound_sp:
-            parent_pid = self.ffplay_sound_sp.pid
-            try:
-                # Kill parent and any child processes
-                try:
-                    parent_proc = psutil.Process(parent_pid)
-                    children = parent_proc.children(recursive=True)
-                    for child in children:
-                        try:
-                            child.kill()
-                        except psutil.NoSuchProcess:
-                            pass
-                except psutil.NoSuchProcess:
-                    pass
-
-                self.ffplay_sound_sp.terminate()
-                try:
-                    self.ffplay_sound_sp.wait(timeout=2)
-                except subprocess.TimeoutExpired:
-                    self.ffplay_sound_sp.kill()
-            except psutil.NoSuchProcess:
-                pass
-            except Exception as e:
-                print(f"[WARN] Error stopping live sound: {e}")
-
-            self.ffplay_sound_sp = None
-
     # --- Webcam Methods ---
 
     def process_webcam(self):
@@ -5144,16 +3444,38 @@ class VideoProcessor(QObject):
             f"[INFO] Init Webcam: Device={webcam_index}, Backend={backend_name}, Target={target_width}x{target_height} @ {target_fps}fps"
         )
 
-        # 2. Initialize VideoCapture with the selected Backend
-        if self.media_capture:
-            misc_helpers.release_capture(self.media_capture)
-            self.media_capture = None
+        # 2. Initialize VideoCapture with the selected Backend (Prevent Race Condition)
+        reinitialize_needed = True
 
-        try:
-            self.media_capture = cv2.VideoCapture(webcam_index, backend_id)
-        except Exception as e:
-            print(f"[ERROR] Failed to init webcam with backend {backend_name}: {e}")
-            self.media_capture = cv2.VideoCapture(webcam_index)
+        # Determine if we can safely reuse the existing capture
+        if self.media_capture and self.media_capture.isOpened():
+            selected_btn = getattr(self.main_window, "selected_video_button", None)
+            from app.ui.widgets import widget_components
+
+            if isinstance(
+                selected_btn, widget_components.TargetMediaCardButton
+            ) and getattr(selected_btn, "is_webcam", False):
+                if (
+                    selected_btn.webcam_index == webcam_index
+                    and selected_btn.webcam_backend == backend_id
+                ):
+                    reinitialize_needed = False
+                    print(
+                        "[INFO] Reusing existing webcam capture to prevent hardware lock issues."
+                    )
+
+        if reinitialize_needed:
+            if self.media_capture:
+                misc_helpers.release_capture(self.media_capture)
+                self.media_capture = None
+                # CRITICAL: Wait for OS driver hardware lock to fully release
+                time.sleep(0.5)
+
+            try:
+                self.media_capture = cv2.VideoCapture(webcam_index, backend_id)
+            except Exception as e:
+                print(f"[ERROR] Failed to init webcam with backend {backend_name}: {e}")
+                self.media_capture = cv2.VideoCapture(webcam_index)
 
         if not (self.media_capture and self.media_capture.isOpened()):
             print("[ERROR] Unable to open webcam source.")
@@ -5203,7 +3525,14 @@ class VideoProcessor(QObject):
         with self.frame_queue.mutex:
             self.frame_queue.queue.clear()
 
-        # 7. Start Metronome ET Feeder
+        # --- Clear raw frame queue ---
+        if hasattr(self, "media_pipeline") and hasattr(
+            self.media_pipeline, "raw_frame_queue"
+        ):
+            with self.media_pipeline.raw_frame_queue.mutex:
+                self.media_pipeline.raw_frame_queue.queue.clear()
+
+        # 7. Start Metronome ET Feeder VIA MEDIAPIPELINE
         fps = self.media_capture.get(cv2.CAP_PROP_FPS)
         if fps <= 0:
             fps = 30
@@ -5212,20 +3541,12 @@ class VideoProcessor(QObject):
         print(f"[INFO] Webcam target FPS: {self.fps}")
 
         self.join_and_clear_threads()
-        self.worker_threads = []
-        for i in range(self.num_threads):
-            worker = FrameWorker(
-                frame_queue=self.frame_queue,  # Pass the task queue
-                main_window=self.main_window,
-                worker_id=i,
-            )
-            worker.start()
-            self.worker_threads.append(worker)
+        self.worker_pool_manager.recreate_queue(self.max_display_buffer_size)
+        self.worker_pool_manager.start_persistent_pool(self.num_threads)
 
-        # Start the feeder thread
-        print("[INFO] Starting feeder thread (Mode: webcam)...")
-        self.feeder_thread = threading.Thread(target=self._feeder_loop, daemon=True)
-        self.feeder_thread.start()
+        # Start the feeder thread via pipeline
+        print("[INFO] Starting feeder thread via Pipeline (Mode: webcam)...")
+        self.media_pipeline.start_feeder(mode="webcam", recording=False)
 
         # Start the display metronome
-        self._start_metronome(self.fps, is_first_start=True)
+        self.media_pipeline.start_metronome(self.fps, is_first_start=True)

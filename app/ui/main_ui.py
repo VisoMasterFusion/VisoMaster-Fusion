@@ -10,6 +10,7 @@ import torch
 from app.ui.core.main_window import Ui_MainWindow
 import app.ui.widgets.actions.common_actions as common_widget_actions
 from app.ui.widgets.actions import card_actions
+from app.ui.widgets.actions import target_videos_list_actions
 from app.ui.widgets.actions import layout_actions
 from app.ui.widgets.actions import video_control_actions
 from app.ui.widgets.actions import filter_actions
@@ -22,6 +23,8 @@ from app.ui.widgets.advanced_embedding_editor import EmbeddingGUI
 import app.ui.widgets.actions.control_actions as control_actions
 from app.processors.video_processor import VideoProcessor
 from app.processors.models_processor import ModelsProcessor
+from app.processors.utils import platform_support
+from app.processors.workers.function_worker import FunctionWorker
 from app.ui.widgets import widget_components
 from app.ui.widgets.event_filters import (
     GraphicsViewEventFilter,
@@ -31,6 +34,7 @@ from app.ui.widgets.event_filters import (
 )
 from app.ui.widgets import ui_workers
 from app.ui.widgets.common_layout_data import COMMON_LAYOUT_DATA
+from app.ui.widgets import sortable_widgets
 from app.ui.widgets.denoiser_layout_data import DENOISER_LAYOUT_DATA
 from app.ui.widgets.swapper_layout_data import (
     SWAPPER_LAYOUT_DATA,
@@ -89,8 +93,15 @@ class MainWindow(QtWidgets.QMainWindow, Ui_MainWindow):
         self.merged_embeddings_filter_worker = ui_workers.FilterWorker(
             main_window=self, search_text="", filter_list="merged_embeddings"
         )
-        self.video_processor = VideoProcessor(self)
+        # 1. Initialize Resource Manager
         self.models_processor = ModelsProcessor(self)
+
+        # 2. Initialize Function Dispatcher (Facade) passing the Resource Manager
+        self.function_worker = FunctionWorker(self.models_processor)
+
+        # 3. Initialize Video Pipeline
+        self.video_processor = VideoProcessor(self)
+
         # Connect the signals from the worker thread to our new slots
         self.models_processor.show_build_dialog.connect(self.show_build_dialog)
         self.models_processor.hide_build_dialog.connect(self.hide_build_dialog)
@@ -172,6 +183,7 @@ class MainWindow(QtWidgets.QMainWindow, Ui_MainWindow):
 
         # This flag is used to make sure new loaded media is properly fit into the graphics frame on the first load
         self.project_root_path = Path(__file__).resolve().parent.parent.parent
+        self.last_workspace_path = self.project_root_path / "last_workspace.json"
         self.actual_models_dir_path = self.project_root_path / global_models_dir
         self.loading_new_media = False
 
@@ -193,11 +205,29 @@ class MainWindow(QtWidgets.QMainWindow, Ui_MainWindow):
         self.last_seek_read_failed = False
         self.embedding_editor_window = None
 
+        # Set by the "Quit without Saving" action so closeEvent skips the autosave.
+        self.quit_without_saving = False
+
+        self._initialize_target_videos_dimension_ranges()
+
+    def _initialize_target_videos_dimension_ranges(self):
+        """Range the minimum width/height filters from 0 up to 8K UHD (7680x4320)."""
+        max_width, max_height = 7680, 4320
+
+        self.targetVideosWidthSlider.setRange(0, max_width)
+        self.targetVideosWidthSlider.setSingleStep(max_width // 100)
+        self.targetVideosWidthSpinBox.setRange(0, max_width)
+
+        self.targetVideosHeightSlider.setRange(0, max_height)
+        self.targetVideosHeightSlider.setSingleStep(max_height // 100)
+        self.targetVideosHeightSpinBox.setRange(0, max_height)
+
     def initialize_widgets(self):
         # Initialize QListWidget for target media
         self.targetVideosList.setFlow(QtWidgets.QListWidget.LeftToRight)
         self.targetVideosList.setWrapping(True)
         self.targetVideosList.setResizeMode(QtWidgets.QListWidget.Adjust)
+        self.targetVideosList.setSortingEnabled(True)
 
         # Initialize QListWidget for face images
         self.inputFacesList.setFlow(QtWidgets.QListWidget.LeftToRight)
@@ -232,7 +262,7 @@ class MainWindow(QtWidgets.QMainWindow, Ui_MainWindow):
         self.buttonTargetVideosPath.clicked.connect(
             partial(list_view_actions.select_target_medias, self, "folder")
         )
-        self._initialize_target_videos_filter_menu()
+        self._initialize_target_videos_list_widgets()  # search, sorting, filters
         self.buttonInputFacesPath.clicked.connect(
             partial(list_view_actions.select_input_face_images, self, "folder")
         )
@@ -262,7 +292,10 @@ class MainWindow(QtWidgets.QMainWindow, Ui_MainWindow):
         self.videoSeekSlider.sliderReleased.connect(
             partial(video_control_actions.on_slider_released, self)
         )
+
         video_control_actions.set_up_video_seek_slider(self)
+        video_control_actions.set_up_timeline_zoom(self)
+
         self.frameAdvanceButton.clicked.connect(
             partial(video_control_actions.advance_video_slider_by_n_frames, self)
         )
@@ -298,7 +331,7 @@ class MainWindow(QtWidgets.QMainWindow, Ui_MainWindow):
         self.videoTimeLineEdit.setAlignment(QtCore.Qt.AlignmentFlag.AlignCenter)
         self.videoTimeLineEdit.setMaximumSize(QtCore.QSize(55, 16777215))
         self.videoTimeLineEdit.setToolTip("Current Time (mm:ss)")
-        self.horizontalLayoutMediaSlider.addWidget(self.videoTimeLineEdit)
+        self.horizontalLayoutMediaSlider.insertWidget(2, self.videoTimeLineEdit)
         video_control_actions.update_video_time_line_edit(self, 0)
         video_seek_line_edit_event_filter = videoSeekSliderLineEditEventFilter(
             self, self.videoSeekLineEdit
@@ -324,10 +357,6 @@ class MainWindow(QtWidgets.QMainWindow, Ui_MainWindow):
         self.clearTargetFacesButton.clicked.connect(
             partial(card_actions.clear_target_faces, self)
         )
-        self.targetVideosSearchBox.textChanged.connect(
-            partial(filter_actions.filter_target_videos, self)
-        )
-
         self.inputFacesSearchBox.textChanged.connect(
             partial(filter_actions.filter_input_faces, self)
         )
@@ -365,7 +394,7 @@ class MainWindow(QtWidgets.QMainWindow, Ui_MainWindow):
             partial(video_control_actions.process_batch_images, self, True)
         )
         self.clearMemoryButton.clicked.connect(
-            partial(common_widget_actions.clear_gpu_memory, self)
+            partial(control_actions.clear_gpu_memory, self)
         )
 
         QtCore.QTimer.singleShot(0, self._configure_faces_panel_button_column)
@@ -577,6 +606,8 @@ class MainWindow(QtWidgets.QMainWindow, Ui_MainWindow):
 
         self.menuFile.clear()
         self.menuFile.addAction(self.actionLoad_SavedWorkspace)
+        self.menuFile.addAction(self.actionReset_to_LastWorkspace)
+        self.menuFile.addAction(self.actionSave_LastWorkspace)
         self.menuFile.addAction(self.actionSave_CurrentWorkspace)
         self.menuFile.addSeparator()
         self.menuFile.addAction(self.actionOpen_Videos_Folder)
@@ -591,54 +622,86 @@ class MainWindow(QtWidgets.QMainWindow, Ui_MainWindow):
         self.menuFile.addAction(self.actionLoad_Embeddings)
         self.menuFile.addAction(self.actionSave_Embeddings)
         self.menuFile.addAction(self.actionSave_Embeddings_As)
+        self.menuFile.addSeparator()
+        self.menuFile.addAction(self.actionQuit_WithoutSaving)
+        self.menuFile.addAction(self.actionQuit)
 
-    def _initialize_target_videos_filter_menu(self):
-        self.targetVideosFilterMenu = QtWidgets.QMenu(self.targetVideosFilterMenuButton)
-        self.targetVideosFilterMenuButton.setStyleSheet(
-            "QPushButton::menu-indicator { image: none; width: 0px; }"
-        )
-        self.targetVideosFilterImagesCheckBox = (
-            self._create_target_videos_filter_menu_checkbox(
-                "Images", ":/media/media/image.png", checked=True
-            )
-        )
-        self.targetVideosFilterVideosCheckBox = (
-            self._create_target_videos_filter_menu_checkbox(
-                "Videos", ":/media/media/video.png", checked=True
-            )
-        )
-        self.targetVideosFilterWebcamsCheckBox = (
-            self._create_target_videos_filter_menu_checkbox(
-                "Webcams", ":/media/media/webcam.png", checked=False
-            )
-        )
-
-        self.targetVideosFilterMenuButton.setMenu(self.targetVideosFilterMenu)
-
-        self.targetVideosFilterImagesCheckBox.toggled.connect(
+    def _initialize_target_videos_list_widgets(self):
+        """Wire up the target media search box, sort controls and filters."""
+        # Search
+        self.targetVideosSearchBox.textChanged.connect(
             partial(filter_actions.filter_target_videos, self)
         )
-        self.targetVideosFilterVideosCheckBox.toggled.connect(
-            partial(filter_actions.filter_target_videos, self)
+        self.targetVideosSearchBox.textChanged.connect(
+            partial(target_videos_list_actions.update_target_videos_search_reset, self)
         )
-        self.targetVideosFilterWebcamsCheckBox.toggled.connect(
-            partial(filter_actions.filter_target_videos, self)
+        self.targetVideosSearchResetButton.setEnabled(False)
+        self.targetVideosSearchResetButton.clicked.connect(
+            self.targetVideosSearchBox.clear
         )
+
+        # Sorting
+        self.targetVideosSortComboBox.clear()
+        for item_text, item_sort_mode in sortable_widgets.initialize_combobox_items:
+            self.targetVideosSortComboBox.addItem(item_text, item_sort_mode)
+        self.targetVideosSortComboBox.setCurrentIndex(0)
+        self.targetVideosList.setSortingMode(
+            self.targetVideosSortComboBox.currentData()
+        )
+        self.targetVideosSortComboBox.currentIndexChanged.connect(
+            partial(target_videos_list_actions.sort_target_videos, self)
+        )
+        self.sortTargetVideosDirectionButton.toggled.connect(
+            partial(target_videos_list_actions.sort_target_videos, self)
+        )
+
+        # Filters: the button now toggles the filter row instead of opening a menu
+        self.targetVideosFilterMenuButton.setCheckable(True)
+        self.targetVideosFilterMenuButton.setChecked(False)
+        self.targetVideosFilterMenuButton.clicked.connect(
+            partial(
+                target_videos_list_actions.toggle_target_video_filters_sorting, self
+            )
+        )
+        target_videos_list_actions.toggle_target_video_filters_sorting(self)
+
+        for checkbox in (
+            self.targetVideosFilterImagesCheckBox,
+            self.targetVideosFilterVideosCheckBox,
+            self.targetVideosFilterWebcamsCheckBox,
+        ):
+            checkbox.toggled.connect(partial(filter_actions.filter_target_videos, self))
         self.targetVideosFilterWebcamsCheckBox.toggled.connect(
             partial(list_view_actions.load_target_webcams, self)
         )
 
-    def _create_target_videos_filter_menu_checkbox(
-        self, text: str, icon_path: str, checked: bool
-    ) -> QtWidgets.QCheckBox:
-        checkbox = QtWidgets.QCheckBox(text, self.targetVideosFilterMenu)
-        checkbox.setIcon(QtGui.QIcon(icon_path))
-        checkbox.setChecked(checked)
-
-        action = QtWidgets.QWidgetAction(self.targetVideosFilterMenu)
-        action.setDefaultWidget(checkbox)
-        self.targetVideosFilterMenu.addAction(action)
-        return checkbox
+        # Minimum dimension filters: keep each slider and its spin box in step
+        for slider, spinbox in (
+            (self.targetVideosWidthSlider, self.targetVideosWidthSpinBox),
+            (self.targetVideosHeightSlider, self.targetVideosHeightSpinBox),
+        ):
+            slider.valueChanged.connect(
+                partial(target_videos_list_actions.sort_target_videos, self)
+            )
+            slider.valueChanged.connect(
+                partial(
+                    target_videos_list_actions._set_value_blocking_signals,
+                    slider,
+                    spinbox,
+                )
+            )
+            spinbox.valueChanged.connect(
+                partial(
+                    target_videos_list_actions._set_value_blocking_signals,
+                    spinbox,
+                    slider,
+                )
+            )
+            # The sync above blocks the slider's signals, so the spin box has to
+            # ask for the re-filter itself.
+            spinbox.valueChanged.connect(
+                partial(target_videos_list_actions.sort_target_videos, self)
+            )
 
     def update_denoiser_controls_visibility_for_pass(
         self, pass_suffix: str, current_mode_text: str
@@ -811,7 +874,7 @@ class MainWindow(QtWidgets.QMainWindow, Ui_MainWindow):
     def handle_unload_request(self, model_names: list):
         """Unloads models requested by a worker thread, keeping essential ones."""
         current_swapper = self.control.get("FaceSwapperTypeSelection", "Inswapper128")
-        active_arcface_model = self.models_processor.get_arcface_model(current_swapper)
+        active_arcface_model = self.function_worker.get_arcface_model(current_swapper)
 
         print(f"[INFO] Unload request for: {model_names}")
         print(f"[INFO] Keeping active model: {active_arcface_model}")
@@ -957,16 +1020,24 @@ class MainWindow(QtWidgets.QMainWindow, Ui_MainWindow):
         list_view_actions.clear_stop_loading_input_media(self)
         list_view_actions.clear_stop_loading_target_media(self)
 
-        save_load_actions.save_current_workspace(
-            self, str(self.project_root_path / "last_workspace.json")
-        )
+        if self.quit_without_saving:
+            print("[INFO] MainWindow: quitting without saving the workspace.")
+        else:
+            save_load_actions.save_current_workspace(
+                self, str(self.last_workspace_path)
+            )
         self.video_processor.join_and_clear_threads()
         # Optionally handle the event if needed
         event.accept()
 
-    def load_last_workspace(self):
+    def load_last_workspace(self) -> None:
+        """
+        Loads the last used workspace if available.
+        If no workspace is found (first launch or deleted config), prompts the user
+        to select an Execution Provider to prevent unwanted TensorRT engine generation.
+        """
         # Show the load workspace dialog if the file exists
-        last_workspace_path = self.project_root_path / "last_workspace.json"
+        last_workspace_path = self.last_workspace_path
         if last_workspace_path.is_file():
             auto_load_workspace_toggle = (
                 save_load_actions.get_auto_load_workspace_toggle(
@@ -978,10 +1049,56 @@ class MainWindow(QtWidgets.QMainWindow, Ui_MainWindow):
             else:
                 load_dialog = widget_components.LoadLastWorkspaceDialog(self)
                 load_dialog.exec_()
+        else:
+            # First launch or no workspace: Prompt for execution provider
+            options = platform_support.available_execution_providers()
+            default_index = options.index(
+                platform_support.default_execution_provider()
+            )
 
-            # Re-populate and set current selection for dynamic widgets like DenoiserUNetModelSelection
-            self._populate_denoiser_unet_models()
-            self._populate_reference_kv_tensors()
+            prompt = (
+                "No previous workspace found.\n\n"
+                "Please select your preferred execution provider."
+            )
+            # The TensorRT warning only makes sense where TensorRT is an option.
+            if any(o.startswith("TensorRT") for o in options):
+                prompt += (
+                    "\n(Select 'CUDA' or 'CPU' to avoid generating TensorRT "
+                    "engines on this launch):"
+                )
+
+            provider, ok = QtWidgets.QInputDialog.getItem(
+                self,
+                "Initial Setup: Execution Provider",
+                prompt,
+                options,
+                default_index,
+                False,  # Non-editable dropdown
+            )
+
+            if ok and provider:
+                print(f"[INFO] Initial provider selected: {provider}")
+                # 1. Update the control state
+                self.control["ProvidersPrioritySelection"] = provider
+
+                # 2. Update the corresponding UI widget if it has been instantiated
+                provider_widget = self.parameter_widgets.get(
+                    "ProvidersPrioritySelection"
+                )
+                if provider_widget and hasattr(provider_widget, "setCurrentText"):
+                    provider_widget.setCurrentText(provider)
+
+                # 3. Execute the function to apply the provider changes system-wide
+                try:
+                    control_actions.change_execution_provider(self)
+                except Exception as e:
+                    print(
+                        f"[ERROR] Failed to apply execution provider during startup: {e}"
+                    )
+
+        # Re-populate and set current selection for dynamic widgets like DenoiserUNetModelSelection
+        self._populate_denoiser_unet_models()
+        self._populate_reference_kv_tensors()
 
     def register_parameter_section(
         self,

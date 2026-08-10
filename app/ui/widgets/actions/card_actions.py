@@ -24,8 +24,13 @@ def clear_target_faces(main_window: "MainWindow", refresh_frame=True):
     ):
         return
 
+    # --- WEBCAM GUARD ---
     if main_window.video_processor.processing:
-        main_window.video_processor.stop_processing()
+        if main_window.video_processor.file_type == "webcam":
+            main_window.video_processor.ui_state_is_dirty = True
+        else:
+            main_window.video_processor.stop_processing()
+
     main_window.targetFacesList.clear()
 
     for target_face in list(main_window.target_faces.values()):
@@ -187,8 +192,28 @@ def find_target_faces(main_window: "MainWindow"):
                 media_capture, video_processor.media_rotation
             )
         elif video_processor.file_type == "webcam" and media_capture:
-            # Pass 0 for webcam rotation
-            ret, frame = misc_helpers.read_frame(media_capture, 0)
+            # --- WEBCAM GUARD & THREAD SAFETY ---
+            if video_processor.processing:
+                # Do NOT call read_frame on cv2.VideoCapture while the Feeder Thread is running!
+                if (
+                    isinstance(video_processor.current_frame, numpy.ndarray)
+                    and video_processor.current_frame.size > 0
+                ):
+                    frame = video_processor.current_frame.copy()
+                else:
+                    print(
+                        "[WARN] Webcam is initializing. Frame not ready for extraction."
+                    )
+                    common_widget_actions.create_and_show_messagebox(
+                        main_window,
+                        "Webcam Starting",
+                        "The webcam feed is currently initializing. Please wait a moment before finding faces.",
+                        main_window,
+                    )
+                    return
+            else:
+                # Pass 0 for webcam rotation (Only executes if the stream is paused/idle)
+                ret, frame = misc_helpers.read_frame(media_capture, 0)
 
         if frame is not None:
             # Frame must be in RGB format
@@ -206,7 +231,7 @@ def find_target_faces(main_window: "MainWindow"):
                     expand=True,
                 )
 
-            _, kpss_5, _ = main_window.models_processor.run_detect(
+            _, kpss_5, _ = main_window.function_worker.run_detect(
                 img,
                 control.get("DetectorModelSelection", "retinaface_10g"),
                 max_num=control.get("MaxFacesToDetectSlider", 1),
@@ -228,7 +253,7 @@ def find_target_faces(main_window: "MainWindow"):
             similarity_type = str("Auto")
             for face_kps in kpss_5:
                 face_emb, cropped_img = (
-                    main_window.models_processor.run_recognize_direct(
+                    main_window.function_worker.run_recognize_direct(
                         img,
                         face_kps,
                         similarity_type,
@@ -245,7 +270,7 @@ def find_target_faces(main_window: "MainWindow"):
                     for face_id, target_face in main_window.target_faces.items():
                         parameters = main_window.parameters[target_face.face_id]
                         threshhold = parameters.get("SimilarityThresholdSlider", 0.6)
-                        if main_window.models_processor.findCosineDistance(
+                        if main_window.function_worker.findCosineDistance(
                             target_face.get_embedding(
                                 str(
                                     control.get(
@@ -324,8 +349,13 @@ def find_target_faces(main_window: "MainWindow"):
             if main_window.target_faces and not main_window.selected_target_face_id:
                 list(main_window.target_faces.values())[0].click()
 
+    # --- WEBCAM GUARD ---
     if main_window.video_processor.processing:
-        main_window.video_processor.stop_processing()
+        if main_window.video_processor.file_type == "webcam":
+            main_window.video_processor.ui_state_is_dirty = True
+        else:
+            main_window.video_processor.stop_processing()
+
     common_widget_actions.refresh_frame(main_window)
     video_control_actions.update_scan_review_button_states(main_window)
 

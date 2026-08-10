@@ -37,6 +37,14 @@ def download_file(
         bool: True if the file was successfully downloaded and verified, False otherwise.
     """
 
+    # Ensure the destination directory exists. Models grouped under subfolders
+    # (e.g. ``model_assets/performrecast_onnx/``) would otherwise fail with a
+    # FileNotFoundError on a fresh/portable install where the subfolder has not
+    # been created yet (the root cause of broken portable update downloads).
+    parent_dir = os.path.dirname(file_path)
+    if parent_dir:
+        os.makedirs(parent_dir, exist_ok=True)
+
     # First, check if the file already exists and has the correct integrity.
     # This avoids re-downloading large files unnecessarily.
     if Path(file_path).is_file():

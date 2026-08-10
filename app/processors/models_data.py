@@ -1,12 +1,194 @@
 import os
 from pathlib import Path
+import numpy as np
 
 models_dir = Path(__file__).resolve().parent.parent.parent / "model_assets"
 # ensure ref-ldm paths exist
 refldm_ckpts_path = models_dir / "ref-ldm_embedding/ckpts"
 os.makedirs(refldm_ckpts_path, exist_ok=True)
 
+# Ensure the grouped ONNX model subfolders exist up front. On a fresh/portable
+# install (and during portable app updates) these subfolders are otherwise only
+# created on first download — but the PerformRecast models were missing the
+# folder, so the portable updater had nowhere to place the freshly downloaded
+# ONNX files. Creating them here makes the destinations exist regardless of how
+# the models arrive (download vs. copy-in). The downloader also makes parent
+# dirs on demand, so this is belt-and-suspenders.
+for _subfolder in ("liveportrait_onnx", "performrecast_onnx"):
+    os.makedirs(models_dir / _subfolder, exist_ok=True)
+
 assets_repo = "https://github.com/visomaster/visomaster-assets/releases/download"
+
+ARCFACE_DST = np.array(
+    [
+        [38.2946, 51.6963],
+        [73.5318, 51.5014],
+        [56.0252, 71.7366],
+        [41.5493, 92.3655],
+        [70.7299, 92.2041],
+    ],
+    dtype=np.float32,
+)
+
+FFHQ_KPS = np.array(
+    [
+        [192.98138, 239.94708],
+        [318.90277, 240.1936],
+        [256.63416, 314.01935],
+        [201.26117, 371.41043],
+        [313.08905, 371.15118],
+    ],
+    dtype=np.float32,
+)
+
+LANDMARKS_SUBSET_IDXS = [
+    0,
+    1,
+    4,
+    5,
+    6,
+    7,
+    8,
+    10,
+    13,
+    14,
+    17,
+    21,
+    33,
+    37,
+    39,
+    40,
+    46,
+    52,
+    53,
+    54,
+    55,
+    58,
+    61,
+    63,
+    65,
+    66,
+    67,
+    70,
+    78,
+    80,
+    81,
+    82,
+    84,
+    87,
+    88,
+    91,
+    93,
+    95,
+    103,
+    105,
+    107,
+    109,
+    127,
+    132,
+    133,
+    136,
+    144,
+    145,
+    146,
+    148,
+    149,
+    150,
+    152,
+    153,
+    154,
+    155,
+    157,
+    158,
+    159,
+    160,
+    161,
+    162,
+    163,
+    168,
+    172,
+    173,
+    176,
+    178,
+    181,
+    185,
+    191,
+    195,
+    197,
+    234,
+    246,
+    249,
+    251,
+    263,
+    267,
+    269,
+    270,
+    276,
+    282,
+    283,
+    284,
+    285,
+    288,
+    291,
+    293,
+    295,
+    296,
+    297,
+    300,
+    308,
+    310,
+    311,
+    312,
+    314,
+    317,
+    318,
+    321,
+    323,
+    324,
+    332,
+    334,
+    336,
+    338,
+    356,
+    361,
+    362,
+    365,
+    373,
+    374,
+    375,
+    377,
+    378,
+    379,
+    380,
+    381,
+    382,
+    384,
+    385,
+    386,
+    387,
+    388,
+    389,
+    390,
+    397,
+    398,
+    400,
+    402,
+    405,
+    409,
+    415,
+    454,
+    466,
+    468,
+    469,
+    470,
+    471,
+    472,
+    473,
+    474,
+    475,
+    476,
+    477,
+]
 
 arcface_mapping_model_dict = {
     "Inswapper128": "Inswapper128ArcFace",
@@ -102,6 +284,16 @@ fp16_safe_models_list = [
     "GhostFacev3",
 ]
 
+# Models whose ONNX graph must be shape-inferred (with a static batch=1) before
+# the TensorRT EP can build an engine. The PerformRecast warping module contains
+# 5-D GridSample nodes whose outputs have no static shape, which makes the TRT EP
+# abort with "has no shape specified. Please run shape inference on the onnx
+# model first." The loader transparently builds a cached, shape-inferred sidecar
+# (``*.trtshape.onnx``) for these models. See ModelsProcessor._ensure_trt_ready_onnx.
+tensorrt_shape_infer_models = [
+    "PerformRecastWarpingModule",
+]
+
 models_list = [
     {
         "model_name": "Inswapper128",
@@ -180,6 +372,24 @@ models_list = [
         "local_path": f"{models_dir}/yunet_n_640_640.onnx",
         "hash": "9e65c0213faef0173a3d2e05156b4bf44a45cde598bdabb69203da4a6b7ad61e",
         "url": f"{assets_repo}/v0.1.0/yunet_n_640_640.onnx",
+    },
+    {
+        # Yolov11-face trained at 960×960 for VR180 face detection. Unlike the
+        # other detectors it outputs no facial keypoints (output0: [1,5,N] =
+        # cx,cy,w,h,score); landmarks are synthesised from the bbox downstream.
+        "model_name": "YoloFace11nVR180",
+        "local_path": f"{models_dir}/yoloface_11n-vr180.onnx",
+        "hash": "7572f27c2930ff83d24f95fb4b6321ea0d7f5883cb40ed647fa80889e8d4e4d8",
+        "url": "https://github.com/Glat0s/yolo-face/releases/download/vr/yoloface_11n-vr180.onnx",
+    },
+    {
+        # Yolov12-face trained at 640×640 for VR180 face detection. Unlike the
+        # other detectors it outputs no facial keypoints (output0: [1,5,N] =
+        # cx,cy,w,h,score); landmarks are synthesised from the bbox downstream.
+        "model_name": "YoloFace12nVR180",
+        "local_path": f"{models_dir}/yoloface_12n-vr180.onnx",
+        "hash": "8d5e9187fe5aa8f95be7a3267802639299fb39df969407d22bc379eed9aaf1e1",
+        "url": "https://github.com/Glat0s/yolo-face/releases/download/vr/yoloface_12n-vr180.onnx",
     },
     {
         "model_name": "FaceLandmark5",
@@ -450,6 +660,31 @@ models_list = [
         "local_path": f"{models_dir}/liveportrait_onnx/warping_spade.onnx",
         "hash": "d6ee9af4352b47e88e0521eba6b774c48204afddc8d91c671a5f7b8a0dfb4971",
         "url": f"{assets_repo}/v0.1.0_lp/warping_spade.onnx",
+    },
+    # --- PerformRecast (expression-only "Recast" mode of the Face Expression Restorer) ---
+    {
+        "model_name": "PerformRecastAppearanceFeatureExtractor",
+        "local_path": f"{models_dir}/performrecast_onnx/appearance_feature_extractor.onnx",
+        "hash": "208e4f848b430cbfa71a36dab7ec25a5b345882f846dbb27288abcfb2ae89a96",
+        "url": "https://github.com/Glat0s/PerformRecast-onnx/releases/download/onnx-v1/appearance_feature_extractor.onnx",
+    },
+    {
+        "model_name": "PerformRecastMotionExtractor",
+        "local_path": f"{models_dir}/performrecast_onnx/motion_extractor.onnx",
+        "hash": "b1b26c1b6d7520eb8020175050f0381c4f402ccaa6afbaebee259da4ff9dcb6c",
+        "url": "https://github.com/Glat0s/PerformRecast-onnx/releases/download/onnx-v1/motion_extractor.onnx",
+    },
+    {
+        "model_name": "PerformRecastWarpingModule",
+        "local_path": f"{models_dir}/performrecast_onnx/warping_module.onnx",
+        "hash": "92d8a1414a31a4117237bbfb667be02e71831a085af6697c9c3465200228a0ce",
+        "url": "https://github.com/Glat0s/PerformRecast-onnx/releases/download/onnx-v1/warping_module.onnx",
+    },
+    {
+        "model_name": "PerformRecastSpadeGenerator",
+        "local_path": f"{models_dir}/performrecast_onnx/spade_generator.onnx",
+        "hash": "4d8127313b1c2f6b53320b65208dafc22db260550f690cfa114dec646c7a8f5f",
+        "url": "https://github.com/Glat0s/PerformRecast-onnx/releases/download/onnx-v1/spade_generator.onnx",
     },
     {
         "model_name": "RefLDMVAEEncoder",

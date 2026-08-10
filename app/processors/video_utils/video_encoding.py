@@ -509,7 +509,9 @@ class FFmpegPostProcessor:
         audio_files = []
         for idx, (start_frame, end_frame) in enumerate(segments):
             if fps > 0:
-                start_time = time_offset_sec + max(0.0, (start_frame - frame_origin) / fps)
+                start_time = time_offset_sec + max(
+                    0.0, (start_frame - frame_origin) / fps
+                )
                 end_time = time_offset_sec + max(
                     0.0, ((end_frame + 1) - frame_origin) / fps
                 )

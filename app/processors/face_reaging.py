@@ -18,6 +18,7 @@ import torch
 
 if TYPE_CHECKING:
     from app.processors.models_processor import ModelsProcessor
+    from app.processors.workers.function_worker import FunctionWorker
 
 
 class FaceReaging:
@@ -25,8 +26,13 @@ class FaceReaging:
 
     MODEL_NAME = "FaceReaging"
 
-    def __init__(self, models_processor: "ModelsProcessor") -> None:
+    def __init__(
+        self,
+        models_processor: "ModelsProcessor",
+        function_worker: "FunctionWorker",
+    ) -> None:
         self.models_processor = models_processor
+        self.function_worker = function_worker
 
     # ------------------------------------------------------------------
     # Public API
