@@ -540,6 +540,30 @@ def initialize_embeddings_list_widget(main_window: "MainWindow"):
     inputEmbeddingsList.setLayoutMode(QtWidgets.QListView.SinglePass)
     _set_up_panel_context_menu(main_window, inputEmbeddingsList, "embeddings")
 
+def sort_embeddings_list_az(main_window: "MainWindow") -> None:
+    """Reorder embeddings A-Z via Qt sort (safe with item widgets)."""
+    if not main_window.control.get("SortEmbeddingsAZToggle", False):
+        return
+
+    list_widget = getattr(main_window, "inputEmbeddingsList", None)
+    if list_widget is None or list_widget.count() <= 1:
+        return
+
+    for i in range(list_widget.count()):
+        item = list_widget.item(i)
+        button = list_widget.itemWidget(item)
+        name = getattr(button, "embedding_name", "") if button else ""
+        item.setText(name or "")
+
+    list_widget.sortItems(QtCore.Qt.AscendingOrder)
+
+    for i in range(list_widget.count()):
+        item = list_widget.item(i)
+        item.setText("")
+        button = list_widget.itemWidget(item)
+        if button is not None:
+            button.list_item = item
+
 
 def create_and_add_embed_button_to_list(
     main_window: "MainWindow",
@@ -567,6 +591,8 @@ def create_and_add_embed_button_to_list(
     embed_button.list_item = list_item
     inputEmbeddingsList.setItemWidget(list_item, embed_button)
     main_window.merged_embeddings[embed_button.embedding_id] = embed_button
+    sort_embeddings_list_az(main_window)
+
 
 
 def clear_stop_loading_target_media(main_window: "MainWindow", clear_list: bool = True):
