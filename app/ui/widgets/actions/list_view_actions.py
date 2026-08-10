@@ -481,18 +481,14 @@ def initialize_media_list_widgets(main_window: "MainWindow"):
 
 def initialize_embeddings_list_widget(main_window: "MainWindow"):
     inputEmbeddingsList = main_window.inputEmbeddingsList
-    inputEmbeddingsList.setUniformItemSizes(False)      # variable widths
-    inputEmbeddingsList.setWrapping(True)               # wrap into next columns
+    inputEmbeddingsList.setUniformItemSizes(False)
+    inputEmbeddingsList.setWrapping(True)
     inputEmbeddingsList.setFlow(QtWidgets.QListView.TopToBottom)
     inputEmbeddingsList.setResizeMode(QtWidgets.QListView.Adjust)
-    inputEmbeddingsList.setSpacing(4)                   # consistent gap between items
+    inputEmbeddingsList.setSpacing(4)
     inputEmbeddingsList.setViewMode(QtWidgets.QListView.IconMode)
     inputEmbeddingsList.setMovement(QtWidgets.QListView.Static)
-
-    # Exactly 3 rows
-    row_height = 22 + 4
-    inputEmbeddingsList.setFixedHeight(row_height * 3 + 8)
-
+    inputEmbeddingsList.setFixedHeight(112)
     inputEmbeddingsList.setVerticalScrollBarPolicy(QtCore.Qt.ScrollBarAlwaysOff)
     inputEmbeddingsList.setHorizontalScrollBarPolicy(QtCore.Qt.ScrollBarAsNeeded)
     inputEmbeddingsList.setVerticalScrollMode(QtWidgets.QAbstractItemView.ScrollPerPixel)
@@ -515,57 +511,20 @@ def create_and_add_embed_button_to_list(
         embedding_store=embedding_store,
         embedding_id=embedding_id,
     )
+    embed_button.setStyleSheet("QPushButton { padding: 2px 8px; }")
 
-    # Consistent button height and padding
-    embed_button.setStyleSheet("""
-        QPushButton {
-            padding: 2px 8px;
-        }
-    """)
-
-    # Calculate the natural width while enforcing a consistent height
-    embed_button.adjustSize()
-    natural_size = embed_button.sizeHint()
-
-    button_height = 28
-    button_width = max(natural_size.width(), 60)
-
-    natural_size.setWidth(button_width)
-    natural_size.setHeight(button_height)
-
-    # Fix every button to exactly the same height and its natural width
-    embed_button.setFixedSize(natural_size)
+    size = embed_button.sizeHint()
+    size.setHeight(24)
+    size.setWidth(max(size.width(), 60))
+    embed_button.setFixedSize(size)
 
     list_item = QtWidgets.QListWidgetItem(inputEmbeddingsList)
-    list_item.setSizeHint(natural_size)
-    embed_button.list_item = list_item
+    list_item.setSizeHint(size)
     list_item.setTextAlignment(QtCore.Qt.AlignmentFlag.AlignCenter)
-
+    embed_button.list_item = list_item
     inputEmbeddingsList.setItemWidget(list_item, embed_button)
-    embed_button.show()
-
     main_window.merged_embeddings[embed_button.embedding_id] = embed_button
 
-    button_size = QtCore.QSize(*_EMBED_BUTTON_SIZE)
-    embed_button.setFixedSize(button_size)
-
-    list_item = QtWidgets.QListWidgetItem(inputEmbeddingsList)
-    list_item.setSizeHint(button_size)
-
-    """
-    # Give the underlying QListWidgetItem the text so the PySide6 C++ sorter can alphabetize it
-    list_item.setText(embedding_name)
-    # Make the text fully transparent so it doesn't visually overlap with your custom EmbeddingCardButton
-    from PySide6 import QtGui
-
-    list_item.setForeground(QtGui.QColor(0, 0, 0, 0))
-    """
-    embed_button.list_item = list_item
-    list_item.setTextAlignment(QtCore.Qt.AlignmentFlag.AlignCenter)
-
-    inputEmbeddingsList.setItemWidget(list_item, embed_button)
-
-    main_window.merged_embeddings[embed_button.embedding_id] = embed_button
 
 
 def clear_stop_loading_target_media(main_window: "MainWindow", clear_list: bool = True):
