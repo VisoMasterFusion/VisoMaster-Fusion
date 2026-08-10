@@ -97,12 +97,24 @@ class WorkerPoolManager(QObject):
         # --- Stream Pool Initialization ---
         if torch.cuda.is_available():
             self.worker_streams.clear()
-            # Cap the number of streams at 3. This is plenty to overlap PyTorch host-to-device transfers
-            # and tensor prep without exploding the VRAM buffer allocations.
-            num_streams = min(num_threads, streamcount)
+            # Streams are shared round-robin across workers. Fewer streams means less
+            # VRAM (each stream carries its own allocator pool) but more cross-worker
+            # waiting, because a stream sync waits on every worker sharing that stream.
+            #
+            # The default of 1 matches the pre-pool behaviour, where all workers ran on
+            # PyTorch's single global default stream. Raising it trades VRAM for less
+            # sync contention; a heavy 1080p workspace already reaches ~15 GB at 3
+            # streams, and high-resolution or VR work is far hungrier, so this is
+            # deliberately left to the user rather than scaled with thread count.
+            #
+            # Clamp to >= 1: min(num_threads, 0) would leave the pool empty, and the
+            # failsafe in FrameWorker.__init__ would then give every worker its own
+            # stream — the exact opposite of what a "0 streams" setting implies.
+            num_streams = max(1, min(num_threads, streamcount))
             self.worker_streams = [torch.cuda.Stream() for _ in range(num_streams)]
             print(
-                f"[INFO] WorkerPoolManager: Allocated {num_streams} shared CUDA streams to conserve VRAM."
+                f"[INFO] WorkerPoolManager: Allocated {num_streams} shared CUDA stream(s) "
+                f"across {num_threads} worker(s)."
             )
 
         for i in range(num_threads):

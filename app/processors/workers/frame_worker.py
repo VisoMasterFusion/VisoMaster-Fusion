@@ -17,6 +17,7 @@ import torchvision
 import numpy as np
 
 from app.processors.utils import faceutil
+from app.processors.utils import platform_support
 
 from app.helpers.miscellaneous import (
     find_best_target_match,
@@ -485,9 +486,11 @@ class FrameWorker(threading.Thread):
                     self.frame = self.frame[..., ::-1]
                     self.frame = np.ascontiguousarray(self.frame)
 
-                # Sync thread before returning to cpu
+                # Sync thread before returning to cpu.
+                # Non-spinning wait: this fires once per frame, so the event
+                # wake-up cost is noise against the frame itself.
                 if self.worker_stream:
-                    self.worker_stream.synchronize()
+                    platform_support.blocking_stream_sync(self.worker_stream)
 
             # Check stop event again
             if self.stop_event.is_set():

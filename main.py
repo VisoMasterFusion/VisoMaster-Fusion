@@ -10,7 +10,9 @@ from pathlib import Path
 # Instructs the caching allocator to release unused memory segments back to the CUDA driver.
 # Dropped 'max_split_size_mb:128' to prevent heavy cudaMalloc/cudaFree churn and implicit
 # device synchronizations when allocating large frame tensors (e.g., 4K, VR180).
-os.environ["PYTORCH_CUDA_ALLOC_CONF"] = "garbage_collection_threshold:0.8"
+# Left overridable so other values can be A/B'd against peak VRAM without a
+# rebuild, e.g. PYTORCH_CUDA_ALLOC_CONF="max_split_size_mb:512,garbage_collection_threshold:0.8"
+os.environ.setdefault("PYTORCH_CUDA_ALLOC_CONF", "garbage_collection_threshold:0.8")
 
 import torch
 

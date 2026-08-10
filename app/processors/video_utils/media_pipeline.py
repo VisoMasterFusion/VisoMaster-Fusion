@@ -1189,7 +1189,15 @@ class MediaPipeline(QObject):
             self.last_display_schedule_time_sec = now_sec + 0.001
 
         wait_time_sec = self.last_display_schedule_time_sec - now_sec
-        wait_ms = max(1, int(wait_time_sec * 1000))
+        # Recording and segment export run the metronome at 9999 fps, so
+        # target_delay_sec collapses to 5ms and this floor decides the real tick rate.
+        # At 1ms a Qt PreciseTimer raises the global Windows timer resolution and wakes
+        # the GUI thread up to 1000x/s for the whole job. Nothing is being watched at
+        # that rate - the metronome only drains finished frames to the encoder, and
+        # nobody is looking at the preview - so back it off. Playback keeps the 1ms
+        # floor, where the tick rate is the frame rate and smoothness is visible.
+        is_export = bool(self.vp.recording or self.vp.is_processing_segments)
+        wait_ms = max(4 if is_export else 1, int(wait_time_sec * 1000))
 
         if self.vp.processing:
             self.precise_metronome.start(wait_ms)

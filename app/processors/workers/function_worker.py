@@ -18,13 +18,10 @@ from app.processors.perform_recast import PerformRecast
 from app.processors.face_denoiser import FaceDenoiser
 from app.processors.frame_edits import FrameEdits
 from app.processors.models_data import arcface_mapping_model_dict
+from app.processors.utils import platform_support
 
 if TYPE_CHECKING:
     from app.processors.models_processor import ModelsProcessor
-
-
-# --- Thread-Local Storage for CUDA Events ---
-_TLS = threading.local()
 
 
 class FunctionWorker:
@@ -73,21 +70,6 @@ class FunctionWorker:
                 self._session_locks[session_id] = threading.RLock()
             return self._session_locks[session_id]
 
-    @staticmethod
-    def _blocking_stream_sync() -> None:
-        """
-        Host-wait for the current CUDA stream without burning a CPU core.
-
-        torch.cuda.current_stream().synchronize() spin-waits under the default
-        cudaDeviceScheduleAuto policy. A blocking event yields to the OS instead.
-        """
-        ev = getattr(_TLS, "sync_event", None)
-        if ev is None:
-            ev = torch.cuda.Event(blocking=True)
-            _TLS.sync_event = ev
-        ev.record()
-        ev.synchronize()
-
     def run_ort_with_iobinding(self, session: Any, io_binding: Any) -> None:
         """Serialize shared ONNX/TensorRT session execution ACROSS THE SAME MODEL only."""
         session_lock = self._get_session_lock(session)
@@ -96,7 +78,7 @@ class FunctionWorker:
         # Ensure PyTorch has finished writing inputs to the GPU on the isolated worker_stream.
         # This occurs outside the lock so other threads aren't blocked during tensor prep.
         if self.mp.device_type == "cuda":
-            self._blocking_stream_sync()
+            platform_support.blocking_stream_sync()
         elif self.mp.device_type != "cpu":
             self.mp.syncvec.cpu()
 
