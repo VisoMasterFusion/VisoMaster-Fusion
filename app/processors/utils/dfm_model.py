@@ -3,6 +3,7 @@ import onnxruntime
 import numpy as np
 
 from app.processors.utils import faceutil
+from app.processors.utils import platform_support
 
 onnxruntime.set_default_logger_severity(4)
 onnxruntime.log_verbosity_level = -1
@@ -206,10 +207,15 @@ class DFMModel:
             )
 
         if self.device_type == "cuda":
-            torch.cuda.current_stream().synchronize()
+            platform_support.blocking_stream_sync()
         elif self.device_type != "cpu":
             self.syncvec.cpu()
         self._sess.run_with_iobinding(io_binding)
+
+        # POST-INFERENCE SYNC: binding_outputs are pre-allocated PyTorch VRAM tensors
+        # and ORT writes them asynchronously on its own stream. They are read directly
+        # below, so without this we can consume half-written data.
+        io_binding.synchronize_outputs()
 
         # Process outputs (resize, clip channels, and convert back to original dtype)
         out_face_mask = self.to_dtype(

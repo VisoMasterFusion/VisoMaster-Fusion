@@ -14,6 +14,7 @@ import kornia.color as kc
 import kornia.geometry.transform as kgm
 
 from app.processors.utils import faceutil
+from app.processors.utils import platform_support
 
 if TYPE_CHECKING:
     # Forward reference to the main FrameWorker orchestrator
@@ -714,7 +715,7 @@ class PipelineProcessor:
 
                     # CRITICAL GPU SYNCHRONIZATION BARRIER
                     if self.worker.models_processor.device_type == "cuda":
-                        torch.cuda.current_stream().synchronize()
+                        platform_support.blocking_stream_sync()
 
                     # OPTIMIZATION: Zero-Sync Fallback
                     # Previously, `if zero_mask.any():` forced a Device-to-Host transfer,
@@ -774,7 +775,7 @@ class PipelineProcessor:
                             )
 
                     if self.worker.models_processor.device_type == "cuda":
-                        torch.cuda.current_stream().synchronize()
+                        platform_support.blocking_stream_sync()
 
                     for idx, (j, i) in enumerate(tile_coords):
                         # OPTIMIZATION: Zero-Sync Fallback for sequential path
@@ -830,7 +831,7 @@ class PipelineProcessor:
                         )
 
                 if self.worker.models_processor.device_type == "cuda":
-                    torch.cuda.current_stream().synchronize()
+                    platform_support.blocking_stream_sync()
 
                 for idx, (j, i) in enumerate(tile_coords):
                     res = (
@@ -874,7 +875,7 @@ class PipelineProcessor:
                     input_face_disc, latent, swapper_output
                 )
                 if self.worker.models_processor.device_type == "cuda":
-                    torch.cuda.current_stream().synchronize()
+                    platform_support.blocking_stream_sync()
 
                 # Robustness: Fallback to input if output is empty
                 if swapper_output.abs().max() < 1e-4:
@@ -917,7 +918,7 @@ class PipelineProcessor:
                     input_face_disc, latent, swapper_output, swapper_model
                 )
                 if self.worker.models_processor.device_type == "cuda":
-                    torch.cuda.current_stream().synchronize()
+                    platform_support.blocking_stream_sync()
 
                 swapper_output = swapper_output[0]
                 # FW-BUG-11: use abs().mean() instead of sum() for zero-output heuristic
@@ -968,7 +969,7 @@ class PipelineProcessor:
                     input_face_disc, latent, swapper_output
                 )
                 if self.worker.models_processor.device_type == "cuda":
-                    torch.cuda.current_stream().synchronize()
+                    platform_support.blocking_stream_sync()
 
                 swapper_output = swapper_output.squeeze(0)
                 swapper_output = torch.add(torch.mul(swapper_output, 0.5), 0.5)
@@ -1040,7 +1041,7 @@ class PipelineProcessor:
             # Execute DFM inference with thread-safety lock
             with self.worker.models_processor.dfm_inference_lock:
                 if self.worker.models_processor.device_type == "cuda":
-                    torch.cuda.current_stream().synchronize()
+                    platform_support.blocking_stream_sync()
                 out_celeb, _, _ = dfm_model.convert(
                     dfm_input,
                     parameters["DFMAmpMorphSlider"] / 100,

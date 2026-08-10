@@ -15,6 +15,7 @@ if TYPE_CHECKING:
     from PIL import Image
 
 from app.processors.utils import faceutil
+from app.processors.utils import platform_support
 from app.helpers.miscellaneous import is_file_exists
 from app.helpers.downloader import download_file
 from app.processors.utils.ref_ldm_kv_embedding import KVExtractor
@@ -538,7 +539,7 @@ class FaceDenoiser:
             ).contiguous()
 
             if torch.cuda.is_available():
-                torch.cuda.current_stream().synchronize()
+                platform_support.blocking_stream_sync()
 
             self.function_worker.run_ref_ldm_unet(
                 x_noisy_plus_lq_latent=unet_input_16_channel,
@@ -642,7 +643,7 @@ class FaceDenoiser:
                 unet_input_16_channel[:, :8] = current_latent_xt_scaled
 
                 if torch.cuda.is_available():
-                    torch.cuda.current_stream().synchronize()
+                    platform_support.blocking_stream_sync()
 
                 self.function_worker.run_ref_ldm_unet(
                     x_noisy_plus_lq_latent=unet_input_16_channel,
@@ -655,7 +656,7 @@ class FaceDenoiser:
 
                 if denoiser_cfg_scale != 1.0:
                     if torch.cuda.is_available():
-                        torch.cuda.current_stream().synchronize()
+                        platform_support.blocking_stream_sync()
 
                     # We re-use unet_input_16_channel directly.
                     self.function_worker.run_ref_ldm_unet(

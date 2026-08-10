@@ -74,7 +74,7 @@ SETTINGS_LAYOUT_DATA: Any = {
             "max_value": "15",
             "default": "1",
             "step": 1,
-            "help": "Set number of Worker Streams while playing and recording. Depends strongly on GPU VRAM. Will be used on new processing task.",
+            "help": "Set number of Worker Streams while playing and recording. Workers share streams round-robin: more streams means workers wait on each other less during GPU synchronization, but each stream costs VRAM. Raise this only if you have headroom to spare - a heavy 1080p workspace can already reach ~15GB at 3 streams, and 4K/VR far more. Depends strongly on GPU VRAM. Will be used on new processing task.",
         },
         "KeepControlsToggle": {
             "level": 1,

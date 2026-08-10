@@ -4,6 +4,7 @@ import numpy as np
 import torch
 import threading
 
+
 # --- Internal Sub-Processor Imports ---
 from app.processors.face_detectors import FaceDetectors
 from app.processors.face_landmark_detectors import FaceLandmarkDetectors
@@ -17,6 +18,7 @@ from app.processors.perform_recast import PerformRecast
 from app.processors.face_denoiser import FaceDenoiser
 from app.processors.frame_edits import FrameEdits
 from app.processors.models_data import arcface_mapping_model_dict
+from app.processors.utils import platform_support
 
 if TYPE_CHECKING:
     from app.processors.models_processor import ModelsProcessor
@@ -76,22 +78,21 @@ class FunctionWorker:
         # Ensure PyTorch has finished writing inputs to the GPU on the isolated worker_stream.
         # This occurs outside the lock so other threads aren't blocked during tensor prep.
         if self.mp.device_type == "cuda":
-            torch.cuda.current_stream().synchronize()
+            platform_support.blocking_stream_sync()
         elif self.mp.device_type != "cpu":
             self.mp.syncvec.cpu()
 
-        # 2. INFERENCE AND POST-SYNC (Inside the lock)
+        # 2. INFERENCE AND CORRECT POST-SYNC (Inside the lock)
         with session_lock:
             # Execute ONNX Runtime / TensorRT.
             session.run_with_iobinding(io_binding)
 
             # 3. POST-INFERENCE SYNC (MUST BE INSIDE THE LOCK)
-            # Create a hard barrier ensuring the TRT context is completely finished
-            # before releasing the lock, preventing the next thread from overwriting activation buffers mid-flight.
-            if self.mp.device_type == "cuda":
-                torch.cuda.current_stream().synchronize()
-            elif self.mp.device_type != "cpu":
-                self.mp.syncvec.cpu()
+            # We use ORT's native synchronization instead of PyTorch's stream sync.
+            # PyTorch stream sync does not order ORT's internal stream.
+            # This guarantees ORT is completely finished writing the pre-allocated output tensors
+            # before we release the lock to the next worker thread.
+            io_binding.synchronize_outputs()
 
     # --- Models Unloaders ---
 
