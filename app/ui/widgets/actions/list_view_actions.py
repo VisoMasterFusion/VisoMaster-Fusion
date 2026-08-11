@@ -752,14 +752,15 @@ def clear_all_target_media(main_window: "MainWindow") -> bool:
     if not main_window.target_videos:
         return False
 
-    confirmed = _confirm_panel_clear(
-        main_window,
-        "Clear All Media",
-        "This will remove all target media, including webcams, and reset the "
-        "Target Media panel.\n\nFiles on disk will not be deleted.",
-    )
-    if not confirmed:
-        return False
+    if not main_window.control.get("SkipClearConfirmationToggle", False):
+        confirmed = _confirm_panel_clear(
+            main_window,
+            "Clear All Media",
+            "This will remove all target media, including webcams, and reset the "
+            "Target Media panel.\n\nFiles on disk will not be deleted.",
+        )
+        if not confirmed:
+            return False
 
     clear_stop_loading_target_media(main_window, clear_list=False)
 
@@ -786,14 +787,15 @@ def clear_all_input_faces(main_window: "MainWindow") -> bool:
     if not main_window.input_faces:
         return False
 
-    confirmed = _confirm_panel_clear(
-        main_window,
-        "Clear All Faces",
-        "This will remove all input faces and reset the Input Faces panel.\n\n"
-        "Files on disk will not be deleted.",
-    )
-    if not confirmed:
-        return False
+    if not main_window.control.get("SkipClearConfirmationToggle", False):
+        confirmed = _confirm_panel_clear(
+            main_window,
+            "Clear All Faces",
+            "This will remove all input faces and reset the Input Faces panel.\n\n"
+            "Files on disk will not be deleted.",
+        )
+        if not confirmed:
+            return False
 
     clear_stop_loading_input_media(main_window, clear_list=False)
 
@@ -820,14 +822,15 @@ def clear_all_embeddings(main_window: "MainWindow") -> bool:
     if not main_window.merged_embeddings:
         return False
 
-    confirmed = _confirm_panel_clear(
-        main_window,
-        "Clear All Embeddings",
-        "This will remove all embeddings and reset the Embeddings panel.\n\n"
-        "Files on disk will not be deleted.",
-    )
-    if not confirmed:
-        return False
+    if not main_window.control.get("SkipClearConfirmationToggle", False):
+        confirmed = _confirm_panel_clear(
+            main_window,
+            "Clear All Embeddings",
+            "This will remove all embeddings and reset the Embeddings panel.\n\n"
+            "Files on disk will not be deleted.",
+        )
+        if not confirmed:
+            return False
 
     card_actions.clear_merged_embeddings(main_window)
     return True
