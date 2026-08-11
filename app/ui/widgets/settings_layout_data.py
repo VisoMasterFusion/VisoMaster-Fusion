@@ -788,7 +788,7 @@ SETTINGS_LAYOUT_DATA: Any = {
             "level": 1,
             "label": "Turn OFF warning messages",
             "default": False,
-            "help": "When enabled, clearing all target media, input faces, or embeddings will not show confirmation prompts.",
+            "help": "When enabled, clearing all target media, input faces or embeddings will not show confirmation prompts. ⚠ It will also not prompt when DELETING files.",
         },
         "ToastDurationText": {
             "level": 1,
