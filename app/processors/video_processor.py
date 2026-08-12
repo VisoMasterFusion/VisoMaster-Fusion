@@ -2420,6 +2420,12 @@ class VideoProcessor(QObject):
             # 7a. Audio Merging
             if self.play_end_time <= self.play_start_time:
                 print("[WARN] Recording produced no frames. Skipping audio merge.")
+                common_widget_actions.create_and_show_toast_message(
+                    self.main_window,
+                    "No Video Created",
+                    "Recording produced no frames, so no video file was saved.",
+                    style_type="warning",
+                )
                 if self.temp_file and os.path.exists(self.temp_file):
                     try:
                         os.remove(self.temp_file)
@@ -2606,15 +2612,29 @@ class VideoProcessor(QObject):
                     print(
                         f"[INFO] --- Successfully created final video: {final_file_path} ---"
                     )
+                    common_widget_actions.create_and_show_toast_message(
+                        self.main_window,
+                        "Video Saved",
+                        f"Saved video to file: {final_file_path}",
+                    )
                 except Exception as e:
                     print(f"[ERROR] Audio merge failed: {e}")
                     if self.temp_file and os.path.exists(self.temp_file):
                         print(
                             "[WARN] Falling back to video-only output for default-style recording."
                         )
-                        if not FFmpegPostProcessor.write_video_only_output(
+                        if FFmpegPostProcessor.write_video_only_output(
                             source_video=self.temp_file, output_video=final_file_path
                         ):
+                            print(
+                                f"[INFO] --- Video-only fallback succeeded: {final_file_path} ---"
+                            )
+                            common_widget_actions.create_and_show_toast_message(
+                                self.main_window,
+                                "Video Saved",
+                                f"Saved video to file (without audio): {final_file_path}",
+                            )
+                        else:
                             self.main_window.display_messagebox_signal.emit(
                                 "Recording Error",
                                 f"Audio merge failed and video-only fallback also failed:\n{e}",
@@ -3150,6 +3170,12 @@ class VideoProcessor(QObject):
 
         if not valid_segment_files:
             print("[WARN] No valid temporary segment files found to concatenate.")
+            common_widget_actions.create_and_show_toast_message(
+                self.main_window,
+                "No Video Created",
+                "No valid recorded segments were found, so no video file was saved.",
+                style_type="warning",
+            )
             self._cleanup_temp_dir()
             layout_actions.enable_all_parameters_and_control_widget(self.main_window)
             video_control_actions.reset_media_buttons(self.main_window)
@@ -3319,6 +3345,11 @@ class VideoProcessor(QObject):
 
             if concatenation_successful:
                 self._auto_save_workspace_for_output(final_file_path)
+                common_widget_actions.create_and_show_toast_message(
+                    self.main_window,
+                    "Video Saved",
+                    f"Saved video to file: {final_file_path}",
+                )
 
             # 7. Reset state
             self.segments_to_process = []
