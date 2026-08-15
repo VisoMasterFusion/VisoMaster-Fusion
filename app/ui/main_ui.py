@@ -13,6 +13,7 @@ from app.ui.widgets.actions import card_actions
 from app.ui.widgets.actions import target_videos_list_actions
 from app.ui.widgets.actions import layout_actions
 from app.ui.widgets.actions import video_control_actions
+from app.ui.widgets.actions.video_seek_actions import CompositeTimelineWidget
 from app.ui.widgets.actions import filter_actions
 from app.ui.widgets.actions import save_load_actions
 from app.ui.widgets.actions import list_view_actions
@@ -279,10 +280,37 @@ class MainWindow(QtWidgets.QMainWindow, Ui_MainWindow):
 
         video_control_actions.enable_zoom_and_pan(self, self.graphicsViewFrame)
 
+        # --- SWAP NATIVE SLIDER WITH COMPOSITE TIMELINE ---
+        timeline_layout = self.verticalLayout_timeline
+
+        index = timeline_layout.indexOf(self.videoSeekSlider)
+        timeline_layout.removeWidget(self.videoSeekSlider)
+        self.videoSeekSlider.deleteLater()
+
+        # 1. Instantiate the composite container
+        self.timelineContainer = CompositeTimelineWidget(self.scrollAreaWidgetContents)
+
+        # 2. Re-assign the global references so the rest of the app doesn't break
+        self.videoSeekSlider = self.timelineContainer.slider
+        self.thumbnailTrack = self.timelineContainer.thumbnail_track
+
+        self.videoSeekSlider.setObjectName("videoSeekSlider")
+        self.videoSeekSlider.setOrientation(QtCore.Qt.Orientation.Horizontal)
+
+        # 3. Expand the scroll area to fit both the slider and the 40px thumbnails
+        self.timelineScrollArea.setMinimumHeight(85)
+        self.timelineScrollArea.setMaximumHeight(85)
+
+        # 4. Insert the CONTAINER into the UI
+        timeline_layout.insertWidget(index, self.timelineContainer)
+
+        self.timelineContainer.setup(self)
+
         video_slider_event_filter = VideoSeekSliderEventFilter(
             self, self.videoSeekSlider
         )
         self.videoSeekSlider.installEventFilter(video_slider_event_filter)
+
         self.videoSeekSlider.valueChanged.connect(
             partial(video_control_actions.on_change_video_seek_slider, self)
         )
@@ -293,7 +321,6 @@ class MainWindow(QtWidgets.QMainWindow, Ui_MainWindow):
             partial(video_control_actions.on_slider_released, self)
         )
 
-        video_control_actions.set_up_video_seek_slider(self)
         video_control_actions.set_up_timeline_zoom(self)
 
         self.frameAdvanceButton.clicked.connect(
