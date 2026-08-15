@@ -522,23 +522,6 @@ def initialize_embeddings_list_widget(main_window: "MainWindow"):
     inputEmbeddingsList.setLayoutMode(QtWidgets.QListView.Batched)
     _set_up_panel_context_menu(main_window, inputEmbeddingsList, "embeddings")
 
-def initialize_embeddings_list_widget(main_window: "MainWindow"):
-    inputEmbeddingsList = main_window.inputEmbeddingsList
-    inputEmbeddingsList.setUniformItemSizes(False)
-    inputEmbeddingsList.setWrapping(True)
-    inputEmbeddingsList.setFlow(QtWidgets.QListView.TopToBottom)
-    inputEmbeddingsList.setResizeMode(QtWidgets.QListView.Adjust)
-    inputEmbeddingsList.setSpacing(4)
-    inputEmbeddingsList.setViewMode(QtWidgets.QListView.IconMode)
-    inputEmbeddingsList.setMovement(QtWidgets.QListView.Static)
-    inputEmbeddingsList.setFixedHeight(112)
-    inputEmbeddingsList.setVerticalScrollBarPolicy(QtCore.Qt.ScrollBarAlwaysOff)
-    inputEmbeddingsList.setHorizontalScrollBarPolicy(QtCore.Qt.ScrollBarAsNeeded)
-    inputEmbeddingsList.setVerticalScrollMode(QtWidgets.QAbstractItemView.ScrollPerPixel)
-    inputEmbeddingsList.setHorizontalScrollMode(QtWidgets.QAbstractItemView.ScrollPerPixel)
-    inputEmbeddingsList.setLayoutDirection(QtCore.Qt.LeftToRight)
-    inputEmbeddingsList.setLayoutMode(QtWidgets.QListView.SinglePass)
-    _set_up_panel_context_menu(main_window, inputEmbeddingsList, "embeddings")
 
 def sort_embeddings_list_az(main_window: "MainWindow") -> None:
     """Reorder embeddings A-Z via Qt sort (safe with item widgets)."""
@@ -592,7 +575,6 @@ def create_and_add_embed_button_to_list(
     inputEmbeddingsList.setItemWidget(list_item, embed_button)
     main_window.merged_embeddings[embed_button.embedding_id] = embed_button
     sort_embeddings_list_az(main_window)
-
 
 
 def clear_stop_loading_target_media(main_window: "MainWindow", clear_list: bool = True):
