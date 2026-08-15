@@ -74,7 +74,7 @@ SETTINGS_LAYOUT_DATA: Any = {
             "max_value": "15",
             "default": "1",
             "step": 1,
-            "help": "Set number of Worker Streams while playing and recording. Workers share streams round-robin: more streams means workers wait on each other less during GPU synchronization, but each stream costs VRAM. Raise this only if you have headroom to spare - a heavy 1080p workspace can already reach ~15GB at 3 streams, and 4K/VR far more. Depends strongly on GPU VRAM. Will be used on new processing task.",
+            "help": "Set number of Worker Streams while playing and recording. Depends strongly on GPU VRAM. Will be used on new processing task.",
         },
         "KeepControlsToggle": {
             "level": 1,
@@ -776,6 +776,27 @@ SETTINGS_LAYOUT_DATA: Any = {
             "default": False,
             "help": "When enabled, the mouse wheel adjusts parameter sliders and dropdowns on hover.\nWhen disabled, the mouse wheel scrolls the parameter panel instead.\nHold Ctrl to temporarily adjust a hovered slider or dropdown while this is disabled.",
         },
+        "SortEmbeddingsAZToggle": {
+            "level": 1,
+            "label": "Sort A-Z for new Embeddings",
+            "default": False,
+            "help": "ONLY APPLIES WHEN CREATING NEW EMBEDDINGS. When enabled, new embeddings are sorted alphabetically by name (A-Z).",
+            "exec_function": control_actions.handle_sort_embeddings_az_toggle,
+            "exec_function_args": [],
+        },
+        "SkipClearConfirmationToggle": {
+            "level": 1,
+            "label": "Turn OFF warning messages",
+            "default": False,
+            "help": "When enabled, clearing all target media, input faces or embeddings will not show confirmation prompts. ⚠ It will also not prompt when DELETING files.",
+        },
+        "ToastDurationText": {
+            "level": 1,
+            "label": "Notification Duration (ms)",
+            "default": "2000",
+            "width": 60,
+            "help": "Duration of toast notifications in milliseconds (1000 = 1 sec.)",
+        },
         "VideoSeekMaxFrameSlider": {
             "level": 1,
             "label": "Max Visible Frames",
@@ -784,14 +805,6 @@ SETTINGS_LAYOUT_DATA: Any = {
             "default": "20",
             "step": 1,
             "help": "Maximum number of frames visible in the timeline at Max Zoom level.",
-        },
-        "SortEmbeddingsAZToggle": {
-            "level": 1,
-            "label": "Sort A-Z for new Embeddings",
-            "default": False,
-            "help": "ONLY APPLIES WHEN CREATING NEW EMBEDDINGS. When enabled, new embeddings are sorted alphabetically by name (A-Z).",
-            "exec_function": control_actions.handle_sort_embeddings_az_toggle,
-            "exec_function_args": [],
         },
     },
 }

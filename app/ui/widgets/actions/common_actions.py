@@ -38,7 +38,6 @@ def create_and_show_messagebox(
     messagebox.setText(message)
     messagebox.exec_()
 
-
 def create_and_show_toast_message(
     main_window: "MainWindow", title: str, message: str, style_type="information"
 ):
@@ -55,7 +54,13 @@ def create_and_show_toast_message(
     toast = Toast(main_window)
     toast.setTitle(title)
     toast.setText(message)
-    toast.setDuration(10000)
+    duration = 2000
+    if hasattr(main_window, "control") and "ToastDurationText" in main_window.control:
+        try:
+            duration = int(float(main_window.control["ToastDurationText"]))
+        except (ValueError, TypeError):
+            pass
+    toast.setDuration(duration)
     toast.setPosition(ToastPosition.TOP_RIGHT)  # Default: ToastPosition.BOTTOM_RIGHT
     toast.applyPreset(style_preset_map[style_type])  # Apply style preset
     toast.show()
