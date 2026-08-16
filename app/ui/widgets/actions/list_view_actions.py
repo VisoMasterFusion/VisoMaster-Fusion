@@ -490,24 +490,19 @@ def initialize_media_list_widgets(main_window: "MainWindow"):
 def initialize_embeddings_list_widget(main_window: "MainWindow"):
     """One-time configuration for the inputEmbeddingsList widget."""
     inputEmbeddingsList = main_window.inputEmbeddingsList
-    button_size = QtCore.QSize(*_EMBED_BUTTON_SIZE)
-    grid_size_with_padding = button_size + QtCore.QSize(4, 4)
 
-    inputEmbeddingsList.setGridSize(grid_size_with_padding)
     inputEmbeddingsList.setWrapping(True)
     inputEmbeddingsList.setFlow(QtWidgets.QListView.TopToBottom)
-    inputEmbeddingsList.setResizeMode(QtWidgets.QListView.Fixed)
-    inputEmbeddingsList.setSpacing(2)
-    inputEmbeddingsList.setUniformItemSizes(True)
+
+    # Dynamic resizing, more spacing, and disabling uniform sizes
+    inputEmbeddingsList.setResizeMode(QtWidgets.QListView.Adjust)
+    inputEmbeddingsList.setSpacing(4)
+    inputEmbeddingsList.setUniformItemSizes(False)
+
     inputEmbeddingsList.setViewMode(QtWidgets.QListView.IconMode)
     inputEmbeddingsList.setMovement(QtWidgets.QListView.Static)
-    # inputEmbeddingsList.setSortingEnabled(True)
 
     inputEmbeddingsList.setFixedHeight(_EMBED_LIST_HEIGHT)
-
-    col_width = grid_size_with_padding.width()
-    min_width = (3 * col_width) + 16
-    inputEmbeddingsList.setMinimumWidth(min_width)
 
     inputEmbeddingsList.setVerticalScrollBarPolicy(QtCore.Qt.ScrollBarAlwaysOff)
     inputEmbeddingsList.setHorizontalScrollBarPolicy(QtCore.Qt.ScrollBarAsNeeded)
@@ -517,9 +512,10 @@ def initialize_embeddings_list_widget(main_window: "MainWindow"):
     inputEmbeddingsList.setHorizontalScrollMode(
         QtWidgets.QAbstractItemView.ScrollPerPixel
     )
-
     inputEmbeddingsList.setLayoutDirection(QtCore.Qt.LeftToRight)
-    inputEmbeddingsList.setLayoutMode(QtWidgets.QListView.Batched)
+
+    # SinglePass layout mode for better dynamic item sizing
+    inputEmbeddingsList.setLayoutMode(QtWidgets.QListView.SinglePass)
     _set_up_panel_context_menu(main_window, inputEmbeddingsList, "embeddings")
 
 
