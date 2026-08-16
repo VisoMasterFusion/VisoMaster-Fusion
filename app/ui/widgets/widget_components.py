@@ -458,6 +458,11 @@ class TargetMediaCardButton(CardButton):
         main_window.videoSeekSlider.setValue(0)  # Set the slider to 0 for the new video
         main_window.videoSeekSlider.blockSignals(False)  # Unblock signals
 
+        # --- FORCE TIMELINE & THUMBNAILS TO REFRESH ---
+        main_window.videoSeekSlider.rangeChanged.emit(0, max_frames_number)
+        if hasattr(main_window, "timelineContainer"):
+            main_window.timelineContainer.thumbnail_track.request_thumbnails()
+
         # Toggle UI elements visibility based on file type
         self._toggle_timeline_visibility(
             main_window, self.file_type in ["video", "webcam"]
@@ -541,6 +546,11 @@ class TargetMediaCardButton(CardButton):
                 0
             )  # Set the slider to 0 for the new video
             main_window.videoSeekSlider.blockSignals(False)  # Unblock signals
+
+            # --- FORCE TIMELINE & THUMBNAILS TO REFRESH ---
+            main_window.videoSeekSlider.rangeChanged.emit(0, 1)
+            if hasattr(main_window, "timelineContainer"):
+                main_window.timelineContainer.thumbnail_track.request_thumbnails()
 
             # Hide timeline UI elements when no media is selected
             self._toggle_timeline_visibility(main_window, False)
