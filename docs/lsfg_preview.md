@@ -1,22 +1,44 @@
-# Lossless Scaling / LSFG preview bridge
+# LSFG preview integration
 
-VisoMaster Fusion can use Lossless Scaling as an external frame-generation layer for the live preview. The integration point is `app.helpers.lsfg_bridge.LosslessScalingBridge`.
+VisoMaster Fusion can be used with Lossless Scaling (LSFG) as a preview-only frame-generation layer.
 
 ## Important limitation
 
-LSFG itself remains proprietary to Lossless Scaling. The public Lossless Scaling release notes document its capture engine, but do not provide a public SDK for injecting Fusion frames into LSFG. Therefore this bridge does **not** copy, reverse-engineer, or reimplement LSFG.
+LSFG is proprietary. Fusion does not feed frames directly into the LSFG engine. Lossless Scaling captures the visible VisoMaster window through its own DXGI/WGC capture path and performs frame generation itself.
 
-The bridge is intentionally limited to:
+Official LSFG documentation recommends a stable base framerate and notes that 30 FPS is a minimum, 40+ FPS is preferred, and 60 FPS is ideal at 1080p. LSFG 3.1 also provides Performance Mode for reducing GPU load.
 
-- locating `LosslessScaling.exe` on Windows/Steam installations;
-- starting Lossless Scaling from Fusion tooling;
-- detecting whether a VisoMaster window is present;
-- calculating a sensible fixed-multiplier base FPS.
+## Helper
 
-After Lossless Scaling is running, select the VisoMaster window in Lossless Scaling and enable LSFG there.
+Run from the Fusion project directory on Windows:
 
-## Recommended preview setup
+```text
+python tools/lsfg_preview.py --refresh 60 --multiplier 2 --wait 2
+```
 
-For LSFG 3, use a stable base framerate. For a 120 Hz display and X2 generation, target about 60 FPS. For a 144 Hz display and X3 generation, target about 48 FPS. Lossless Scaling's own guidance recommends borderless/windowed capture rather than exclusive fullscreen and recommends a stable base framerate for good frame pacing.
+For a 120 Hz monitor:
 
-The bridge does not alter recording/export FPS; it is intended as a companion layer for the preview window.
+```text
+python tools/lsfg_preview.py --refresh 120 --multiplier 2
+```
+
+For 144 Hz with X3:
+
+```text
+python tools/lsfg_preview.py --refresh 144 --multiplier 3
+```
+
+The helper starts Lossless Scaling, checks whether a VisoMaster window exists, and calculates the recommended Fusion base FPS. It does not modify exported video FPS.
+
+## Recommended Fusion profiles
+
+- 60 Hz: 30 FPS -> LSFG X2 -> 60 FPS
+- 120 Hz: 60 FPS -> LSFG X2 -> 120 FPS
+- 144 Hz: 48 FPS -> LSFG X3 -> 144 FPS
+- 240 Hz: 60 FPS -> LSFG X4 -> 240 FPS
+
+For 1440p/4K, use LSFG's Flow Scale/Resolution Scale when GPU load is too high.
+
+## Next step
+
+A true one-click Fusion UI integration would require wiring the bridge into `MainWindow.initialize_widgets()` and the settings layout. The bridge is deliberately kept independent so it cannot destabilize the AI/rendering pipeline.
