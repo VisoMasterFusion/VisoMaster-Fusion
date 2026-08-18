@@ -10,8 +10,8 @@ set "RCC_PY_FILE=app\ui\core\media_rc.py"
 :: Find Project Root (Embedded)
 call :findRoot
 if "%R%"=="" exit /b 1
-set "UIC=%R%\dependencies\Python\Scripts\pyside6-uic.exe"
-set "RCC=%R%\dependencies\Python\Scripts\pyside6-rcc.exe"
+set "UIC=%R%\..\portable-files\python\Scripts\pyside6-uic.exe"
+set "RCC=%R%\..\portable-files\python\Scripts\pyside6-rcc.exe"
 
 :: Run PySide6 commands
 "%UIC%" "%UI_FILE%" -o "%PY_FILE%"
@@ -36,7 +36,7 @@ set "tempFile=%PY_FILE%.tmp"
 
 :: Replace the original file with the temporary file
 move /y "%tempFile%" "%PY_FILE%" > nul
-
+pause
 exit /b 0
 
 :findRoot
@@ -45,3 +45,5 @@ set "F=main.py"
 if exist "%CD%\%F%" (set "R=%CD%"&exit /b 0)
 if "%CD:~2%"=="" (echo ERROR: No root found.&exit /b 1)
 cd ..&goto findRoot
+
+
