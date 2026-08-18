@@ -36,7 +36,6 @@ set "tempFile=%PY_FILE%.tmp"
 
 :: Replace the original file with the temporary file
 move /y "%tempFile%" "%PY_FILE%" > nul
-pause
 exit /b 0
 
 :findRoot
