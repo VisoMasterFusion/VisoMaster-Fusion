@@ -41,6 +41,11 @@ def create_and_show_messagebox(
 def create_and_show_toast_message(
     main_window: "MainWindow", title: str, message: str, style_type="information"
 ):
+    if hasattr(main_window, "control") and not main_window.control.get(
+        "EnableMediaToastToggle", True
+    ):
+        return
+
     style_preset_map = {
         "success": ToastPreset.SUCCESS,
         "warning": ToastPreset.WARNING,
