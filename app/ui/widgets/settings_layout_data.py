@@ -790,6 +790,12 @@ SETTINGS_LAYOUT_DATA: Any = {
             "default": False,
             "help": "When enabled, clearing all target media, input faces or embeddings will not show confirmation prompts. ⚠ It will also not prompt when DELETING files.",
         },
+        "EnableMediaToastToggle": {
+            "level": 1,
+            "label": "Enable Toast Notifications",
+            "default": True,
+            "help": "Show toast notifications after saving videos or images.",
+        },
         "ToastDurationText": {
             "level": 1,
             "label": "Notification Duration (ms)",
