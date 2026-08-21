@@ -803,6 +803,14 @@ SETTINGS_LAYOUT_DATA: Any = {
             "width": 60,
             "help": "Duration of toast notifications in milliseconds (1000 = 1 sec.)",
         },
+        "ShowSeekBarThumbnailsToggle": {
+            "level": 1,
+            "label": "Show Seek Bar Thumbnails",
+            "default": True,
+            "help": "Show and generate thumbnails on the video seek bar. Disable to hide them and stop generation.",
+            "exec_function": control_actions.handle_seek_bar_thumbnails_toggle,
+            "exec_function_args": [],
+        },
         "VideoSeekMaxFrameSlider": {
             "level": 1,
             "label": "Max Visible Frames",
