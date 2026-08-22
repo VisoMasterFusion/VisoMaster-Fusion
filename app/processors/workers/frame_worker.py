@@ -704,7 +704,7 @@ class FrameWorker(threading.Thread):
         to the canonical face template for the given *swapper_model*.
 
         Different swapper architectures use different alignment templates
-        (ArcFace 128 crop, ArcFace map crop, or FFHQ-aligned crop for CSCS/Ghost).
+        (ArcFace 128 crop, pose-aware ArcFace map crop, or FFHQ-aligned crop).
 
         Args:
             swapper_model: The name of the active swapper (e.g. ``"Inswapper128"``).
@@ -717,7 +717,10 @@ class FrameWorker(threading.Thread):
             ValueError: If the transform estimation fails (degenerate face geometry).
         """
         # FW-QUAL-10: use GHOSTFACE_MODELS frozenset instead of chained != comparisons
-        if swapper_model not in self.GHOSTFACE_MODELS and swapper_model != "CSCS":
+        uses_pose_aware_template = (
+            swapper_model in self.GHOSTFACE_MODELS or swapper_model == "AlphaFace"
+        )
+        if not uses_pose_aware_template and swapper_model != "CSCS":
             dst = faceutil.get_arcface_template(image_size=512, mode="arcface128")
             dst = np.squeeze(dst)
             # Use instance initialization + .estimate() for older skimage versions
@@ -750,20 +753,26 @@ class FrameWorker(threading.Thread):
                         "Similarity transform estimation failed for CSCS face"
                     )
         else:
-            # FW-QUAL-10: swapper_model in GHOSTFACE_MODELS
+            # FW-QUAL-10: swapper_model in GHOSTFACE_MODELS, or AlphaFace
             tform = trans.SimilarityTransform()
             dst = faceutil.get_arcface_template(image_size=512, mode="arcfacemap")
+            if swapper_model == "AlphaFace":
+                # AlphaFace only matches the five yaw templates. The two trailing
+                # pitch templates can select a noticeably different crop scale for
+                # near-profile faces, which pops between frames.
+                dst = dst[:5]
             M, _ = faceutil.estimate_norm_arcface_template(kps_5, src=dst)
             if M is None or np.any(np.isnan(M)) or np.any(np.isinf(M)):
                 raise ValueError(
-                    "GhostFace transform estimation failed (degenerate face geometry)"
+                    f"{swapper_model} transform estimation failed "
+                    "(degenerate face geometry)"
                 )
             tform.params[0:2] = M
         return tform
 
     @torch.no_grad()
     def get_transformed_and_scaled_faces(
-        self, tform, img, interp_mode: str = "bilinear"
+        self, tform, img, interp_mode: str = "bilinear", only_256: bool = False
     ):
         """
         Applies the similarity transform to extract aligned face crops at four resolutions.
@@ -773,6 +782,10 @@ class FrameWorker(threading.Thread):
             tform:       Fitted ``SimilarityTransform`` from ``get_face_similarity_tform``.
             img:         Full-frame CHW uint8 tensor.
             interp_mode: Interpolation mode for warp_affine (e.g. "bilinear" or "bicubic").
+            only_256:    Skip the 384px and 128px resizes and alias those slots onto
+                         the 512px/256px crops. Inswapper128 is the only swapper that
+                         reads those two crops, so this is safe for any other model
+                         (currently used by AlphaFace).
 
         Returns:
             Tuple ``(face_512, face_384, face_256, face_128)``, all CHW uint8 tensors.
@@ -799,17 +812,25 @@ class FrameWorker(threading.Thread):
         # Convert back to original dtype (uint8) before passing to torchvision resizers
         original_face_512 = original_face_512.to(img.dtype)
 
-        assert self.t384 is not None, (
-            "t384 must be initialized via set_scaling_transforms"
-        )
         assert self.t256 is not None, (
             "t256 must be initialized via set_scaling_transforms"
+        )
+        original_face_256 = self.t256(original_face_512)
+        if only_256:
+            return (
+                original_face_512,
+                original_face_512,
+                original_face_256,
+                original_face_256,
+            )
+
+        assert self.t384 is not None, (
+            "t384 must be initialized via set_scaling_transforms"
         )
         assert self.t128 is not None, (
             "t128 must be initialized via set_scaling_transforms"
         )
         original_face_384 = self.t384(original_face_512)
-        original_face_256 = self.t256(original_face_512)
         original_face_128 = self.t128(original_face_256)
         return (
             original_face_512,

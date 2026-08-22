@@ -360,6 +360,18 @@ class MainWindow(QtWidgets.QMainWindow, Ui_MainWindow):
         self.videoTimeLineEdit.setToolTip("Current Time (mm:ss)")
         self.horizontalLayoutMediaSlider.insertWidget(2, self.videoTimeLineEdit)
         video_control_actions.update_video_time_line_edit(self, 0)
+        self.videoFpsLineEdit = QtWidgets.QLineEdit(self.mediaLayout)
+        self.videoFpsLineEdit.setObjectName("videoFpsLineEdit")
+        self.videoFpsLineEdit.setReadOnly(True)
+        self.videoFpsLineEdit.setFocusPolicy(QtCore.Qt.FocusPolicy.NoFocus)
+        self.videoFpsLineEdit.setAlignment(QtCore.Qt.AlignmentFlag.AlignCenter)
+        self.videoFpsLineEdit.setFixedWidth(56)
+        self.videoFpsLineEdit.setText("0/0")
+        self.videoFpsLineEdit.setToolTip("Source video FPS / measured playback FPS")
+        self.horizontalLayoutMediaSlider.insertWidget(3, self.videoFpsLineEdit)
+        # Reclaim the width the FPS readout takes from the zoom slider so the
+        # media bar does not overflow on narrow windows.
+        self.timelineZoomSlider.setFixedWidth(68)
         video_seek_line_edit_event_filter = videoSeekSliderLineEditEventFilter(
             self, self.videoSeekLineEdit
         )

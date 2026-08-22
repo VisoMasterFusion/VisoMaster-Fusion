@@ -131,6 +131,7 @@ Choose the AI model used to perform the face transfer. Each model has different 
 | Model | Description |
 |---|---|
 | **Inswapper128** | The default model. Fast, versatile, and works well at multiple resolutions. Recommended for most use cases. |
+| **AlphaFace** | A 256 px swapper with strong identity transfer. Uses pose-aware alignment, so it holds up better than most models on off-angle faces. Runs FP16 under TensorRT. See [AlphaFace](alphaface.md). |
 | **InStyleSwapper256 (A / B / C)** | Higher-resolution swappers based on the Inswapper architecture and trained using a custom technique. Operate at 256 px and tend to preserve skin tone, lighting, and style cues from the target scene. Each variant produces slightly different results. |
 | **SimSwap512** | Operates natively at 512 px. Good identity preservation and fine detail. |
 | **GhostFace-v1 / v2 / v3** | A family of lightweight swappers. v2 and v3 generally outperform v1 in sharpness and identity fidelity. |
@@ -807,6 +808,7 @@ VisoMaster Fusion has two separate model optimisation processes:
 
 | Term | Definition |
 |---|---|
+| **AlphaFace** | A 256 px face swap model that injects the identity embedding into every encoder stage instead of only at the bottleneck. Uses Inswapper128ArcFace for recognition, re-projected through its own identity matrix (`model_assets/alphaface/emp.npy`). See [AlphaFace](alphaface.md). |
 | **ArcFace** | A deep learning model that encodes a face image into a fixed-length identity vector (embedding). VisoMaster Fusion uses several ArcFace variants paired to specific swapper models: Inswapper128ArcFace, SimSwapArcFace, GhostArcFace, and CSCSArcFace. The correct variant is selected automatically during swapping; the UI setting controls the face matching pass. |
 | **Auto Mouth Expression** | A feature in the Face Expression Restorer that automatically activates mouth-expression transfer when mouth action is detected in the scene. |
 | **ByteTrack** | A multi-object tracking algorithm that assigns a consistent ID to each detected face across video frames. Ensures the correct face card settings follow the correct person through motion and occlusion. |

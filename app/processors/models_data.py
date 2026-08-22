@@ -14,10 +14,13 @@ os.makedirs(refldm_ckpts_path, exist_ok=True)
 # ONNX files. Creating them here makes the destinations exist regardless of how
 # the models arrive (download vs. copy-in). The downloader also makes parent
 # dirs on demand, so this is belt-and-suspenders.
-for _subfolder in ("liveportrait_onnx", "performrecast_onnx"):
+for _subfolder in ("alphaface", "liveportrait_onnx", "performrecast_onnx"):
     os.makedirs(models_dir / _subfolder, exist_ok=True)
 
 assets_repo = "https://github.com/visomaster/visomaster-assets/releases/download"
+alphaface_repo = (
+    "https://github.com/kodek4/VisoMaster-Fusion/releases/download/alphaface-model-v1"
+)
 
 ARCFACE_DST = np.array(
     [
@@ -192,6 +195,7 @@ LANDMARKS_SUBSET_IDXS = [
 
 arcface_mapping_model_dict = {
     "Inswapper128": "Inswapper128ArcFace",
+    "AlphaFace": "Inswapper128ArcFace",
     "InStyleSwapper256 Version A": "Inswapper128ArcFace",
     "InStyleSwapper256 Version B": "Inswapper128ArcFace",
     "InStyleSwapper256 Version C": "Inswapper128ArcFace",
@@ -276,6 +280,7 @@ fp16_safe_models_list = [
     # --- Texture ---
     "combo_relu3_3_relu3_1",
     # --- Swappers ---
+    "AlphaFace",
     "InStyleSwapper256 Version A",
     "InStyleSwapper256 Version B",
     "InStyleSwapper256 Version C",
@@ -290,8 +295,20 @@ fp16_safe_models_list = [
 # abort with "has no shape specified. Please run shape inference on the onnx
 # model first." The loader transparently builds a cached, shape-inferred sidecar
 # (``*.trtshape.onnx``) for these models. See ModelsProcessor._ensure_trt_ready_onnx.
+#
+# AlphaFace needs it for a different reason. Its graph ships with no value_info
+# at all (0 of 709 tensors annotated), and torch.onnx.export emitted the output
+# as ``[Divoutput_dim_0, 3, Divoutput_dim_0, Divoutput_dim_3]`` — reusing a
+# single dim_param for both the batch axis and the 256px height axis, which in
+# ONNX declares those two axes equal. Without shape inference the engine build
+# hangs/crashes hard enough to take the display driver with it; with it the
+# output resolves to a static [1, 3, 256, 256], all 709 tensors get shapes, and
+# the FP16 engine builds in ~35 s using ~2.4 GiB. The reflect-pad Shape/Gather
+# chains PyTorch generates are what defeat plain inference here, so the symbolic
+# pass is required.
 tensorrt_shape_infer_models = [
     "PerformRecastWarpingModule",
+    "AlphaFace",
 ]
 
 models_list = [
@@ -300,6 +317,13 @@ models_list = [
         "local_path": f"{models_dir}/inswapper_128.fp16.onnx",
         "hash": "6d51a9278a1f650cffefc18ba53f38bf2769bf4bbff89267822cf72945f8a38b",
         "url": f"{assets_repo}/v0.1.0/inswapper_128.fp16.onnx",
+    },
+    {
+        # FP32 graph; the TensorRT EP casts it to FP16 via fp16_safe_models_list.
+        "model_name": "AlphaFace",
+        "local_path": f"{models_dir}/alphaface/alphaface_swapper_fused_norm.onnx",
+        "hash": "5514d967ab6cc27e1b0edc092e05ee97d235adccb4da68574a9b1a1e221a4c6a",
+        "url": f"{alphaface_repo}/alphaface_swapper_fused_norm.onnx",
     },
     {
         "model_name": "InStyleSwapper256 Version A",

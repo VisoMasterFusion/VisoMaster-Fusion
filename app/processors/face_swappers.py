@@ -4,6 +4,7 @@ import weakref
 from skimage import transform as trans
 from torchvision.transforms import v2
 from app.processors.utils import faceutil
+from app.processors.models_data import models_dir
 import numpy as np
 from numpy.linalg import norm as l2norm
 from typing import TYPE_CHECKING
@@ -42,6 +43,7 @@ class FaceSwappers:
         )
         self.swapper_models = [
             "Inswapper128",
+            "AlphaFace",
             "InStyleSwapper256 Version A",
             "InStyleSwapper256 Version B",
             "InStyleSwapper256 Version C",
@@ -58,6 +60,8 @@ class FaceSwappers:
             "CSCSArcFace",
             "CSCSIDArcFace",
         ]
+        # AlphaFace ships its own ArcFace->ID projection matrix; loaded on first use.
+        self._alphaface_emap: np.ndarray | None = None
 
     def unload_models(self):
         with self.models_processor.model_lock:
@@ -467,6 +471,92 @@ class FaceSwappers:
             return None
 
         return self._calc_emap_latent(source_embedding)
+
+    def calc_swapper_latent_alphaface(
+        self, source_embedding: np.ndarray
+    ) -> np.ndarray | None:
+        """Projects the shared W600K ArcFace embedding into AlphaFace ID space.
+
+        AlphaFace does not embed its projection matrix in the ONNX graph the way
+        Inswapper does, so the matrix ships as a repo asset instead of being read
+        back from the model. Returns ``None`` on any failure so the caller can
+        skip the swap instead of feeding the model garbage.
+        """
+        if self._alphaface_emap is None:
+            emap_path = models_dir / "alphaface" / "emp.npy"
+            try:
+                emap = np.load(emap_path).astype(np.float32)
+            except (OSError, ValueError) as exc:
+                print(f"[ERROR] Could not load AlphaFace identity projection: {exc}")
+                return None
+            if emap.shape != (512, 512):
+                print(
+                    "[ERROR] AlphaFace identity projection must have shape (512, 512)."
+                )
+                return None
+            self._alphaface_emap = emap
+
+        embedding = np.asarray(source_embedding, dtype=np.float32).reshape(1, -1)
+        if embedding.shape[1] != 512:
+            print("[ERROR] AlphaFace requires a 512-dimensional ArcFace embedding.")
+            return None
+        latent = np.dot(embedding, self._alphaface_emap)
+        latent_norm = np.linalg.norm(latent)
+        if not np.isfinite(latent_norm) or latent_norm <= 1e-12:
+            print("[ERROR] AlphaFace produced an invalid identity projection.")
+            return None
+        return latent / latent_norm
+
+    @torch.no_grad()
+    def run_swapper_alphaface(
+        self, image: torch.Tensor, embedding: torch.Tensor, output: torch.Tensor
+    ) -> None:
+        model_name = "AlphaFace"
+
+        model = self._load_swapper_model(model_name)
+        if not model:
+            # The caller falls back to the unswapped crop when the buffer stays
+            # empty, so zero it rather than leaving uninitialised VRAM.
+            output.zero_()
+            print(
+                "[ERROR] AlphaFace model not loaded. Run 'python download_models.py' "
+                "to install model_assets/alphaface/alphaface_swapper_fused_norm.onnx."
+            )
+            return
+
+        image = image.contiguous()
+        embedding = embedding.contiguous()
+        output = output.contiguous()
+
+        io_binding = model.io_binding()
+        io_binding.clear_binding_inputs()
+        io_binding.clear_binding_outputs()
+        io_binding.bind_input(
+            name="target",
+            device_type=self.models_processor.device_type,
+            device_id=self.models_processor.binding_device_id,
+            element_type=np.float32,
+            shape=(1, 3, 256, 256),
+            buffer_ptr=image.data_ptr(),
+        )
+        io_binding.bind_input(
+            name="source_embedding",
+            device_type=self.models_processor.device_type,
+            device_id=self.models_processor.binding_device_id,
+            element_type=np.float32,
+            shape=(1, 512),
+            buffer_ptr=embedding.data_ptr(),
+        )
+        io_binding.bind_output(
+            name="output",
+            device_type=self.models_processor.device_type,
+            device_id=self.models_processor.binding_device_id,
+            element_type=np.float32,
+            shape=(1, 3, 256, 256),
+            buffer_ptr=output.data_ptr(),
+        )
+
+        self._run_model_with_lazy_build_check(model_name, model, io_binding)
 
     @torch.no_grad()
     def run_inswapper(
