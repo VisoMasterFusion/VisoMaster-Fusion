@@ -490,6 +490,19 @@ class ThumbnailTrackWidget(QtWidgets.QWidget):
         if not self.main_window or not self.main_window.video_processor:
             return
 
+        # Respect the setting — stop generation and hide when disabled
+        if not self.main_window.control.get("ShowSeekBarThumbnailsToggle", True):
+            self.thumbnail_cache.clear()
+            self.expected_intervals.clear()
+            self.setVisible(False)
+            if self.worker and self.worker.isRunning():
+                self.worker.cancel()
+                self.worker.wait()
+            self.update()
+            return
+
+        self.setVisible(True)
+
         vp = self.main_window.video_processor
         if vp.file_type != "video" or not vp.media_path or vp.max_frame_number <= 0:
             self.thumbnail_cache.clear()

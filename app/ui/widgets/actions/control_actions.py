@@ -964,3 +964,74 @@ def handle_sort_embeddings_az_toggle(
         import traceback
 
         traceback.print_exc()
+
+def handle_seek_bar_thumbnails_toggle(main_window: "MainWindow", enabled: bool):
+    thumb = None
+    composite = None
+
+    for attr in ("compositeTimeline", "composite_timeline", "timelineWidget"):
+        composite = getattr(main_window, attr, None)
+        if composite is not None and hasattr(composite, "thumbnail_track"):
+            thumb = composite.thumbnail_track
+            break
+
+    if thumb is None:
+        slider = getattr(main_window, "videoSeekSlider", None)
+        if slider is not None:
+            parent = slider.parent()
+            if parent is not None and hasattr(parent, "thumbnail_track"):
+                composite = parent
+                thumb = parent.thumbnail_track
+
+    if thumb is None:
+        return
+
+    layout = getattr(composite, "layout", None) if composite is not None else None
+    if layout is not None and not hasattr(layout, "setSpacing"):
+        layout = None
+
+    scroll_area = getattr(main_window, "timelineScrollArea", None)
+
+    if enabled:
+        if layout is not None:
+            layout.setSpacing(2)
+            layout.setContentsMargins(0, 0, 0, 0)
+        thumb.setFixedHeight(40)
+        thumb.setMaximumHeight(40)
+        thumb.setVisible(True)
+        if composite is not None:
+            composite.setMinimumHeight(0)
+            composite.setMaximumHeight(16777215)
+        if scroll_area is not None:
+            scroll_area.setMinimumHeight(0)
+            scroll_area.setMaximumHeight(16777215)
+        thumb.request_thumbnails()
+    else:
+        if getattr(thumb, "worker", None) and thumb.worker.isRunning():
+            thumb.worker.cancel()
+            thumb.worker.wait()
+        thumb.thumbnail_cache.clear()
+        thumb.expected_intervals.clear()
+        thumb.setVisible(False)
+        thumb.setFixedHeight(0)
+        thumb.setMaximumHeight(0)
+        if layout is not None:
+            layout.setSpacing(0)
+            layout.setContentsMargins(0, 0, 0, 0)
+        if composite is not None:
+            # Keep only the slider height (~20-28px typical)
+            slider = getattr(composite, "slider", None) or getattr(
+                main_window, "videoSeekSlider", None
+            )
+            h = slider.height() if slider is not None else 24
+            composite.setFixedHeight(h)
+            composite.setMaximumHeight(h)
+            composite.adjustSize()
+            composite.updateGeometry()
+        if scroll_area is not None:
+            h = composite.height() if composite is not None else 24
+            scroll_area.setFixedHeight(h)
+            scroll_area.setMaximumHeight(h)
+            scroll_area.adjustSize()
+            scroll_area.updateGeometry()
+        thumb.update()
