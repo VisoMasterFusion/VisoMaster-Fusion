@@ -761,6 +761,12 @@ class FrameWorker(threading.Thread):
                 # pitch templates can select a noticeably different crop scale for
                 # near-profile faces, which pops between frames.
                 dst = dst[:5]
+                # Scale the 112-based templates to match the 128-based Inswapper crop.
+                # This zooms the crop out.
+                dst = dst * (112.0 / 128.0)
+                # Re-center the face horizontally by shifting X coordinates
+                dst[:, :, 0] += (512.0 / 128.0) * 8.0
+
             M, _ = faceutil.estimate_norm_arcface_template(kps_5, src=dst)
             if M is None or np.any(np.isnan(M)) or np.any(np.isinf(M)):
                 raise ValueError(

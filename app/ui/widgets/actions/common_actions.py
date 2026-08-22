@@ -38,6 +38,7 @@ def create_and_show_messagebox(
     messagebox.setText(message)
     messagebox.exec_()
 
+
 def create_and_show_toast_message(
     main_window: "MainWindow", title: str, message: str, style_type="information"
 ):

@@ -334,6 +334,11 @@ class FunctionWorker:
     ) -> None:
         self.face_swappers.run_swapper_alphaface(image, embedding, output)
 
+    def run_swapper_alphaface_batched(
+        self, images: torch.Tensor, embedding: torch.Tensor, output: torch.Tensor
+    ) -> None:
+        self.face_swappers.run_swapper_alphaface_batched(images, embedding, output)
+
     def calc_swapper_latent_iss(
         self, source_embedding: np.ndarray, version: str = "A"
     ) -> np.ndarray:

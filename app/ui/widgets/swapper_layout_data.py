@@ -43,6 +43,15 @@ SWAPPER_LAYOUT_DATA: Any = {  # noqa: F811
             "requiredSelectionValue": "Inswapper128",
             "help": "Autoselect Swapper Resolution based on original Face Size (only for Inswapper).",
         },
+        "AlphaFaceResSelection": {
+            "level": 2,
+            "label": "Swapper Resolution",
+            "options": ["256", "512", "Auto"],
+            "default": "256",
+            "parentSelection": "SwapModelSelection",
+            "requiredSelectionValue": "AlphaFace",
+            "help": "Select the rendering resolution for AlphaFace. '256' is native (fastest). '512' uses sub-pixel phase-shift tiling to preserve extremely fine skin and eye details (runs 4x slower). 'Auto' dynamically selects 512px only when the face is large.",
+        },
         "InStyleResAEnableToggle": {
             "level": 2,
             "label": "512 Resolution",

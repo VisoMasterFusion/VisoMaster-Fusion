@@ -358,8 +358,24 @@ class PipelineProcessor:
                 )
                 latent = self._apply_likeness(latent, dst_latent, parameters)
 
-            dim = 2
-            input_face_affined = original_face_256
+            # Support 512px sub-pixel phase mode (dim=4) or standard 256px mode (dim=2)
+            alpha_res = str(parameters.get("AlphaFaceResSelection", "256"))
+
+            if alpha_res == "Auto":
+                # Adjusted threshold to account for the mathematically
+                # smaller (112/128) bounding box projection we inject in get_face_similarity_tform.
+                if tform.scale <= 1.10:
+                    dim = 4
+                    input_face_affined = original_face_512
+                else:
+                    dim = 2
+                    input_face_affined = original_face_256
+            elif alpha_res == "512":
+                dim = 4
+                input_face_affined = original_face_512
+            else:
+                dim = 2
+                input_face_affined = original_face_256
 
         # --- InStyleSwapper Logic ---
         elif swapper_model in (
@@ -736,17 +752,17 @@ class PipelineProcessor:
                 if _use_batched:
                     # ------ BATCHED PATH (dim > 1) ------
                     # Vectorized Pixel-Unshuffle (Space-to-Depth)
-                    H_tgt: int = 128
-                    W_tgt: int = 128
+                    H_tgt = 128
+                    W_tgt = 128
 
-                    batch_input: torch.Tensor = (
+                    batch_input = (
                         input_face_affined.view(H_tgt, dim, W_tgt, dim, 3)
                         .permute(1, 3, 4, 0, 2)
                         .reshape(dim * dim, 3, H_tgt, W_tgt)
                         .contiguous()
                     )
 
-                    batch_output: torch.Tensor = torch.empty_like(batch_input)
+                    batch_output = torch.empty_like(batch_input)
 
                     self.worker.function_worker.run_inswapper_batched(
                         batch_input, latent, batch_output
@@ -759,14 +775,12 @@ class PipelineProcessor:
                     # OPTIMIZATION: Zero-Sync Fallback
                     # Previously, `if zero_mask.any():` forced a Device-to-Host transfer,
                     # causing a massive global pipeline stall. We use `torch.where` to keep it 100% on GPU.
-                    tile_sums: torch.Tensor = batch_output.abs().sum(
-                        dim=(1, 2, 3), keepdim=True
-                    )
-                    zero_mask: torch.Tensor = tile_sums < 1.0
+                    tile_sums = batch_output.abs().sum(dim=(1, 2, 3), keepdim=True)
+                    zero_mask = tile_sums < 1.0
                     batch_output = torch.where(zero_mask, batch_input, batch_output)
 
                     # Vectorized Pixel-Shuffle (Depth-to-Space)
-                    temp_output: torch.Tensor = (
+                    temp_output = (
                         batch_output.view(dim, dim, 3, H_tgt, W_tgt)
                         .permute(3, 0, 4, 1, 2)
                         .reshape(dim * H_tgt, dim * W_tgt, 3)
@@ -775,7 +789,7 @@ class PipelineProcessor:
 
                     # --- MODE 2 ---
                     if use_mode_2:
-                        curr_chw: torch.Tensor = temp_output.permute(2, 0, 1)
+                        curr_chw = temp_output.permute(2, 0, 1)
                         if k == 0:
                             first_pass_face = (
                                 curr_chw.clone()
@@ -841,49 +855,110 @@ class PipelineProcessor:
 
         # --- AlphaFace Path ---
         elif swapper_model == "AlphaFace":
+            _use_batched_512 = dim > 2
+
             for k in range(itex):
                 prev_face = input_face_affined
-                input_face_disc = (
-                    input_face_affined.permute(2, 0, 1).unsqueeze(0).contiguous()
-                )
-                # AlphaFace consumes and emits [0..1] RGB, so no range conversion.
-                swapper_output = torch.empty(
-                    (1, 3, 256, 256),
-                    dtype=torch.float32,
-                    device=self.worker.models_processor.device,
-                )
 
-                self.worker.function_worker.run_swapper_alphaface(
-                    input_face_disc, latent, swapper_output
-                )
-                # No blocking_stream_sync() here: run_ort_with_iobinding already
-                # calls io_binding.synchronize_outputs() before returning, which is
-                # the sync that actually orders ORT's stream against our reads.
+                if _use_batched_512:
+                    # Vectorized Pixel-Unshuffle (Space-to-Depth): 512x512 -> 4x(256x256)
+                    dim_res = dim // 2  # 2x2 grid
+                    H_tgt = 256
+                    W_tgt = 256
 
-                swapper_output = swapper_output.squeeze(0)
-                # Zero-sync robustness check: keep the comparison on-device so a
-                # failed inference cannot stall the pipeline with a D2H transfer.
-                valid_output = torch.logical_and(
-                    torch.isfinite(swapper_output).all(),
-                    swapper_output.abs().mean() >= 1e-4,
-                )
-                swapper_output = torch.where(
-                    valid_output,
-                    swapper_output,
-                    input_face_affined.permute(2, 0, 1),
-                )
+                    batch_input = (
+                        input_face_affined.view(H_tgt, dim_res, W_tgt, dim_res, 3)
+                        .permute(1, 3, 4, 0, 2)
+                        .reshape(dim_res * dim_res, 3, H_tgt, W_tgt)
+                        .contiguous()
+                    )
 
-                # --- MODE 2 ---
-                if use_mode_2:
-                    if k == 0:
-                        first_pass_face = swapper_output.clone()
-                    else:
-                        swapper_output = self._fix_drift_and_texture(
-                            swapper_output, first_pass_face
+                    batch_output = torch.empty_like(batch_input)
+
+                    if hasattr(
+                        self.worker.function_worker, "run_swapper_alphaface_batched"
+                    ):
+                        self.worker.function_worker.run_swapper_alphaface_batched(
+                            batch_input, latent, batch_output
                         )
+                    else:
+                        for b_i in range(dim_res * dim_res):
+                            self.worker.function_worker.run_swapper_alphaface(
+                                batch_input[b_i : b_i + 1],
+                                latent,
+                                batch_output[b_i : b_i + 1],
+                            )
 
-                input_face_affined = swapper_output.permute(1, 2, 0)
-                output = torch.clamp(input_face_affined * 255.0, 0, 255)
+                    # Zero-sync validation check on device
+                    tile_sums = batch_output.abs().sum(dim=(1, 2, 3), keepdim=True)
+                    zero_mask = tile_sums < 1e-4
+                    batch_output = torch.where(zero_mask, batch_input, batch_output)
+
+                    # Vectorized Pixel-Shuffle (Depth-to-Space): 4x(256x256) -> 512x512
+                    temp_output = (
+                        batch_output.view(dim_res, dim_res, 3, H_tgt, W_tgt)
+                        .permute(3, 0, 4, 1, 2)
+                        .reshape(dim_res * H_tgt, dim_res * W_tgt, 3)
+                        .contiguous()
+                    )
+
+                    # --- MODE 2 ---
+                    if use_mode_2:
+                        curr_chw = temp_output.permute(2, 0, 1)
+                        if k == 0:
+                            first_pass_face = curr_chw.clone()
+                        else:
+                            curr_chw = self._fix_drift_and_texture(
+                                curr_chw, first_pass_face
+                            )
+                            temp_output = curr_chw.permute(1, 2, 0)
+
+                    input_face_affined = temp_output
+                    output = torch.clamp(temp_output * 255.0, 0, 255)
+
+                else:
+                    # Single 256x256 pass
+                    input_face_disc = (
+                        input_face_affined.permute(2, 0, 1).unsqueeze(0).contiguous()
+                    )
+                    # AlphaFace consumes and emits [0..1] RGB, so no range conversion.
+                    swapper_output = torch.empty(
+                        (1, 3, 256, 256),
+                        dtype=torch.float32,
+                        device=self.worker.models_processor.device,
+                    )
+
+                    self.worker.function_worker.run_swapper_alphaface(
+                        input_face_disc, latent, swapper_output
+                    )
+                    # No blocking_stream_sync() here: run_ort_with_iobinding already
+                    # calls io_binding.synchronize_outputs() before returning, which is
+                    # the sync that actually orders ORT's stream against our reads.
+
+                    swapper_output = swapper_output.squeeze(0)
+                    # Zero-sync robustness check: keep the comparison on-device so a
+                    # failed inference cannot stall the pipeline with a D2H transfer.
+                    valid_output = torch.logical_and(
+                        torch.isfinite(swapper_output).all(),
+                        swapper_output.abs().mean() >= 1e-4,
+                    )
+                    swapper_output = torch.where(
+                        valid_output,
+                        swapper_output,
+                        input_face_affined.permute(2, 0, 1),
+                    )
+
+                    # --- MODE 2 ---
+                    if use_mode_2:
+                        if k == 0:
+                            first_pass_face = swapper_output.clone()
+                        else:
+                            swapper_output = self._fix_drift_and_texture(
+                                swapper_output, first_pass_face
+                            )
+
+                    input_face_affined = swapper_output.permute(1, 2, 0)
+                    output = torch.clamp(input_face_affined * 255.0, 0, 255)
 
         # --- InStyleSwapper Path ---
         elif swapper_model in (
@@ -1692,63 +1767,77 @@ class PipelineProcessor:
         )
 
         # --- OPTIMIZATION / FIX: Synchronized Pixel & Keypoint Face Scaling ---
+        alphaface_scale_val = 1.0
         if parameters.get("FaceAdjEnableToggle", False):
             scale_val = 1.0 + (parameters.get("FaceScaleAmountSlider", 0) / 100.0)
             if scale_val != 1.0:
-                # 1. Scale the primary 512 canvas pixels
-                _, h, w = original_face_512.shape
-                new_h, new_w = max(1, int(h * scale_val)), max(1, int(w * scale_val))
-
-                resized = v2.functional.resize(
-                    original_face_512,
-                    [new_h, new_w],
-                    interpolation=v2.InterpolationMode.BICUBIC,
-                    antialias=True,
-                )
-
-                if scale_val < 1.0:
-                    pad_l = (w - new_w) // 2
-                    pad_r = w - new_w - pad_l
-                    pad_t = (h - new_h) // 2
-                    pad_b = h - new_h - pad_t
-                    original_face_512 = F.pad(
-                        resized, (pad_l, pad_r, pad_t, pad_b), mode="constant", value=0
-                    )
+                if swapper_model == "AlphaFace":
+                    # AlphaFace rigidly enforces canonical geometry and distorts if the input tensor is padded.
+                    # We bypass input padding and defer scaling strictly to the paste-back inverse matrix.
+                    alphaface_scale_val = scale_val
                 else:
-                    crop_t = (new_h - h) // 2
-                    crop_l = (new_w - w) // 2
-                    original_face_512 = v2.functional.crop(
-                        resized, crop_t, crop_l, h, w
+                    # 1. Scale the primary 512 canvas pixels for flexible models (Inswapper, SimSwap, etc.)
+                    _, h, w = original_face_512.shape
+                    new_h, new_w = (
+                        max(1, int(h * scale_val)),
+                        max(1, int(w * scale_val)),
                     )
 
-                # 2. Cascade changes to down-res variants used by specific swappers/masks
-                original_face_256 = _resize_func(
-                    original_face_512, (256, 256), is_mask=False
-                )
-                if _only_256:
-                    original_face_384 = original_face_512
-                    original_face_128 = original_face_256
-                else:
-                    original_face_384 = _resize_func(
-                        original_face_512, (384, 384), is_mask=False
-                    )
-                    original_face_128 = _resize_func(
-                        original_face_512, (128, 128), is_mask=False
+                    resized = v2.functional.resize(
+                        original_face_512,
+                        [new_h, new_w],
+                        interpolation=v2.InterpolationMode.BICUBIC,
+                        antialias=True,
                     )
 
-                # 3. Mathematically shift the coordinate matrix so Restorers track the new pixel locations
-                scale_matrix = np.array(
-                    [
-                        [scale_val, 0.0, 256.0 * (1.0 - scale_val)],
-                        [0.0, scale_val, 256.0 * (1.0 - scale_val)],
-                        [0.0, 0.0, 1.0],
-                    ],
-                    dtype=np.float32,
-                )
+                    if scale_val < 1.0:
+                        pad_l = (w - new_w) // 2
+                        pad_r = w - new_w - pad_l
+                        pad_t = (h - new_h) // 2
+                        pad_b = h - new_h - pad_t
+                        original_face_512 = F.pad(
+                            resized,
+                            (pad_l, pad_r, pad_t, pad_b),
+                            mode="constant",
+                            value=0,
+                        )
+                    else:
+                        crop_t = (new_h - h) // 2
+                        crop_l = (new_w - w) // 2
+                        original_face_512 = v2.functional.crop(
+                            resized, crop_t, crop_l, h, w
+                        )
 
-                # Update tform. Because Python assigns objects by reference, tform_original
-                # remains safely pointing to the unscaled bounds.
-                tform = trans.SimilarityTransform(matrix=scale_matrix @ tform.params)
+                    # 2. Cascade changes to down-res variants used by specific swappers/masks
+                    original_face_256 = _resize_func(
+                        original_face_512, (256, 256), is_mask=False
+                    )
+                    if _only_256:
+                        original_face_384 = original_face_512
+                        original_face_128 = original_face_256
+                    else:
+                        original_face_384 = _resize_func(
+                            original_face_512, (384, 384), is_mask=False
+                        )
+                        original_face_128 = _resize_func(
+                            original_face_512, (128, 128), is_mask=False
+                        )
+
+                    # 3. Mathematically shift the coordinate matrix so Restorers track the new pixel locations
+                    scale_matrix = np.array(
+                        [
+                            [scale_val, 0.0, 256.0 * (1.0 - scale_val)],
+                            [0.0, scale_val, 256.0 * (1.0 - scale_val)],
+                            [0.0, 0.0, 1.0],
+                        ],
+                        dtype=np.float32,
+                    )
+
+                    # Update tform. Because Python assigns objects by reference, tform_original
+                    # remains safely pointing to the unscaled bounds.
+                    tform = trans.SimilarityTransform(
+                        matrix=scale_matrix @ tform.params
+                    )
 
         # OPTIMIZATION: Transform full-frame smoothed keypoints to the 512x512 crop space
         kps_all_crop = None
@@ -3237,8 +3326,23 @@ class PipelineProcessor:
         # Eliminates CPU bound calculations, manual slicing, and memory-heavy paddings.
         # Warps directly to the full frame resolution in one highly optimized GPU pass.
 
+        M_inv_np = cast(np.ndarray, tform_original.inverse.params)
+
+        if alphaface_scale_val != 1.0:
+            # Scale the paste-back matrix to physically resize the canonically-generated AlphaFace
+            # without distorting the model's strict internal UNet priors.
+            scale_matrix = np.array(
+                [
+                    [alphaface_scale_val, 0.0, 256.0 * (1.0 - alphaface_scale_val)],
+                    [0.0, alphaface_scale_val, 256.0 * (1.0 - alphaface_scale_val)],
+                    [0.0, 0.0, 1.0],
+                ],
+                dtype=np.float32,
+            )
+            M_inv_np = M_inv_np @ scale_matrix
+
         M_inv = (
-            torch.from_numpy(cast(np.ndarray, tform_original.inverse.params)[0:2])
+            torch.from_numpy(M_inv_np[0:2])
             .float()
             .unsqueeze(0)
             .to(self.worker.models_processor.device)

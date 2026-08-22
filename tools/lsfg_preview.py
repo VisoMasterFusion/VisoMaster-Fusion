@@ -14,11 +14,21 @@ from app.helpers.lsfg_bridge import LosslessScalingBridge
 
 
 def main() -> int:
-    parser = argparse.ArgumentParser(description="Prepare VisoMaster for Lossless Scaling LSFG")
-    parser.add_argument("--refresh", type=float, default=60.0, help="Display refresh rate in Hz")
-    parser.add_argument("--multiplier", type=float, default=2.0, help="LSFG fixed multiplier")
-    parser.add_argument("--exe", default=None, help="Optional path to LosslessScaling.exe")
-    parser.add_argument("--wait", type=float, default=0.0, help="Seconds to wait before status check")
+    parser = argparse.ArgumentParser(
+        description="Prepare VisoMaster for Lossless Scaling LSFG"
+    )
+    parser.add_argument(
+        "--refresh", type=float, default=60.0, help="Display refresh rate in Hz"
+    )
+    parser.add_argument(
+        "--multiplier", type=float, default=2.0, help="LSFG fixed multiplier"
+    )
+    parser.add_argument(
+        "--exe", default=None, help="Optional path to LosslessScaling.exe"
+    )
+    parser.add_argument(
+        "--wait", type=float, default=0.0, help="Seconds to wait before status check"
+    )
     args = parser.parse_args()
 
     bridge = LosslessScalingBridge(args.exe)
@@ -35,8 +45,12 @@ def main() -> int:
 
     print(f"[LSFG] Lossless Scaling: {executable}")
     print(f"[LSFG] VisoMaster window found: {status.visomaster_window_found}")
-    print(f"[LSFG] Recommended base FPS: {base_fps} for {args.refresh:g} Hz x{args.multiplier:g}")
-    print("[LSFG] In Lossless Scaling: select VisoMaster's window, enable LSFG, then start scaling.")
+    print(
+        f"[LSFG] Recommended base FPS: {base_fps} for {args.refresh:g} Hz x{args.multiplier:g}"
+    )
+    print(
+        "[LSFG] In Lossless Scaling: select VisoMaster's window, enable LSFG, then start scaling."
+    )
     return 0
 
 

@@ -44,5 +44,3 @@ set "F=main.py"
 if exist "%CD%\%F%" (set "R=%CD%"&exit /b 0)
 if "%CD:~2%"=="" (echo ERROR: No root found.&exit /b 1)
 cd ..&goto findRoot
-
-
