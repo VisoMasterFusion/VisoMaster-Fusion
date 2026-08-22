@@ -323,6 +323,8 @@ class TargetMediaCardButton(CardButton):
             main_window.videoSeekLineEdit.setVisible(is_visible)
         if hasattr(main_window, "videoTimeLineEdit") and main_window.videoTimeLineEdit:
             main_window.videoTimeLineEdit.setVisible(is_visible)
+        if hasattr(main_window, "videoFpsLineEdit") and main_window.videoFpsLineEdit:
+            main_window.videoFpsLineEdit.setVisible(is_visible)
         if hasattr(main_window, "zoomLabel") and main_window.zoomLabel:
             main_window.zoomLabel.setVisible(is_visible)
         if (

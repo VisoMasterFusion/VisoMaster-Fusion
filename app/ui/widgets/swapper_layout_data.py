@@ -12,6 +12,7 @@ SWAPPER_LAYOUT_DATA: Any = {  # noqa: F811
             "label": "Swapper Model",
             "options": [
                 "Inswapper128",
+                "AlphaFace",
                 "InStyleSwapper256 Version A",
                 "InStyleSwapper256 Version B",
                 "InStyleSwapper256 Version C",

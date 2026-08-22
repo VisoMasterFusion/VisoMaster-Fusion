@@ -124,6 +124,9 @@ class MediaPipeline(QObject):
         self.playback_started: bool = False
         self.playback_display_start_time: float = 0.0
         self.heartbeat_frame_counter: int = 0
+        self._fps_window_start_sec: float = 0.0
+        self._fps_window_frames: int = 0
+        self._display_fps_ema: float = 0.0
 
         # --- Error & Skip Tracking ---
         self.skipped_frames: set[int] = set()
@@ -971,6 +974,55 @@ class MediaPipeline(QObject):
 
     # --- CONSUMER (METRONOME) ---
 
+    def _source_video_fps(self) -> float:
+        source_fps = float(getattr(self.vp, "recording_source_fps", 0.0) or 0.0)
+        if source_fps > 0.0:
+            return source_fps
+        return float(getattr(self.vp, "fps", 0.0) or 0.0)
+
+    def _set_playback_fps_text(self, playback_fps: float) -> None:
+        fps_widget = getattr(self.main_window, "videoFpsLineEdit", None)
+        if fps_widget is None:
+            return
+
+        source_fps = max(0, round(self._source_video_fps()))
+        measured_fps = max(0, round(playback_fps))
+        fps_widget.setText(f"{source_fps}/{measured_fps}")
+
+    def _reset_playback_fps_display(self, now_sec: float | None = None) -> None:
+        self._fps_window_start_sec = (
+            time.perf_counter() if now_sec is None else float(now_sec)
+        )
+        self._fps_window_frames = 0
+        self._display_fps_ema = 0.0
+        self._set_playback_fps_text(0.0)
+
+    def _update_playback_fps_display(self, now_sec: float | None = None) -> None:
+        """Counts displayed frames and refreshes the readout ~1.3x per second.
+
+        Measuring over a window (rather than per-frame deltas) keeps the number
+        readable while a single slow frame is being swapped, and the EMA stops it
+        from flickering between adjacent integers.
+        """
+        now = time.perf_counter() if now_sec is None else float(now_sec)
+        if self._fps_window_start_sec <= 0.0:
+            self._fps_window_start_sec = now
+
+        self._fps_window_frames += 1
+        elapsed = now - self._fps_window_start_sec
+        if elapsed < 0.75:
+            return
+
+        measured_fps = self._fps_window_frames / max(elapsed, 1e-6)
+        if self._display_fps_ema > 0.0:
+            self._display_fps_ema = 0.65 * self._display_fps_ema + 0.35 * measured_fps
+        else:
+            self._display_fps_ema = measured_fps
+
+        self._set_playback_fps_text(self._display_fps_ema)
+        self._fps_window_start_sec = now
+        self._fps_window_frames = 0
+
     def start_metronome(self, target_fps: float, is_first_start: bool = True) -> None:
         """Starts the hyper-precise Qt Timer that pulls completed frames and updates the UI."""
         if target_fps <= 0:
@@ -979,6 +1031,8 @@ class MediaPipeline(QObject):
             self.target_delay_sec = 0.005
         else:
             self.target_delay_sec = 1.0 / target_fps
+
+        self._reset_playback_fps_display()
 
         self.vp.gpu_memory_update_timer.start(5000)
 
@@ -1310,6 +1364,7 @@ class MediaPipeline(QObject):
         graphics_view_actions.update_graphics_view(
             self.main_window, pixmap, slider_display_frame
         )
+        self._update_playback_fps_display()
 
         self.main_window.models_processor.check_deferred_unloads(
             frame_number_to_display

@@ -322,6 +322,45 @@ class PipelineProcessor:
                     dim = 4
                     input_face_affined = original_face_512
 
+        # --- AlphaFace Logic ---
+        elif swapper_model == "AlphaFace":
+            _s_latent_np = self.worker.function_worker.calc_swapper_latent_alphaface(
+                s_e
+            )
+            if _s_latent_np is None:
+                print(
+                    "[ERROR] calc_swapper_latent_alphaface returned None. Skipping swap."
+                )
+                return input_face_affined, dfm_model_instance, dim, latent
+
+            latent = (
+                torch.from_numpy(_s_latent_np)
+                .float()
+                .to(self.worker.models_processor.device)
+            )
+
+            # The target projection is only consumed by Face Likeness, so skip it
+            # (one 512x512 matmul per face per frame) whenever that is disabled.
+            if parameters.get("FaceLikenessEnableToggle", False):
+                _t_latent_np = (
+                    self.worker.function_worker.calc_swapper_latent_alphaface(t_e)
+                )
+                if _t_latent_np is None:
+                    print(
+                        "[ERROR] calc_swapper_latent_alphaface returned None for the "
+                        "target face. Skipping swap."
+                    )
+                    return input_face_affined, dfm_model_instance, dim, None
+                dst_latent = (
+                    torch.from_numpy(_t_latent_np)
+                    .float()
+                    .to(self.worker.models_processor.device)
+                )
+                latent = self._apply_likeness(latent, dst_latent, parameters)
+
+            dim = 2
+            input_face_affined = original_face_256
+
         # --- InStyleSwapper Logic ---
         elif swapper_model in (
             "InStyleSwapper256 Version A",
@@ -799,6 +838,52 @@ class PipelineProcessor:
 
                     input_face_affined = temp_output
                     output = torch.clamp(temp_output * 255.0, 0, 255)
+
+        # --- AlphaFace Path ---
+        elif swapper_model == "AlphaFace":
+            for k in range(itex):
+                prev_face = input_face_affined
+                input_face_disc = (
+                    input_face_affined.permute(2, 0, 1).unsqueeze(0).contiguous()
+                )
+                # AlphaFace consumes and emits [0..1] RGB, so no range conversion.
+                swapper_output = torch.empty(
+                    (1, 3, 256, 256),
+                    dtype=torch.float32,
+                    device=self.worker.models_processor.device,
+                )
+
+                self.worker.function_worker.run_swapper_alphaface(
+                    input_face_disc, latent, swapper_output
+                )
+                # No blocking_stream_sync() here: run_ort_with_iobinding already
+                # calls io_binding.synchronize_outputs() before returning, which is
+                # the sync that actually orders ORT's stream against our reads.
+
+                swapper_output = swapper_output.squeeze(0)
+                # Zero-sync robustness check: keep the comparison on-device so a
+                # failed inference cannot stall the pipeline with a D2H transfer.
+                valid_output = torch.logical_and(
+                    torch.isfinite(swapper_output).all(),
+                    swapper_output.abs().mean() >= 1e-4,
+                )
+                swapper_output = torch.where(
+                    valid_output,
+                    swapper_output,
+                    input_face_affined.permute(2, 0, 1),
+                )
+
+                # --- MODE 2 ---
+                if use_mode_2:
+                    if k == 0:
+                        first_pass_face = swapper_output.clone()
+                    else:
+                        swapper_output = self._fix_drift_and_texture(
+                            swapper_output, first_pass_face
+                        )
+
+                input_face_affined = swapper_output.permute(1, 2, 0)
+                output = torch.clamp(input_face_affined * 255.0, 0, 255)
 
         # --- InStyleSwapper Path ---
         elif swapper_model in (
@@ -1597,9 +1682,12 @@ class PipelineProcessor:
             if parameters.get("FaceAlignmentInterpolation", "Bilinear") == "Bicubic"
             else "bilinear"
         )
+        # AlphaFace only ever reads the 256px crop, so the 384px/128px resizes are
+        # pure waste on that path.
+        _only_256 = swapper_model == "AlphaFace"
         original_face_512, original_face_384, original_face_256, original_face_128 = (
             self.worker.get_transformed_and_scaled_faces(
-                tform, img, interp_mode=_face_interp
+                tform, img, interp_mode=_face_interp, only_256=_only_256
             )
         )
 
@@ -1634,15 +1722,19 @@ class PipelineProcessor:
                     )
 
                 # 2. Cascade changes to down-res variants used by specific swappers/masks
-                original_face_384 = _resize_func(
-                    original_face_512, (384, 384), is_mask=False
-                )
                 original_face_256 = _resize_func(
                     original_face_512, (256, 256), is_mask=False
                 )
-                original_face_128 = _resize_func(
-                    original_face_512, (128, 128), is_mask=False
-                )
+                if _only_256:
+                    original_face_384 = original_face_512
+                    original_face_128 = original_face_256
+                else:
+                    original_face_384 = _resize_func(
+                        original_face_512, (384, 384), is_mask=False
+                    )
+                    original_face_128 = _resize_func(
+                        original_face_512, (128, 128), is_mask=False
+                    )
 
                 # 3. Mathematically shift the coordinate matrix so Restorers track the new pixel locations
                 scale_matrix = np.array(
