@@ -295,7 +295,7 @@ class PipelineProcessor:
             latent = self._apply_likeness(latent, dst_latent, parameters)
 
             dim = 1
-            if parameters["SwapperResAutoSelectEnableToggle"]:
+            if parameters["SwapperResSelection"] == "Auto":
                 if tform.scale <= 1.00:
                     dim = 4
                     input_face_affined = original_face_512
@@ -2051,6 +2051,17 @@ class PipelineProcessor:
                 swap, swap, parameters, control
             )
 
+        # --- Face Shaping (Beginning) ---
+        if (
+            parameters.get("FaceShapingEnableToggle", False)
+            and self.worker.local_control_state_from_feeder.get("edit_enabled", True)
+            and parameters.get("FaceEditorBeforeTypeSelection", "Beginning")
+            == "Beginning"
+        ):
+            swap = self.worker.function_worker.apply_face_shaping_gpu(
+                swap, kps_ref, parameters
+            )
+
         # First Denoiser pass - Before Restorers
         if control.get("DenoiserUNetEnableBeforeRestorersToggle", False):
             swap = self._apply_denoiser_pass(
@@ -2492,6 +2503,17 @@ class PipelineProcessor:
             else:
                 swap_mask = swap_mask_noFP
 
+        # --- Face Shaping (After First Restorer) ---
+        if (
+            parameters.get("FaceShapingEnableToggle", False)
+            and self.worker.local_control_state_from_feeder.get("edit_enabled", True)
+            and parameters.get("FaceEditorBeforeTypeSelection", "Beginning")
+            == "After First Restorer"
+        ):
+            swap = self.worker.function_worker.apply_face_shaping_gpu(
+                swap, kps_ref, parameters
+            )
+
         # Second Denoiser pass - After First Restorer
         if control.get("DenoiserAfterFirstRestorerToggle", False):
             swap = self._apply_denoiser_pass(
@@ -2585,6 +2607,17 @@ class PipelineProcessor:
                 )
             else:
                 swap_mask = swap_mask_noFP
+
+        # --- Face Shaping (After Second Restorer) ---
+        if (
+            parameters.get("FaceShapingEnableToggle", False)
+            and self.worker.local_control_state_from_feeder.get("edit_enabled", True)
+            and parameters.get("FaceEditorBeforeTypeSelection", "Beginning")
+            == "After Second Restorer"
+        ):
+            swap = self.worker.function_worker.apply_face_shaping_gpu(
+                swap, kps_ref, parameters
+            )
 
         # --- AUTO COLOR (Mask 512) ---
         # FW-QUAL-12: AutoColorEnableToggle runs here — BEFORE FaceParser mask is applied
@@ -2946,6 +2979,17 @@ class PipelineProcessor:
                 )
             else:
                 swap_mask = swap_mask_noFP
+
+        # --- Face Shaping (After Texture Transfer) ---
+        if (
+            parameters.get("FaceShapingEnableToggle", False)
+            and self.worker.local_control_state_from_feeder.get("edit_enabled", True)
+            and parameters.get("FaceEditorBeforeTypeSelection", "Beginning")
+            == "After Texture Transfer"
+        ):
+            swap = self.worker.function_worker.apply_face_shaping_gpu(
+                swap, kps_ref, parameters
+            )
 
         # --- COLOR CORRECTIONS ---
         if parameters["ColorEnableToggle"]:

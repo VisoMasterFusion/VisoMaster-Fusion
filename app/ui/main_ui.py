@@ -525,6 +525,20 @@ class MainWindow(QtWidgets.QMainWindow, Ui_MainWindow):
             data_type="control",
             section_namespace="denoiser",
         )
+
+        # --- INJECT PURGE KV MAP STORAGE BUTTON ---
+        self.purgeKVMapsButton = QtWidgets.QPushButton("Purge Unused K/V Maps", self)
+        self.purgeKVMapsButton.setToolTip(
+            "Scans the registry and safely deletes orphaned K/V map tensors to free up disk space."
+        )
+        self.purgeKVMapsButton.setIcon(
+            self.style().standardIcon(QtWidgets.QStyle.StandardPixmap.SP_TrashIcon)
+        )
+        self.denoiserWidgetsLayout.addWidget(self.purgeKVMapsButton)
+        self.purgeKVMapsButton.clicked.connect(
+            partial(save_load_actions.purge_unused_kv_maps, self)
+        )
+
         layout_actions.add_widgets_to_tab_layout(
             self,
             LAYOUT_DATA=SWAPPER_LAYOUT_DATA,
