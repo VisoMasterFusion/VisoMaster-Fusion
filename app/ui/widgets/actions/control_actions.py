@@ -965,6 +965,7 @@ def handle_sort_embeddings_az_toggle(
 
         traceback.print_exc()
 
+
 def handle_seek_bar_thumbnails_toggle(main_window: "MainWindow", enabled: bool):
     thumb = None
     composite = None

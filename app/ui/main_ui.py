@@ -351,16 +351,53 @@ class MainWindow(QtWidgets.QMainWindow, Ui_MainWindow):
         )
         # Set up videoSeekLineEdit and add the event filter to handle changes
         video_control_actions.set_up_video_seek_line_edit(self)
-        self.videoTimeLineEdit = QtWidgets.QLineEdit(self.mediaLayout)
+
+        # 1. Create a strict container widget to prevent layout explosion
+        self.rightSideMediaWidget = QtWidgets.QWidget(self.mediaLayout)
+        self.rightSideMediaWidget.setMaximumHeight(85)
+
+        self.rightSideMediaLayout = QtWidgets.QVBoxLayout(self.rightSideMediaWidget)
+        self.rightSideMediaLayout.setContentsMargins(0, 0, 0, 0)
+        self.rightSideMediaLayout.setSpacing(2)
+        self.rightSideMediaLayout.setAlignment(QtCore.Qt.AlignmentFlag.AlignVCenter)
+
+        # Add descriptive label above the boxes
+        self.boxesLabel = QtWidgets.QLabel(
+            "Frame | Time | FPS", self.rightSideMediaWidget
+        )
+        self.boxesLabel.setAlignment(QtCore.Qt.AlignmentFlag.AlignCenter)
+        font = self.boxesLabel.font()
+        font.setPointSize(8)
+        self.boxesLabel.setFont(font)
+
+        self.boxesLayout = QtWidgets.QHBoxLayout()
+        self.boxesLayout.setContentsMargins(0, 0, 0, 0)
+        self.boxesLayout.setSpacing(4)
+
+        self.zoomLayout = QtWidgets.QHBoxLayout()
+        self.zoomLayout.setContentsMargins(0, 0, 0, 0)
+        self.zoomLayout.setSpacing(4)
+
+        # 2. Extract existing widgets from the native horizontal layout
+        self.horizontalLayoutMediaSlider.removeWidget(self.videoSeekLineEdit)
+        self.horizontalLayoutMediaSlider.removeWidget(self.zoomLabel)
+        self.horizontalLayoutMediaSlider.removeWidget(self.timelineZoomSlider)
+
+        # Reparent existing widgets so Qt doesn't complain about layout parenting
+        self.videoSeekLineEdit.setParent(self.rightSideMediaWidget)
+        self.zoomLabel.setParent(self.rightSideMediaWidget)
+        self.timelineZoomSlider.setParent(self.rightSideMediaWidget)
+
+        # 3. Instantiate the new LineEdits
+        self.videoTimeLineEdit = QtWidgets.QLineEdit(self.rightSideMediaWidget)
         self.videoTimeLineEdit.setObjectName("videoTimeLineEdit")
         self.videoTimeLineEdit.setReadOnly(True)
         self.videoTimeLineEdit.setFocusPolicy(QtCore.Qt.FocusPolicy.NoFocus)
         self.videoTimeLineEdit.setAlignment(QtCore.Qt.AlignmentFlag.AlignCenter)
         self.videoTimeLineEdit.setMaximumSize(QtCore.QSize(55, 16777215))
         self.videoTimeLineEdit.setToolTip("Current Time (mm:ss)")
-        self.horizontalLayoutMediaSlider.insertWidget(2, self.videoTimeLineEdit)
-        video_control_actions.update_video_time_line_edit(self, 0)
-        self.videoFpsLineEdit = QtWidgets.QLineEdit(self.mediaLayout)
+
+        self.videoFpsLineEdit = QtWidgets.QLineEdit(self.rightSideMediaWidget)
         self.videoFpsLineEdit.setObjectName("videoFpsLineEdit")
         self.videoFpsLineEdit.setReadOnly(True)
         self.videoFpsLineEdit.setFocusPolicy(QtCore.Qt.FocusPolicy.NoFocus)
@@ -368,10 +405,28 @@ class MainWindow(QtWidgets.QMainWindow, Ui_MainWindow):
         self.videoFpsLineEdit.setFixedWidth(56)
         self.videoFpsLineEdit.setText("0/0")
         self.videoFpsLineEdit.setToolTip("Source video FPS / measured playback FPS")
-        self.horizontalLayoutMediaSlider.insertWidget(3, self.videoFpsLineEdit)
-        # Reclaim the width the FPS readout takes from the zoom slider so the
-        # media bar does not overflow on narrow windows.
-        self.timelineZoomSlider.setFixedWidth(68)
+
+        # 4. Populate the sub-layouts
+        self.boxesLayout.addWidget(self.videoSeekLineEdit)
+        self.boxesLayout.addWidget(self.videoTimeLineEdit)
+        self.boxesLayout.addWidget(self.videoFpsLineEdit)
+
+        self.zoomLayout.addWidget(self.zoomLabel)
+        self.zoomLayout.addWidget(self.timelineZoomSlider)
+
+        # 5. Assemble the right side container
+        self.rightSideMediaLayout.addWidget(self.boxesLabel)
+        self.rightSideMediaLayout.addLayout(self.boxesLayout)
+        self.rightSideMediaLayout.addLayout(self.zoomLayout)
+
+        # 6. Insert the safe container back into the UI next to the timeline
+        self.horizontalLayoutMediaSlider.addWidget(self.rightSideMediaWidget)
+
+        video_control_actions.update_video_time_line_edit(self, 0)
+
+        # Restore the zoom slider to standard width since it now has its own row
+        self.timelineZoomSlider.setFixedWidth(100)
+
         video_seek_line_edit_event_filter = videoSeekSliderLineEditEventFilter(
             self, self.videoSeekLineEdit
         )

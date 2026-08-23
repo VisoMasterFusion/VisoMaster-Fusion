@@ -559,6 +559,69 @@ class FaceSwappers:
         self._run_model_with_lazy_build_check(model_name, model, io_binding)
 
     @torch.no_grad()
+    def run_swapper_alphaface_batched(
+        self, images: torch.Tensor, embedding: torch.Tensor, output: torch.Tensor
+    ) -> None:
+        """Batched AlphaFace inference for sub-pixel 512px phase-shift resolution mode.
+
+        Optimized zero-copy tile execution using a persistent IOBinding instance
+        and direct GPU pointer offsets across contiguous sub-pixel phase slices.
+        """
+        model_name: str = "AlphaFace"
+        model = self._load_swapper_model(model_name)
+        if not model:
+            output.zero_()
+            print("[ERROR] AlphaFace model not loaded for batched execution.")
+            return
+
+        if not images.is_contiguous():
+            images = images.contiguous()
+        if not embedding.is_contiguous():
+            embedding = embedding.contiguous()
+        if not output.is_contiguous():
+            output = output.contiguous()
+
+        batch_size: int = images.shape[0]
+        device_type: str = self.models_processor.device_type
+        device_id: int = self.models_processor.binding_device_id
+
+        io_binding = model.io_binding()
+
+        for idx in range(batch_size):
+            img_tile: torch.Tensor = images[idx : idx + 1]
+            out_tile: torch.Tensor = output[idx : idx + 1]
+
+            io_binding.clear_binding_inputs()
+            io_binding.clear_binding_outputs()
+
+            io_binding.bind_input(
+                name="target",
+                device_type=device_type,
+                device_id=device_id,
+                element_type=np.float32,
+                shape=(1, 3, 256, 256),
+                buffer_ptr=img_tile.data_ptr(),
+            )
+            io_binding.bind_input(
+                name="source_embedding",
+                device_type=device_type,
+                device_id=device_id,
+                element_type=np.float32,
+                shape=(1, 512),
+                buffer_ptr=embedding.data_ptr(),
+            )
+            io_binding.bind_output(
+                name="output",
+                device_type=device_type,
+                device_id=device_id,
+                element_type=np.float32,
+                shape=(1, 3, 256, 256),
+                buffer_ptr=out_tile.data_ptr(),
+            )
+
+            self._run_model_with_lazy_build_check(model_name, model, io_binding)
+
+    @torch.no_grad()
     def run_inswapper(
         self, image: torch.Tensor, embedding: torch.Tensor, output: torch.Tensor
     ) -> None:

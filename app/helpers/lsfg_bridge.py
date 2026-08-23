@@ -111,7 +111,13 @@ class LosslessScalingBridge:
                             continue
                         value = line.split('"')[-2].strip()
                         if value:
-                            candidate = Path(value) / "steamapps" / "common" / "Lossless Scaling" / LOSSLESS_SCALING_EXE
+                            candidate = (
+                                Path(value)
+                                / "steamapps"
+                                / "common"
+                                / "Lossless Scaling"
+                                / LOSSLESS_SCALING_EXE
+                            )
                             if candidate.is_file():
                                 return candidate
         except Exception:
@@ -149,7 +155,9 @@ class LosslessScalingBridge:
 
             entry = PROCESSENTRY32W()
             entry.dwSize = ctypes.sizeof(PROCESSENTRY32W)
-            first = ctypes.windll.kernel32.Process32FirstW(snapshot, ctypes.byref(entry))
+            first = ctypes.windll.kernel32.Process32FirstW(
+                snapshot, ctypes.byref(entry)
+            )
             if not first:
                 ctypes.windll.kernel32.CloseHandle(snapshot)
                 return False
@@ -157,7 +165,9 @@ class LosslessScalingBridge:
                 while True:
                     if entry.szExeFile.lower() == LOSSLESS_SCALING_EXE.lower():
                         return True
-                    if not ctypes.windll.kernel32.Process32NextW(snapshot, ctypes.byref(entry)):
+                    if not ctypes.windll.kernel32.Process32NextW(
+                        snapshot, ctypes.byref(entry)
+                    ):
                         break
             finally:
                 ctypes.windll.kernel32.CloseHandle(snapshot)
