@@ -661,6 +661,10 @@ def _make_workspace_main_window(
     mw.targetVideosFilterImagesCheckBox = SimpleNamespace(isChecked=lambda: True)
     mw.targetVideosFilterVideosCheckBox = SimpleNamespace(isChecked=lambda: True)
     mw.targetVideosFilterWebcamsCheckBox = SimpleNamespace(isChecked=lambda: False)
+    mw.targetVideosFilterMenuButton = SimpleNamespace(isChecked=lambda: True)
+    mw.swapfacesButton = SimpleNamespace(isChecked=lambda: True)
+    mw.editFacesButton = SimpleNamespace(isChecked=lambda: False)
+    mw.selected_target_face_id = None
     mw.scan_tools_expanded = False
     mw.project_root_path = tmp_path
     mw.geometry = lambda: geometry
@@ -1066,6 +1070,13 @@ def test_load_workspace_restores_target_media_filters_without_double_loading_web
         job_marker_pairs=[],
         selected_target_face_id=None,
         videoSeekSlider=SimpleNamespace(update=MagicMock()),
+        placeholder_update_signal=SimpleNamespace(emit=MagicMock()),
+        swapfacesButton=MagicMock(),
+        editFacesButton=MagicMock(),
+        targetVideosList=MagicMock(),
+        inputFacesList=MagicMock(),
+        inputEmbeddingsList=MagicMock(),
+        targetVideosSortComboBox=SimpleNamespace(currentData=lambda: None),
         targetVideosPathLineEdit=SimpleNamespace(
             setText=MagicMock(), setToolTip=MagicMock()
         ),
@@ -1090,6 +1101,17 @@ def test_load_workspace_restores_target_media_filters_without_double_loading_web
             lambda: filter_calls.append("signal-filter"),
             lambda: webcam_calls.append("signal-webcam"),
         ],
+    )
+    main_window.targetVideosFilterMenuButton = _SignalAwareCheckBox(checked=False)
+
+    # The filter/sort menu toggle drives real Qt layouts; the media-filter
+    # behaviour under test is unaffected by it.
+    from app.ui.widgets.actions import target_videos_list_actions
+
+    monkeypatch.setattr(
+        target_videos_list_actions,
+        "toggle_target_video_filters_sorting",
+        lambda *_args, **_kwargs: None,
     )
 
     monkeypatch.setattr(
@@ -1152,6 +1174,26 @@ def test_load_workspace_restores_target_media_filters_without_double_loading_web
         "apply_face_thumbnail_size",
         lambda *_args, **_kwargs: None,
     )
+    # The loader now drains the batched thumbnail queue before continuing. The
+    # stubbed list_view_actions would report pending work forever, so model a
+    # single outstanding batch.
+    pending_batches = {"remaining": 1}
+    flushed_batches = []
+
+    def flush_target_media_batch(*_args, **_kwargs):
+        pending_batches["remaining"] -= 1
+        flushed_batches.append("flush")
+
+    monkeypatch.setattr(
+        save_load_actions.list_view_actions,
+        "_has_pending_target_media_thumbnail_work",
+        lambda *_args, **_kwargs: pending_batches["remaining"] > 0,
+    )
+    monkeypatch.setattr(
+        save_load_actions.list_view_actions,
+        "_flush_target_media_thumbnail_batch",
+        flush_target_media_batch,
+    )
     monkeypatch.setattr(
         save_load_actions.common_widget_actions,
         "set_control_widgets_values",
@@ -1165,6 +1207,13 @@ def test_load_workspace_restores_target_media_filters_without_double_loading_web
     monkeypatch.setattr(
         save_load_actions.common_widget_actions,
         "set_widgets_values_using_face_id_parameters",
+        lambda *_args, **_kwargs: None,
+    )
+    # Restoring the Edit-Faces button now reaches into the model manager, which
+    # is out of scope for this media-filter test.
+    monkeypatch.setattr(
+        save_load_actions.control_actions,
+        "handle_face_editor_button_click",
         lambda *_args, **_kwargs: None,
     )
     monkeypatch.setattr(
@@ -1202,3 +1251,4 @@ def test_load_workspace_restores_target_media_filters_without_double_loading_web
 
     assert filter_calls == ["final-filter"]
     assert webcam_calls == ["final-webcam"]
+    assert flushed_batches == ["flush"]

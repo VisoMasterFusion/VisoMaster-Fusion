@@ -4,7 +4,7 @@ from app.ui.widgets.actions import common_actions
 from app.ui.widgets.actions import card_actions, job_manager_actions, list_view_actions
 from app.ui.widgets.actions import save_load_actions
 from app.ui.widgets import event_filters
-from app.processors.video_processor import VideoProcessor
+from app.processors.video_utils.issue_scanner import IssueScanner
 from app.ui.widgets.actions.video_control_actions import (
     _handle_issue_scan_cancelled,
     _handle_issue_scan_completed,
@@ -154,6 +154,20 @@ class _FakeIssueScanWorker:
         self.deleted = True
 
 
+def _issue_scan_unavailable_reason(
+    control, scan_ranges=None, markers=None, fallback_control=None
+):
+    """Mirror the VideoProcessor facade, which delegates to the IssueScanner.
+
+    The VR180 check only reads the control/marker dictionaries handed to it, so a
+    scanner without media state is enough.
+    """
+    scanner = IssueScanner(main_window=None, sequential_detector=None)  # type: ignore[arg-type]
+    return scanner.get_issue_scan_unavailable_reason(
+        control, scan_ranges, markers, fallback_control
+    )
+
+
 def _make_worker_main_window():
     return SimpleNamespace(
         control={},
@@ -165,8 +179,6 @@ def _make_worker_main_window():
             _get_issue_scan_ranges=lambda: [(0, 2)],
             describe_issue_scan_scope=lambda _ranges: "Scanning 1 marked range",
             _get_target_input_height=lambda: 256,
-            _filter_scan_control=VideoProcessor._filter_scan_control,
-            _filter_scan_face_params=VideoProcessor._filter_scan_face_params,
             prepare_issue_scan_target_faces_snapshot=lambda *_args, **_kwargs: {},
             scan_issue_frames=None,
         ),
@@ -246,7 +258,7 @@ def _make_scan_main_window(keep_controls=False):
         stop_processing=lambda: False,
         process_current_frame=lambda: None,
         _get_issue_scan_ranges=lambda: [(0, 24)],
-        get_issue_scan_unavailable_reason=VideoProcessor.get_issue_scan_unavailable_reason,
+        get_issue_scan_unavailable_reason=_issue_scan_unavailable_reason,
     )
     return main_window
 
@@ -1757,6 +1769,7 @@ def test_target_media_load_clears_single_frame_preview_caches(monkeypatch):
             blockSignals=lambda *_args, **_kwargs: None,
             setMaximum=lambda *_args, **_kwargs: None,
             setValue=lambda *_args, **_kwargs: None,
+            rangeChanged=SimpleNamespace(emit=lambda *_args: None),
         ),
         loading_new_media=False,
     )
@@ -1768,6 +1781,7 @@ def test_target_media_load_clears_single_frame_preview_caches(monkeypatch):
         media_capture=None,
         reset_related_widgets_and_values=lambda: None,
         _restore_pre_click_checked_state=lambda: None,
+        _toggle_timeline_visibility=lambda *_args, **_kwargs: None,
     )
 
     monkeypatch.setattr(

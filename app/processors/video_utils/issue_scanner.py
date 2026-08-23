@@ -628,7 +628,6 @@ class IssueScanner:
         base_params: Optional[dict] = None,
         target_faces_snapshot: Optional[IssueScanTargetSnapshot] = None,
         control_defaults_snapshot: Optional[dict] = None,
-        reset_frame_number: Optional[int] = None,
     ) -> Optional[dict]:
         """
         The core analytical loop. Runs high-speed sequential detection on specified frame ranges

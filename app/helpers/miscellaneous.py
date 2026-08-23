@@ -378,6 +378,17 @@ class ParametersDict(UserDict):
             self.__setitem__(key, self._default_parameters[key])
             return self._default_parameters[key]
 
+    def get(self, key, default=None):
+        # Python 3.12 added UserDict.get(), which short-circuits on
+        # `key in self` and therefore never reaches our default-parameter
+        # fallback in __getitem__. Route through __getitem__ again so a key
+        # that only exists in _default_parameters still resolves to its
+        # default instead of the caller's fallback.
+        try:
+            return self[key]
+        except KeyError:
+            return default
+
 
 def copy_mapping_data(value: object) -> dict[str, Any]:
     """Return a plain dict copy when *value* is any mapping-like object.

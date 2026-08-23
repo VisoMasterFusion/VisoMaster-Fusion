@@ -131,7 +131,7 @@ def test_alphaface_selects_256px_face_and_projected_latent() -> None:
         function_worker=Functions(),
         models_processor=SimpleNamespace(device=torch.device("cpu")),
     )
-    pipeline = PipelineProcessor(worker)
+    pipeline = PipelineProcessor(worker)  # type: ignore[arg-type]
     faces = tuple(torch.zeros((3, size, size)) for size in (512, 384, 256, 128))
 
     selected, dfm, dim, latent = pipeline.get_affined_face_dim_and_swapping_latents(
@@ -160,7 +160,7 @@ def test_alphaface_skips_the_target_projection_when_likeness_is_off() -> None:
         function_worker=Functions(),
         models_processor=SimpleNamespace(device=torch.device("cpu")),
     )
-    pipeline = PipelineProcessor(worker)
+    pipeline = PipelineProcessor(worker)  # type: ignore[arg-type]
     faces = tuple(torch.zeros((3, size, size)) for size in (512, 384, 256, 128))
 
     selected, _dfm, _dim, latent = pipeline.get_affined_face_dim_and_swapping_latents(
@@ -188,7 +188,7 @@ def test_alphaface_failed_projection_skips_the_swap() -> None:
         function_worker=Functions(),
         models_processor=SimpleNamespace(device=torch.device("cpu")),
     )
-    pipeline = PipelineProcessor(worker)
+    pipeline = PipelineProcessor(worker)  # type: ignore[arg-type]
     faces = tuple(torch.zeros((3, size, size)) for size in (512, 384, 256, 128))
 
     selected, _dfm, _dim, latent = pipeline.get_affined_face_dim_and_swapping_latents(
@@ -226,7 +226,13 @@ def test_alphaface_uses_pose_aware_target_alignment() -> None:
     alphaface = worker.get_face_similarity_tform("AlphaFace", profile_landmarks)
     inswapper = worker.get_face_similarity_tform("Inswapper128", profile_landmarks)
 
-    np.testing.assert_allclose(alphaface.params, np.eye(3), atol=3e-5)
+    # Feeding a pose template back in must select that same template, so the
+    # transform is exactly the AlphaFace crop adjustment: the 112-based map is
+    # zoomed out to the 128-based Inswapper crop and re-centred horizontally.
+    expected = profile_landmarks * (112.0 / 128.0)
+    expected[:, 0] += (512.0 / 128.0) * 8.0
+    np.testing.assert_allclose(alphaface(profile_landmarks), expected, atol=1e-3)
+
     assert not np.allclose(inswapper.params, alphaface.params, atol=1e-3)
 
 
@@ -255,7 +261,7 @@ def test_alphaface_inference_path_preserves_unit_range_contract() -> None:
         t512=lambda tensor: tensor,
         GHOSTFACE_MODELS=frozenset(),
     )
-    pipeline = PipelineProcessor(worker)
+    pipeline = PipelineProcessor(worker)  # type: ignore[arg-type]
     face = torch.full((256, 256, 3), 0.5)
 
     swap, previous = pipeline.get_swapped_and_prev_face(
@@ -287,7 +293,7 @@ def test_alphaface_nonfinite_output_falls_back_to_aligned_crop() -> None:
         t512=lambda tensor: tensor,
         GHOSTFACE_MODELS=frozenset(),
     )
-    pipeline = PipelineProcessor(worker)
+    pipeline = PipelineProcessor(worker)  # type: ignore[arg-type]
     face = torch.full((256, 256, 3), 0.5)
 
     swap, _ = pipeline.get_swapped_and_prev_face(
@@ -320,7 +326,7 @@ def test_alphaface_empty_output_falls_back_to_aligned_crop() -> None:
         t512=lambda tensor: tensor,
         GHOSTFACE_MODELS=frozenset(),
     )
-    pipeline = PipelineProcessor(worker)
+    pipeline = PipelineProcessor(worker)  # type: ignore[arg-type]
     face = torch.full((256, 256, 3), 0.5)
 
     swap, _ = pipeline.get_swapped_and_prev_face(

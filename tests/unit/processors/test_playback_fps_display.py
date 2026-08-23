@@ -18,12 +18,12 @@ class _TextField:
 def _pipeline(source_fps: float = 24.0) -> tuple[MediaPipeline, _TextField]:
     field = _TextField()
     pipeline = MediaPipeline.__new__(MediaPipeline)
-    pipeline.vp = SimpleNamespace(
+    pipeline.vp = SimpleNamespace(  # type: ignore[assignment]
         recording_source_fps=source_fps,
         fps=source_fps,
         media_capture=None,
     )
-    pipeline.main_window = SimpleNamespace(videoFpsLineEdit=field)
+    pipeline.main_window = SimpleNamespace(videoFpsLineEdit=field)  # type: ignore[assignment]
     pipeline._fps_window_start_sec = 0.0
     pipeline._fps_window_frames = 0
     pipeline._display_fps_ema = 0.0
@@ -75,7 +75,7 @@ def test_fps_display_does_not_query_the_live_capture() -> None:
 
 def test_fps_display_is_a_noop_without_the_widget() -> None:
     pipeline, _field = _pipeline(30.0)
-    pipeline.main_window = SimpleNamespace()
+    pipeline.main_window = SimpleNamespace()  # type: ignore[assignment]
 
     pipeline._reset_playback_fps_display(now_sec=1.0)
     pipeline._update_playback_fps_display(now_sec=2.0)
