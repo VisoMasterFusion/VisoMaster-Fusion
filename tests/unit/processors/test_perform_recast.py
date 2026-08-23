@@ -18,6 +18,7 @@ import torch
 # no stubbing is required to import it here.
 from app.processors.perform_recast import (  # noqa: E402
     NUM_KP,
+    MODE_ADVANCED,
     MODE_ENHANCEMENT,
     MODE_REPLACEMENT,
     PerformRecast,
@@ -242,32 +243,36 @@ class TestComposeDrivenKeypoints:
         with pytest.raises(ValueError):
             recast.compose_driven_keypoints(info, exp_d, mode="Bogus")
 
-    def test_replacement_eye_lip_weight_zero_keeps_source(self):
-        """eye/lip driving weight 0 -> the eye/lip planar channels stay at the
-        source expression; weight 1 -> they follow the driver."""
+    def test_advanced_eye_lip_weight_zero_keeps_source(self):
+        """eye/lip driving weight 0 -> the eye/lip channels stay at the source
+        expression; weight 1 -> they follow the driver. The weights are
+        Advanced-mode only (the UI gates the sliders on that mode); Replacement
+        uses the upstream authors' fixed cheek/jaw blend instead."""
         recast = _make_recast()
         info = recast.build_source_info(_torch_motion(8))
         exp_d = _torch_motion(123)["exp"]
 
-        x_keep = recast.compose_driven_keypoints(
-            info,
-            exp_d,
-            mode=MODE_REPLACEMENT,
-            factor=1.0,
-            eye_driving_weight=0.0,
-            lip_driving_weight=0.0,
+        def compose(mode, weight):
+            return recast.compose_driven_keypoints(
+                info,
+                exp_d,
+                mode=mode,
+                factor=1.0,
+                eye_driving_weight=weight,
+                lip_driving_weight=weight,
+            )
+
+        eyes = PerformRecast.EYE_INDICES
+        x_keep = compose(MODE_ADVANCED, 0.0)
+        x_follow = compose(MODE_ADVANCED, 1.0)
+        # With weight 0 the eye channels equal the source; with weight 1 they
+        # follow the driver, so the two compositions must differ on the eyes.
+        assert not torch.allclose(x_keep[:, eyes, :], x_follow[:, eyes, :], atol=1e-4)
+
+        # Replacement ignores the two weights entirely.
+        assert torch.allclose(
+            compose(MODE_REPLACEMENT, 0.0), compose(MODE_REPLACEMENT, 1.0), atol=1e-6
         )
-        x_follow = recast.compose_driven_keypoints(
-            info,
-            exp_d,
-            mode=MODE_REPLACEMENT,
-            factor=1.0,
-            eye_driving_weight=1.0,
-            lip_driving_weight=1.0,
-        )
-        # With weight 0 the eye planar channels equal the source; with weight 1
-        # they differ (driver), so the two compositions must differ on the eyes.
-        assert not torch.allclose(x_keep[:, 31:34, :], x_follow[:, 31:34, :], atol=1e-4)
 
     def test_replacement_default_weights_match_legacy_constants(self):
         """Default weights (0.7 eyes / 0.8 lips) reproduce the original

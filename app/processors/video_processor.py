@@ -2052,18 +2052,27 @@ class VideoProcessor(QObject):
         control_defaults_snapshot: Optional[dict] = None,
         reset_frame_number: Optional[int] = None,
     ) -> Optional[dict]:
-        return self._get_issue_scanner_instance().scan_issue_frames(
-            progress_callback,
-            issue_found_callback,
-            is_cancelled,
-            scan_ranges,
-            target_height,
-            base_control,
-            base_params,
-            target_faces_snapshot,
-            control_defaults_snapshot,
-            reset_frame_number,
-        )
+        try:
+            return self._get_issue_scanner_instance().scan_issue_frames(
+                progress_callback,
+                issue_found_callback,
+                is_cancelled,
+                scan_ranges,
+                target_height,
+                base_control,
+                base_params,
+                target_faces_snapshot,
+                control_defaults_snapshot,
+            )
+        finally:
+            # The scanner walks the media with its own capture, so restore the
+            # live playback position afterwards. Without this the next play or
+            # seek resumes from the last scanned frame.
+            self.current_frame_number = (
+                reset_frame_number
+                if reset_frame_number is not None
+                else int(self.main_window.videoSeekSlider.value())
+            )
 
     def _probe_video_duration(self, file_path: str) -> float | None:
         """
