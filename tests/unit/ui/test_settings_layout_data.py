@@ -215,3 +215,27 @@ def test_confirm_before_stopping_recording_toggle_exists_in_video_recording_sett
     ]
     assert entry["label"] == "Confirm Before Stopping Recording"
     assert entry["default"] is True
+
+
+# ---------------------------------------------------------------------------
+# SLD-16: every landmark model in the dropdown resolves to a real model
+# ---------------------------------------------------------------------------
+
+
+def test_landmark_dropdown_options_are_all_mapped_to_models():
+    """A dropdown value with no landmark_model_mapping entry silently loads nothing
+    (control_actions.handle_landmark_model_selection_change returns early), so the
+    selection appears to work and then produces no landmarks."""
+    from app.processors.models_data import landmark_model_mapping
+
+    for cat, name, entry in _all_widget_entries():
+        if name != "LandmarkDetectModelSelection":
+            continue
+        for option in entry["options"]:
+            assert option in landmark_model_mapping, (
+                f"{cat}/{name}: dropdown option {option!r} has no "
+                f"landmark_model_mapping entry"
+            )
+        # The two 98-point additions must be reachable from the UI.
+        assert "tufa98" in entry["options"]
+        assert "orformer98" in entry["options"]

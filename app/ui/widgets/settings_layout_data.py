@@ -503,11 +503,29 @@ SETTINGS_LAYOUT_DATA: Any = {
         "LandmarkDetectModelSelection": {
             "level": 2,
             "label": "Landmark Detect Model",
-            "options": ["5", "68", "3d68", "98", "106", "203", "478"],
+            "options": [
+                "5",
+                "68",
+                "3d68",
+                "98",
+                "106",
+                "203",
+                "478",
+                "tufa98",
+                "orformer98",
+            ],
             "default": "203",
             "parentToggle": "LandmarkDetectToggle",
             "requiredToggleValue": True,
-            "help": "Select the landmark detection model, where different models detect varying numbers of facial landmarks.",
+            "help": (
+                "Select the landmark detection model, where different models detect varying "
+                "numbers of facial landmarks.\n\n"
+                "tufa98 - TUFA (IJCV 2025), 98 points. Best accuracy on strongly angled "
+                "faces of the models here. ~3.9 ms/face.\n"
+                "orformer98 - ORFormer (WACV 2025), 98 points. Built for occluded faces "
+                "and also estimates which regions are hidden. ~5.9 ms/face.\n\n"
+                "Both use their own upright square crop and ignore 'Detect From Points'."
+            ),
             "exec_function": control_actions.handle_landmark_model_selection_change,
             "exec_function_args": ["LandmarkDetectModelSelection"],
         },

@@ -451,9 +451,14 @@ class FaceDetectors:
                     landmark_kpss if len(landmark_kpss) > 0 else kpss_5[i]
                 )
                 # If the new landmarks have a higher confidence, replace the old 5-point landmarks.
+                # '478' and 'orformer98' bypass the comparison because their "scores"
+                # are not detection confidences ('478' returns blendshapes;
+                # 'orformer98' returns visibility derived from an uncalibrated blend
+                # weight that sits near 0.5 on clean faces). Comparing either against
+                # the detector's confidence would throw away good refined keypoints.
                 if len(landmark_kpss_5) > 0:
                     if (
-                        landmark_detect_mode == "478"
+                        landmark_detect_mode in ("478", "orformer98")
                         or len(landmark_scores) == 0
                         or np.mean(landmark_scores) > np.mean(score_values[i])
                     ):
