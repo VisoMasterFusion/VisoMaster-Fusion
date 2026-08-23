@@ -480,6 +480,11 @@ class FunctionWorker:
             feature_3d, kp_source, kp_driving, face_editor_type
         )
 
+    def apply_face_shaping_gpu(
+        self, img: torch.Tensor, kps: np.ndarray, parameters: dict
+    ) -> torch.Tensor:
+        return self.frame_edits.apply_face_shaping_gpu(img, kps, parameters)
+
     # --- PerformRecast Wrappers ---
 
     def perform_recast_prewarm(self) -> None:
