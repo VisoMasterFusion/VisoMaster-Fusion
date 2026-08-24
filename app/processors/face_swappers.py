@@ -1,13 +1,14 @@
 import torch
 import threading
 import weakref
+from collections import OrderedDict
 from skimage import transform as trans
 from torchvision.transforms import v2
 from app.processors.utils import faceutil
 from app.processors.models_data import models_dir
 import numpy as np
 from numpy.linalg import norm as l2norm
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Any
 
 if TYPE_CHECKING:
     from app.processors.models_processor import ModelsProcessor
@@ -19,11 +20,15 @@ class FaceSwappers:
         self,
         models_processor: "ModelsProcessor",
         function_worker: "FunctionWorker",
-    ):
+    ) -> None:
         self.models_processor = models_processor
         self.function_worker = function_worker
-        self.current_swapper_model = None
-        self.current_arcface_model = None
+
+        # Support dual-swapper pipelines without ping-pong eviction
+        self._active_swapper_models: OrderedDict[str, bool] = OrderedDict()
+        self._MAX_ACTIVE_SWAPPERS: int = 2
+
+        self.current_arcface_model: str | None = None
         # FS-PERF-02: cache input/output names per InferenceSession.
         #
         # Keyed by the session object itself, not id(session). Sessions are
@@ -41,7 +46,7 @@ class FaceSwappers:
         self.resize_112 = v2.Resize(
             (112, 112), interpolation=v2.InterpolationMode.BILINEAR, antialias=False
         )
-        self.swapper_models = [
+        self.swapper_models: list[str] = [
             "Inswapper128",
             "AlphaFace",
             "InStyleSwapper256 Version A",
@@ -53,7 +58,7 @@ class FaceSwappers:
             "GhostFacev3",
             "CSCS",
         ]
-        self.arcface_models = [
+        self.arcface_models: list[str] = [
             "Inswapper128ArcFace",
             "SimSwapArcFace",
             "GhostArcFace",
@@ -63,24 +68,43 @@ class FaceSwappers:
         # AlphaFace ships its own ArcFace->ID projection matrix; loaded on first use.
         self._alphaface_emap: np.ndarray | None = None
 
-    def unload_models(self):
+    @property
+    def current_swapper_model(self) -> str | None:
+        """Backward-compatible property returning the most recently active swapper."""
         with self.models_processor.model_lock:
+            if self._active_swapper_models:
+                return next(reversed(self._active_swapper_models))
+            return None
+
+    @current_swapper_model.setter
+    def current_swapper_model(self, value: str | None) -> None:
+        with self.models_processor.model_lock:
+            if value is not None:
+                self._active_swapper_models[value] = True
+                self._active_swapper_models.move_to_end(value)
+
+    def unload_models(self) -> None:
+        with self.models_processor.model_lock:
+            self._active_swapper_models.clear()
             for model_name in self.swapper_models:
                 self.models_processor.unload_model(model_name)
             for model_name in self.arcface_models:
                 self.models_processor.unload_model(model_name)
 
-    def _manage_model(self, new_model_name):
-        # FS-RACE-01: protect read-modify-write of current_swapper_model with lock
+    def _manage_model(self, new_model_name: str) -> None:
+        # FS-RACE-01: protect read-modify-write of active swappers with lock
         with self.models_processor.model_lock:
-            if (
-                self.current_swapper_model
-                and self.current_swapper_model != new_model_name
-            ):
-                self.models_processor.unload_model(self.current_swapper_model)
-            # FS-BUG-07: current_swapper_model is committed only after load confirmation (see _load_swapper_model)
+            if new_model_name in self._active_swapper_models:
+                self._active_swapper_models.move_to_end(new_model_name)
+                return
 
-    def _load_swapper_model(self, model_name):
+            # Keep up to 2 active swapper models in VRAM for seamless dual swapping
+            while len(self._active_swapper_models) >= self._MAX_ACTIVE_SWAPPERS:
+                oldest_model, _ = self._active_swapper_models.popitem(last=False)
+                if oldest_model != new_model_name:
+                    self.models_processor.unload_model(oldest_model)
+
+    def _load_swapper_model(self, model_name: str) -> Any:
         """Handles loading and swapping of swapper models."""
         self._manage_model(model_name)
         model = self.models_processor.models.get(model_name)
@@ -89,7 +113,8 @@ class FaceSwappers:
         # FS-BUG-07: only commit state after load is confirmed non-None
         if model is not None:
             with self.models_processor.model_lock:
-                self.current_swapper_model = model_name
+                self._active_swapper_models[model_name] = True
+                self._active_swapper_models.move_to_end(model_name)
         return model
 
     def _run_model_with_lazy_build_check(

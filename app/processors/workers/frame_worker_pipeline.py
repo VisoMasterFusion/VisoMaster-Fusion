@@ -1757,9 +1757,14 @@ class PipelineProcessor:
             if parameters.get("FaceAlignmentInterpolation", "Bilinear") == "Bicubic"
             else "bilinear"
         )
-        # AlphaFace only ever reads the 256px crop, so the 384px/128px resizes are
-        # pure waste on that path.
-        _only_256 = swapper_model == "AlphaFace"
+
+        # Determine if only 256px crop is needed: only safe if both primary and secondary swappers are AlphaFace
+        sec_enabled = parameters.get("SecondarySwapperEnableToggle", False)
+        sec_model = parameters.get("SecondarySwapModelSelection", "AlphaFace")
+        _only_256 = (swapper_model == "AlphaFace") and (
+            not sec_enabled or sec_model == "AlphaFace"
+        )
+
         original_face_512, original_face_384, original_face_256, original_face_128 = (
             self.worker.get_transformed_and_scaled_faces(
                 tform, img, interp_mode=_face_interp, only_256=_only_256
@@ -1882,7 +1887,7 @@ class PipelineProcessor:
                 swap = original_face_512
             else:
                 itex = 1
-                if parameters["StrengthEnableToggle"]:
+                if parameters.get("StrengthEnableToggle", False):
                     itex = ceil(parameters["StrengthAmountSlider"] / 100.0)
 
                 output_size = int(128 * dim)
@@ -1905,33 +1910,182 @@ class PipelineProcessor:
                     dfm_model_instance,
                     parameters,
                 )
+
+                # Finalize Primary Swap Strength Blend
+                if parameters.get("StrengthEnableToggle", False):
+                    if itex == 0:
+                        swap = original_face_512.clone()
+                    else:
+                        alpha = np.mod(parameters["StrengthAmountSlider"], 100) * 0.01
+                        if alpha == 0:
+                            alpha = 1.0
+                        prev_face = (
+                            torch.mul(prev_face, 255.0).clamp(0, 255).permute(2, 0, 1)
+                        )
+                        if prev_face.shape[-1] != swap.shape[-1]:
+                            # Using functional resize for RGB buffer (antialias=True is fine here)
+                            prev_face = _resize_func(
+                                prev_face,
+                                (swap.shape[-2], swap.shape[-1]),
+                                is_mask=False,
+                            )
+                        swap = (
+                            torch.lerp(prev_face.float(), swap.float(), alpha)
+                            .to(swap.dtype)
+                            .contiguous()
+                        )
+
+                # --- SECONDARY SWAPPING INFERENCE ---
+                # STRICT VRAM & LATENT GUARD: Only execute if BOTH primary and secondary models
+                # share the exact same Inswapper128ArcFace latent space representation.
+                _COMPATIBLE_ARCFACE_MODELS: frozenset[str] = frozenset(
+                    {
+                        "Inswapper128",
+                        "AlphaFace",
+                        "InStyleSwapper256 Version A",
+                        "InStyleSwapper256 Version B",
+                        "InStyleSwapper256 Version C",
+                    }
+                )
+
+                if (
+                    sec_enabled
+                    and swapper_model in _COMPATIBLE_ARCFACE_MODELS
+                    and sec_model in _COMPATIBLE_ARCFACE_MODELS
+                ):
+                    sec_parameters = dict(parameters)
+
+                    # Map Secondary Resolution
+                    sec_res_choice = parameters.get(
+                        "SecondarySwapperResSelection", "Auto"
+                    )
+                    sec_parameters["SwapperResSelection"] = sec_res_choice
+                    sec_parameters["AlphaFaceResSelection"] = sec_res_choice
+
+                    # Map Unified Secondary Strength based on Master Toggle
+                    strength_enabled = parameters.get("StrengthEnableToggle", False)
+                    if strength_enabled:
+                        sec_amount = parameters.get(
+                            "SecondaryStrengthAmountSlider", 100
+                        )
+                    else:
+                        sec_amount = (
+                            100  # Force exactly 1 pass if master strength is disabled
+                        )
+
+                    sec_parameters["StrengthEnableToggle"] = strength_enabled
+                    sec_parameters["StrengthMode2EnableToggle"] = parameters.get(
+                        "StrengthMode2EnableToggle", False
+                    )
+                    sec_parameters["StrengthAmountSlider"] = sec_amount
+
+                    # 1. Calculate latents and affined face for secondary model
+                    sec_input, sec_dfm, sec_dim, sec_latent = (
+                        self.get_affined_face_dim_and_swapping_latents(
+                            original_faces,
+                            sec_model,
+                            dfm_model_name,
+                            valid_s_e,
+                            valid_t_e,
+                            sec_parameters,
+                            debug,
+                            tform,
+                        )
+                    )
+
+                    if sec_input is not None:
+                        sec_itex = ceil(sec_amount / 100.0)
+
+                        if (
+                            sec_itex == 0
+                        ):  # This only happens if slider is explicitly set to 0 and toggle is ON
+                            sec_swap = original_face_512.clone()
+                            del sec_input, sec_latent
+                        else:
+                            sec_output_size = int(128 * sec_dim)
+                            sec_output = torch.zeros(
+                                (sec_output_size, sec_output_size, 3),
+                                dtype=torch.float32,
+                                device=self.worker.models_processor.device,
+                            )
+                            sec_input_chw = (
+                                sec_input.permute(1, 2, 0).contiguous().div(255.0)
+                            )
+
+                            # 2. Run inference for secondary model with full iteration count
+                            sec_swap, sec_prev_face = self.get_swapped_and_prev_face(
+                                sec_output,
+                                sec_input_chw,
+                                original_face_512,
+                                sec_latent,
+                                sec_itex,
+                                sec_dim,
+                                sec_model,
+                                sec_dfm,
+                                sec_parameters,
+                            )
+
+                            # 3. Apply fractional Strength blend to secondary swap (only if enabled)
+                            if strength_enabled:
+                                sec_alpha = np.mod(sec_amount, 100) * 0.01
+                                if sec_alpha == 0:
+                                    sec_alpha = 1.0
+
+                                sec_prev_face = (
+                                    torch.mul(sec_prev_face, 255.0)
+                                    .clamp(0, 255)
+                                    .permute(2, 0, 1)
+                                )
+                                if sec_prev_face.shape[-1] != sec_swap.shape[-1]:
+                                    sec_prev_face = _resize_func(
+                                        sec_prev_face,
+                                        (sec_swap.shape[-2], sec_swap.shape[-1]),
+                                        is_mask=False,
+                                    )
+                                sec_swap = (
+                                    torch.lerp(
+                                        sec_prev_face.float(),
+                                        sec_swap.float(),
+                                        sec_alpha,
+                                    )
+                                    .to(sec_swap.dtype)
+                                    .contiguous()
+                                )
+
+                            del (
+                                sec_output,
+                                sec_input,
+                                sec_input_chw,
+                                sec_latent,
+                                sec_prev_face,
+                            )
+
+                        # 4. Match dimensions if necessary
+                        if sec_swap.shape[-1] != swap.shape[-1]:
+                            sec_swap = _resize_func(
+                                sec_swap,
+                                (swap.shape[-2], swap.shape[-1]),
+                                is_mask=False,
+                            )
+
+                        # 5. Blend tensors (Lerp)
+                        blend_alpha = (
+                            float(
+                                parameters.get("SecondarySwapperBlendAmountSlider", 50)
+                            )
+                            / 100.0
+                        )
+                        swap = (
+                            torch.lerp(swap.float(), sec_swap.float(), blend_alpha)
+                            .to(swap.dtype)
+                            .contiguous()
+                        )
+                        del sec_swap
+                elif sec_enabled:
+                    if debug:
+                        debug_info["Sec_Swapper_Skipped"] = "Incompatible ArcFace Model"
         else:
             swap = original_face_512
-            if parameters["StrengthEnableToggle"]:
-                itex = ceil(parameters["StrengthAmountSlider"] / 100.0)
-                prev_face = torch.div(swap, 255.0)
-                prev_face = prev_face.permute(1, 2, 0)
-
-        if parameters["StrengthEnableToggle"]:
-            if itex == 0:
-                swap = original_face_512.clone()
-            else:
-                alpha = np.mod(parameters["StrengthAmountSlider"], 100) * 0.01
-                if alpha == 0:
-                    alpha = 1
-                prev_face = torch.mul(prev_face, 255)
-                prev_face = torch.clamp(prev_face, 0, 255)
-                prev_face = prev_face.permute(2, 0, 1)
-                if prev_face.shape[-1] != swap.shape[-1]:
-                    # Using functional resize for RGB buffer (antialias=True is fine here)
-                    prev_face = _resize_func(
-                        prev_face, (swap.shape[-2], swap.shape[-1]), is_mask=False
-                    )
-                swap = (
-                    torch.lerp(prev_face.float(), swap.float(), alpha)
-                    .to(swap.dtype)
-                    .contiguous()
-                )
 
         # --- DYNAMIC MASKS INITIALIZATION ---
         current_swap_h, current_swap_w = swap.shape[1], swap.shape[2]
