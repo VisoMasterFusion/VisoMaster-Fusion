@@ -197,7 +197,7 @@ SWAPPER_LAYOUT_DATA: Any = {  # noqa: F811
             "max_value": "500",
             "default": "100",
             "step": 25,
-            "parentToggle": "StrengthEnableToggle & SecondarySwapperEnableToggle",
+            "parentToggle": "StrengthEnableToggle",
             "requiredToggleValue": True,
             "help": "Adjust iterations for the secondary model (100 = 1 pass). 0 turns the secondary swap off.",
         },
