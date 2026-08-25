@@ -1,4 +1,5 @@
-from typing import TYPE_CHECKING, Any, Dict, List, Optional, Tuple
+from contextlib import contextmanager
+from typing import TYPE_CHECKING, Any, Dict, Iterator, List, Optional, Tuple
 
 import numpy as np
 import torch
@@ -48,6 +49,12 @@ class FunctionWorker:
         self._session_locks: dict[int, threading.RLock] = {}
         self._session_locks_mutex = threading.Lock()
 
+        # GFPGAN runs exclusively; all other ORT sessions may run concurrently.
+        self._ort_gate_condition = threading.Condition()
+        self._ort_gate_readers = 0
+        self._ort_gate_writer_active = False
+        self._ort_gate_writers_waiting = 0
+
         # Initialize Sub-Processors centrally.
         # We pass `self.mp` for VRAM management, and `self` so they can route calls through this Facade.
         self.face_detectors = FaceDetectors(self.mp, self)
@@ -70,8 +77,39 @@ class FunctionWorker:
                 self._session_locks[session_id] = threading.RLock()
             return self._session_locks[session_id]
 
+    @contextmanager
+    def _ort_inference_gate(self, exclusive: bool) -> Iterator[None]:
+        if exclusive:
+            with self._ort_gate_condition:
+                self._ort_gate_writers_waiting += 1
+                try:
+                    while self._ort_gate_writer_active or self._ort_gate_readers:
+                        self._ort_gate_condition.wait()
+                    self._ort_gate_writer_active = True
+                finally:
+                    self._ort_gate_writers_waiting -= 1
+                    self._ort_gate_condition.notify_all()
+        else:
+            with self._ort_gate_condition:
+                while (
+                    self._ort_gate_writer_active
+                    or self._ort_gate_writers_waiting > 0
+                ):
+                    self._ort_gate_condition.wait()
+                self._ort_gate_readers += 1
+
+        try:
+            yield
+        finally:
+            with self._ort_gate_condition:
+                if exclusive:
+                    self._ort_gate_writer_active = False
+                else:
+                    self._ort_gate_readers -= 1
+                self._ort_gate_condition.notify_all()
+
     def run_ort_with_iobinding(self, session: Any, io_binding: Any) -> None:
-        """Serialize shared ONNX/TensorRT session execution ACROSS THE SAME MODEL only."""
+        """Serialize each session and isolate GFPGAN from other ORT inference."""
         session_lock = self._get_session_lock(session)
 
         # 1. PRE-INFERENCE SYNC (Outside the lock)
@@ -82,17 +120,21 @@ class FunctionWorker:
         elif self.mp.device_type != "cpu":
             self.mp.syncvec.cpu()
 
-        # 2. INFERENCE AND CORRECT POST-SYNC (Inside the lock)
-        with session_lock:
-            # Execute ONNX Runtime / TensorRT.
-            session.run_with_iobinding(io_binding)
+        exclusive = self.mp.models.get("GFPGANv1.4") is session
 
-            # 3. POST-INFERENCE SYNC (MUST BE INSIDE THE LOCK)
-            # We use ORT's native synchronization instead of PyTorch's stream sync.
-            # PyTorch stream sync does not order ORT's internal stream.
-            # This guarantees ORT is completely finished writing the pre-allocated output tensors
-            # before we release the lock to the next worker thread.
-            io_binding.synchronize_outputs()
+        # 2. Keep GFPGAN isolated from every other ORT/TensorRT inference.
+        with self._ort_inference_gate(exclusive):
+            # 3. INFERENCE AND CORRECT POST-SYNC (Inside the session lock)
+            with session_lock:
+                # Execute ONNX Runtime / TensorRT.
+                session.run_with_iobinding(io_binding)
+
+                # 4. POST-INFERENCE SYNC (MUST BE INSIDE BOTH LOCKS)
+                # We use ORT's native synchronization instead of PyTorch's stream sync.
+                # PyTorch stream sync does not order ORT's internal stream.
+                # This guarantees ORT is completely finished writing the pre-allocated output tensors
+                # before we release the locks to the next worker thread.
+                io_binding.synchronize_outputs()
 
     # --- Models Unloaders ---
 
