@@ -211,6 +211,10 @@ class FaceLandmarkDetectors:
                 "model_name": "FaceLandmarkORFormer98",
                 "function": self.detect_face_landmark_orformer98,
             },
+            "tufa314": {
+                "model_name": "FaceLandmarkTUFA314",
+                "function": self.detect_face_landmark_tufa314,
+            },
         }
 
     @torch.no_grad()
@@ -937,6 +941,30 @@ class FaceLandmarkDetectors:
         # run_detect_landmark passes the result through (same as 106 / 203). The
         # converter still requires a score array positionally, hence the zeros.
         landmark_5, _ = faceutil.convert_face_landmark_98_to_5(pred, np.zeros(98))
+        return landmark_5, pred, []
+
+    def detect_face_landmark_tufa314(
+        self, img, bbox, det_kpss, from_points=False, **kwargs
+    ):
+        """
+        TUFA, dense 314-point topology. Same weights and same crop as tufa98 — only the
+        structure prompt baked into the graph differs — so the * 256.0 denormalisation,
+        the 1.15 crop scale and the "no confidence head" behaviour all carry over.
+        """
+        aimg, IM = self._prepare_upright_square_crop(img, bbox, det_kpss, 1.15)
+        if aimg is None:
+            return [], [], []
+
+        net_outs = self._run_onnx_binding(
+            "FaceLandmarkTUFA314", {"image": aimg}, ["landmarks"]
+        )
+        if not net_outs or len(net_outs) < 1:
+            return [], [], []
+
+        pred = net_outs[0].reshape((-1, 2)) * 256.0
+        pred = faceutil.trans_points2d(pred, IM)
+
+        landmark_5, _ = faceutil.convert_face_landmark_314_to_5(pred, np.zeros(314))
         return landmark_5, pred, []
 
     def detect_face_landmark_orformer98(

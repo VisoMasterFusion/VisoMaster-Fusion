@@ -228,16 +228,37 @@ landmark_model_mapping = {
     # faceutil.convert_face_landmark_98_to_5 unchanged.
     "tufa98": "FaceLandmarkTUFA98",
     "orformer98": "FaceLandmarkORFormer98",
+    # TUFA's own dense 314-point set — not a dataset topology, hence its own
+    # converter (faceutil.convert_face_landmark_314_to_5).
+    "tufa314": "FaceLandmarkTUFA314",
+}
+
+# Point count per landmark_model_mapping key. The mode string used to double as the
+# count ("98", "203", ...); the named modes broke that, so callers that need a count
+# (e.g. building a zero placeholder for a failed detection) look it up here.
+landmark_point_counts = {
+    "5": 5,
+    "68": 68,
+    "3d68": 68,
+    "98": 98,
+    "106": 106,
+    "203": 203,
+    "478": 478,
+    "tufa98": 98,
+    "orformer98": 98,
+    "tufa314": 314,
 }
 
 # Models listed here get trt_fp16_enable=True on the TensorRT EP.
 #
-# DO NOT add FaceLandmarkTUFA98 or FaceLandmarkORFormer98. Both were measured under
-# the exact options in ModelsProcessor.trt_ep_options and both fail in fp16:
+# DO NOT add FaceLandmarkTUFA98, FaceLandmarkTUFA314 or FaceLandmarkORFormer98. All
+# were measured under the exact options in ModelsProcessor.trt_ep_options and all fail
+# in fp16:
 #   * TUFA fails SILENTLY — the fp16 engine builds and runs 1.9x faster (2.09 vs
 #     3.89 ms) while emitting ~69 px of error on a 256 px crop. That is garbage, not
 #     precision loss; reproduced twice with byte-identical output.
-#     trt_layer_norm_fp32_fallback is already on and does not help.
+#     trt_layer_norm_fp32_fallback is already on and does not help. The 314-point
+#     export is the same graph with a longer prompt constant, so it inherits this.
 #   * ORFormer fails LOUDLY — the fp16 build never produces an engine. All three
 #     isolated probe attempts died natively (0xC0000005 access violation x2,
 #     0xC000041D x1). Its fp32 build succeeds first try in ~97 s.
@@ -487,6 +508,26 @@ models_list = [
         "local_path": f"{models_dir}/tufa_vits8_256_98pt.onnx",
         "hash": "cf8fab1d1e748b3a4b9f7e8421620659b0219d4c6a69792438086c6d610e52cc",
         "url": f"{tufa_repo}/tufa_vits8_256_98pt.onnx",
+    },
+    {
+        # Same TUFA weights as above, exported with the 314-point structure prompt
+        # (Prompt/shape_314.npz in the export fork) frozen into the graph. TUFA queries
+        # a point by its anchor position in a canonical mean face, so one checkpoint
+        # serves any topology; the ViT-S/8 encoder dominates the cost and the extra
+        # decoder queries are essentially free (measured identical to the 98-point
+        # graph, CUDA EP fp32).
+        # This 314-point set is TUFA's own dense definition, NOT a dataset topology:
+        # anchors 0..311 are a dense sampling of the facial regions ordered by x in the
+        # canonical face, with the two pupil anchors appended at 312/313. 20 of the 98
+        # WFLW anchors appear in it verbatim, which is where the 5-point indices in
+        # faceutil.convert_face_landmark_314_to_5 come from.
+        # Input: RGB float32 [0,1], NCHW 1x3x256x256 (ImageNet normalisation is inside
+        # the graph). Output "landmarks" (1,314,2) is NORMALISED — multiply by 256.
+        # NOT fp16-safe: see the note above fp16_safe_models_list.
+        "model_name": "FaceLandmarkTUFA314",
+        "local_path": f"{models_dir}/tufa_vits8_256_314pt.onnx",
+        "hash": "0e848e4e1a8ce18404f9c42bc83ecd08c048ffda16d061dd7f21e98c967f971c",
+        "url": f"{tufa_repo}/tufa_vits8_256_314pt.onnx",
     },
     {
         # ORFormer (WACV 2025 oral), 98-point WFLW topology. The upstream two-stage

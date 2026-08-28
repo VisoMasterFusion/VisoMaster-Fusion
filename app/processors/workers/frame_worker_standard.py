@@ -7,6 +7,7 @@ import torch
 from torchvision.transforms import v2
 import kornia.geometry.transform as kgm
 
+from app.processors.models_data import landmark_point_counts
 from app.helpers.miscellaneous import (
     ParametersDict,
     draw_bounding_boxes_on_detected_faces,
@@ -326,8 +327,15 @@ class StandardProcessor:
                             if len(lm_std_5) > 0:
                                 kpss_5[idx] = lm_std_5
                         else:
+                            # int(landmark_mode) used to work because every mode string
+                            # was its own point count. The named modes ('3d68',
+                            # 'tufa98', 'tufa314', 'orformer98') are not numeric, so the
+                            # count comes from the table instead of a ValueError.
                             kpss_list.append(
-                                np.zeros((int(landmark_mode), 2), dtype=np.float32)
+                                np.zeros(
+                                    (landmark_point_counts.get(landmark_mode, 5), 2),
+                                    dtype=np.float32,
+                                )
                             )
                 kpss = np.array(kpss_list, dtype=object)
 
