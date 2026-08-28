@@ -512,6 +512,7 @@ SETTINGS_LAYOUT_DATA: Any = {
                 "203",
                 "478",
                 "tufa98",
+                "tufa314",
                 "orformer98",
             ],
             "default": "203",
@@ -522,9 +523,14 @@ SETTINGS_LAYOUT_DATA: Any = {
                 "numbers of facial landmarks.\n\n"
                 "tufa98 - TUFA (IJCV 2025), 98 points. Best accuracy on strongly angled "
                 "faces of the models here. ~3.9 ms/face.\n"
+                "tufa314 - the same TUFA network asked for its dense 314-point set. Costs "
+                "the same as tufa98 (the ViT encoder dominates), and the swap itself uses "
+                "the same 5 points, so pick it for a denser overlay rather than for a "
+                "better swap.\n"
                 "orformer98 - ORFormer (WACV 2025), 98 points. Built for occluded faces "
                 "and also estimates which regions are hidden. ~5.9 ms/face.\n\n"
-                "Both use their own upright square crop and ignore 'Detect From Points'."
+                "All three use their own upright square crop and ignore "
+                "'Detect From Points'."
             ),
             "exec_function": control_actions.handle_landmark_model_selection_change,
             "exec_function_args": ["LandmarkDetectModelSelection"],

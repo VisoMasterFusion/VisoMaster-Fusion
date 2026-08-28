@@ -1,4 +1,4 @@
-"""End-to-end GPU checks for the TUFA / ORFormer landmark detectors.
+"""End-to-end GPU checks for the TUFA (98/314) and ORFormer landmark detectors.
 
 These run the REAL ONNX graphs through the app's own call path --
 run_detect_landmark -> _prepare_crop -> _run_onnx_binding (zero-copy IOBinding) --
@@ -7,7 +7,7 @@ crop scale, or a broken coordinate round-trip.
 
 Marked gpu, so skipped by default. Run with:
     pytest tests/unit/processors/test_landmark_tufa_orformer_gpu.py -m gpu
-Requires the two ONNX files in model_assets/ (download_models.py fetches them).
+Requires the three ONNX files in model_assets/ (download_models.py fetches them).
 """
 
 from __future__ import annotations
@@ -35,6 +35,20 @@ CHIN = 16
 L_PUPIL, R_PUPIL = 96, 97
 NOSE_TIP = 54
 MOUTH_L, MOUTH_R = 76, 82
+
+# The 314-point equivalents. These are the anchors shape_314.npz shares exactly with
+# shape_98.npz in the export fork's structure prompts; see
+# faceutil.convert_face_landmark_314_to_5.
+PT314 = {
+    L_PUPIL: 312,
+    R_PUPIL: 313,
+    NOSE_TIP: 154,
+    MOUTH_L: 51,
+    MOUTH_R: 258,
+    CHIN: 152,
+    60: 28,  # left eye outer corner, used for the interocular normaliser
+    72: 283,  # right eye outer corner
+}
 
 
 def _model_path(mode: str) -> Path:
@@ -77,6 +91,10 @@ def _harness(mode: str) -> FaceLandmarkDetectors:
             "model_name": "FaceLandmarkORFormer98",
             "function": inst.detect_face_landmark_orformer98,
         },
+        "tufa314": {
+            "model_name": "FaceLandmarkTUFA314",
+            "function": inst.detect_face_landmark_tufa314,
+        },
     }
     return inst
 
@@ -110,17 +128,32 @@ def real_face() -> tuple[np.ndarray, np.ndarray]:
     return rgb, bbox
 
 
-@pytest.mark.parametrize("mode", MODES)
-def test_detector_returns_98_anatomically_arranged_points(mode, real_face):
+def _idx(mode: str, wflw_index: int) -> int:
+    """The index of a WFLW semantic point in whichever topology `mode` emits."""
+    return PT314[wflw_index] if mode == "tufa314" else wflw_index
+
+
+@pytest.mark.parametrize(
+    ("mode", "n_points"), [(m, 98) for m in MODES] + [("tufa314", 314)]
+)
+def test_detector_returns_its_points_anatomically_arranged(mode, n_points, real_face):
     rgb, bbox = real_face
     img = torch.from_numpy(rgb).to("cuda").permute(2, 0, 1)
+
+    L_PUPIL, R_PUPIL, NOSE_TIP, MOUTH_L, MOUTH_R, CHIN = (
+        _idx(mode, i) for i in (96, 97, 54, 76, 82, 16)
+    )
+    # tufa314's anchors are x-sorted, so its "contour" is not a leading slice; the
+    # x-extent check below only needs a set of points spanning the face, and for 314
+    # that is the whole array.
+    CONTOUR = slice(0, 33) if mode != "tufa314" else slice(0, 314)
 
     inst = _harness(mode)
     kpss_5, kpss, _scores = inst.run_detect_landmark(
         img, bbox, None, detect_mode=mode, score=0.5
     )
 
-    assert len(kpss) == 98, f"{mode} returned {len(kpss)} points"
+    assert len(kpss) == n_points, f"{mode} returned {len(kpss)} points"
     assert len(kpss_5) == 5
     assert np.all(np.isfinite(kpss))
 
@@ -151,6 +184,51 @@ def test_detector_returns_98_anatomically_arranged_points(mode, real_face):
     np.testing.assert_allclose(kpss_5[2], kpss[NOSE_TIP], atol=1e-4)
     np.testing.assert_allclose(kpss_5[3], kpss[MOUTH_L], atol=1e-4)
     np.testing.assert_allclose(kpss_5[4], kpss[MOUTH_R], atol=1e-4)
+
+
+def test_tufa314_lands_on_the_same_anchors_as_tufa98(real_face):
+    """The whole 314-point index mapping rests on one claim: TUFA addresses a landmark
+    by its anchor position in the canonical face, so an anchor the 314-point prompt
+    shares with the 98-point prompt is the same physical point. If that is wrong -- or
+    if the indices in convert_face_landmark_314_to_5 are off -- the pairs below will
+    diverge by tens of pixels, and the 5-point swap alignment goes with them.
+    """
+    rgb, bbox = real_face
+    img = torch.from_numpy(rgb).to("cuda").permute(2, 0, 1)
+
+    preds = {}
+    for mode in ("tufa98", "tufa314"):
+        _kpss_5, kpss, _ = _harness(mode).run_detect_landmark(
+            img, bbox, None, detect_mode=mode, score=0.5
+        )
+        preds[mode] = np.asarray(kpss, dtype=np.float64)
+
+    interocular = np.linalg.norm(preds["tufa98"][60] - preds["tufa98"][72])
+    deltas = {
+        i: np.linalg.norm(preds["tufa98"][i] - preds["tufa314"][j])
+        for i, j in PT314.items()
+    }
+    worst = max(deltas.values()) / interocular
+    assert worst < 0.02, f"paired anchors disagree by {worst * 100:.2f}% of interocular"
+
+    # Guard the tolerance: a deliberately wrong pairing must fail it, otherwise the
+    # assertion above would pass on any index table.
+    wrong = np.linalg.norm(preds["tufa98"][96] - preds["tufa314"][0]) / interocular
+    assert wrong > 0.02
+
+
+def test_tufa314_five_point_set_is_the_slice_the_swapper_expects(real_face):
+    rgb, bbox = real_face
+    img = torch.from_numpy(rgb).to("cuda").permute(2, 0, 1)
+
+    kpss_5, kpss, scores = _harness("tufa314").run_detect_landmark(
+        img, bbox, None, detect_mode="tufa314", score=0.99
+    )
+
+    for slot, wflw_index in enumerate((96, 97, 54, 76, 82)):
+        np.testing.assert_allclose(kpss_5[slot], kpss[PT314[wflw_index]], atol=1e-4)
+    # No confidence head, so a 0.99 threshold must not filter it out.
+    assert len(scores) == 0
 
 
 def test_the_two_models_agree_on_a_real_face(real_face):

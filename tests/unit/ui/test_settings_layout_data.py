@@ -236,6 +236,7 @@ def test_landmark_dropdown_options_are_all_mapped_to_models():
                 f"{cat}/{name}: dropdown option {option!r} has no "
                 f"landmark_model_mapping entry"
             )
-        # The two 98-point additions must be reachable from the UI.
+        # The TUFA / ORFormer additions must be reachable from the UI.
         assert "tufa98" in entry["options"]
+        assert "tufa314" in entry["options"]
         assert "orformer98" in entry["options"]

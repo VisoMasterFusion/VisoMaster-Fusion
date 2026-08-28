@@ -92,8 +92,7 @@ class FunctionWorker:
         else:
             with self._ort_gate_condition:
                 while (
-                    self._ort_gate_writer_active
-                    or self._ort_gate_writers_waiting > 0
+                    self._ort_gate_writer_active or self._ort_gate_writers_waiting > 0
                 ):
                     self._ort_gate_condition.wait()
                 self._ort_gate_readers += 1
