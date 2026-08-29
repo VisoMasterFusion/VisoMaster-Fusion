@@ -3,6 +3,7 @@ import threading
 import queue
 import copy
 import contextlib
+import time
 from collections import OrderedDict
 from typing import TYPE_CHECKING, Any, cast
 
@@ -16,6 +17,7 @@ import torchvision
 import numpy as np
 
 from app.processors.utils import faceutil
+from app.processors.utils import platform_support
 
 from app.helpers.miscellaneous import (
     find_best_target_match,
@@ -64,6 +66,7 @@ class FrameWorker(threading.Thread):
         # Pool worker args (frame_queue is a task queue)
         frame_queue: queue.Queue | None = None,
         worker_id: int = -1,
+        worker_stream: torch.cuda.Stream | None = None,
         # Single-frame worker args
         frame: np.ndarray | None = None,
         frame_number: int = -1,
@@ -83,6 +86,7 @@ class FrameWorker(threading.Thread):
                             target faces, and control settings.
             frame_queue:    Shared task queue for pool-mode workers; ``None`` in single-frame mode.
             worker_id:      Integer identifier used to name the thread; ``-1`` in single-frame mode.
+            worker_stream:  Explicitly injected CUDA stream for VRAM pooling and task scheduling.
             frame:          Pre-read frame (RGB ndarray) for single-frame mode; ``None`` in pool mode.
             frame_number:   Frame index corresponding to *frame*; ``-1`` in pool mode.
             is_single_frame: ``True`` when this is a one-shot single-frame worker.
@@ -181,8 +185,17 @@ class FrameWorker(threading.Thread):
         self.precomputed_kpss: list[np.ndarray] | None = None
         self.precomputed_kpss_203: list[np.ndarray] | None = None
 
-        # Do not use local streams here! Onnxruntime handles independent streams internally
-        self.worker_stream: torch.cuda.Stream | None = None
+        # --- ISOLATED CUDA STREAM (VRAM OPTIMIZED) ---
+        # The WorkerPoolManager now explicitly passes the shared stream
+        self.worker_stream = worker_stream
+
+        if (
+            torch.cuda.is_available()
+            and self.is_pool_worker
+            and self.worker_stream is None
+        ):
+            # Failsafe fallback just in case the orchestrator failed to pass one
+            self.worker_stream = torch.cuda.Stream()
 
     def set_scaling_transforms(self, control_params: dict[str, Any]) -> None:
         """Initializes the torchvision transforms based on user interpolation settings."""
@@ -246,6 +259,10 @@ class FrameWorker(threading.Thread):
                 "Pool worker initialized without a frame_queue."
             )
 
+            # VRAM check throttling state
+            vram_check_counter: int = 0
+            was_vram_throttled: bool = False
+
             while not self.stop_event.is_set():
                 task = None  # Ensure task is defined for 'finally'
                 try:
@@ -278,8 +295,52 @@ class FrameWorker(threading.Thread):
                     self.parameters = local_params_from_feeder
                     self.local_control_state_from_feeder = local_control_from_feeder
 
-                    # Process the frame
-                    self.process_and_emit_task()
+                    # --- Prevent Unified Memory Thrashing (VRAM Paging) ---
+                    # Throttled VRAM Probe: Query driver every 8th frame or if recently throttled
+                    vram_check_counter += 1
+                    should_check_vram: bool = (
+                        vram_check_counter % 8 == 0
+                    ) or was_vram_throttled
+
+                    if (
+                        should_check_vram
+                        and torch.cuda.is_available()
+                        and torch.cuda.is_initialized()
+                    ):
+                        device_id = torch.cuda.current_device()
+                        free_vram_os, total_vram = torch.cuda.mem_get_info(device_id)
+
+                        # CACHING ALLOCATOR TRAP: OS reports VRAM as "used" even if PyTorch is just
+                        # caching it for reuse. We MUST add PyTorch's cached memory back to the true free count.
+                        pytorch_cached_free = torch.cuda.memory_reserved(
+                            device_id
+                        ) - torch.cuda.memory_allocated(device_id)
+                        actual_free_vram = free_vram_os + pytorch_cached_free
+
+                        # Reserve 5% of total VRAM or at least 1.2 GB to prevent driver crashes
+                        min_required_vram = max(total_vram * 0.05, 1288490188)
+
+                        if actual_free_vram < min_required_vram:
+                            was_vram_throttled = True
+                            backoff_delay: float = 0.05
+                            while actual_free_vram < min_required_vram:
+                                if self.stop_event.is_set():
+                                    break
+                                time.sleep(backoff_delay)
+                                # Progressive backoff up to 200ms to reduce polling pressure
+                                backoff_delay = min(0.2, backoff_delay * 1.5)
+
+                                free_vram_os, _ = torch.cuda.mem_get_info(device_id)
+                                pytorch_cached_free = torch.cuda.memory_reserved(
+                                    device_id
+                                ) - torch.cuda.memory_allocated(device_id)
+                                actual_free_vram = free_vram_os + pytorch_cached_free
+                        else:
+                            was_vram_throttled = False
+
+                    if not self.stop_event.is_set():
+                        # Process the frame
+                        self.process_and_emit_task()
 
                 except queue.Empty:
                     # Timeout occurred, just loop again to check stop_event
@@ -308,6 +369,22 @@ class FrameWorker(threading.Thread):
                     self.parameters = {}
                     self.local_control_state_from_feeder = {}
                     task = None
+
+            # --- Break Circular References & Clear Caches ---
+            # We explicitly wipe the heavy PyTorch VRAM caches when the thread dies to ensure
+            # immediate memory release back to the OS.
+            if hasattr(self, "pipeline_processor"):
+                if hasattr(self.pipeline_processor, "_drift_cache"):
+                    self.pipeline_processor._drift_cache.clear()
+                if hasattr(self.pipeline_processor, "_gabor_kernels_cache"):
+                    self.pipeline_processor._gabor_kernels_cache.clear()
+                if hasattr(self.pipeline_processor, "_gabor_kernels_expanded_cache"):
+                    self.pipeline_processor._gabor_kernels_expanded_cache.clear()
+                if hasattr(self.pipeline_processor, "_color_stats_ema"):
+                    self.pipeline_processor._color_stats_ema.clear()
+                self.pipeline_processor._kernel_lap = None
+                self.pipeline_processor._kernel_sobel_x = None
+                self.pipeline_processor._kernel_sobel_y = None
 
         else:
             # --- Single-Frame Mode ---
@@ -409,9 +486,11 @@ class FrameWorker(threading.Thread):
                     self.frame = self.frame[..., ::-1]
                     self.frame = np.ascontiguousarray(self.frame)
 
-                # Sync thread before returning to cpu
+                # Sync thread before returning to cpu.
+                # Non-spinning wait: this fires once per frame, so the event
+                # wake-up cost is noise against the frame itself.
                 if self.worker_stream:
-                    self.worker_stream.synchronize()
+                    platform_support.blocking_stream_sync(self.worker_stream)
 
             # Check stop event again
             if self.stop_event.is_set():
@@ -456,6 +535,12 @@ class FrameWorker(threading.Thread):
                     "Launcher → Update / Maintenance → switch provider (TensorRT ↔ CUDA) "
                     "or rebuild the TensorRT engines."
                 )
+                try:
+                    self.video_processor.fatal_processing_error_signal.emit(
+                        f"{self.name} frame {self.frame_number}: {e}"
+                    )
+                except Exception:
+                    pass
             else:
                 print(f"[ERROR] Error in {self.name} (frame {self.frame_number}): {e}")
             traceback.print_exc()
@@ -619,7 +704,7 @@ class FrameWorker(threading.Thread):
         to the canonical face template for the given *swapper_model*.
 
         Different swapper architectures use different alignment templates
-        (ArcFace 128 crop, ArcFace map crop, or FFHQ-aligned crop for CSCS/Ghost).
+        (ArcFace 128 crop, pose-aware ArcFace map crop, or FFHQ-aligned crop).
 
         Args:
             swapper_model: The name of the active swapper (e.g. ``"Inswapper128"``).
@@ -632,7 +717,10 @@ class FrameWorker(threading.Thread):
             ValueError: If the transform estimation fails (degenerate face geometry).
         """
         # FW-QUAL-10: use GHOSTFACE_MODELS frozenset instead of chained != comparisons
-        if swapper_model not in self.GHOSTFACE_MODELS and swapper_model != "CSCS":
+        uses_pose_aware_template = (
+            swapper_model in self.GHOSTFACE_MODELS or swapper_model == "AlphaFace"
+        )
+        if not uses_pose_aware_template and swapper_model != "CSCS":
             dst = faceutil.get_arcface_template(image_size=512, mode="arcface128")
             dst = np.squeeze(dst)
             # Use instance initialization + .estimate() for older skimage versions
@@ -665,19 +753,32 @@ class FrameWorker(threading.Thread):
                         "Similarity transform estimation failed for CSCS face"
                     )
         else:
-            # FW-QUAL-10: swapper_model in GHOSTFACE_MODELS
+            # FW-QUAL-10: swapper_model in GHOSTFACE_MODELS, or AlphaFace
             tform = trans.SimilarityTransform()
             dst = faceutil.get_arcface_template(image_size=512, mode="arcfacemap")
+            if swapper_model == "AlphaFace":
+                # AlphaFace only matches the five yaw templates. The two trailing
+                # pitch templates can select a noticeably different crop scale for
+                # near-profile faces, which pops between frames.
+                dst = dst[:5]
+                # Scale the 112-based templates to match the 128-based Inswapper crop.
+                # This zooms the crop out.
+                dst = dst * (112.0 / 128.0)
+                # Re-center the face horizontally by shifting X coordinates
+                dst[:, :, 0] += (512.0 / 128.0) * 8.0
+
             M, _ = faceutil.estimate_norm_arcface_template(kps_5, src=dst)
             if M is None or np.any(np.isnan(M)) or np.any(np.isinf(M)):
                 raise ValueError(
-                    "GhostFace transform estimation failed (degenerate face geometry)"
+                    f"{swapper_model} transform estimation failed "
+                    "(degenerate face geometry)"
                 )
             tform.params[0:2] = M
         return tform
 
+    @torch.no_grad()
     def get_transformed_and_scaled_faces(
-        self, tform, img, interp_mode: str = "bilinear"
+        self, tform, img, interp_mode: str = "bilinear", only_256: bool = False
     ):
         """
         Applies the similarity transform to extract aligned face crops at four resolutions.
@@ -687,6 +788,10 @@ class FrameWorker(threading.Thread):
             tform:       Fitted ``SimilarityTransform`` from ``get_face_similarity_tform``.
             img:         Full-frame CHW uint8 tensor.
             interp_mode: Interpolation mode for warp_affine (e.g. "bilinear" or "bicubic").
+            only_256:    Skip the 384px and 128px resizes and alias those slots onto
+                         the 512px/256px crops. Inswapper128 is the only swapper that
+                         reads those two crops, so this is safe for any other model
+                         (currently used by AlphaFace).
 
         Returns:
             Tuple ``(face_512, face_384, face_256, face_128)``, all CHW uint8 tensors.
@@ -713,17 +818,25 @@ class FrameWorker(threading.Thread):
         # Convert back to original dtype (uint8) before passing to torchvision resizers
         original_face_512 = original_face_512.to(img.dtype)
 
-        assert self.t384 is not None, (
-            "t384 must be initialized via set_scaling_transforms"
-        )
         assert self.t256 is not None, (
             "t256 must be initialized via set_scaling_transforms"
+        )
+        original_face_256 = self.t256(original_face_512)
+        if only_256:
+            return (
+                original_face_512,
+                original_face_512,
+                original_face_256,
+                original_face_256,
+            )
+
+        assert self.t384 is not None, (
+            "t384 must be initialized via set_scaling_transforms"
         )
         assert self.t128 is not None, (
             "t128 must be initialized via set_scaling_transforms"
         )
         original_face_384 = self.t384(original_face_512)
-        original_face_256 = self.t256(original_face_512)
         original_face_128 = self.t128(original_face_256)
         return (
             original_face_512,

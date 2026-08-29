@@ -68,7 +68,7 @@ def test_recast_widgets_gated_on_recast_selection():
 
 def test_recast_mode_options_and_default():
     entry = FACE_EXPR["RecastModeSelection"]
-    assert entry["options"] == ["Enhancement", "Replacement"]
+    assert entry["options"] == ["Enhancement", "Replacement", "Advanced"]
     assert entry["default"] in entry["options"]
 
 
@@ -87,7 +87,9 @@ def test_recast_expression_factor_range():
 
 
 def test_recast_crop_scale_defaults_to_safe_framing():
-    entry = FACE_EXPR["RecastCropScaleDecimalSlider"]
+    # "Recast advanced mode" dropped the dedicated RecastCropScaleDecimalSlider;
+    # Recast now shares the Face-Expression crop scale.
+    entry = FACE_EXPR["FaceExpressionCropScaleBothDecimalSlider"]
     # Default matches the proven 2.3 framing (best viable similarity). Too-tight
     # crops drive the generator into black frames (handled by the guard); wider
     # is safer. Default must stay within range.
@@ -99,22 +101,34 @@ def test_recast_crop_scale_defaults_to_safe_framing():
     )
 
 
-def test_recast_blend_weight_defaults_match_upstream():
-    eye = FACE_EXPR["RecastEyeDrivingWeightDecimalSlider"]
-    lip = FACE_EXPR["RecastLipDrivingWeightDecimalSlider"]
-    assert float(eye["default"]) == 0.7
-    assert float(lip["default"]) == 0.8
-    for entry in (eye, lip):
-        assert float(entry["min_value"]) == 0.0
-        assert float(entry["max_value"]) == 1.0
+# The per-region driving weights are Advanced-mode multipliers scaled by the
+# global Expression Strength; their defaults mirror the compose_driven_keypoints
+# signature (1.0 for eyes/lips/brows, 0.20 cheeks, 0.15 jaw).
+RECAST_REGION_WEIGHT_DEFAULTS = {
+    "RecastEyeDrivingWeightDecimalSlider": 1.0,
+    "RecastLipDrivingWeightDecimalSlider": 1.0,
+    "RecastBrowsDrivingWeightDecimalSlider": 1.0,
+    "RecastCheeksDrivingWeightDecimalSlider": 0.20,
+    "RecastJawDrivingWeightDecimalSlider": 0.15,
+}
 
 
-def test_recast_smoothing_widgets_exist_and_default_off():
-    toggle = FACE_EXPR["RecastExpressionSmoothToggle"]
-    assert toggle["default"] is False
-    strength = FACE_EXPR["RecastSmoothStrengthDecimalSlider"]
-    # Strength is additionally gated on the smoothing toggle.
-    assert "RecastExpressionSmoothToggle" in strength["parentToggle"]
+def test_recast_region_weight_defaults_match_the_compose_signature():
+    for name, expected_default in RECAST_REGION_WEIGHT_DEFAULTS.items():
+        entry = FACE_EXPR[name]
+        assert float(entry["default"]) == expected_default, name
+        assert float(entry["min_value"]) == 0.0, name
+        assert float(entry["max_value"]) == 2.0, name
+
+
+def test_recast_region_weights_are_gated_on_advanced_mode():
+    for name in RECAST_REGION_WEIGHT_DEFAULTS:
+        entry = FACE_EXPR[name]
+        assert entry["parentSelection"] == [
+            "FaceExpressionModeSelection",
+            "RecastModeSelection",
+        ], name
+        assert entry["requiredSelectionValue"] == ["Recast", "Advanced"], name
 
 
 def test_recast_paste_back_feather_defaults_off():

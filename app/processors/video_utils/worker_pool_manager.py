@@ -1,0 +1,382 @@
+import queue
+import gc
+from typing import TYPE_CHECKING, List, Optional, Tuple, Dict, Any
+
+import numpy
+import torch
+from PySide6.QtCore import QObject, QTimer
+
+from app.processors.workers.frame_worker import FrameWorker
+from app.helpers.typing_helper import ControlTypes, FacesParametersTypes
+
+if TYPE_CHECKING:
+    from app.ui.main_ui import MainWindow
+
+
+class WorkerPoolManager(QObject):
+    """
+    Encapsulates all Threading, Queue, and VRAM lifecycle management.
+
+    Responsibilities:
+    - Maintains the persistent pool of FrameWorkers for continuous video processing.
+    - Manages the single-frame asynchronous worker used for timeline scrubbing.
+    - Debounces rapid UI scrubbing requests via QTimer to prevent TensorRT context crashes.
+    - Strictly controls VRAM garbage collection (torch.cuda.empty_cache) upon thread termination.
+    """
+
+    def __init__(self, main_window: "MainWindow"):
+        super().__init__()
+        self.main_window = main_window
+
+        # --- Persistent Pool State (Video / Webcam) ---
+        # The Queue holds tasks: (frame_num, frame_rgb, params, control, bboxes, kpss_5, kpss, kpss_203)
+        self.frame_queue: queue.Queue[
+            Optional[
+                Tuple[
+                    int,
+                    numpy.ndarray,
+                    FacesParametersTypes,
+                    ControlTypes,
+                    numpy.ndarray,
+                    numpy.ndarray,
+                    numpy.ndarray,
+                    numpy.ndarray,
+                ]
+            ]
+        ] = queue.Queue()
+        self.worker_threads: List[FrameWorker] = []
+
+        # --- VRAM OPTIMIZATION: Shared Stream Pool ---
+        # Caps PyTorch memory allocations by sharing streams across workers.
+        self.worker_streams: List[torch.cuda.Stream] = []
+
+        # --- Single-Frame State (Scrubbing / Image processing) ---
+        self.current_single_frame_worker: Optional[FrameWorker] = None
+
+        # Generation tracking prevents out-of-order frames from updating the UI during fast scrubs
+        self.single_frame_request_generation: int = 0
+        self.active_single_frame_request_generation: int = 0
+        self.fit_on_single_frame_request_generation: Optional[int] = None
+
+        self.pending_single_frame_request: Optional[Dict[str, Any]] = None
+
+        # QTimer for debouncing fast slider movements
+        self.single_frame_handoff_timer = QTimer(self)
+        self.single_frame_handoff_timer.setInterval(15)
+        self.single_frame_handoff_timer.timeout.connect(
+            self._try_start_pending_single_frame_worker
+        )
+        # --- VRAM OPTIMIZATION: Debounced Idle Cleanup ---
+        self._single_frame_scrub_count: int = 0
+        self._vram_idle_cleanup_timer = QTimer(self)
+        self._vram_idle_cleanup_timer.setSingleShot(True)
+        self._vram_idle_cleanup_timer.setInterval(300)  # 300ms idle delay
+        self._vram_idle_cleanup_timer.timeout.connect(
+            self._perform_debounced_vram_cleanup
+        )
+
+    def recreate_queue(self, maxsize: int) -> None:
+        """
+        Safely recreates the frame queue with a new maximum size limit.
+        Used to bound RAM usage dynamically based on the number of threads.
+        """
+        with self.frame_queue.mutex:
+            self.frame_queue.queue.clear()
+            self.frame_queue.all_tasks_done.notify_all()
+            self.frame_queue.not_full.notify_all()
+        self.frame_queue = queue.Queue(maxsize=maxsize)
+
+    def start_persistent_pool(self, num_threads: int) -> None:
+        """Starts the persistent FrameWorker pool for continuous processing."""
+        print(
+            f"[INFO] WorkerPoolManager: Starting {num_threads} persistent worker thread(s)..."
+        )
+        self.worker_threads = []
+        streamcount: int = int(self.main_window.control.get("nStreamSlider", 1))
+
+        # --- Stream Pool Initialization ---
+        if torch.cuda.is_available():
+            self.worker_streams.clear()
+            # Streams are shared round-robin across workers. Fewer streams means less
+            # VRAM (each stream carries its own allocator pool) but more cross-worker
+            # waiting, because a stream sync waits on every worker sharing that stream.
+            #
+            # The default of 1 matches the pre-pool behaviour, where all workers ran on
+            # PyTorch's single global default stream. Raising it trades VRAM for less
+            # sync contention; a heavy 1080p workspace already reaches ~15 GB at 3
+            # streams, and high-resolution or VR work is far hungrier, so this is
+            # deliberately left to the user rather than scaled with thread count.
+            #
+            # Clamp to >= 1: min(num_threads, 0) would leave the pool empty, and the
+            # failsafe in FrameWorker.__init__ would then give every worker its own
+            # stream — the exact opposite of what a "0 streams" setting implies.
+            num_streams = max(1, min(num_threads, streamcount))
+            self.worker_streams = [torch.cuda.Stream() for _ in range(num_streams)]
+            print(
+                f"[INFO] WorkerPoolManager: Allocated {num_streams} shared CUDA stream(s) "
+                f"across {num_threads} worker(s)."
+            )
+
+        for i in range(num_threads):
+            # Distribute the streams evenly across the threads using modulo math.
+            # E.g., Thread 0->Stream 0, Thread 1->Stream 1, Thread 3->Stream 0.
+            assigned_stream = None
+            if self.worker_streams:
+                assigned_stream = self.worker_streams[i % len(self.worker_streams)]
+
+            worker = FrameWorker(
+                frame_queue=self.frame_queue,
+                main_window=self.main_window,
+                worker_id=i,
+                worker_stream=assigned_stream,  # Inject the stream into the worker
+            )
+            worker.start()
+            self.worker_threads.append(worker)
+
+    def join_and_clear_threads(self, clear_module_caches: bool = True) -> None:
+        """
+        Stops and waits for all pool worker threads to finish.
+        Sends poison pills to wake blocked workers and enforces strict VRAM cleanup.
+
+        Args:
+            clear_module_caches: If True, clears module-level VR caches. Set to False
+                                 during mid-job pool restarts to keep caches warm.
+        """
+        active_threads = self.worker_threads
+        if not active_threads:
+            return  # Nothing to do
+
+        print(
+            f"[INFO] WorkerPoolManager: Signaling {len(active_threads)} active worker(s) to stop..."
+        )
+
+        # 1. Set stop event for all workers in the pool
+        for thread in active_threads:
+            if hasattr(thread, "stop_event") and not thread.stop_event.is_set():
+                try:
+                    thread.stop_event.set()
+                except Exception as e:
+                    print(
+                        f"[WARN] Error setting stop_event on thread {thread.name}: {e}"
+                    )
+
+        # 2. Wake up any workers blocked on queue.get() by sending a "poison pill" (None).
+        # Clear the queue first so pills are never lost when the queue is full.
+        with self.frame_queue.mutex:
+            self.frame_queue.queue.clear()
+
+        for _ in active_threads:
+            try:
+                self.frame_queue.put(None, block=False)
+            except queue.Full:
+                pass
+            except Exception as e:
+                print(f"[WARN] Error putting poison pill in queue: {e}")
+
+        # 3. Join all threads safely
+        for thread in active_threads:
+            try:
+                if thread.is_alive():
+                    thread.join(timeout=2.0)
+                    if thread.is_alive():
+                        print(f"[WARN] Thread {thread.name} did not join gracefully.")
+            except Exception as e:
+                print(f"[WARN] Error joining thread {thread.name}: {e}")
+
+        # 4. Clear the worker list and streams
+        self.worker_threads.clear()
+        self.worker_streams.clear()
+
+        # 5. Strict VRAM Garbage Collection
+        # Release GPU memory held by the now-dead workers (kernel tensors, etc.).
+        gc.collect()
+        # PROTECTED: Only empty cache if CUDA is already awake.
+        # Calling empty_cache() on an asleep GPU forces a 2GB context initialization.
+        if torch.cuda.is_available() and torch.cuda.is_initialized():
+            torch.cuda.empty_cache()
+
+        # 6. Release module-level VR caches (Prevents RAM memory leak across jobs)
+        if clear_module_caches:
+            try:
+                from app.processors.external.Equirec2Perspec_vr import clear_persp_cache
+                from app.processors.external.Perspec2Equirec_vr import clear_p2e_caches
+                from app.helpers.vr_utils import clear_feathered_mask_cache
+
+                clear_persp_cache()
+                clear_p2e_caches()
+                clear_feathered_mask_cache()
+            except Exception:
+                pass
+
+    def _trigger_smart_single_frame_gc(self) -> None:
+        """
+        Manages VRAM cleanup during timeline scrubbing without causing frame stutter.
+
+        - During active slider dragging: Postpones GC/empty_cache until scrubbing pauses for 300ms.
+        - Safety Valve: If continuous dragging exceeds 25 frames without a pause, triggers a cleanup
+          pass to prevent Out-Of-Memory (OOM) accumulation.
+        """
+        self._single_frame_scrub_count += 1
+
+        # Safety Valve: Force cleanup every 25 continuous scrubs if the user doesn't pause
+        if self._single_frame_scrub_count >= 25:
+            self._perform_debounced_vram_cleanup()
+        else:
+            # Debounce: Restart the 300ms idle timer
+            self._vram_idle_cleanup_timer.start(300)
+
+    def _perform_debounced_vram_cleanup(self) -> None:
+        """Executes full Python garbage collection and flushes the PyTorch CUDA memory cache."""
+        self._vram_idle_cleanup_timer.stop()
+        self._single_frame_scrub_count = 0
+        gc.collect()
+        if torch.cuda.is_available() and torch.cuda.is_initialized():
+            torch.cuda.empty_cache()
+
+    def _launch_async_single_frame_worker(
+        self, frame_number: int, frame: numpy.ndarray, generation: int
+    ) -> FrameWorker:
+        """Launches a one-shot worker explicitly for UI single-frame processing."""
+        worker = FrameWorker(
+            frame=frame,
+            main_window=self.main_window,
+            frame_number=frame_number,
+            frame_queue=None,
+            is_single_frame=True,
+            worker_id=-1,
+        )
+        worker.preview_generation = generation
+        self.current_single_frame_worker = worker
+        worker.start()
+        return worker
+
+    def _try_start_pending_single_frame_worker(self) -> None:
+        """Timer callback: Launches the pending frame if the previous worker has finished."""
+        if self.pending_single_frame_request is None:
+            self.single_frame_handoff_timer.stop()
+            return
+
+        current_worker = self.current_single_frame_worker
+        if current_worker is not None and current_worker.is_alive():
+            return  # Still busy, wait for the next timer tick
+
+        request = self.pending_single_frame_request
+        self.pending_single_frame_request = None
+        self.single_frame_handoff_timer.stop()
+
+        # Explicitly release references on the finished worker instance before dropping it
+        if current_worker is not None:
+            current_worker.frame = None
+            current_worker.parameters = {}
+
+        self.current_single_frame_worker = None
+
+        # Smart VRAM Management: Replace heavy synchronous GC with debounced idle cleanup
+        self._trigger_smart_single_frame_gc()
+
+        self._launch_async_single_frame_worker(
+            request["frame_number"],
+            request["frame"],
+            request["generation"],
+        )
+
+    def cancel_single_frame_preview_state(self) -> None:
+        """Immediately aborts any active or pending UI single-frame scrubs."""
+        self.single_frame_request_generation += 1
+        self.active_single_frame_request_generation = (
+            self.single_frame_request_generation
+        )
+        self.pending_single_frame_request = None
+        self.single_frame_handoff_timer.stop()
+        self.fit_on_single_frame_request_generation = None
+
+        worker = self.current_single_frame_worker
+        if worker is not None:
+            if worker.is_alive():
+                worker.stop_event.set()
+                worker.join(timeout=2.0)
+                if worker.is_alive():
+                    print("[WARN] Single-frame preview worker did not join gracefully.")
+                    self.current_single_frame_worker = None
+                    return
+            # Explicitly wipe heavy references to allow fast Python ref-count deletion
+            worker.frame = None
+            worker.parameters = {}
+
+        self.current_single_frame_worker = None
+
+        # Smart VRAM Management: Replace heavy synchronous GC with debounced idle cleanup
+        self._trigger_smart_single_frame_gc()
+
+    def start_single_frame_worker(
+        self,
+        frame_number: int,
+        frame: numpy.ndarray,
+        is_single_frame: bool = False,
+        synchronous: bool = False,
+        fit_on_complete: bool = False,
+    ) -> Optional[FrameWorker]:
+        """
+        Manages the execution of a single frame outside the main video pool.
+        Crucial for thread safety during fast UI scrubbing (debouncing).
+        """
+        # Stop any previous single-frame worker before starting a new one to prevent
+        # concurrent TensorRT inference crashes.
+        prev = self.current_single_frame_worker
+
+        if synchronous:
+            self.pending_single_frame_request = None
+            self.single_frame_handoff_timer.stop()
+            if prev is not None and prev.is_alive():
+                prev.stop_event.set()
+                prev.join()
+            self.current_single_frame_worker = None
+
+            worker = FrameWorker(
+                frame=frame,
+                main_window=self.main_window,
+                frame_number=frame_number,
+                frame_queue=None,
+                is_single_frame=is_single_frame,
+                worker_id=-1,
+            )
+
+            self.fit_on_single_frame_request_generation = 0 if fit_on_complete else None
+            worker.preview_generation = 0
+            worker.run()  # Blocking execution
+            return worker
+
+        else:
+            # Asynchronous Execution (Debounced)
+            self.single_frame_request_generation += 1
+            self.active_single_frame_request_generation = (
+                self.single_frame_request_generation
+            )
+
+            self.fit_on_single_frame_request_generation = (
+                self.single_frame_request_generation if fit_on_complete else None
+            )
+
+            request = {
+                "frame_number": frame_number,
+                "frame": frame,
+                "generation": self.single_frame_request_generation,
+            }
+
+            if prev is not None and prev.is_alive():
+                prev.stop_event.set()
+
+            self.pending_single_frame_request = request
+
+            # Dynamically fetch user-defined delay
+            frameworker_delay = max(
+                int(
+                    self.main_window.control.get("FrameWorkerDelayDecimalSlider", 0.3)
+                    * 1000
+                ),
+                15,
+            )
+            self.single_frame_handoff_timer.setInterval(frameworker_delay)
+            self.single_frame_handoff_timer.start()
+
+            return prev

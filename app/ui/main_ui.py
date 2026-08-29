@@ -13,6 +13,7 @@ from app.ui.widgets.actions import card_actions
 from app.ui.widgets.actions import target_videos_list_actions
 from app.ui.widgets.actions import layout_actions
 from app.ui.widgets.actions import video_control_actions
+from app.ui.widgets.actions.video_seek_actions import CompositeTimelineWidget
 from app.ui.widgets.actions import filter_actions
 from app.ui.widgets.actions import save_load_actions
 from app.ui.widgets.actions import list_view_actions
@@ -23,6 +24,7 @@ from app.ui.widgets.advanced_embedding_editor import EmbeddingGUI
 import app.ui.widgets.actions.control_actions as control_actions
 from app.processors.video_processor import VideoProcessor
 from app.processors.models_processor import ModelsProcessor
+from app.processors.utils import platform_support
 from app.processors.workers.function_worker import FunctionWorker
 from app.ui.widgets import widget_components
 from app.ui.widgets.event_filters import (
@@ -278,10 +280,37 @@ class MainWindow(QtWidgets.QMainWindow, Ui_MainWindow):
 
         video_control_actions.enable_zoom_and_pan(self, self.graphicsViewFrame)
 
+        # --- SWAP NATIVE SLIDER WITH COMPOSITE TIMELINE ---
+        timeline_layout = self.verticalLayout_timeline
+
+        index = timeline_layout.indexOf(self.videoSeekSlider)
+        timeline_layout.removeWidget(self.videoSeekSlider)
+        self.videoSeekSlider.deleteLater()
+
+        # 1. Instantiate the composite container
+        self.timelineContainer = CompositeTimelineWidget(self.scrollAreaWidgetContents)
+
+        # 2. Re-assign the global references so the rest of the app doesn't break
+        self.videoSeekSlider = self.timelineContainer.slider
+        self.thumbnailTrack = self.timelineContainer.thumbnail_track
+
+        self.videoSeekSlider.setObjectName("videoSeekSlider")
+        self.videoSeekSlider.setOrientation(QtCore.Qt.Orientation.Horizontal)
+
+        # 3. Expand the scroll area to fit both the slider and the 40px thumbnails
+        self.timelineScrollArea.setMinimumHeight(85)
+        self.timelineScrollArea.setMaximumHeight(85)
+
+        # 4. Insert the CONTAINER into the UI
+        timeline_layout.insertWidget(index, self.timelineContainer)
+
+        self.timelineContainer.setup(self)
+
         video_slider_event_filter = VideoSeekSliderEventFilter(
             self, self.videoSeekSlider
         )
         self.videoSeekSlider.installEventFilter(video_slider_event_filter)
+
         self.videoSeekSlider.valueChanged.connect(
             partial(video_control_actions.on_change_video_seek_slider, self)
         )
@@ -292,7 +321,6 @@ class MainWindow(QtWidgets.QMainWindow, Ui_MainWindow):
             partial(video_control_actions.on_slider_released, self)
         )
 
-        video_control_actions.set_up_video_seek_slider(self)
         video_control_actions.set_up_timeline_zoom(self)
 
         self.frameAdvanceButton.clicked.connect(
@@ -323,15 +351,82 @@ class MainWindow(QtWidgets.QMainWindow, Ui_MainWindow):
         )
         # Set up videoSeekLineEdit and add the event filter to handle changes
         video_control_actions.set_up_video_seek_line_edit(self)
-        self.videoTimeLineEdit = QtWidgets.QLineEdit(self.mediaLayout)
+
+        # 1. Create a strict container widget to prevent layout explosion
+        self.rightSideMediaWidget = QtWidgets.QWidget(self.mediaLayout)
+        self.rightSideMediaWidget.setMaximumHeight(85)
+
+        self.rightSideMediaLayout = QtWidgets.QVBoxLayout(self.rightSideMediaWidget)
+        self.rightSideMediaLayout.setContentsMargins(0, 0, 0, 0)
+        self.rightSideMediaLayout.setSpacing(2)
+        self.rightSideMediaLayout.setAlignment(QtCore.Qt.AlignmentFlag.AlignVCenter)
+
+        # Add descriptive label above the boxes
+        self.boxesLabel = QtWidgets.QLabel(
+            "Frame | Time | FPS", self.rightSideMediaWidget
+        )
+        self.boxesLabel.setAlignment(QtCore.Qt.AlignmentFlag.AlignCenter)
+        font = self.boxesLabel.font()
+        font.setPointSize(8)
+        self.boxesLabel.setFont(font)
+
+        self.boxesLayout = QtWidgets.QHBoxLayout()
+        self.boxesLayout.setContentsMargins(0, 0, 0, 0)
+        self.boxesLayout.setSpacing(4)
+
+        self.zoomLayout = QtWidgets.QHBoxLayout()
+        self.zoomLayout.setContentsMargins(0, 0, 0, 0)
+        self.zoomLayout.setSpacing(4)
+
+        # 2. Extract existing widgets from the native horizontal layout
+        self.horizontalLayoutMediaSlider.removeWidget(self.videoSeekLineEdit)
+        self.horizontalLayoutMediaSlider.removeWidget(self.zoomLabel)
+        self.horizontalLayoutMediaSlider.removeWidget(self.timelineZoomSlider)
+
+        # Reparent existing widgets so Qt doesn't complain about layout parenting
+        self.videoSeekLineEdit.setParent(self.rightSideMediaWidget)
+        self.zoomLabel.setParent(self.rightSideMediaWidget)
+        self.timelineZoomSlider.setParent(self.rightSideMediaWidget)
+
+        # 3. Instantiate the new LineEdits
+        self.videoTimeLineEdit = QtWidgets.QLineEdit(self.rightSideMediaWidget)
         self.videoTimeLineEdit.setObjectName("videoTimeLineEdit")
         self.videoTimeLineEdit.setReadOnly(True)
         self.videoTimeLineEdit.setFocusPolicy(QtCore.Qt.FocusPolicy.NoFocus)
         self.videoTimeLineEdit.setAlignment(QtCore.Qt.AlignmentFlag.AlignCenter)
         self.videoTimeLineEdit.setMaximumSize(QtCore.QSize(55, 16777215))
         self.videoTimeLineEdit.setToolTip("Current Time (mm:ss)")
-        self.horizontalLayoutMediaSlider.insertWidget(2, self.videoTimeLineEdit)
+
+        self.videoFpsLineEdit = QtWidgets.QLineEdit(self.rightSideMediaWidget)
+        self.videoFpsLineEdit.setObjectName("videoFpsLineEdit")
+        self.videoFpsLineEdit.setReadOnly(True)
+        self.videoFpsLineEdit.setFocusPolicy(QtCore.Qt.FocusPolicy.NoFocus)
+        self.videoFpsLineEdit.setAlignment(QtCore.Qt.AlignmentFlag.AlignCenter)
+        self.videoFpsLineEdit.setFixedWidth(56)
+        self.videoFpsLineEdit.setText("0/0")
+        self.videoFpsLineEdit.setToolTip("Source video FPS / measured playback FPS")
+
+        # 4. Populate the sub-layouts
+        self.boxesLayout.addWidget(self.videoSeekLineEdit)
+        self.boxesLayout.addWidget(self.videoTimeLineEdit)
+        self.boxesLayout.addWidget(self.videoFpsLineEdit)
+
+        self.zoomLayout.addWidget(self.zoomLabel)
+        self.zoomLayout.addWidget(self.timelineZoomSlider)
+
+        # 5. Assemble the right side container
+        self.rightSideMediaLayout.addWidget(self.boxesLabel)
+        self.rightSideMediaLayout.addLayout(self.boxesLayout)
+        self.rightSideMediaLayout.addLayout(self.zoomLayout)
+
+        # 6. Insert the safe container back into the UI next to the timeline
+        self.horizontalLayoutMediaSlider.addWidget(self.rightSideMediaWidget)
+
         video_control_actions.update_video_time_line_edit(self, 0)
+
+        # Restore the zoom slider to standard width since it now has its own row
+        self.timelineZoomSlider.setFixedWidth(100)
+
         video_seek_line_edit_event_filter = videoSeekSliderLineEditEventFilter(
             self, self.videoSeekLineEdit
         )
@@ -393,7 +488,7 @@ class MainWindow(QtWidgets.QMainWindow, Ui_MainWindow):
             partial(video_control_actions.process_batch_images, self, True)
         )
         self.clearMemoryButton.clicked.connect(
-            partial(common_widget_actions.clear_gpu_memory, self)
+            partial(control_actions.clear_gpu_memory, self)
         )
 
         QtCore.QTimer.singleShot(0, self._configure_faces_panel_button_column)
@@ -430,6 +525,20 @@ class MainWindow(QtWidgets.QMainWindow, Ui_MainWindow):
             data_type="control",
             section_namespace="denoiser",
         )
+
+        # --- INJECT PURGE KV MAP STORAGE BUTTON ---
+        self.purgeKVMapsButton = QtWidgets.QPushButton("Purge Unused K/V Maps", self)
+        self.purgeKVMapsButton.setToolTip(
+            "Scans the registry and safely deletes orphaned K/V map tensors to free up disk space."
+        )
+        self.purgeKVMapsButton.setIcon(
+            self.style().standardIcon(QtWidgets.QStyle.StandardPixmap.SP_TrashIcon)
+        )
+        self.denoiserWidgetsLayout.addWidget(self.purgeKVMapsButton)
+        self.purgeKVMapsButton.clicked.connect(
+            partial(save_load_actions.purge_unused_kv_maps, self)
+        )
+
         layout_actions.add_widgets_to_tab_layout(
             self,
             LAYOUT_DATA=SWAPPER_LAYOUT_DATA,
@@ -656,12 +765,13 @@ class MainWindow(QtWidgets.QMainWindow, Ui_MainWindow):
 
         # Filters: the button now toggles the filter row instead of opening a menu
         self.targetVideosFilterMenuButton.setCheckable(True)
-        self.targetVideosFilterMenuButton.setChecked(True)
+        self.targetVideosFilterMenuButton.setChecked(False)
         self.targetVideosFilterMenuButton.clicked.connect(
             partial(
                 target_videos_list_actions.toggle_target_video_filters_sorting, self
             )
         )
+        target_videos_list_actions.toggle_target_video_filters_sorting(self)
 
         for checkbox in (
             self.targetVideosFilterImagesCheckBox,
@@ -1049,14 +1159,26 @@ class MainWindow(QtWidgets.QMainWindow, Ui_MainWindow):
                 load_dialog.exec_()
         else:
             # First launch or no workspace: Prompt for execution provider
-            options = ["CUDA", "TensorRT", "TensorRT-Engine", "CPU"]
+            options = platform_support.available_execution_providers()
+            default_index = options.index(platform_support.default_execution_provider())
+
+            prompt = (
+                "No previous workspace found.\n\n"
+                "Please select your preferred execution provider."
+            )
+            # The TensorRT warning only makes sense where TensorRT is an option.
+            if any(o.startswith("TensorRT") for o in options):
+                prompt += (
+                    "\n(Select 'CUDA' or 'CPU' to avoid generating TensorRT "
+                    "engines on this launch):"
+                )
 
             provider, ok = QtWidgets.QInputDialog.getItem(
                 self,
                 "Initial Setup: Execution Provider",
-                "No previous workspace found.\n\nPlease select your preferred execution provider.\n(Select 'CUDA' or 'CPU' to avoid generating TensorRT engines on this launch):",
+                prompt,
                 options,
-                1,  # Default index (1 = TensorRT)
+                default_index,
                 False,  # Non-editable dropdown
             )
 

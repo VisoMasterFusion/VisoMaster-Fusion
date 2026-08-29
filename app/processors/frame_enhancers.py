@@ -89,26 +89,13 @@ class FrameEnhancers:
             )
 
         try:
-            # PRE-INFERENCE SYNC
-            if self.models_processor.device_type == "cuda":
-                torch.cuda.current_stream().synchronize()
-            elif self.models_processor.device_type != "cpu":
-                if hasattr(self.models_processor, "syncvec"):
-                    self.models_processor.syncvec.cpu()
-
-            ort_session.run_with_iobinding(io_binding)
-
-            # POST-INFERENCE SYNC
-            if self.models_processor.device_type == "cuda":
-                torch.cuda.current_stream().synchronize()
-            elif self.models_processor.device_type != "cpu":
-                if hasattr(self.models_processor, "syncvec"):
-                    self.models_processor.syncvec.cpu()
+            self.function_worker.run_ort_with_iobinding(ort_session, io_binding)
         finally:
             # Always hide the dialog, even if the run fails
             if is_lazy_build:
                 self.models_processor.hide_build_dialog.emit()
 
+    @torch.no_grad()
     def run_enhance_frame_tile_process(
         self,
         img: torch.Tensor,
@@ -191,37 +178,37 @@ class FrameEnhancers:
             device=self.models_processor.device,
         ).contiguous()
 
-        with torch.no_grad():  # Disable gradient calculation for inference
-            # Process tiles
-            for j in range(tiles_y):
-                for i in range(tiles_x):
-                    x_start, y_start = i * tile_size, j * tile_size
-                    x_end, y_end = x_start + tile_size, y_start + tile_size
+        # Process tiles
+        for j in range(tiles_y):
+            for i in range(tiles_x):
+                x_start, y_start = i * tile_size, j * tile_size
+                x_end, y_end = x_start + tile_size, y_start + tile_size
 
-                    # Extract the input tile
-                    input_tile = img[:, :, y_start:y_end, x_start:x_end].contiguous()
+                # Extract the input tile
+                input_tile = img[:, :, y_start:y_end, x_start:x_end].contiguous()
 
-                    # Run the selected upscaler function into the pre-allocated tile
-                    fn_upscaler(input_tile, output_tile)
+                # Run the selected upscaler function into the pre-allocated tile
+                fn_upscaler(input_tile, output_tile)
 
-                    # --- 4. Reassemble Output ---
-                    # Calculate coordinates to place the output tile in the main output tensor
-                    output_y_start, output_x_start = y_start * scale, x_start * scale
-                    output_y_end, output_x_end = (
-                        output_y_start + output_tile.shape[2],
-                        output_x_start + output_tile.shape[3],
-                    )
-                    # Place the processed tile into the output tensor
-                    output[
-                        :, :, output_y_start:output_y_end, output_x_start:output_x_end
-                    ] = output_tile
+                # --- 4. Reassemble Output ---
+                # Calculate coordinates to place the output tile in the main output tensor
+                output_y_start, output_x_start = y_start * scale, x_start * scale
+                output_y_end, output_x_end = (
+                    output_y_start + output_tile.shape[2],
+                    output_x_start + output_tile.shape[3],
+                )
+                # Place the processed tile into the output tensor
+                output[
+                    :, :, output_y_start:output_y_end, output_x_start:output_x_end
+                ] = output_tile
 
-            # Crop the final output to remove the padding that was added
-            if pad_right != 0 or pad_bottom != 0:
-                output = v2.functional.crop(output, 0, 0, height * scale, width * scale)
+        # Crop the final output to remove the padding that was added
+        if pad_right != 0 or pad_bottom != 0:
+            output = v2.functional.crop(output, 0, 0, height * scale, width * scale)
 
         return output
 
+    @torch.no_grad()
     def _run_enhancer_model(
         self, model_name: str, image: torch.Tensor, output: torch.Tensor
     ) -> None:
@@ -425,6 +412,7 @@ class FrameEnhancers:
         """
         self._run_enhancer_model("DDcolor", image, output)
 
+    @torch.no_grad()
     def enhance_core(self, img: torch.Tensor, control: dict[str, Any]) -> torch.Tensor:
         enhancer_type = control["FrameEnhancerTypeSelection"]
 

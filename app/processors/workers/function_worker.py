@@ -1,7 +1,10 @@
-from typing import TYPE_CHECKING, Any, Dict, List, Optional, Tuple
+from contextlib import contextmanager
+from typing import TYPE_CHECKING, Any, Dict, Iterator, List, Optional, Tuple
 
 import numpy as np
 import torch
+import threading
+
 
 # --- Internal Sub-Processor Imports ---
 from app.processors.face_detectors import FaceDetectors
@@ -16,6 +19,7 @@ from app.processors.perform_recast import PerformRecast
 from app.processors.face_denoiser import FaceDenoiser
 from app.processors.frame_edits import FrameEdits
 from app.processors.models_data import arcface_mapping_model_dict
+from app.processors.utils import platform_support
 
 if TYPE_CHECKING:
     from app.processors.models_processor import ModelsProcessor
@@ -41,6 +45,16 @@ class FunctionWorker:
         """
         self.mp = models_processor
 
+        # --- Granular Locking ---
+        self._session_locks: dict[int, threading.RLock] = {}
+        self._session_locks_mutex = threading.Lock()
+
+        # GFPGAN runs exclusively; all other ORT sessions may run concurrently.
+        self._ort_gate_condition = threading.Condition()
+        self._ort_gate_readers = 0
+        self._ort_gate_writer_active = False
+        self._ort_gate_writers_waiting = 0
+
         # Initialize Sub-Processors centrally.
         # We pass `self.mp` for VRAM management, and `self` so they can route calls through this Facade.
         self.face_detectors = FaceDetectors(self.mp, self)
@@ -54,6 +68,72 @@ class FunctionWorker:
         self.perform_recast = PerformRecast(self.mp, self)
         self.face_denoiser = FaceDenoiser(self.mp, self)
         self.frame_edits = FrameEdits(self.mp, self)
+
+    def _get_session_lock(self, session: Any) -> threading.RLock:
+        """Retrieves or creates a dedicated lock for a specific ORT Session."""
+        session_id = id(session)
+        with self._session_locks_mutex:
+            if session_id not in self._session_locks:
+                self._session_locks[session_id] = threading.RLock()
+            return self._session_locks[session_id]
+
+    @contextmanager
+    def _ort_inference_gate(self, exclusive: bool) -> Iterator[None]:
+        if exclusive:
+            with self._ort_gate_condition:
+                self._ort_gate_writers_waiting += 1
+                try:
+                    while self._ort_gate_writer_active or self._ort_gate_readers:
+                        self._ort_gate_condition.wait()
+                    self._ort_gate_writer_active = True
+                finally:
+                    self._ort_gate_writers_waiting -= 1
+                    self._ort_gate_condition.notify_all()
+        else:
+            with self._ort_gate_condition:
+                while (
+                    self._ort_gate_writer_active or self._ort_gate_writers_waiting > 0
+                ):
+                    self._ort_gate_condition.wait()
+                self._ort_gate_readers += 1
+
+        try:
+            yield
+        finally:
+            with self._ort_gate_condition:
+                if exclusive:
+                    self._ort_gate_writer_active = False
+                else:
+                    self._ort_gate_readers -= 1
+                self._ort_gate_condition.notify_all()
+
+    def run_ort_with_iobinding(self, session: Any, io_binding: Any) -> None:
+        """Serialize each session and isolate GFPGAN from other ORT inference."""
+        session_lock = self._get_session_lock(session)
+
+        # 1. PRE-INFERENCE SYNC (Outside the lock)
+        # Ensure PyTorch has finished writing inputs to the GPU on the isolated worker_stream.
+        # This occurs outside the lock so other threads aren't blocked during tensor prep.
+        if self.mp.device_type == "cuda":
+            platform_support.blocking_stream_sync()
+        elif self.mp.device_type != "cpu":
+            self.mp.syncvec.cpu()
+
+        exclusive = self.mp.models.get("GFPGANv1.4") is session
+
+        # 2. Keep GFPGAN isolated from every other ORT/TensorRT inference.
+        with self._ort_inference_gate(exclusive):
+            # 3. INFERENCE AND CORRECT POST-SYNC (Inside the session lock)
+            with session_lock:
+                # Execute ONNX Runtime / TensorRT.
+                session.run_with_iobinding(io_binding)
+
+                # 4. POST-INFERENCE SYNC (MUST BE INSIDE BOTH LOCKS)
+                # We use ORT's native synchronization instead of PyTorch's stream sync.
+                # PyTorch stream sync does not order ORT's internal stream.
+                # This guarantees ORT is completely finished writing the pre-allocated output tensors
+                # before we release the locks to the next worker thread.
+                io_binding.synchronize_outputs()
 
     # --- Models Unloaders ---
 
@@ -107,6 +187,18 @@ class FunctionWorker:
         print("[INFO] Clearing GPU Memory: Unloading all models...")
         # 1. Stop processing to ensure no workers try to access models during unload
         self.mp.main_window.video_processor.stop_processing()
+
+        # --- Clear Global Target Face KV Caches ---
+        # The Denoiser generates massive PyTorch KV cache tensors per face.
+        # Because they are attached to the global UI target_faces dictionary,
+        # they permanently survive "Clear VRAM" unless explicitly deleted here.
+        try:
+            for target_face in self.mp.main_window.target_faces.values():
+                target_face.assigned_kv_map = None
+                if hasattr(target_face, "aged_kv_map"):
+                    target_face.aged_kv_map = None
+        except Exception as e:
+            print(f"[WARN] Could not clear target face KV caches: {e}")
 
         # 2. Bypass KeepModelsAliveToggle
         self.mp.force_unload_in_progress = True
@@ -273,6 +365,21 @@ class FunctionWorker:
     ) -> None:
         self.face_swappers.run_inswapper_batched(images, embedding, output)
 
+    def calc_swapper_latent_alphaface(
+        self, source_embedding: np.ndarray
+    ) -> np.ndarray | None:
+        return self.face_swappers.calc_swapper_latent_alphaface(source_embedding)
+
+    def run_swapper_alphaface(
+        self, image: torch.Tensor, embedding: torch.Tensor, output: torch.Tensor
+    ) -> None:
+        self.face_swappers.run_swapper_alphaface(image, embedding, output)
+
+    def run_swapper_alphaface_batched(
+        self, images: torch.Tensor, embedding: torch.Tensor, output: torch.Tensor
+    ) -> None:
+        self.face_swappers.run_swapper_alphaface_batched(images, embedding, output)
+
     def calc_swapper_latent_iss(
         self, source_embedding: np.ndarray, version: str = "A"
     ) -> np.ndarray:
@@ -413,6 +520,11 @@ class FunctionWorker:
         return self.face_editors.lp_warp_decode(
             feature_3d, kp_source, kp_driving, face_editor_type
         )
+
+    def apply_face_shaping_gpu(
+        self, img: torch.Tensor, kps: np.ndarray, parameters: dict
+    ) -> torch.Tensor:
+        return self.frame_edits.apply_face_shaping_gpu(img, kps, parameters)
 
     # --- PerformRecast Wrappers ---
 

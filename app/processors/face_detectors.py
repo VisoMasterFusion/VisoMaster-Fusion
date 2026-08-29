@@ -451,9 +451,14 @@ class FaceDetectors:
                     landmark_kpss if len(landmark_kpss) > 0 else kpss_5[i]
                 )
                 # If the new landmarks have a higher confidence, replace the old 5-point landmarks.
+                # '478' and 'orformer98' bypass the comparison because their "scores"
+                # are not detection confidences ('478' returns blendshapes;
+                # 'orformer98' returns visibility derived from an uncalibrated blend
+                # weight that sits near 0.5 on clean faces). Comparing either against
+                # the detector's confidence would throw away good refined keypoints.
                 if len(landmark_kpss_5) > 0:
                     if (
-                        landmark_detect_mode == "478"
+                        landmark_detect_mode in ("478", "orformer98")
                         or len(landmark_scores) == 0
                         or np.mean(landmark_scores) > np.mean(score_values[i])
                     ):
@@ -485,31 +490,16 @@ class FaceDetectors:
             )
 
         try:
-            # PRE-INFERENCE SYNC: Ensure PyTorch has finished preparing the memory
-            # before ONNX Runtime starts reading from the IOBinding pointers.
-            if self.models_processor.device_type == "cuda":
-                torch.cuda.current_stream().synchronize()
-            elif self.models_processor.device_type != "cpu":
-                self.models_processor.syncvec.cpu()
-
-            ort_session.run_with_iobinding(io_binding)
-
-            # POST-INFERENCE SYNC : Ensure the GPU has completed all
-            # calculations before ONNX Runtime attempts to copy the result back to CPU RAM.
-            # Without this, copy_outputs_to_cpu() might grab an incomplete tensor.
-            if self.models_processor.device_type == "cuda":
-                torch.cuda.current_stream().synchronize()
-            elif self.models_processor.device_type != "cpu":
-                self.models_processor.syncvec.cpu()
+            self.function_worker.run_ort_with_iobinding(ort_session, io_binding)
 
             net_outs = io_binding.copy_outputs_to_cpu()
-
         finally:
             if is_lazy_build:
                 self.models_processor.hide_build_dialog.emit()
 
         return net_outs
 
+    @torch.no_grad()
     def run_detect(
         self,
         img: torch.Tensor,

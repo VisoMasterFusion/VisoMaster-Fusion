@@ -14,10 +14,15 @@ os.makedirs(refldm_ckpts_path, exist_ok=True)
 # ONNX files. Creating them here makes the destinations exist regardless of how
 # the models arrive (download vs. copy-in). The downloader also makes parent
 # dirs on demand, so this is belt-and-suspenders.
-for _subfolder in ("liveportrait_onnx", "performrecast_onnx"):
+for _subfolder in ("alphaface", "liveportrait_onnx", "performrecast_onnx"):
     os.makedirs(models_dir / _subfolder, exist_ok=True)
 
 assets_repo = "https://github.com/visomaster/visomaster-assets/releases/download"
+alphaface_repo = (
+    "https://github.com/kodek4/VisoMaster-Fusion/releases/download/alphaface-model-v1"
+)
+tufa_repo = "https://github.com/Glat0s/TUFA-onnx/releases/download/v0.0.1"
+orformer_repo = "https://github.com/Glat0s/ORFormer-onnx/releases/download/v0.0.1"
 
 ARCFACE_DST = np.array(
     [
@@ -192,6 +197,7 @@ LANDMARKS_SUBSET_IDXS = [
 
 arcface_mapping_model_dict = {
     "Inswapper128": "Inswapper128ArcFace",
+    "AlphaFace": "Inswapper128ArcFace",
     "InStyleSwapper256 Version A": "Inswapper128ArcFace",
     "InStyleSwapper256 Version B": "Inswapper128ArcFace",
     "InStyleSwapper256 Version C": "Inswapper128ArcFace",
@@ -218,8 +224,46 @@ landmark_model_mapping = {
     "106": "FaceLandmark106",
     "203": "FaceLandmark203",
     "478": "FaceLandmark478",
+    # Both emit the 98-point WFLW topology, so they reuse
+    # faceutil.convert_face_landmark_98_to_5 unchanged.
+    "tufa98": "FaceLandmarkTUFA98",
+    "orformer98": "FaceLandmarkORFormer98",
+    # TUFA's own dense 314-point set — not a dataset topology, hence its own
+    # converter (faceutil.convert_face_landmark_314_to_5).
+    "tufa314": "FaceLandmarkTUFA314",
 }
 
+# Point count per landmark_model_mapping key. The mode string used to double as the
+# count ("98", "203", ...); the named modes broke that, so callers that need a count
+# (e.g. building a zero placeholder for a failed detection) look it up here.
+landmark_point_counts = {
+    "5": 5,
+    "68": 68,
+    "3d68": 68,
+    "98": 98,
+    "106": 106,
+    "203": 203,
+    "478": 478,
+    "tufa98": 98,
+    "orformer98": 98,
+    "tufa314": 314,
+}
+
+# Models listed here get trt_fp16_enable=True on the TensorRT EP.
+#
+# DO NOT add FaceLandmarkTUFA98, FaceLandmarkTUFA314 or FaceLandmarkORFormer98. All
+# were measured under the exact options in ModelsProcessor.trt_ep_options and all fail
+# in fp16:
+#   * TUFA fails SILENTLY — the fp16 engine builds and runs 1.9x faster (2.09 vs
+#     3.89 ms) while emitting ~69 px of error on a 256 px crop. That is garbage, not
+#     precision loss; reproduced twice with byte-identical output.
+#     trt_layer_norm_fp32_fallback is already on and does not help. The 314-point
+#     export is the same graph with a longer prompt constant, so it inherits this.
+#   * ORFormer fails LOUDLY — the fp16 build never produces an engine. All three
+#     isolated probe attempts died natively (0xC0000005 access violation x2,
+#     0xC000041D x1). Its fp32 build succeeds first try in ~97 s.
+# In fp32 both are fast enough (3.9 ms and 5.9 ms per face on an RTX 4090).
+# See onnx-export-notes.md in the repo root for the full measurements.
 fp16_safe_models_list = [
     # --- LivePortrait ---
     "LivePortraitAppearanceFeatureExtractor",
@@ -276,6 +320,7 @@ fp16_safe_models_list = [
     # --- Texture ---
     "combo_relu3_3_relu3_1",
     # --- Swappers ---
+    "AlphaFace",
     "InStyleSwapper256 Version A",
     "InStyleSwapper256 Version B",
     "InStyleSwapper256 Version C",
@@ -290,8 +335,20 @@ fp16_safe_models_list = [
 # abort with "has no shape specified. Please run shape inference on the onnx
 # model first." The loader transparently builds a cached, shape-inferred sidecar
 # (``*.trtshape.onnx``) for these models. See ModelsProcessor._ensure_trt_ready_onnx.
+#
+# AlphaFace needs it for a different reason. Its graph ships with no value_info
+# at all (0 of 709 tensors annotated), and torch.onnx.export emitted the output
+# as ``[Divoutput_dim_0, 3, Divoutput_dim_0, Divoutput_dim_3]`` — reusing a
+# single dim_param for both the batch axis and the 256px height axis, which in
+# ONNX declares those two axes equal. Without shape inference the engine build
+# hangs/crashes hard enough to take the display driver with it; with it the
+# output resolves to a static [1, 3, 256, 256], all 709 tensors get shapes, and
+# the FP16 engine builds in ~35 s using ~2.4 GiB. The reflect-pad Shape/Gather
+# chains PyTorch generates are what defeat plain inference here, so the symbolic
+# pass is required.
 tensorrt_shape_infer_models = [
     "PerformRecastWarpingModule",
+    "AlphaFace",
 ]
 
 models_list = [
@@ -300,6 +357,13 @@ models_list = [
         "local_path": f"{models_dir}/inswapper_128.fp16.onnx",
         "hash": "6d51a9278a1f650cffefc18ba53f38bf2769bf4bbff89267822cf72945f8a38b",
         "url": f"{assets_repo}/v0.1.0/inswapper_128.fp16.onnx",
+    },
+    {
+        # FP32 graph; the TensorRT EP casts it to FP16 via fp16_safe_models_list.
+        "model_name": "AlphaFace",
+        "local_path": f"{models_dir}/alphaface/alphaface_swapper_fused_norm.onnx",
+        "hash": "5514d967ab6cc27e1b0edc092e05ee97d235adccb4da68574a9b1a1e221a4c6a",
+        "url": f"{alphaface_repo}/alphaface_swapper_fused_norm.onnx",
     },
     {
         "model_name": "InStyleSwapper256 Version A",
@@ -432,6 +496,51 @@ models_list = [
         "local_path": f"{models_dir}/face_landmarks_detector_Nx3x256x256.onnx",
         "hash": "6d7932bdefc38871f57dd915b8c723d855e599f29cf4cdf19616fb35d0ed572e",
         "url": f"{assets_repo}/v0.1.0/face_landmarks_detector_Nx3x256x256.onnx",
+    },
+    {
+        # TUFA (IJCV 2025), 98-point WFLW topology. ViT-S/8 + DETR-style decoder with
+        # the structure prompt baked in as a constant. Best published WFLW pose-subset
+        # NME of the models evaluated (6.48 vs STAR's 6.79).
+        # Input: RGB float32 [0,1], NCHW 1x3x256x256 (ImageNet normalisation is inside
+        # the graph). Output "landmarks" (1,98,2) is NORMALISED — multiply by 256.
+        # NOT fp16-safe: see the note above fp16_safe_models_list.
+        "model_name": "FaceLandmarkTUFA98",
+        "local_path": f"{models_dir}/tufa_vits8_256_98pt.onnx",
+        "hash": "cf8fab1d1e748b3a4b9f7e8421620659b0219d4c6a69792438086c6d610e52cc",
+        "url": f"{tufa_repo}/tufa_vits8_256_98pt.onnx",
+    },
+    {
+        # Same TUFA weights as above, exported with the 314-point structure prompt
+        # (Prompt/shape_314.npz in the export fork) frozen into the graph. TUFA queries
+        # a point by its anchor position in a canonical mean face, so one checkpoint
+        # serves any topology; the ViT-S/8 encoder dominates the cost and the extra
+        # decoder queries are essentially free (measured identical to the 98-point
+        # graph, CUDA EP fp32).
+        # This 314-point set is TUFA's own dense definition, NOT a dataset topology:
+        # anchors 0..311 are a dense sampling of the facial regions ordered by x in the
+        # canonical face, with the two pupil anchors appended at 312/313. 20 of the 98
+        # WFLW anchors appear in it verbatim, which is where the 5-point indices in
+        # faceutil.convert_face_landmark_314_to_5 come from.
+        # Input: RGB float32 [0,1], NCHW 1x3x256x256 (ImageNet normalisation is inside
+        # the graph). Output "landmarks" (1,314,2) is NORMALISED — multiply by 256.
+        # NOT fp16-safe: see the note above fp16_safe_models_list.
+        "model_name": "FaceLandmarkTUFA314",
+        "local_path": f"{models_dir}/tufa_vits8_256_314pt.onnx",
+        "hash": "0e848e4e1a8ce18404f9c42bc83ecd08c048ffda16d061dd7f21e98c967f971c",
+        "url": f"{tufa_repo}/tufa_vits8_256_314pt.onnx",
+    },
+    {
+        # ORFormer (WACV 2025 oral), 98-point WFLW topology. The upstream two-stage
+        # pipeline (VQ-VAE+ORFormer heatmap generator at 64px, then StackedHGNet at
+        # 256px) is fused into one graph, so the 64px downscale happens internally.
+        # Input: RGB float32 [0,1], NCHW 1x3x256x256.
+        # Outputs: "landmarks" (1,98,2) already in 256-crop PIXELS, and "occlusion"
+        # (1,1,16,16) — a per-patch non-visibility score no other landmark model here
+        # provides. NOT fp16-safe: see the note above fp16_safe_models_list.
+        "model_name": "FaceLandmarkORFormer98",
+        "local_path": f"{models_dir}/orformer_hgnet_wflw_98pt_256.onnx",
+        "hash": "219835e107a44cebf73ce3b8d592b0ed8e2f25400bee918e8fccab36fbb43f1b",
+        "url": f"{orformer_repo}/orformer_hgnet_wflw_98pt_256.onnx",
     },
     {
         "model_name": "FaceBlendShapes",

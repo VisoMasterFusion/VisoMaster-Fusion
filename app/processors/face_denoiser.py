@@ -15,6 +15,7 @@ if TYPE_CHECKING:
     from PIL import Image
 
 from app.processors.utils import faceutil
+from app.processors.utils import platform_support
 from app.helpers.miscellaneous import is_file_exists
 from app.helpers.downloader import download_file
 from app.processors.utils.ref_ldm_kv_embedding import KVExtractor
@@ -223,6 +224,7 @@ class FaceDenoiser:
             self.models_processor.unload_model("RefLDMVAEEncoder")
             self.models_processor.unload_model("RefLDMVAEDecoder")
 
+    @torch.no_grad()
     def get_kv_map_for_face(
         self,
         image: Union["Image.Image", torch.Tensor],
@@ -348,6 +350,7 @@ class FaceDenoiser:
                 if torch.cuda.is_available():
                     torch.cuda.empty_cache()
 
+    @torch.no_grad()
     def apply_denoiser_unet(
         self,
         image_cxhxw_uint8: torch.Tensor,
@@ -536,7 +539,7 @@ class FaceDenoiser:
             ).contiguous()
 
             if torch.cuda.is_available():
-                torch.cuda.current_stream().synchronize()
+                platform_support.blocking_stream_sync()
 
             self.function_worker.run_ref_ldm_unet(
                 x_noisy_plus_lq_latent=unet_input_16_channel,
@@ -589,6 +592,16 @@ class FaceDenoiser:
                 torch.clamp(1.0 - ddim_alphas, min=0.0)
             )
 
+            # --- OPTIMIZATION: Pre-view schedule tensors for O(1) direct indexing ---
+            # We reshape to (N, 1, 1, 1) so PyTorch automatically broadcasts to (1, 8, H, W)
+            view_shape = (-1, 1, 1, 1)
+            ddim_alphas_view = ddim_alphas.view(view_shape)
+            ddim_alphas_prev_view = ddim_alphas_prev.view(view_shape)
+            ddim_sigmas_view = ddim_sigmas.view(view_shape)
+            ddim_sqrt_one_minus_alphas_view = ddim_sqrt_one_minus_alphas.view(
+                view_shape
+            )
+
             current_latent_xt_scaled = torch.randn(
                 lq_latent_x0_scaled_for_unet.shape,
                 device=self.models_processor.device,
@@ -602,9 +615,6 @@ class FaceDenoiser:
 
             ts_unet = torch.empty(
                 (1,), dtype=torch.int64, device=self.models_processor.device
-            )
-            schedule_idx_tensor = torch.empty(
-                (1,), dtype=torch.long, device=self.models_processor.device
             )
             e_t_cond = torch.empty_like(lq_latent_x0_scaled_for_unet)
             e_t_uncond = (
@@ -628,14 +638,12 @@ class FaceDenoiser:
                 index_for_schedules = total_steps - 1 - i
 
                 ts_unet.fill_(step_ddpm_idx)
-                schedule_idx_tensor.fill_(index_for_schedules)
 
                 # Update only the dynamic noisy channels (0-7) in-place.
-                # No more torch.cat memory fragmentation inside the loop.
                 unet_input_16_channel[:, :8] = current_latent_xt_scaled
 
                 if torch.cuda.is_available():
-                    torch.cuda.current_stream().synchronize()
+                    platform_support.blocking_stream_sync()
 
                 self.function_worker.run_ref_ldm_unet(
                     x_noisy_plus_lq_latent=unet_input_16_channel,
@@ -648,10 +656,9 @@ class FaceDenoiser:
 
                 if denoiser_cfg_scale != 1.0:
                     if torch.cuda.is_available():
-                        torch.cuda.current_stream().synchronize()
+                        platform_support.blocking_stream_sync()
 
                     # We re-use unet_input_16_channel directly.
-                    # It contains the exact same data needed for the uncond pass.
                     self.function_worker.run_ref_ldm_unet(
                         x_noisy_plus_lq_latent=unet_input_16_channel,
                         timesteps_tensor=ts_unet,
@@ -661,7 +668,6 @@ class FaceDenoiser:
                         output_unet_tensor=e_t_uncond,
                     )
                     # In-place CFG math to save memory overhead
-                    # Formula: e_t = e_t_uncond + denoiser_cfg_scale * (e_t_cond - e_t_uncond)
                     e_t = (
                         e_t_cond.sub_(e_t_uncond)
                         .mul_(denoiser_cfg_scale)
@@ -670,22 +676,13 @@ class FaceDenoiser:
                 else:
                     e_t = e_t_cond
 
-                a_t = self.extract_into_tensor_torch(
-                    ddim_alphas, schedule_idx_tensor, current_latent_xt_scaled.shape
-                )
-                a_prev = self.extract_into_tensor_torch(
-                    ddim_alphas_prev,
-                    schedule_idx_tensor,
-                    current_latent_xt_scaled.shape,
-                )
-                sigma_t = self.extract_into_tensor_torch(
-                    ddim_sigmas, schedule_idx_tensor, current_latent_xt_scaled.shape
-                )
-                sqrt_one_minus_a_t = self.extract_into_tensor_torch(
-                    ddim_sqrt_one_minus_alphas,
-                    schedule_idx_tensor,
-                    current_latent_xt_scaled.shape,
-                )
+                # --- OPTIMIZATION: Direct indexing replaces extract_into_tensor_torch ---
+                a_t = ddim_alphas_view[index_for_schedules]
+                a_prev = ddim_alphas_prev_view[index_for_schedules]
+                sigma_t = ddim_sigmas_view[index_for_schedules]
+                sqrt_one_minus_a_t = ddim_sqrt_one_minus_alphas_view[
+                    index_for_schedules
+                ]
 
                 pred_x0_scaled_current_step = (
                     current_latent_xt_scaled - sqrt_one_minus_a_t * e_t

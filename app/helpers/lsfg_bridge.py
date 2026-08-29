@@ -52,15 +52,14 @@ class LosslessScalingBridge:
             os.environ.get("ProgramFiles(x86)"),
             os.environ.get("LOCALAPPDATA"),
         )
-        for root in env_roots:
-            if root:
-                yield Path(root)
+        base_roots = [Path(root) for root in env_roots if root]
+        yield from base_roots
 
-        # Common Steam library locations. The recursive scan is intentionally
-        # limited to the library root rather than the entire system drive.
-        for root in LosslessScalingBridge._candidate_roots():
-            yield root / "Steam" / "steamapps" / "common" / "Lossless Scaling"
-            yield root / "Steam" / "steamapps" / "common"
+        # Common Steam library locations. The scan is intentionally limited to
+        # the library root rather than the entire system drive.
+        for base_root in base_roots:
+            yield base_root / "Steam" / "steamapps" / "common" / "Lossless Scaling"
+            yield base_root / "Steam" / "steamapps" / "common"
 
     def find_executable(self) -> Path | None:
         if not self.supported_platform():
@@ -111,7 +110,13 @@ class LosslessScalingBridge:
                             continue
                         value = line.split('"')[-2].strip()
                         if value:
-                            candidate = Path(value) / "steamapps" / "common" / "Lossless Scaling" / LOSSLESS_SCALING_EXE
+                            candidate = (
+                                Path(value)
+                                / "steamapps"
+                                / "common"
+                                / "Lossless Scaling"
+                                / LOSSLESS_SCALING_EXE
+                            )
                             if candidate.is_file():
                                 return candidate
         except Exception:
@@ -128,7 +133,7 @@ class LosslessScalingBridge:
             import ctypes
             from ctypes import wintypes
 
-            PROCESS_QUERY_LIMITED_INFORMATION = 0x1000
+            # TH32CS_SNAPPROCESS
             snapshot = ctypes.windll.kernel32.CreateToolhelp32Snapshot(0x00000002, 0)
             if snapshot in (0, -1):
                 return False
@@ -149,7 +154,9 @@ class LosslessScalingBridge:
 
             entry = PROCESSENTRY32W()
             entry.dwSize = ctypes.sizeof(PROCESSENTRY32W)
-            first = ctypes.windll.kernel32.Process32FirstW(snapshot, ctypes.byref(entry))
+            first = ctypes.windll.kernel32.Process32FirstW(
+                snapshot, ctypes.byref(entry)
+            )
             if not first:
                 ctypes.windll.kernel32.CloseHandle(snapshot)
                 return False
@@ -157,7 +164,9 @@ class LosslessScalingBridge:
                 while True:
                     if entry.szExeFile.lower() == LOSSLESS_SCALING_EXE.lower():
                         return True
-                    if not ctypes.windll.kernel32.Process32NextW(snapshot, ctypes.byref(entry)):
+                    if not ctypes.windll.kernel32.Process32NextW(
+                        snapshot, ctypes.byref(entry)
+                    ):
                         break
             finally:
                 ctypes.windll.kernel32.CloseHandle(snapshot)

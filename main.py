@@ -1,8 +1,22 @@
+import os
 import sys
 import argparse
 import traceback
 from datetime import datetime
 from pathlib import Path
+
+# --- PyTorch VRAM Optimization ---
+# MUST be set BEFORE importing torch (which occurs during _run_app).
+# Instructs the caching allocator to release unused memory segments back to the CUDA driver.
+# Dropped 'max_split_size_mb:128' to prevent heavy cudaMalloc/cudaFree churn and implicit
+# device synchronizations when allocating large frame tensors (e.g., 4K, VR180).
+# Left overridable so other values can be A/B'd against peak VRAM without a
+# rebuild, e.g. PYTORCH_CUDA_ALLOC_CONF="max_split_size_mb:512,garbage_collection_threshold:0.8"
+os.environ.setdefault("PYTORCH_CUDA_ALLOC_CONF", "garbage_collection_threshold:0.8")
+
+import torch
+
+torch.set_grad_enabled(False)
 
 
 def _write_crash_log(exc: BaseException) -> Path:

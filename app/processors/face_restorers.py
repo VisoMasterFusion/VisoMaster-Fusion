@@ -81,21 +81,12 @@ class FaceRestorers:
             )
 
         try:
-            # ⚠️ This is a critical synchronization point.
-            # PRE-INFERENCE SYNC
-            if self.models_processor.device_type == "cuda":
-                torch.cuda.current_stream().synchronize()
-            elif self.models_processor.device_type != "cpu":
-                # This handles synchronization for other execution providers (e.g., DirectML)
-                # by synchronizing with a placeholder vector.
-                self.models_processor.syncvec.cpu()
-
-            ort_session.run_with_iobinding(io_binding)
-
+            self.function_worker.run_ort_with_iobinding(ort_session, io_binding)
         finally:
             if is_lazy_build:
                 self.models_processor.hide_build_dialog.emit()
 
+    @torch.no_grad()
     def apply_facerestorer(
         self,
         swapped_face_upscaled: torch.Tensor,
@@ -324,6 +315,7 @@ class FaceRestorers:
         # Removing the explicit try/except `del` block saves CPU branching overhead.
         return outpred
 
+    @torch.no_grad()
     def run_vae_encoder(
         self, image_input_tensor: torch.Tensor, output_latent_tensor: torch.Tensor
     ) -> None:
@@ -376,6 +368,7 @@ class FaceRestorers:
         # Run the model with lazy build handling
         self._run_model_with_lazy_build_check(model_name, ort_session, io_binding)
 
+    @torch.no_grad()
     def run_vae_decoder(
         self, latent_input_tensor: torch.Tensor, output_image_tensor: torch.Tensor
     ) -> None:
@@ -428,6 +421,7 @@ class FaceRestorers:
         # Run the model with lazy build handling
         self._run_model_with_lazy_build_check(model_name, ort_session, io_binding)
 
+    @torch.no_grad()
     def run_ref_ldm_unet(
         self,
         x_noisy_plus_lq_latent: torch.Tensor,

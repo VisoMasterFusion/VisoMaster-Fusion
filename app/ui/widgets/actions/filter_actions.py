@@ -11,23 +11,39 @@ if TYPE_CHECKING:
 def filter_target_videos(main_window: "MainWindow", *args):
     main_window.target_videos_filter_worker.stop_thread()
 
-    # Capture all Qt widget data in the main thread before starting the worker
-    search_text = main_window.targetVideosSearchBox.text().lower()
+    # Capture search text immediately
+    search_text = main_window.targetVideosSearchBox.text().lower().strip()
+
+    filter_button = getattr(main_window, "targetVideosFilterMenuButton", None)
+    filter_panel_open = filter_button is not None and filter_button.isChecked()
+
+    # Early exit ONLY if both the panel is closed AND there is no search text
+    if not filter_panel_open and not search_text:
+        for i in range(main_window.targetVideosList.count()):
+            main_window.targetVideosList.item(i).setHidden(False)
+        return
 
     include_file_types = []
-    if main_window.targetVideosFilterImagesCheckBox.isChecked():
-        include_file_types.append("image")
-    if main_window.targetVideosFilterVideosCheckBox.isChecked():
-        include_file_types.append("video")
-    if main_window.targetVideosFilterWebcamsCheckBox.isChecked():
-        include_file_types.append("webcam")
+    min_width = 0
+    min_height = 0
 
-    # The worker runs off the GUI thread, so it only ever sees plain values -
-    # never the QListWidgetItem / card widget objects themselves.
-    min_dimension = main_window.targetVideosList.minImageDimension()
-    min_width = min_dimension.width if min_dimension else 0
-    min_height = min_dimension.height if min_dimension else 0
+    # Only apply advanced filters if the panel is open
+    if filter_panel_open:
+        if main_window.targetVideosFilterImagesCheckBox.isChecked():
+            include_file_types.append("image")
+        if main_window.targetVideosFilterVideosCheckBox.isChecked():
+            include_file_types.append("video")
+        if main_window.targetVideosFilterWebcamsCheckBox.isChecked():
+            include_file_types.append("webcam")
 
+        min_dimension = main_window.targetVideosList.minImageDimension()
+        min_width = min_dimension.width if min_dimension else 0
+        min_height = min_dimension.height if min_dimension else 0
+    else:
+        # If panel is closed, allow all types and sizes so ONLY the search text applies
+        include_file_types = ["image", "video", "webcam"]
+
+    # Capture all Qt widget data in the main thread before starting the worker
     items_snapshot = []
     for i in range(main_window.targetVideosList.count()):
         item = main_window.targetVideosList.item(i)

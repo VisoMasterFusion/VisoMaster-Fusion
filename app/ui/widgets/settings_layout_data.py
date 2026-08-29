@@ -1,6 +1,9 @@
-from app.ui.widgets.actions import control_actions
-import cv2
 from typing import Any
+
+import cv2
+
+from app.processors.utils import platform_support
+from app.ui.widgets.actions import control_actions
 
 EXPERIMENTAL_SETTINGS_CONTROL_KEYS = frozenset(
     {
@@ -18,7 +21,7 @@ EXPERIMENTAL_SETTINGS_CONTROL_KEYS = frozenset(
     }
 )
 
-SETTINGS_LAYOUT_DATA: Any = {  # noqa: F811
+SETTINGS_LAYOUT_DATA: Any = {
     "Appearance": {
         "ThemeSelection": {
             "level": 1,
@@ -47,8 +50,8 @@ SETTINGS_LAYOUT_DATA: Any = {  # noqa: F811
         "ProvidersPrioritySelection": {
             "level": 1,
             "label": "Providers Priority",
-            "options": ["CUDA", "TensorRT", "TensorRT-Engine", "CPU"],
-            "default": "TensorRT",
+            "options": platform_support.available_execution_providers(),
+            "default": platform_support.default_execution_provider(),
             "help": "Select the providers priority to be used with the system.",
             "exec_function": control_actions.change_execution_provider,
             "exec_function_args": [],
@@ -63,6 +66,15 @@ SETTINGS_LAYOUT_DATA: Any = {  # noqa: F811
             "help": "Set number of execution threads while playing and recording. Depends strongly on GPU VRAM.",
             "exec_function": control_actions.change_threads_number,
             "exec_function_args": [],
+        },
+        "nStreamSlider": {
+            "level": 1,
+            "label": "Number of Streams (High VRAM usage)",
+            "min_value": "1",
+            "max_value": "15",
+            "default": "1",
+            "step": 1,
+            "help": "Set number of Worker Streams while playing and recording. Depends strongly on GPU VRAM. Will be used on new processing task.",
         },
         "KeepControlsToggle": {
             "level": 1,
@@ -148,6 +160,12 @@ SETTINGS_LAYOUT_DATA: Any = {  # noqa: F811
             "default": False,
             "help": "Activates buffering for smoother video playback.",
         },
+        "VideoPlaybackSegmentsToggle": {
+            "level": 1,
+            "label": "Plays Active Segments Only",
+            "default": False,
+            "help": "Only plays the active segments of the video, skipping inactive parts.",
+        },
         "VideoPlaybackLoopToggle": {
             "level": 1,
             "label": "Playback Loop",
@@ -180,16 +198,6 @@ SETTINGS_LAYOUT_DATA: Any = {  # noqa: F811
             "step": 0.01,
             "decimals": 2,
             "help": "Set the playback audio of the audio, when Live Sound is enabled",
-        },
-        "LiveSoundDelayDecimalSlider": {
-            "level": 1,
-            "label": "Audio Start Delay (Seconds)",
-            "min_value": "0.00",
-            "max_value": "3.00",
-            "default": "0.30",
-            "step": 0.01,
-            "decimals": 2,
-            "help": "Set the audio starting delay to adjust for latency.",
         },
     },
     "Video Recording Settings": {
@@ -306,6 +314,12 @@ SETTINGS_LAYOUT_DATA: Any = {  # noqa: F811
         },
     },
     "Swap settings": {
+        "ForceSwapToggle": {
+            "level": 1,
+            "label": "Swap Original Faces",
+            "default": True,
+            "help": "Allow Swap Pipeline to run on Original Faces (Blank Target faces).",
+        },
         "AutoSwapToggle": {
             "level": 1,
             "label": "Auto Swap",
@@ -326,16 +340,36 @@ SETTINGS_LAYOUT_DATA: Any = {  # noqa: F811
         },
         "VR180ModeEnableToggle": {
             "level": 1,
-            "label": "Enable VR180 Mode",
+            "label": "Enable VR Mode",
             "default": False,
-            "help": "Enable VR180 mode. This will treat the input video as an equirectangular VR180 video and apply face swapping within perspective crops.",
+            "help": "Enable VR mode. This will treat the input video as spherical VR footage and apply face swapping within undistorted perspective crops. Set the projection and coverage below to match your video — the defaults are standard VR180.",
         },
         "VR180EyeModeSelection": {
             "level": 1,
-            "label": "VR180 Eye Mode",
+            "label": "VR Eye Mode",
             "options": ["Both Eyes", "Single Eye"],
             "default": "Both Eyes",
-            "help": "Select 'Both Eyes' for standard VR180 video (left+right eye side-by-side). Select 'Single Eye' if the input video already contains only one eye's equirectangular view (full frame = one hemisphere).",
+            "help": "Select 'Both Eyes' for standard stereo VR video (left+right eye side-by-side). Select 'Single Eye' if the input video already contains only one eye's view (full frame = one view).",
+            "parentToggle": "VR180ModeEnableToggle",
+            "requiredToggleValue": True,
+        },
+        "VRProjectionSelection": {
+            "level": 1,
+            "label": "VR Projection",
+            "options": ["Equirectangular", "Fisheye (equidistant)"],
+            "default": "Equirectangular",
+            "help": "How each eye's view is stored in the video frame. 'Equirectangular' is a latitude/longitude grid — the usual output of stitching tools such as Mistika VR or Canon EOS VR Utility, and correct for standard VR180. 'Fisheye (equidistant)' is a circular lens image where distance from the centre is proportional to the angle from the lens axis — used by 200° lens formats (MKX200, VRCA220, Fisheye190) and typical of unstitched single-lens-per-eye footage. Picking the wrong one makes swapped faces land in visibly the wrong place, so if crops look misaligned, try the other.",
+            "parentToggle": "VR180ModeEnableToggle",
+            "requiredToggleValue": True,
+        },
+        "VRCoverageSlider": {
+            "level": 1,
+            "label": "VR Coverage (per eye)",
+            "min_value": "90",
+            "max_value": "360",
+            "default": "180",
+            "step": 5,
+            "help": "How many degrees of the sphere ONE eye's view covers horizontally. 180 = standard VR180 (the default, and identical to previous versions). 200 = 200° lens content such as MKX200. Use lower values for narrower footage, and 360 together with 'Single Eye' for a full monoscopic panorama. Vertical coverage is derived from this and the frame's aspect ratio, assuming square angular pixels, and is capped at 180° for equirectangular content. This is the coverage of the VIDEO, not the field of view you view it at — if your player recommends '110-150 FOV', that is a viewing zoom and does not necessarily mean the file covers 110-150°.",
             "parentToggle": "VR180ModeEnableToggle",
             "requiredToggleValue": True,
         },
@@ -349,7 +383,7 @@ SETTINGS_LAYOUT_DATA: Any = {  # noqa: F811
             # horizontal resolution. Power users can disable for max throughput
             # in scenes that don't need it.
             "default": False,
-            "help": "Run face detection on a grid of 24 undistorted perspective crops to catch faces missed by standard detection (faces near poles, the ±180° seam, head tilted back, or very close to the camera). Default ON — recommended for most VR content. Disable only when you are certain the standard detector finds every face you need.",
+            "help": "Run face detection on a grid of undistorted perspective crops covering the whole sphere your footage spans (24 crops at the default coverage) to catch faces missed by standard detection (faces near the poles, near an eye's edge, head tilted back, or very close to the camera). Recommended for most VR content. Disable only when you are certain the standard detector finds every face you need.",
             "parentToggle": "VR180ModeEnableToggle",
             "requiredToggleValue": True,
         },
@@ -469,11 +503,35 @@ SETTINGS_LAYOUT_DATA: Any = {  # noqa: F811
         "LandmarkDetectModelSelection": {
             "level": 2,
             "label": "Landmark Detect Model",
-            "options": ["5", "68", "3d68", "98", "106", "203", "478"],
+            "options": [
+                "5",
+                "68",
+                "3d68",
+                "98",
+                "106",
+                "203",
+                "478",
+                "tufa98",
+                "tufa314",
+                "orformer98",
+            ],
             "default": "203",
             "parentToggle": "LandmarkDetectToggle",
             "requiredToggleValue": True,
-            "help": "Select the landmark detection model, where different models detect varying numbers of facial landmarks.",
+            "help": (
+                "Select the landmark detection model, where different models detect varying "
+                "numbers of facial landmarks.\n\n"
+                "tufa98 - TUFA (IJCV 2025), 98 points. Best accuracy on strongly angled "
+                "faces of the models here. ~3.9 ms/face.\n"
+                "tufa314 - the same TUFA network asked for its dense 314-point set. Costs "
+                "the same as tufa98 (the ViT encoder dominates), and the swap itself uses "
+                "the same 5 points, so pick it for a denser overlay rather than for a "
+                "better swap.\n"
+                "orformer98 - ORFormer (WACV 2025), 98 points. Built for occluded faces "
+                "and also estimates which regions are hidden. ~5.9 ms/face.\n\n"
+                "All three use their own upright square crop and ignore "
+                "'Detect From Points'."
+            ),
             "exec_function": control_actions.handle_landmark_model_selection_change,
             "exec_function_args": ["LandmarkDetectModelSelection"],
         },
@@ -741,6 +799,41 @@ SETTINGS_LAYOUT_DATA: Any = {  # noqa: F811
             "label": "Enable Mouse Wheel on Parameter Controls",
             "default": False,
             "help": "When enabled, the mouse wheel adjusts parameter sliders and dropdowns on hover.\nWhen disabled, the mouse wheel scrolls the parameter panel instead.\nHold Ctrl to temporarily adjust a hovered slider or dropdown while this is disabled.",
+        },
+        "SortEmbeddingsAZToggle": {
+            "level": 1,
+            "label": "Sort A-Z for new Embeddings",
+            "default": False,
+            "help": "ONLY APPLIES WHEN CREATING NEW EMBEDDINGS. When enabled, new embeddings are sorted alphabetically by name (A-Z).",
+            "exec_function": control_actions.handle_sort_embeddings_az_toggle,
+            "exec_function_args": [],
+        },
+        "SkipClearConfirmationToggle": {
+            "level": 1,
+            "label": "Turn OFF warning messages",
+            "default": False,
+            "help": "When enabled, clearing all target media, input faces or embeddings will not show confirmation prompts. ⚠ It will also not prompt when DELETING files.",
+        },
+        "EnableMediaToastToggle": {
+            "level": 1,
+            "label": "Enable Toast Notifications",
+            "default": True,
+            "help": "Show toast notifications after saving videos or images.",
+        },
+        "ToastDurationText": {
+            "level": 1,
+            "label": "Notification Duration (ms)",
+            "default": "2000",
+            "width": 60,
+            "help": "Duration of toast notifications in milliseconds (1000 = 1 sec.)",
+        },
+        "ShowSeekBarThumbnailsToggle": {
+            "level": 1,
+            "label": "Show Seek Bar Thumbnails",
+            "default": True,
+            "help": "Show and generate thumbnails on the video seek bar. Disable to hide them and stop generation.",
+            "exec_function": control_actions.handle_seek_bar_thumbnails_toggle,
+            "exec_function_args": [],
         },
         "VideoSeekMaxFrameSlider": {
             "level": 1,

@@ -147,368 +147,6 @@ def update_video_time_line_edit(
     video_time_line_edit.setText(f"{minutes:02d}:{seconds:02d}")
 
 
-def set_up_video_seek_slider(main_window: "MainWindow"):
-    """
-    Configures the video seek slider with custom painting, marker management, and
-    job-bracket rendering.  Attaches add_marker_and_paint, remove_marker_and_paint,
-    and a custom paintEvent directly to the slider instance.
-    """
-    main_window.videoSeekSlider.markers = set()  # Store unique tick positions
-    main_window.videoSeekSlider.markers_sorted = []  # Sorted list for iteration in paintEvent
-    main_window.videoSeekSlider.issue_markers = set()
-    main_window.videoSeekSlider.issue_markers_sorted = []
-    main_window.videoSeekSlider.dropped_markers = set()
-    main_window.videoSeekSlider.dropped_markers_sorted = []
-    main_window.videoSeekSlider.setTickPosition(
-        QtWidgets.QSlider.TickPosition.TicksBelow
-    )
-
-    # --- Provisional State Tracking ---
-    main_window.videoSeekSlider._last_provisional_state = False
-    main_window.videoSeekSlider._last_polled_position = -1
-    main_window.videoSeekSlider._cached_baseline_params = {}
-    main_window.videoSeekSlider._cached_baseline_ctrl = {}
-
-    def is_state_provisional(slider: QtWidgets.QSlider) -> bool:
-        current_position = slider.value()
-
-        # 1. Grey Area Check (Instant Math Check)
-        if not slider.markers_sorted or current_position < slider.markers_sorted[0]:
-            return True
-
-        # 2. Cache Marker Lookups
-        if current_position != getattr(slider, "_last_polled_position", -1):
-            slider._last_polled_position = current_position
-            marker_data = _get_marker_data_for_position(main_window, current_position)
-
-            if not marker_data:
-                return True
-
-            slider._cached_baseline_params = marker_data.get("parameters", {})
-            slider._cached_baseline_ctrl = marker_data.get("control", {})
-
-        baseline_params = slider._cached_baseline_params
-        baseline_ctrl = slider._cached_baseline_ctrl
-
-        # Fast dictionary comparison for parameters
-        if main_window.parameters != baseline_params:
-            return True
-
-        # Zero-allocation loop comparison for controls
-        protected_keys = {
-            "TrackMarkersToggle",
-            "OutputMediaFolder",
-            "OutputToTargetLocationToggle",
-            "PreserveOutputDirectoryStructureToggle",
-            "ClusterOutputBySourceToggle",
-        }
-
-        curr_ctrl = main_window.control
-        for k, v in curr_ctrl.items():
-            if k in protected_keys:
-                continue
-            if k not in baseline_ctrl or baseline_ctrl[k] != v:
-                return True
-
-        for k in baseline_ctrl:
-            if k in protected_keys:
-                continue
-            if k not in curr_ctrl:
-                return True
-
-        return False
-
-    def check_provisional_changes():
-        current_state = is_state_provisional(main_window.videoSeekSlider)
-        if current_state != getattr(
-            main_window.videoSeekSlider, "_last_provisional_state", False
-        ):
-            main_window.videoSeekSlider._last_provisional_state = current_state
-            main_window.videoSeekSlider.update()  # Force repaint instantly
-
-    def trigger_check(*args, **kwargs):
-        # We defer the state check by 150ms to allow custom widgets
-        # (like ParameterSlider's 300ms debounce) time to write to the dictionary.
-        QtCore.QTimer.singleShot(150, check_provisional_changes)
-
-    # --- Event-Driven Observer Hooking (DEFERRED BINDING) ---
-    def bind_provisional_events():
-        # Ensure the attribute exists
-        if not hasattr(main_window.videoSeekSlider, "_connected_widgets"):
-            main_window.videoSeekSlider._connected_widgets = set()
-
-        if hasattr(main_window, "parameter_widgets"):
-            for name, widget in main_window.parameter_widgets.items():
-                if name in main_window.videoSeekSlider._connected_widgets:
-                    continue
-                try:
-                    if isinstance(widget, QtWidgets.QSlider):
-                        widget.valueChanged.connect(trigger_check)
-                    elif isinstance(widget, QtWidgets.QComboBox):
-                        widget.currentIndexChanged.connect(trigger_check)
-                    elif isinstance(widget, QtWidgets.QAbstractButton):
-                        widget.toggled.connect(trigger_check)
-                    elif isinstance(widget, QtWidgets.QLineEdit):
-                        widget.textChanged.connect(trigger_check)
-                    main_window.videoSeekSlider._connected_widgets.add(name)
-                except Exception:
-                    pass
-
-    # Schedule the binding
-    QtCore.QTimer.singleShot(500, bind_provisional_events)
-    # Simple connect for the slider itself
-    try:
-        main_window.videoSeekSlider.valueChanged.connect(trigger_check)
-    except Exception:
-        pass
-
-    def add_marker_and_paint(self: QtWidgets.QSlider, value=None):
-        """Add a tick mark at a specific slider value."""
-        if value is None or isinstance(value, bool):  # Default to current slider value
-            value = self.value()
-        if self.minimum() <= value <= self.maximum() and value not in self.markers:
-            self.markers.add(value)
-            if value not in self.markers_sorted:
-                self.markers_sorted.append(value)
-                self.markers_sorted.sort()
-            self._last_polled_position = -1
-            self.update()
-            trigger_check()  # Instantly remove yellow line when saved
-
-    def remove_marker_and_paint(self: QtWidgets.QSlider, value=None):
-        """Remove a tick mark."""
-        if value is None or isinstance(value, bool):  # Default to current slider value
-            value = self.value()
-        if value in self.markers:
-            self.markers.remove(value)
-            if value in self.markers_sorted:
-                self.markers_sorted.remove(value)
-            self._last_polled_position = -1
-            self.update()
-            trigger_check()
-
-    def _add_sorted_marker(
-        marker_set: set[int], marker_list: list[int], value: int
-    ) -> bool:
-        if value not in marker_set:
-            marker_set.add(value)
-            marker_list.append(value)
-            marker_list.sort()
-            return True
-        return False
-
-    def _remove_sorted_marker(
-        marker_set: set[int], marker_list: list[int], value: int
-    ) -> bool:
-        if value in marker_set:
-            marker_set.remove(value)
-            if value in marker_list:
-                marker_list.remove(value)
-            return True
-        return False
-
-    def add_issue_marker_and_paint(self: QtWidgets.QSlider, value=None):
-        if value is None or isinstance(value, bool):
-            value = self.value()
-        if self.minimum() <= value <= self.maximum() and _add_sorted_marker(
-            self.issue_markers, self.issue_markers_sorted, value
-        ):
-            self.update()
-
-    def remove_issue_marker_and_paint(self: QtWidgets.QSlider, value=None):
-        if value is None or isinstance(value, bool):
-            value = self.value()
-        if _remove_sorted_marker(self.issue_markers, self.issue_markers_sorted, value):
-            self.update()
-
-    def add_dropped_marker_and_paint(self: QtWidgets.QSlider, value=None):
-        if value is None or isinstance(value, bool):
-            value = self.value()
-        if self.minimum() <= value <= self.maximum() and _add_sorted_marker(
-            self.dropped_markers, self.dropped_markers_sorted, value
-        ):
-            self.update()
-
-    def remove_dropped_marker_and_paint(self: QtWidgets.QSlider, value=None):
-        if value is None or isinstance(value, bool):
-            value = self.value()
-        if _remove_sorted_marker(
-            self.dropped_markers, self.dropped_markers_sorted, value
-        ):
-            self.update()
-
-    def paintEvent(self: QtWidgets.QSlider, event: QtGui.QPaintEvent):
-        """Custom paint: draws the groove with colored marker segments, provisional overlay, a thin handle, coloured ticks, and brackets."""
-        if self.maximum() == self.minimum():
-            return super(QtWidgets.QSlider, self).paintEvent(event)
-        # Do not draw the slider if the current media is a single image
-        if main_window.video_processor.file_type == "image":
-            return super(QtWidgets.QSlider, self).paintEvent(event)
-        # Set up the painter and style option
-        painter = QtWidgets.QStylePainter(self)
-        opt = QtWidgets.QStyleOptionSlider()
-        self.initStyleOption(opt)
-        style = self.style()
-
-        # Get groove and handle geometry
-        groove_rect = style.subControlRect(
-            QtWidgets.QStyle.ComplexControl.CC_Slider,
-            opt,
-            QtWidgets.QStyle.SubControl.SC_SliderGroove,
-        )
-        groove_y = (
-            groove_rect.top() + groove_rect.bottom()
-        ) // 2  # Groove's vertical center
-        groove_start = groove_rect.left()
-        groove_end = groove_rect.right()
-        groove_width = groove_end - groove_start
-
-        def marker_x_for_value(value: int) -> float:
-            marker_normalized_value = (value - self.minimum()) / max(
-                1, (self.maximum() - self.minimum())
-            )
-            return groove_start + marker_normalized_value * groove_width
-
-        # Calculate handle position based on the current slider value
-        normalized_value = (self.value() - self.minimum()) / max(
-            1, (self.maximum() - self.minimum())
-        )
-        handle_center_x = groove_start + normalized_value * groove_width
-
-        # Make the handle thinner
-        handle_width = 5  # Fixed width for thin handle
-        handle_height = groove_rect.height()  # Slightly shorter than groove height
-        handle_left_x = int(handle_center_x - (handle_width // 2))
-        handle_top_y = groove_y - (handle_height // 2)
-
-        # Define the handle rectangle
-        handle_rect = QtCore.QRect(
-            handle_left_x, handle_top_y, handle_width, handle_height
-        )
-
-        has_provisional_changes = getattr(self, "_last_provisional_state", False)
-
-        # 1. Base Alternating Segments
-        painter.setPen(QtGui.QPen(QtGui.QColor("gray"), 3))
-        if not self.markers_sorted:
-            painter.drawLine(groove_start, groove_y, groove_end, groove_y)
-        else:
-            first_marker_x = marker_x_for_value(self.markers_sorted[0])
-            painter.drawLine(groove_start, groove_y, int(first_marker_x), groove_y)
-
-            color_a = QtGui.QColor("#7e57c2")  # Deep Purple
-            color_b = QtGui.QColor("#42a5f5")  # Bright Blue
-
-            for i in range(len(self.markers_sorted)):
-                start_val = self.markers_sorted[i]
-                end_val = (
-                    self.markers_sorted[i + 1]
-                    if i + 1 < len(self.markers_sorted)
-                    else self.maximum()
-                )
-
-                start_x = marker_x_for_value(start_val)
-                end_x = marker_x_for_value(end_val)
-
-                current_color = color_a if i % 2 == 0 else color_b
-                painter.setPen(QtGui.QPen(current_color, 3))
-
-                painter.drawLine(int(start_x), groove_y, int(end_x), groove_y)
-                painter.drawLine(
-                    int(start_x), groove_rect.top(), int(start_x), groove_rect.bottom()
-                )
-
-        # 2. Provisional Changes Overlay (Soft Yellow)
-        if has_provisional_changes:
-            provisional_start_val = self.value()
-            provisional_end_val = self.maximum()
-
-            for m in self.markers_sorted:
-                if m > provisional_start_val:
-                    provisional_end_val = m
-                    break
-
-            start_x = marker_x_for_value(provisional_start_val)
-            end_x = marker_x_for_value(provisional_end_val)
-
-            painter.setPen(QtGui.QPen(QtGui.QColor("#e5c07b"), 3))  # Soft Yellow
-            painter.drawLine(int(start_x), groove_y, int(end_x), groove_y)
-
-        # 3. Issue markers
-        if self.issue_markers:
-            issue_pen = QtGui.QPen(QtGui.QColor("#ff9800"), 3)
-            issue_pen.setCapStyle(QtCore.Qt.PenCapStyle.SquareCap)
-            painter.setPen(issue_pen)
-            issue_top = groove_y - 2
-            issue_bottom = groove_y + 2
-            for value in self.issue_markers_sorted:
-                if value in self.dropped_markers:
-                    continue
-                marker_x = marker_x_for_value(value)
-                painter.drawLine(int(marker_x), issue_top, int(marker_x), issue_bottom)
-
-        # 4. Dropped markers
-        if self.dropped_markers:
-            painter.setPen(QtGui.QPen(QtGui.QColor("#e8483c"), 3))
-            for value in self.dropped_markers_sorted:
-                marker_x = marker_x_for_value(value)
-                painter.drawLine(
-                    int(marker_x),
-                    groove_rect.top(),
-                    int(marker_x),
-                    groove_rect.bottom(),
-                )
-
-        # 5. Playhead Handle (Turns Yellow if state is provisional)
-        handle_color = (
-            QtGui.QColor("#e5c07b")
-            if has_provisional_changes
-            else QtGui.QColor("white")
-        )
-        painter.setPen(QtGui.QPen(handle_color, 1))
-        painter.setBrush(QtGui.QBrush(handle_color))
-        painter.drawRect(handle_rect)
-
-        # 6. Job Start/End Brackets
-        painter.setFont(QtGui.QFont("Arial", 16, QtGui.QFont.Bold))
-        font_metrics = painter.fontMetrics()
-        bracket_height = font_metrics.height()
-        bracket_y_pos = groove_y + (bracket_height // 4)
-
-        for start_frame, end_frame in main_window.job_marker_pairs:
-            if start_frame is not None:
-                start_x = marker_x_for_value(int(start_frame))
-                painter.setPen(QtGui.QPen(QtGui.QColor("#4CAF50"), 1))
-                painter.drawText(int(start_x - 4), int(bracket_y_pos), "[")
-
-            if end_frame is not None:
-                end_x = marker_x_for_value(int(end_frame))
-                painter.setPen(QtGui.QPen(QtGui.QColor("#e8483c"), 1))
-                painter.drawText(int(end_x - 4), int(bracket_y_pos), "]")
-
-    main_window.videoSeekSlider.add_marker_and_paint = partial(
-        add_marker_and_paint, main_window.videoSeekSlider
-    )
-    main_window.videoSeekSlider.remove_marker_and_paint = partial(
-        remove_marker_and_paint, main_window.videoSeekSlider
-    )
-    main_window.videoSeekSlider.add_issue_marker_and_paint = partial(
-        add_issue_marker_and_paint, main_window.videoSeekSlider
-    )
-    main_window.videoSeekSlider.remove_issue_marker_and_paint = partial(
-        remove_issue_marker_and_paint, main_window.videoSeekSlider
-    )
-    main_window.videoSeekSlider.add_dropped_marker_and_paint = partial(
-        add_dropped_marker_and_paint, main_window.videoSeekSlider
-    )
-    main_window.videoSeekSlider.remove_dropped_marker_and_paint = partial(
-        remove_dropped_marker_and_paint, main_window.videoSeekSlider
-    )
-    main_window.videoSeekSlider.paintEvent = partial(
-        paintEvent, main_window.videoSeekSlider
-    )
-
-
 def set_up_timeline_zoom(main_window: "MainWindow"):
     """
     Configures the timeline zoom slider and dynamically adjusts the video seek slider's physical width.
@@ -552,7 +190,7 @@ def set_up_timeline_zoom(main_window: "MainWindow"):
         if zoom_label:
             zoom_label.setText("Zoom - x1.0")
 
-        main_window.videoSeekSlider.setMinimumWidth(0)
+        main_window.timelineContainer.setMinimumWidth(0)
 
     def on_settings_changed(*args) -> None:
         """Triggered instantly when the user adjusts the Max Frames setting slider."""
@@ -591,22 +229,10 @@ def set_up_timeline_zoom(main_window: "MainWindow"):
     # Expose the manual refresh hook just in case
     main_window.refresh_timeline_zoom = on_settings_changed
 
-    # --- PATCH TO BYPASS blockSignals(True) ---
-    original_set_maximum = main_window.videoSeekSlider.setMaximum
-
-    def custom_set_maximum(max_val: int) -> None:
-        original_set_maximum(max_val)
-        on_video_duration_changed(max_val)
-
-    main_window.videoSeekSlider.setMaximum = custom_set_maximum
-
-    original_set_range = main_window.videoSeekSlider.setRange
-
-    def custom_set_range(min_val: int, max_val: int) -> None:
-        original_set_range(min_val, max_val)
-        on_video_duration_changed(max_val)
-
-    main_window.videoSeekSlider.setRange = custom_set_range
+    # We use the native Qt signal emitted whenever setMaximum() or setRange() is called on the slider.
+    main_window.videoSeekSlider.rangeChanged.connect(
+        lambda min_val, max_val: on_video_duration_changed(max_val)
+    )
 
     # Initialize bounds for the currently loaded video
     on_video_duration_changed(main_window.videoSeekSlider.maximum())
@@ -643,7 +269,7 @@ def set_up_timeline_zoom(main_window: "MainWindow"):
 
         # 3. Apply new physical width using the EXPONENTIAL zoom value
         new_width = int(viewport_width * (actual_zoom / 100.0))
-        main_window.videoSeekSlider.setMinimumWidth(new_width)
+        main_window.timelineContainer.setMinimumWidth(new_width)
 
         # 4. Adjust the horizontal scrollbar to stay centered on the playhead
         scrollbar = scroll_area.horizontalScrollBar()
@@ -2095,7 +1721,9 @@ def show_graphics_view_context_menu(
         )
 
 
-def enable_zoom_and_pan(main_window: "MainWindow", view: QtWidgets.QGraphicsView):
+def enable_zoom_and_pan(
+    main_window: "MainWindow", view: QtWidgets.QGraphicsView
+) -> None:
     """
     Attaches mouse-wheel zoom, middle-click pan, and context-menu behaviour to a
     QGraphicsView instance.
@@ -2104,76 +1732,186 @@ def enable_zoom_and_pan(main_window: "MainWindow", view: QtWidgets.QGraphicsView
     mouseReleaseEvent, and contextMenuEvent directly onto the view object so no
     subclass is required.
     """
-    SCALE_FACTOR = 1.1
+    SCALE_FACTOR: float = 1.1
     view.zoom_value = 0  # Track zoom level
     view.last_scale_factor = 1.0  # Track the last scale factor (1.0 = no scaling)
     view.is_panning = False  # Track whether panning is active
     view.pan_start_pos = QtCore.QPoint()  # Store the initial mouse position for panning
 
-    def zoom(self: QtWidgets.QGraphicsView, step=False):
+    def zoom(self: QtWidgets.QGraphicsView, step: int | bool = False) -> None:
         """Zoom in or out by a step."""
         if not step:
             factor = self.last_scale_factor
         else:
-            self.zoom_value += step
-            factor = SCALE_FACTOR**step
+            self.zoom_value += int(step)
+            factor = SCALE_FACTOR ** int(step)
             self.last_scale_factor *= factor  # Update the last scale factor
+
         if factor > 0:
             self.scale(factor, factor)
 
-    def wheelEvent(self: QtWidgets.QGraphicsView, event: QtGui.QWheelEvent):
-        """Handle mouse wheel event for zooming."""
-        delta = event.angleDelta().y()
-        if delta != 0:
-            zoom(self, delta // abs(delta))
+    # SHIFT + MOUSE WHEEL EMBEDDING CYCLING
+    def cycle_embedding(direction: int) -> bool:
+        """
+        Select the previous or next merged embedding.
 
-    def reset_zoom(self: QtWidgets.QGraphicsView):
+        direction:
+            -1 = previous embedding
+             1 = next embedding
+        """
+        target_face_button = getattr(
+            main_window,
+            "cur_selected_target_face_button",
+            None,
+        )
+
+        # Embeddings are assigned to the currently selected target face.
+        if target_face_button is None:
+            return False
+
+        embedding_buttons = [
+            button
+            for button in getattr(
+                main_window,
+                "merged_embeddings",
+                {},
+            ).values()
+            if button is not None and button.isEnabled()
+        ]
+
+        if not embedding_buttons:
+            return False
+
+        checked_indices = [
+            index
+            for index, button in enumerate(embedding_buttons)
+            if button.isChecked()
+        ]
+
+        if checked_indices:
+            current_index = checked_indices[0]
+            next_index = (current_index + direction) % len(embedding_buttons)
+        else:
+            # When no embedding is active, start at the appropriate end.
+            next_index = 0 if direction > 0 else len(embedding_buttons) - 1
+
+        next_button = embedding_buttons[next_index]
+
+        # Deactivate the old embedding through its normal click handler.
+        # This allows VisoMaster to update its internal assignment data.
+        for button in embedding_buttons:
+            if button is not next_button and button.isChecked():
+                button.click()
+
+        # Activate the new embedding through its normal click handler.
+        if not next_button.isChecked():
+            next_button.click()
+
+        # KEEP ACTIVE EMBEDDING VISIBLE
+        embeddings_list = getattr(
+            main_window,
+            "inputEmbeddingsList",
+            None,
+        )
+        embedding_list_item = getattr(
+            next_button,
+            "list_item",
+            None,
+        )
+
+        if embeddings_list is not None and embedding_list_item is not None:
+            # Run after the button click has finished updating the UI to prevent Race Conditions.
+            QtCore.QTimer.singleShot(
+                0,
+                lambda: embeddings_list.scrollToItem(
+                    embedding_list_item,
+                    QtWidgets.QAbstractItemView.ScrollHint.EnsureVisible,
+                ),
+            )
+
+        return True
+
+    def wheelEvent(self: QtWidgets.QGraphicsView, event: QtGui.QWheelEvent) -> None:
+        """
+        Mouse wheel controls:
+        Wheel alone: Zoom the displayed video or image.
+        Shift + wheel: Change the selected embedding.
+        """
+        delta = event.angleDelta().y()
+
+        if delta == 0:
+            event.ignore()
+            return
+
+        shift_held = bool(event.modifiers() & QtCore.Qt.KeyboardModifier.ShiftModifier)
+
+        if shift_held:
+            # Wheel up selects the previous embedding.
+            # Wheel down selects the next embedding.
+            direction = -1 if delta > 0 else 1
+
+            if cycle_embedding(direction):
+                event.accept()
+            else:
+                event.ignore()
+            return
+
+        # Original mouse-wheel zoom behavior.
+        zoom(self, delta // abs(delta))
+        event.accept()
+
+    def reset_zoom(self: QtWidgets.QGraphicsView) -> None:
         """Resets the view transform so the scene content fits the viewport exactly."""
         fit_view_to_current_image(main_window)
 
-    def mousePressEvent(self: QtWidgets.QGraphicsView, event: QtGui.QMouseEvent):
+    def mousePressEvent(
+        self: QtWidgets.QGraphicsView, event: QtGui.QMouseEvent
+    ) -> None:
         """Handle mouse press event for panning."""
         if event.button() == QtCore.Qt.MouseButton.MiddleButton:
             self.is_panning = True
             self.pan_start_pos = event.pos()  # Store the initial mouse position
             self.setCursor(
-                QtCore.Qt.ClosedHandCursor
+                QtCore.Qt.CursorShape.ClosedHandCursor
             )  # Change cursor to indicate panning
         else:
             # Explicitly call the base class implementation
             QtWidgets.QGraphicsView.mousePressEvent(self, event)
 
-    def mouseMoveEvent(self: QtWidgets.QGraphicsView, event: QtGui.QMouseEvent):
+    def mouseMoveEvent(self: QtWidgets.QGraphicsView, event: QtGui.QMouseEvent) -> None:
         """Handle mouse move event for panning."""
         if self.is_panning:
             # Calculate the distance moved
             delta = event.pos() - self.pan_start_pos
             self.pan_start_pos = event.pos()  # Update the start position
-            # Translate the view
-            self.horizontalScrollBar().setValue(
-                self.horizontalScrollBar().value() - delta.x()
-            )
-            self.verticalScrollBar().setValue(
-                self.verticalScrollBar().value() - delta.y()
-            )
+
+            # Translate the view safely
+            h_bar = self.horizontalScrollBar()
+            v_bar = self.verticalScrollBar()
+            h_bar.setValue(h_bar.value() - delta.x())
+            v_bar.setValue(v_bar.value() - delta.y())
         else:
             # Explicitly call the base class implementation
             QtWidgets.QGraphicsView.mouseMoveEvent(self, event)
 
-    def mouseReleaseEvent(self: QtWidgets.QGraphicsView, event: QtGui.QMouseEvent):
+    def mouseReleaseEvent(
+        self: QtWidgets.QGraphicsView, event: QtGui.QMouseEvent
+    ) -> None:
         """Handle mouse release event for panning."""
         if event.button() == QtCore.Qt.MouseButton.MiddleButton:
             self.is_panning = False
-            self.setCursor(QtCore.Qt.ArrowCursor)  # Reset the cursor
+            self.setCursor(QtCore.Qt.CursorShape.ArrowCursor)  # Reset the cursor
         else:
             # Explicitly call the base class implementation
             QtWidgets.QGraphicsView.mouseReleaseEvent(self, event)
 
-    def contextMenuEvent(self: QtWidgets.QGraphicsView, event: QtGui.QContextMenuEvent):
+    def contextMenuEvent(
+        self: QtWidgets.QGraphicsView, event: QtGui.QContextMenuEvent
+    ) -> None:
         show_graphics_view_context_menu(main_window, event.globalPos())
         event.accept()
 
-    # Attach methods to the view
+    # Attach methods to the view via partial (Monkey-patching)
     view.zoom = partial(zoom, view)
     view.reset_zoom = partial(reset_zoom, view)
     view.wheelEvent = partial(wheelEvent, view)
@@ -2181,10 +1919,6 @@ def enable_zoom_and_pan(main_window: "MainWindow", view: QtWidgets.QGraphicsView
     view.mouseMoveEvent = partial(mouseMoveEvent, view)
     view.mouseReleaseEvent = partial(mouseReleaseEvent, view)
     view.contextMenuEvent = partial(contextMenuEvent, view)
-
-    # view.zoom = zoom.__get__(view)
-    # view.reset_zoom = reset_zoom.__get__(view)
-    # view.wheelEvent = wheelEvent.__get__(view)
 
     # Set anchors for better interaction
     view.setTransformationAnchor(
@@ -2197,8 +1931,8 @@ def play_video(main_window: "MainWindow", checked: bool):
     """
     Starts or stops video/webcam playback in response to the Play button toggle.
 
-    When *checked* is True: starts playback (or webcam stream) if not already running
-    and the slider is not at the end of the video.
+    When *checked* is True: starts playback (or webcam stream) if not already running.
+    If playback is started at the end of the video, it auto-rewinds to the beginning.
     When *checked* is False: stops any active processing and resets button states.
     """
     video_processor = main_window.video_processor
@@ -2212,16 +1946,27 @@ def play_video(main_window: "MainWindow", checked: bool):
         set_play_button_icon_to_stop(main_window)
         video_processor.process_webcam()
         return
+
     if checked:
-        if (
-            video_processor.processing
-            or video_processor.current_frame_number == video_processor.max_frame_number
-        ):
+        if video_processor.processing:
             print(
                 "[WARN] Video already playing. Stopping the current video before starting a new one."
             )
             video_processor.stop_processing()
             return
+
+        # --- Standard Media Player Auto-Rewind ---
+        # If the user hits play at the absolute end of the file, rewind to 0 automatically.
+        # This bypasses the old restriction and allows process_video to handle loop/segment snapping natively.
+        if video_processor.current_frame_number >= video_processor.max_frame_number:
+            print("[INFO] Play pressed at End of File. Auto-rewinding to start.")
+            # We block signals to prevent triggering a redundant heavy frame read (on_change_video_seek_slider)
+            # since process_video() will immediately read the start frame anyway.
+            main_window.videoSeekSlider.blockSignals(True)
+            main_window.videoSeekSlider.setValue(0)
+            main_window.videoSeekSlider.blockSignals(False)
+            video_processor.current_frame_number = 0
+
         print("[INFO] Starting video processing.")
         set_play_button_icon_to_stop(main_window)
         video_processor.process_video()
@@ -2439,6 +2184,23 @@ def record_video(main_window: "MainWindow", checked: bool):
                 main_window.buttonMediaRecord.blockSignals(False)
                 set_record_button_icon_to_stop(main_window)
                 return
+
+        # If a job queue is actively running, treat manual record-stop as a request
+        # to cancel remaining queued jobs after this stop.
+        job_processor = getattr(main_window, "job_processor", None)
+        if (
+            job_processor is not None
+            and hasattr(job_processor, "isRunning")
+            and job_processor.isRunning()
+            and not job_mgr_flag
+            and hasattr(job_processor, "request_cancel")
+        ):
+            try:
+                job_processor.request_cancel(
+                    "Cancelled by user via Record stop while batch queue is active."
+                )
+            except Exception as e:
+                print(f"[WARN] Failed to request queue cancellation from UI stop: {e}")
 
         if video_processor.is_processing_segments:
             print(

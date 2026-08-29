@@ -7,6 +7,7 @@ import torch
 from torchvision.transforms import v2
 import kornia.geometry.transform as kgm
 
+from app.processors.models_data import landmark_point_counts
 from app.helpers.miscellaneous import (
     ParametersDict,
     draw_bounding_boxes_on_detected_faces,
@@ -30,6 +31,7 @@ class StandardProcessor:
     def __init__(self, worker: "FrameWorker"):
         self.worker = worker
 
+    @torch.no_grad()
     def process_standard_frame(
         self,
         processed_tensor_rgb_uint8: torch.Tensor,
@@ -150,10 +152,7 @@ class StandardProcessor:
         # They consume perfectly sequenced and EMA-smoothed detections from the Feeder thread.
 
         # FW-ARCH-FIX: Flag to know if faces were vetted by the Sequential Detector
-        is_sequentially_tracked = (
-            self.worker.precomputed_bboxes is not None
-            and self.worker.precomputed_kpss_5 is not None
-        )
+        is_sequentially_tracked = not self.worker.is_single_frame
 
         if is_sequentially_tracked:
             # 1. Primary Path (Video/Webcam): Use the sequentially precomputed detections
@@ -201,37 +200,49 @@ class StandardProcessor:
                         requires_203 = True
                         break
 
-            # --- STEP 1: Standard detection (Respect UI Toggle) ---
-            # We pass 'use_landmark_detection=use_landmark' to allow run_detect
-            # to attempt an initial extraction. If Auto-Rotation is enabled,
-            # run_detect may bypass dense landmark extraction if the angle is too extreme.
-            bboxes, kpss_5, kpss = self.worker.function_worker.run_detect(
-                img,
-                control.get("DetectorModelSelection", "RetinaFace"),
-                max_num=control.get("MaxFacesToDetectSlider", 1),
-                score=control.get("DetectorScoreSlider", 50) / 100.0,
-                input_size=(512, 512),
-                use_landmark_detection=use_landmark,
-                landmark_detect_mode=landmark_mode,
-                landmark_score=control.get("LandmarkDetectScoreSlider", 50) / 100.0,
-                from_points=from_points,
-                rotation_angles=[0]
-                if not control.get("AutoRotationToggle", False)
-                else [0, 90, 180, 270],
-                use_mean_eyes=control.get("LandmarkMeanEyesToggle", False),
-                previous_detections=None,
-                bypass_bytetrack=True,
-            )
+            # --- Strict Early Exit (No Targets in Single-Frame) ---
+            show_bboxes = control.get(
+                "ShowAllDetectedFacesBBoxToggle", False
+            ) or control.get("ShowByteTrackBBoxToggle", False)
 
-            # FW-LOGIC-FIX: Validate if Step 1 returned actual dense landmarks (> 5 points).
-            # If run_detect aborted dense extraction due to an extreme rotation angle,
-            # 'kpss' will merely contain a fallback copy of the sparse 'kpss_5'.
-            has_valid_dense_kpss = (
-                kpss is not None
-                and len(kpss) == len(bboxes)
-                and len(bboxes) > 0
-                and kpss[0].shape[0] > 5
-            )
+            if len(target_faces_snapshot) == 0 and not show_bboxes:
+                bboxes = np.empty((0, 4), dtype=np.float32)
+                kpss_5 = np.empty((0, 5, 2), dtype=np.float32)
+                kpss = np.empty((0, 68, 2), dtype=np.float32)
+                kpss_203 = np.empty((0, 203, 2), dtype=np.float32)
+                has_valid_dense_kpss = False
+            else:
+                # --- STEP 1: Standard detection (Respect UI Toggle) ---
+                # We pass 'use_landmark_detection=use_landmark' to allow run_detect
+                # to attempt an initial extraction. If Auto-Rotation is enabled,
+                # run_detect may bypass dense landmark extraction if the angle is too extreme.
+                bboxes, kpss_5, kpss = self.worker.function_worker.run_detect(
+                    img,
+                    control.get("DetectorModelSelection", "RetinaFace"),
+                    max_num=control.get("MaxFacesToDetectSlider", 1),
+                    score=control.get("DetectorScoreSlider", 50) / 100.0,
+                    input_size=(512, 512),
+                    use_landmark_detection=use_landmark,
+                    landmark_detect_mode=landmark_mode,
+                    landmark_score=control.get("LandmarkDetectScoreSlider", 50) / 100.0,
+                    from_points=from_points,
+                    rotation_angles=[0]
+                    if not control.get("AutoRotationToggle", False)
+                    else [0, 90, 180, 270],
+                    use_mean_eyes=control.get("LandmarkMeanEyesToggle", False),
+                    previous_detections=None,
+                    bypass_bytetrack=True,
+                )
+
+                # FW-LOGIC-FIX: Validate if Step 1 returned actual dense landmarks (> 5 points).
+                # If run_detect aborted dense extraction due to an extreme rotation angle,
+                # 'kpss' will merely contain a fallback copy of the sparse 'kpss_5'.
+                has_valid_dense_kpss = (
+                    kpss is not None
+                    and len(kpss) == len(bboxes)
+                    and len(bboxes) > 0
+                    and kpss[0].shape[0] > 5
+                )
 
             # --- STEP 2: 203-Landmark Extraction (Expression Restorer / Face Editor) ---
             kpss_203 = None
@@ -316,8 +327,15 @@ class StandardProcessor:
                             if len(lm_std_5) > 0:
                                 kpss_5[idx] = lm_std_5
                         else:
+                            # int(landmark_mode) used to work because every mode string
+                            # was its own point count. The named modes ('3d68',
+                            # 'tufa98', 'tufa314', 'orformer98') are not numeric, so the
+                            # count comes from the table instead of a ValueError.
                             kpss_list.append(
-                                np.zeros((int(landmark_mode), 2), dtype=np.float32)
+                                np.zeros(
+                                    (landmark_point_counts.get(landmark_mode, 5), 2),
+                                    dtype=np.float32,
+                                )
                             )
                 kpss = np.array(kpss_list, dtype=object)
 
@@ -473,6 +491,18 @@ class StandardProcessor:
                             if s_e is not None and np.isnan(s_e).any():
                                 s_e = None
 
+                        # --- Early Exit for No-Op Swaps ---
+                        # Respect the user's explicit ForceSwapToggle to process blank targets
+                        _is_dfm = params["SwapModelSelection"] == "DeepFaceLive (DFM)"
+                        _has_input = (s_e is not None) or _is_dfm
+                        _force_swap = control.get("ForceSwapToggle", True)
+                        if (
+                            not _has_input
+                            and not edit_button_is_checked_global
+                            and not _force_swap
+                        ):
+                            continue
+
                         _aged_kv = getattr(target_face, "aged_kv_map", None)
                         _reaging_kv = (
                             _aged_kv
@@ -606,6 +636,19 @@ class StandardProcessor:
                                 )
                             if s_e is not None and np.isnan(s_e).any():
                                 s_e = None
+
+                        # --- Early Exit for No-Op Swaps ---
+                        # Respect the user's explicit ForceSwapToggle to process blank targets
+                        _is_dfm = params["SwapModelSelection"] == "DeepFaceLive (DFM)"
+                        _has_input = (s_e is not None) or _is_dfm
+                        _force_swap = control.get("ForceSwapToggle", True)
+
+                        if (
+                            not _has_input
+                            and not edit_button_is_checked_global
+                            and not _force_swap
+                        ):
+                            continue
 
                         _aged_kv_bt = getattr(best_target, "aged_kv_map", None)
                         _reaging_kv = (
@@ -945,6 +988,7 @@ class StandardProcessor:
             return torch.cat(padded_strips_for_vstack, dim=1)
         return img
 
+    @torch.no_grad()
     def get_cropped_face_using_kps(
         self,
         img: torch.Tensor,

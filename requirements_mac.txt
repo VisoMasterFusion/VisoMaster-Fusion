@@ -1,0 +1,51 @@
+# VisoMaster Fusion — macOS (Intel x86_64) requirements
+#
+# macOS x86_64 has hard upper bounds that do not exist on Windows/Linux:
+#   * torch/torchvision: last x86_64 macOS wheels are 2.2.2 / 0.17.2
+#   * no CUDA, no TensorRT, no onnxruntime-gpu
+#
+# Inference runs on the CPUExecutionProvider (or CoreMLExecutionProvider
+# where the model is supported). Use requirements_cu13.txt on Windows/Linux
+# with an NVIDIA GPU.
+
+# --- Core inference ---
+torch==2.2.2
+torchvision==0.17.2
+onnx==1.17.0
+onnxruntime==1.23.2
+numpy==1.26.4
+
+# --- Vision / math ---
+opencv-python==4.10.0.84
+# >=0.25 required: face_swappers.py and faceutil.py call
+# SimilarityTransform.from_estimate() unguarded, which 0.24 does not have.
+# Pinned to match requirements_cu13.txt.
+scikit-image==0.26.0
+scipy==1.14.1
+kornia==0.7.3
+einops==0.8.0
+pillow==10.4.0
+
+# --- UI ---
+pyside6==6.7.3
+pyside6-addons==6.7.3
+pyside6-essentials==6.7.3
+shiboken6==6.7.3
+qdarkstyle==3.2.3
+pyqtdarktheme==2.1.0
+pyqt-toast-notification==1.3.3
+darkdetect==0.7.1
+
+# --- Support ---
+omegaconf==2.3.0
+ftfy==6.2.3
+regex==2024.9.11
+requests==2.32.3
+psutil==6.0.0
+tqdm==4.66.5
+send2trash==1.8.3
+packaging==24.1
+colorama==0.4.6
+rich==13.8.1
+protobuf==4.25.5
+pyvirtualcam==0.12.1

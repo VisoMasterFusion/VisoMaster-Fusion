@@ -838,6 +838,50 @@ def convert_face_landmark_98_to_5(face_landmark_98, face_landmark_98_score):
     return face_landmark_5, face_landmark_5_score
 
 
+# TUFA's dense 314-point set. It is not a dataset topology, so these indices were
+# recovered from the export fork's structure prompts: TUFA addresses a landmark by its
+# anchor position in a canonical mean face, so an anchor that Prompt/shape_314.npz
+# shares with Prompt/shape_98.npz is the same semantic point. The five below are exact
+# (0.0000 px) anchor matches for WFLW 96/97/54/76/82, and running both graphs on the
+# same crop puts the predicted pairs within 0.15 px of each other on the CPU EP and
+# 0.05 px through the app's TensorRT path (a wrong pairing is ~87 px off, for scale).
+LANDMARK_314_EYE_LEFT = 312
+LANDMARK_314_EYE_RIGHT = 313
+LANDMARK_314_NOSE_TIP = 154
+LANDMARK_314_LIP_LEFT = 51
+LANDMARK_314_LIP_RIGHT = 258
+# Eye corners, used only for the use_mean_eyes variant. WFLW's lid points (62/66,
+# 70/74) have no exact counterpart in the 314 set, so this averages the two corners
+# per eye instead of four points; on the canonical face that lands within a pixel of
+# the four-point mean.
+LANDMARK_314_EYE_LEFT_CORNERS = [28, 126]  # WFLW 60 (outer), 64 (inner)
+LANDMARK_314_EYE_RIGHT_CORNERS = [186, 283]  # WFLW 68 (inner), 72 (outer)
+
+
+def convert_face_landmark_314_to_5(face_landmark_314, face_landmark_314_score):
+    face_landmark_5 = np.array(
+        [
+            face_landmark_314[LANDMARK_314_EYE_LEFT],  # eye left
+            face_landmark_314[LANDMARK_314_EYE_RIGHT],  # eye-right
+            face_landmark_314[LANDMARK_314_NOSE_TIP],  # nose,
+            face_landmark_314[LANDMARK_314_LIP_LEFT],  # lip left
+            face_landmark_314[LANDMARK_314_LIP_RIGHT],  # lip right
+        ]
+    )
+
+    face_landmark_5_score = np.array(
+        [
+            face_landmark_314_score[LANDMARK_314_EYE_LEFT],  # eye left
+            face_landmark_314_score[LANDMARK_314_EYE_RIGHT],  # eye-right
+            face_landmark_314_score[LANDMARK_314_NOSE_TIP],  # nose,
+            face_landmark_314_score[LANDMARK_314_LIP_LEFT],  # lip left
+            face_landmark_314_score[LANDMARK_314_LIP_RIGHT],  # lip right
+        ]
+    )
+
+    return face_landmark_5, face_landmark_5_score
+
+
 def convert_face_landmark_106_to_5(face_landmark_106):
     face_landmark_5 = np.array(
         [
@@ -907,6 +951,10 @@ def convert_face_landmark_x_to_5(pts, **kwargs):
     elif pts.shape[0] == 98:
         pt5 = convert_face_landmark_98_to_5(
             face_landmark_98=pts, face_landmark_98_score=pts_score
+        )
+    elif pts.shape[0] == 314:
+        pt5 = convert_face_landmark_314_to_5(
+            face_landmark_314=pts, face_landmark_314_score=pts_score
         )
     elif pts.shape[0] == 106:
         pt5 = convert_face_landmark_106_to_5(face_landmark_106=pts)
@@ -1410,6 +1458,35 @@ def parse_pt2_from_pt478(pt478, use_lip=True, use_mean_eyes=False):
     return pt2
 
 
+def parse_pt2_from_pt314(pt314, use_lip=True, use_mean_eyes=False):
+    """
+    parsing the 2 points according to TUFA's dense 314 points, which cancels the roll
+
+    Indices come from the anchor correspondence documented above
+    convert_face_landmark_314_to_5. Without this branch parse_pt2_from_pt_x would fall
+    into its ``shape[0] > 101`` case and read the first 101 points as if they were the
+    101-point topology, which for this x-sorted set is the left third of the face.
+    """
+    if use_mean_eyes:
+        pt_left_eye = np.mean(pt314[LANDMARK_314_EYE_LEFT_CORNERS], axis=0)
+        pt_right_eye = np.mean(pt314[LANDMARK_314_EYE_RIGHT_CORNERS], axis=0)
+    else:
+        pt_left_eye = pt314[LANDMARK_314_EYE_LEFT]  # Specific left eye point
+        pt_right_eye = pt314[LANDMARK_314_EYE_RIGHT]  # Specific right eye point
+
+    if use_lip:
+        # use lip
+        pt_center_eye = (pt_left_eye + pt_right_eye) / 2
+        pt_center_lip = (
+            pt314[LANDMARK_314_LIP_LEFT] + pt314[LANDMARK_314_LIP_RIGHT]
+        ) / 2
+        pt2 = np.stack([pt_center_eye, pt_center_lip], axis=0)
+    else:
+        pt2 = np.stack([pt_left_eye, pt_right_eye], axis=0)
+
+    return pt2
+
+
 def parse_pt2_from_pt68(pt68, use_lip=True):
     """
     parsing the 2 points according to the 68 points, which cancels the roll
@@ -1499,6 +1576,8 @@ def parse_pt2_from_pt_x(pts, use_lip=True, use_mean_eyes=False):
         pt2 = parse_pt2_from_pt98(pts, use_lip=use_lip, use_mean_eyes=use_mean_eyes)
     elif pts.shape[0] == 478:
         pt2 = parse_pt2_from_pt478(pts, use_lip=use_lip, use_mean_eyes=use_mean_eyes)
+    elif pts.shape[0] == 314:
+        pt2 = parse_pt2_from_pt314(pts, use_lip=use_lip, use_mean_eyes=use_mean_eyes)
     elif pts.shape[0] > 101:
         # take the first 101 points
         pt2 = parse_pt2_from_pt101(pts[:101], use_lip=use_lip)

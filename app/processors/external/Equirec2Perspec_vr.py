@@ -1,11 +1,13 @@
-import cv2
 import threading
 from collections import OrderedDict
 from functools import lru_cache
-from typing import Dict, Any
+
+import cv2
 import numpy as np
 import torch
 import torch.nn.functional as F
+
+from app.helpers.vr_geometry import VRGeometry, rays_to_frame_pixels
 
 # E2P-CACHE-01: perspective plane grid cache — (FOV, height, width) → (persp_xx, persp_yy, w_len, h_len).
 # Stores CPU tensors; callers move to device.  Thread-safe: _PERSP_GRID_CACHE_LOCK guards
@@ -81,18 +83,26 @@ class Equirectangular:
         # for that frame, then freed by setting to None at the next copy_() invalidation.
         # This avoids 24+ redundant uint8→float32 conversions per frame (one per tile/crop)
         # that were the dominant VR processing bottleneck after the VR-MEM-01 change.
-        self._img_float: "torch.Tensor | None" = None
+        self._img_float: torch.Tensor | None = None
 
-    def GetPerspective(self, FOV: float, THETA: float, PHI: float, height: int, width: int) -> torch.Tensor:
+    def GetPerspective(self, FOV: float, THETA: float, PHI: float, height: int, width: int,
+                       geometry: "VRGeometry | None" = None,
+                       is_left_eye: "bool | None" = None) -> torch.Tensor:
         #
         # THETA is left/right angle, PHI is up/down angle, both in degree
+        #
+        # geometry describes how the source frame's pixels map to directions, and
+        # is_left_eye says which eye THETA addresses (None = the frame is one view).
+        # Passing no geometry keeps the historical assumption that the whole frame is
+        # a 360°x180° equirect, i.e. VR180 side-by-side.
         #
         # Returns: Perspective crop as Torch tensor (C, H, W) in RGB, uint8 format, on GPU.
 
         equ_h = self._height
         equ_w = self._width
-        equ_cx = (equ_w - 1) / 2.0
-        equ_cy = (equ_h - 1) / 2.0
+
+        if geometry is None:
+            geometry = VRGeometry(frame_height=equ_h, frame_width=equ_w)
 
         # E2P-CACHE-01: perspective plane grid — depends only on FOV and output size,
         # NOT on THETA/PHI. Cached AS GPU TENSORS keyed by (FOV, h, w, device): a
@@ -136,8 +146,14 @@ class Equirectangular:
 
         # E2P-CACHE-02: rotation matrices cached by (THETA, PHI, device).
         # Avoids 2× cv2.Rodrigues + numpy→GPU on every call (was 48+ calls per tile-detect frame).
+        # Rotation happens in the addressed eye's own camera frame, so THETA has the
+        # eye's optical axis subtracted from it.  Doing this in a frame-level sphere
+        # instead would break above 180° coverage, where the two eyes' longitude
+        # ranges pass ±180° and atan2 folds them onto each other.
         R1_torch, R2_torch = _get_e2p_rotation_matrices_cached(
-            float(THETA), float(PHI), str(self.device)
+            float(geometry.rotation_theta(float(THETA), is_left_eye)),
+            float(PHI),
+            str(self.device),
         )
 
         # Rotate the 3D points
@@ -151,20 +167,22 @@ class Equirectangular:
         rotated_xyz_flat = R2_torch @ R1_torch @ xyz_flat
         rotated_xyz = rotated_xyz_flat.T.reshape(height, width, 3) # H, W, 3
 
-        # Convert Cartesian to spherical coordinates (longitude, latitude)
-        # x_eq = rotated_xyz[..., 0], y_eq = rotated_xyz[..., 1], z_eq = rotated_xyz[..., 2]
-        lon_rad = torch.atan2(rotated_xyz[..., 1], rotated_xyz[..., 0]) # Longitude
-        # Bug 1 fix: clamp to [-1, 1] before asin to avoid NaN from float rounding at poles
-        lat_rad = torch.asin(torch.clamp(rotated_xyz[..., 2], -1.0, 1.0))  # Latitude
-
-        # Convert spherical to equirectangular pixel coordinates
-        lon_px = (lon_rad / torch.pi) * equ_cx + equ_cx # Map [-pi, pi] to [0, equ_w-1]
-        lat_px = (-lat_rad / (torch.pi / 2.0)) * equ_cy + equ_cy # Map [-pi/2, pi/2] to [0, equ_h-1] (lat is inverted)
+        # Project each ray onto the source frame.  Which formula applies depends on
+        # the projection, so it lives in vr_geometry alongside its exact inverse
+        # (used by Perspec2Equirec) to keep the two from drifting apart.
+        lon_px, lat_px = rays_to_frame_pixels(rotated_xyz, geometry, is_left_eye)
 
         # Pre-sanitise pixel coords before normalising for grid_sample.
-        # Longitude: wrap circularly so the 0°/360° seam maps cleanly.
-        # fmod handles the case where atan2 returns exactly ±π, producing lon_px == equ_w.
-        lon_px = torch.fmod(lon_px, equ_w)
+        if geometry.wraps_longitude:
+            # This view closes into a full circle, so wrap circularly and the
+            # 0°/360° seam maps cleanly.  fmod also handles atan2 returning
+            # exactly ±π, which would give lon_px == equ_w.
+            lon_px = torch.fmod(lon_px, equ_w)
+        else:
+            # Partial coverage: pixels past the edge belong to the other eye (or to
+            # nothing), so clamp within this eye's columns instead of wrapping.
+            eye_x_min, eye_x_max = geometry.eye_x_bounds(is_left_eye)
+            lon_px = torch.clamp(lon_px, eye_x_min, eye_x_max)
         # Latitude: clamp at the poles so float rounding near ±90° never exceeds image bounds.
         lat_px = torch.clamp(lat_px, 0.0, equ_h - 1.0)
 

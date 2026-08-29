@@ -86,6 +86,7 @@ def test_clear_all_target_media_cancel_leaves_state_unchanged(monkeypatch):
     placeholder_signal = _DummySignal()
     path_line_edit = _DummyLineEdit("E:/media")
     main_window = SimpleNamespace(
+        control={},
         target_videos={},
         target_faces={"face_1": object()},
         selected_video_button=object(),
@@ -122,6 +123,7 @@ def test_clear_all_target_media_confirm_clears_state(monkeypatch):
     path_line_edit = _DummyLineEdit("E:/media")
     clear_target_faces_calls = []
     main_window = SimpleNamespace(
+        control={},
         target_videos={},
         target_faces={"face_1": object()},
         selected_video_button=object(),
@@ -166,6 +168,36 @@ def test_clear_all_target_media_confirm_clears_state(monkeypatch):
     assert clear_target_faces_calls == [(main_window, False)]
 
 
+def test_clear_all_target_media_skips_confirmation_when_toggle_is_set(monkeypatch):
+    main_window = SimpleNamespace(
+        control={"SkipClearConfirmationToggle": True},
+        target_videos={},
+        target_faces={},
+        selected_video_button=object(),
+        targetVideosPathLineEdit=_DummyLineEdit("E:/media"),
+        last_target_media_folder_path="E:/media",
+        targetVideosList=_DummyListWidget(),
+        placeholder_update_signal=_DummySignal(),
+        video_loader_worker=None,
+    )
+    main_window.target_videos["media_1"] = _DummyTargetMediaButton(
+        main_window, "media_1"
+    )
+
+    monkeypatch.setattr(
+        "app.ui.widgets.actions.video_control_actions.block_if_issue_scan_active",
+        lambda *_args, **_kwargs: False,
+    )
+
+    def fail_question(*_args, **_kwargs):
+        raise AssertionError("confirmation dialog must be skipped")
+
+    monkeypatch.setattr(QtWidgets.QMessageBox, "question", fail_question)
+
+    assert list_view_actions.clear_all_target_media(main_window) is True
+    assert main_window.target_videos == {}
+
+
 def test_clear_all_target_media_blocked_leaves_state_unchanged(monkeypatch):
     main_window = SimpleNamespace(
         target_videos={"media_1": object()},
@@ -195,6 +227,7 @@ def test_clear_all_input_faces_cancel_leaves_state_unchanged(monkeypatch):
     target_face = _DummyTargetFace({"face_1": assigned_face})
     path_line_edit = _DummyLineEdit("E:/faces")
     main_window = SimpleNamespace(
+        control={},
         input_faces={},
         target_faces={"target_1": target_face},
         inputFacesPathLineEdit=path_line_edit,
@@ -234,6 +267,7 @@ def test_clear_all_input_faces_confirm_clears_state(monkeypatch):
     path_line_edit = _DummyLineEdit("E:/faces")
     target_face = _DummyTargetFace({"face_1": object(), "face_2": object()})
     main_window = SimpleNamespace(
+        control={},
         input_faces={},
         target_faces={"target_1": target_face},
         inputFacesPathLineEdit=path_line_edit,
@@ -303,6 +337,7 @@ def test_clear_all_embeddings_cancel_leaves_state_unchanged(monkeypatch):
     target_face = _DummyTargetFace(merged_embeddings={"embed_1": assigned_embedding})
     embed_button = _DummyEmbedButton()
     main_window = SimpleNamespace(
+        control={},
         merged_embeddings={"embed_1": embed_button},
         target_faces={"target_1": target_face},
         inputEmbeddingsList=_DummyListWidget(),
@@ -336,6 +371,7 @@ def test_clear_all_embeddings_confirm_clears_state(monkeypatch):
     embed_button = _DummyEmbedButton()
     list_widget = _DummyListWidget()
     main_window = SimpleNamespace(
+        control={},
         merged_embeddings={"embed_1": embed_button},
         target_faces={"target_1": target_face},
         inputEmbeddingsList=list_widget,

@@ -1,11 +1,14 @@
 import torch
 import threading
+import weakref
+from collections import OrderedDict
 from skimage import transform as trans
 from torchvision.transforms import v2
 from app.processors.utils import faceutil
+from app.processors.models_data import models_dir
 import numpy as np
 from numpy.linalg import norm as l2norm
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Any
 
 if TYPE_CHECKING:
     from app.processors.models_processor import ModelsProcessor
@@ -17,18 +20,35 @@ class FaceSwappers:
         self,
         models_processor: "ModelsProcessor",
         function_worker: "FunctionWorker",
-    ):
+    ) -> None:
         self.models_processor = models_processor
         self.function_worker = function_worker
-        self.current_swapper_model = None
-        self.current_arcface_model = None
-        self._session_io_name_cache: dict = {}  # FS-PERF-02: cache input/output names keyed by session id
+
+        # Support dual-swapper pipelines without ping-pong eviction
+        self._active_swapper_models: OrderedDict[str, bool] = OrderedDict()
+        self._MAX_ACTIVE_SWAPPERS: int = 2
+
+        self.current_arcface_model: str | None = None
+        # FS-PERF-02: cache input/output names per InferenceSession.
+        #
+        # Keyed by the session object itself, not id(session). Sessions are
+        # unloaded whenever the swapper or provider changes, and CPython reuses
+        # the freed address for the next allocation — so an id() key could hand a
+        # newly loaded model the previous model's IO names. That surfaced as
+        # "Failed to find input name in the mapping: input.1" when GhostArcFace
+        # (input "img") landed on the address of a released Inswapper128ArcFace
+        # (input "input.1"). A weak-keyed map drops entries as soon as the
+        # session is collected, so a stale name can never be read back.
+        self._session_io_name_cache: weakref.WeakKeyDictionary = (
+            weakref.WeakKeyDictionary()
+        )
         self._io_cache_lock = threading.Lock()
         self.resize_112 = v2.Resize(
             (112, 112), interpolation=v2.InterpolationMode.BILINEAR, antialias=False
         )
-        self.swapper_models = [
+        self.swapper_models: list[str] = [
             "Inswapper128",
+            "AlphaFace",
             "InStyleSwapper256 Version A",
             "InStyleSwapper256 Version B",
             "InStyleSwapper256 Version C",
@@ -38,32 +58,53 @@ class FaceSwappers:
             "GhostFacev3",
             "CSCS",
         ]
-        self.arcface_models = [
+        self.arcface_models: list[str] = [
             "Inswapper128ArcFace",
             "SimSwapArcFace",
             "GhostArcFace",
             "CSCSArcFace",
             "CSCSIDArcFace",
         ]
+        # AlphaFace ships its own ArcFace->ID projection matrix; loaded on first use.
+        self._alphaface_emap: np.ndarray | None = None
 
-    def unload_models(self):
+    @property
+    def current_swapper_model(self) -> str | None:
+        """Backward-compatible property returning the most recently active swapper."""
         with self.models_processor.model_lock:
+            if self._active_swapper_models:
+                return next(reversed(self._active_swapper_models))
+            return None
+
+    @current_swapper_model.setter
+    def current_swapper_model(self, value: str | None) -> None:
+        with self.models_processor.model_lock:
+            if value is not None:
+                self._active_swapper_models[value] = True
+                self._active_swapper_models.move_to_end(value)
+
+    def unload_models(self) -> None:
+        with self.models_processor.model_lock:
+            self._active_swapper_models.clear()
             for model_name in self.swapper_models:
                 self.models_processor.unload_model(model_name)
             for model_name in self.arcface_models:
                 self.models_processor.unload_model(model_name)
 
-    def _manage_model(self, new_model_name):
-        # FS-RACE-01: protect read-modify-write of current_swapper_model with lock
+    def _manage_model(self, new_model_name: str) -> None:
+        # FS-RACE-01: protect read-modify-write of active swappers with lock
         with self.models_processor.model_lock:
-            if (
-                self.current_swapper_model
-                and self.current_swapper_model != new_model_name
-            ):
-                self.models_processor.unload_model(self.current_swapper_model)
-            # FS-BUG-07: current_swapper_model is committed only after load confirmation (see _load_swapper_model)
+            if new_model_name in self._active_swapper_models:
+                self._active_swapper_models.move_to_end(new_model_name)
+                return
 
-    def _load_swapper_model(self, model_name):
+            # Keep up to 2 active swapper models in VRAM for seamless dual swapping
+            while len(self._active_swapper_models) >= self._MAX_ACTIVE_SWAPPERS:
+                oldest_model, _ = self._active_swapper_models.popitem(last=False)
+                if oldest_model != new_model_name:
+                    self.models_processor.unload_model(oldest_model)
+
+    def _load_swapper_model(self, model_name: str) -> Any:
         """Handles loading and swapping of swapper models."""
         self._manage_model(model_name)
         model = self.models_processor.models.get(model_name)
@@ -72,7 +113,8 @@ class FaceSwappers:
         # FS-BUG-07: only commit state after load is confirmed non-None
         if model is not None:
             with self.models_processor.model_lock:
-                self.current_swapper_model = model_name
+                self._active_swapper_models[model_name] = True
+                self._active_swapper_models.move_to_end(model_name)
         return model
 
     def _run_model_with_lazy_build_check(
@@ -96,20 +138,12 @@ class FaceSwappers:
             )
 
         try:
-            # ⚠️ This is a critical synchronization point.
-            # PRE-INFERENCE SYNC
-            if self.models_processor.device_type == "cuda":
-                torch.cuda.current_stream().synchronize()
-            elif self.models_processor.device_type != "cpu":
-                # This handles synchronization for other execution providers (e.g., DirectML)
-                self.models_processor.syncvec.cpu()
-
-            ort_session.run_with_iobinding(io_binding)
-
+            self.function_worker.run_ort_with_iobinding(ort_session, io_binding)
         finally:
             if is_lazy_build:
                 self.models_processor.hide_build_dialog.emit()
 
+    @torch.no_grad()
     def run_recognize_direct(
         self, img, kps, similarity_type="Auto", arcface_model="Inswapper128ArcFace"
     ):
@@ -141,12 +175,14 @@ class FaceSwappers:
 
         return embedding, cropped_image
 
+    @torch.no_grad()
     def run_recognize(
         self, img, kps, similarity_type="Auto", face_swapper_model="Inswapper128"
     ):
         arcface_model = self.function_worker.get_arcface_model(face_swapper_model)
         return self.run_recognize_direct(img, kps, similarity_type, arcface_model)
 
+    @torch.no_grad()
     def recognize(self, arcface_model, img, face_kps, similarity_type=None):
         """
         Generates the face embedding using the specified ArcFace model and alignment strategy.
@@ -211,15 +247,14 @@ class FaceSwappers:
         # --- INFERENCE ---
         img = torch.unsqueeze(img, 0).contiguous()
 
-        session_id = id(ort_session)
         with self._io_cache_lock:
-            if session_id not in self._session_io_name_cache:
-                self._session_io_name_cache[session_id] = {
+            if ort_session not in self._session_io_name_cache:
+                self._session_io_name_cache[ort_session] = {
                     "input": ort_session.get_inputs()[0].name,
                     "outputs": [o.name for o in ort_session.get_outputs()],
                 }
-            input_name = self._session_io_name_cache[session_id]["input"]
-            output_names = self._session_io_name_cache[session_id]["outputs"]
+            input_name = self._session_io_name_cache[ort_session]["input"]
+            output_names = self._session_io_name_cache[ort_session]["outputs"]
 
         io_binding = ort_session.io_binding()
         io_binding.bind_input(
@@ -242,6 +277,7 @@ class FaceSwappers:
 
         return np.array(io_binding.copy_outputs_to_cpu()).flatten(), cropped_image
 
+    @torch.no_grad()
     def preprocess_image_cscs(self, img, face_kps):
         """
         Preprocesses the image for the CSCS ArcFace models.
@@ -283,6 +319,7 @@ class FaceSwappers:
 
         return torch.unsqueeze(image, 0).contiguous(), cropped_image
 
+    @torch.no_grad()
     def recognize_cscs(self, img, face_kps):
         img, cropped_image = self.preprocess_image_cscs(img, face_kps)
 
@@ -328,6 +365,7 @@ class FaceSwappers:
 
         return embedding, cropped_image
 
+    @torch.no_grad()
     def recognize_cscs_id_adapter(self, img, face_kps):
         model_name = "CSCSIDArcFace"
         model = self.models_processor.models.get(model_name)
@@ -375,6 +413,7 @@ class FaceSwappers:
         latent = source_embedding.reshape((1, -1))
         return latent
 
+    @torch.no_grad()
     def run_swapper_cscs(
         self, image: torch.Tensor, embedding: torch.Tensor, output: torch.Tensor
     ) -> None:
@@ -458,6 +497,156 @@ class FaceSwappers:
 
         return self._calc_emap_latent(source_embedding)
 
+    def calc_swapper_latent_alphaface(
+        self, source_embedding: np.ndarray
+    ) -> np.ndarray | None:
+        """Projects the shared W600K ArcFace embedding into AlphaFace ID space.
+
+        AlphaFace does not embed its projection matrix in the ONNX graph the way
+        Inswapper does, so the matrix ships as a repo asset instead of being read
+        back from the model. Returns ``None`` on any failure so the caller can
+        skip the swap instead of feeding the model garbage.
+        """
+        if self._alphaface_emap is None:
+            emap_path = models_dir / "alphaface" / "emp.npy"
+            try:
+                emap = np.load(emap_path).astype(np.float32)
+            except (OSError, ValueError) as exc:
+                print(f"[ERROR] Could not load AlphaFace identity projection: {exc}")
+                return None
+            if emap.shape != (512, 512):
+                print(
+                    "[ERROR] AlphaFace identity projection must have shape (512, 512)."
+                )
+                return None
+            self._alphaface_emap = emap
+
+        embedding = np.asarray(source_embedding, dtype=np.float32).reshape(1, -1)
+        if embedding.shape[1] != 512:
+            print("[ERROR] AlphaFace requires a 512-dimensional ArcFace embedding.")
+            return None
+        latent = np.dot(embedding, self._alphaface_emap)
+        latent_norm = np.linalg.norm(latent)
+        if not np.isfinite(latent_norm) or latent_norm <= 1e-12:
+            print("[ERROR] AlphaFace produced an invalid identity projection.")
+            return None
+        return latent / latent_norm
+
+    @torch.no_grad()
+    def run_swapper_alphaface(
+        self, image: torch.Tensor, embedding: torch.Tensor, output: torch.Tensor
+    ) -> None:
+        model_name = "AlphaFace"
+
+        model = self._load_swapper_model(model_name)
+        if not model:
+            # The caller falls back to the unswapped crop when the buffer stays
+            # empty, so zero it rather than leaving uninitialised VRAM.
+            output.zero_()
+            print(
+                "[ERROR] AlphaFace model not loaded. Run 'python download_models.py' "
+                "to install model_assets/alphaface/alphaface_swapper_fused_norm.onnx."
+            )
+            return
+
+        image = image.contiguous()
+        embedding = embedding.contiguous()
+        output = output.contiguous()
+
+        io_binding = model.io_binding()
+        io_binding.clear_binding_inputs()
+        io_binding.clear_binding_outputs()
+        io_binding.bind_input(
+            name="target",
+            device_type=self.models_processor.device_type,
+            device_id=self.models_processor.binding_device_id,
+            element_type=np.float32,
+            shape=(1, 3, 256, 256),
+            buffer_ptr=image.data_ptr(),
+        )
+        io_binding.bind_input(
+            name="source_embedding",
+            device_type=self.models_processor.device_type,
+            device_id=self.models_processor.binding_device_id,
+            element_type=np.float32,
+            shape=(1, 512),
+            buffer_ptr=embedding.data_ptr(),
+        )
+        io_binding.bind_output(
+            name="output",
+            device_type=self.models_processor.device_type,
+            device_id=self.models_processor.binding_device_id,
+            element_type=np.float32,
+            shape=(1, 3, 256, 256),
+            buffer_ptr=output.data_ptr(),
+        )
+
+        self._run_model_with_lazy_build_check(model_name, model, io_binding)
+
+    @torch.no_grad()
+    def run_swapper_alphaface_batched(
+        self, images: torch.Tensor, embedding: torch.Tensor, output: torch.Tensor
+    ) -> None:
+        """Batched AlphaFace inference for sub-pixel 512px phase-shift resolution mode.
+
+        Optimized zero-copy tile execution using a persistent IOBinding instance
+        and direct GPU pointer offsets across contiguous sub-pixel phase slices.
+        """
+        model_name: str = "AlphaFace"
+        model = self._load_swapper_model(model_name)
+        if not model:
+            output.zero_()
+            print("[ERROR] AlphaFace model not loaded for batched execution.")
+            return
+
+        if not images.is_contiguous():
+            images = images.contiguous()
+        if not embedding.is_contiguous():
+            embedding = embedding.contiguous()
+        if not output.is_contiguous():
+            output = output.contiguous()
+
+        batch_size: int = images.shape[0]
+        device_type: str = self.models_processor.device_type
+        device_id: int = self.models_processor.binding_device_id
+
+        io_binding = model.io_binding()
+
+        for idx in range(batch_size):
+            img_tile: torch.Tensor = images[idx : idx + 1]
+            out_tile: torch.Tensor = output[idx : idx + 1]
+
+            io_binding.clear_binding_inputs()
+            io_binding.clear_binding_outputs()
+
+            io_binding.bind_input(
+                name="target",
+                device_type=device_type,
+                device_id=device_id,
+                element_type=np.float32,
+                shape=(1, 3, 256, 256),
+                buffer_ptr=img_tile.data_ptr(),
+            )
+            io_binding.bind_input(
+                name="source_embedding",
+                device_type=device_type,
+                device_id=device_id,
+                element_type=np.float32,
+                shape=(1, 512),
+                buffer_ptr=embedding.data_ptr(),
+            )
+            io_binding.bind_output(
+                name="output",
+                device_type=device_type,
+                device_id=device_id,
+                element_type=np.float32,
+                shape=(1, 3, 256, 256),
+                buffer_ptr=out_tile.data_ptr(),
+            )
+
+            self._run_model_with_lazy_build_check(model_name, model, io_binding)
+
+    @torch.no_grad()
     def run_inswapper(
         self, image: torch.Tensor, embedding: torch.Tensor, output: torch.Tensor
     ) -> None:
@@ -512,55 +701,69 @@ class FaceSwappers:
         # Run the model with lazy build handling
         self._run_model_with_lazy_build_check(model_name, model, io_binding)
 
+    @torch.no_grad()
     def run_inswapper_batched(
         self, images: torch.Tensor, embedding: torch.Tensor, output: torch.Tensor
     ) -> None:
         """Batched InSwapper inference for pixel-shift resolution mode.
 
-        Processes each tile sequentially through the ORT session since the ONNX
-        model expects a batch size of 1.
+        Optimized zero-copy tile execution using a persistent IOBinding instance
+        and direct GPU pointer offsets into contiguous memory blocks.
         """
-        model_name = "Inswapper128"
+        model_name: str = "Inswapper128"
         model = self._load_swapper_model(model_name)
         if not model:
             print("[ERROR] Inswapper128 model not loaded.")
             return
 
-        batch_size = images.shape[0]
-        for idx in range(batch_size):
-            img = images[idx : idx + 1].contiguous()
-            out = output[idx : idx + 1].contiguous()
-            emb = embedding.contiguous()
+        # Ensure memory contiguity once outside the tile loop
+        if not images.is_contiguous():
+            images = images.contiguous()
+        if not embedding.is_contiguous():
+            embedding = embedding.contiguous()
+        if not output.is_contiguous():
+            output = output.contiguous()
 
-            io_binding = model.io_binding()
+        batch_size: int = images.shape[0]
+        device_type: str = self.models_processor.device_type
+        device_id: int = self.models_processor.binding_device_id
+
+        # Reuse a single IOBinding instance across tiles
+        io_binding = model.io_binding()
+
+        for idx in range(batch_size):
+            img_tile: torch.Tensor = images[idx : idx + 1]
+            out_tile: torch.Tensor = output[idx : idx + 1]
+
             io_binding.clear_binding_inputs()
             io_binding.clear_binding_outputs()
+
             io_binding.bind_input(
                 name="target",
-                device_type=self.models_processor.device_type,
-                device_id=self.models_processor.binding_device_id,
+                device_type=device_type,
+                device_id=device_id,
                 element_type=np.float32,
                 shape=(1, 3, 128, 128),
-                buffer_ptr=img.data_ptr(),
+                buffer_ptr=img_tile.data_ptr(),
             )
             io_binding.bind_input(
                 name="source",
-                device_type=self.models_processor.device_type,
-                device_id=self.models_processor.binding_device_id,
+                device_type=device_type,
+                device_id=device_id,
                 element_type=np.float32,
                 shape=(1, 512),
-                buffer_ptr=emb.data_ptr(),
+                buffer_ptr=embedding.data_ptr(),
             )
             io_binding.bind_output(
                 name="output",
-                device_type=self.models_processor.device_type,
-                device_id=self.models_processor.binding_device_id,
+                device_type=device_type,
+                device_id=device_id,
                 element_type=np.float32,
                 shape=(1, 3, 128, 128),
-                buffer_ptr=out.data_ptr(),
+                buffer_ptr=out_tile.data_ptr(),
             )
+
             self._run_model_with_lazy_build_check(model_name, model, io_binding)
-            output[idx].copy_(out[0])
 
     def calc_swapper_latent_ghost(self, source_embedding: np.ndarray) -> np.ndarray:
         latent = source_embedding.reshape((1, -1))
@@ -578,6 +781,7 @@ class FaceSwappers:
 
         return self._calc_emap_latent(source_embedding)
 
+    @torch.no_grad()
     def run_iss_swapper(
         self,
         image: torch.Tensor,
@@ -628,6 +832,7 @@ class FaceSwappers:
         latent = latent / np.linalg.norm(latent, axis=1, keepdims=True)
         return latent
 
+    @torch.no_grad()
     def run_swapper_simswap512(
         self, image: torch.Tensor, embedding: torch.Tensor, output: torch.Tensor
     ) -> None:
@@ -666,6 +871,7 @@ class FaceSwappers:
         # Run the model with lazy build handling
         self._run_model_with_lazy_build_check(model_name, model, io_binding)
 
+    @torch.no_grad()
     def run_swapper_ghostface(
         self,
         image: torch.Tensor,
@@ -691,14 +897,13 @@ class FaceSwappers:
             return
 
         # FS-ROBUST-02: introspect output name dynamically instead of hardcoding node IDs
-        session_id = id(ghostfaceswap_model)
         with self._io_cache_lock:
-            if session_id not in self._session_io_name_cache:
-                self._session_io_name_cache[session_id] = {
+            if ghostfaceswap_model not in self._session_io_name_cache:
+                self._session_io_name_cache[ghostfaceswap_model] = {
                     "input": ghostfaceswap_model.get_inputs()[0].name,
                     "outputs": [o.name for o in ghostfaceswap_model.get_outputs()],
                 }
-            output_name = self._session_io_name_cache[session_id]["outputs"][0]
+            output_name = self._session_io_name_cache[ghostfaceswap_model]["outputs"][0]
 
         io_binding = ghostfaceswap_model.io_binding()
         io_binding.bind_input(

@@ -7,6 +7,7 @@ from typing import TYPE_CHECKING, Any, Dict, List
 from send2trash import send2trash
 import subprocess
 import sys
+import time
 
 from PySide6 import QtWidgets, QtGui, QtCore
 from PySide6.QtWidgets import QPushButton
@@ -322,6 +323,8 @@ class TargetMediaCardButton(CardButton):
             main_window.videoSeekLineEdit.setVisible(is_visible)
         if hasattr(main_window, "videoTimeLineEdit") and main_window.videoTimeLineEdit:
             main_window.videoTimeLineEdit.setVisible(is_visible)
+        if hasattr(main_window, "videoFpsLineEdit") and main_window.videoFpsLineEdit:
+            main_window.videoFpsLineEdit.setVisible(is_visible)
         if hasattr(main_window, "zoomLabel") and main_window.zoomLabel:
             main_window.zoomLabel.setVisible(is_visible)
         if (
@@ -371,9 +374,19 @@ class TargetMediaCardButton(CardButton):
             # Get video rotation metadata before loading
             rotation_angle = get_video_rotation(self.media_path)
             # Check for Variable Frame Rate (VFR) and warn the user
+            vfr_start = time.perf_counter()
             misc_helpers.check_and_warn_vfr(self.media_path)
+            print(
+                f"[INFO] Media Load [1/3]: Variable Frame Rate (VFR) validation completed in "
+                f"{time.perf_counter() - vfr_start:.3f}s for '{self.media_path}'."
+            )
             main_window.video_processor.media_rotation = rotation_angle
+            open_start = time.perf_counter()
             media_capture = cv2.VideoCapture(self.media_path)
+            print(
+                f"[INFO] Media Load [2/3]: OpenCV VideoCapture initialization completed in "
+                f"{time.perf_counter() - open_start:.3f}s for '{self.media_path}'."
+            )
             # Explicitly enable OpenCV's auto-rotation to let it handle metadata natively
             if hasattr(cv2, "CAP_PROP_ORIENTATION_AUTO"):
                 media_capture.set(cv2.CAP_PROP_ORIENTATION_AUTO, 1)
@@ -383,7 +396,12 @@ class TargetMediaCardButton(CardButton):
 
             media_capture.set(cv2.CAP_PROP_POS_FRAMES, 0)
             max_frames_number = int(media_capture.get(cv2.CAP_PROP_FRAME_COUNT)) - 1
+            read_start = time.perf_counter()
             _, frame = misc_helpers.read_frame(media_capture, rotation_angle)
+            print(
+                f"[INFO] Media Load [3/3]: First frame decoded and read into memory in "
+                f"{time.perf_counter() - read_start:.3f}s for '{self.media_path}'."
+            )
             main_window.video_processor.media_capture = media_capture
             self.media_capture = media_capture
             main_window.video_processor.fps = media_capture.get(cv2.CAP_PROP_FPS)
@@ -442,6 +460,11 @@ class TargetMediaCardButton(CardButton):
         main_window.videoSeekSlider.setValue(0)  # Set the slider to 0 for the new video
         main_window.videoSeekSlider.blockSignals(False)  # Unblock signals
 
+        # --- FORCE TIMELINE & THUMBNAILS TO REFRESH ---
+        main_window.videoSeekSlider.rangeChanged.emit(0, max_frames_number)
+        if hasattr(main_window, "timelineContainer"):
+            main_window.timelineContainer.thumbnail_track.request_thumbnails()
+
         # Toggle UI elements visibility based on file type
         self._toggle_timeline_visibility(
             main_window, self.file_type in ["video", "webcam"]
@@ -479,6 +502,17 @@ class TargetMediaCardButton(CardButton):
             # Re-initialize virtualcam to reset its dimensions with that of the new video
             main_window.video_processor.enable_virtualcam()
 
+        # --- AUTO-START WEBCAM FEED ---
+        # A webcam is a live sensor, so it should stream immediately without waiting for "Play".
+        if self.file_type == "webcam":
+            main_window.buttonMediaPlay.blockSignals(True)
+            main_window.buttonMediaPlay.setChecked(True)
+            main_window.buttonMediaPlay.blockSignals(False)
+            video_control_actions.set_play_button_icon_to_stop(main_window)
+
+            # Start the live stream immediately
+            main_window.video_processor.process_webcam()
+
         # list_view_actions.find_target_faces(main_window)
 
     def deselect_currently_selected_video(self, main_window):
@@ -514,6 +548,11 @@ class TargetMediaCardButton(CardButton):
                 0
             )  # Set the slider to 0 for the new video
             main_window.videoSeekSlider.blockSignals(False)  # Unblock signals
+
+            # --- FORCE TIMELINE & THUMBNAILS TO REFRESH ---
+            main_window.videoSeekSlider.rangeChanged.emit(0, 1)
+            if hasattr(main_window, "timelineContainer"):
+                main_window.timelineContainer.thumbnail_track.request_thumbnails()
 
             # Hide timeline UI elements when no media is selected
             self._toggle_timeline_visibility(main_window, False)
@@ -1196,7 +1235,13 @@ class TargetFaceCardButton(CardButton):
             return
 
         if main_window.video_processor.processing:
-            main_window.video_processor.stop_processing()
+            # --- WEBCAM GUARD ---
+            # Do not kill the live hardware sensor. Just flag the UI state as dirty
+            # so the background threads adapt to the removed face seamlessly.
+            if main_window.video_processor.file_type == "webcam":
+                main_window.video_processor.ui_state_is_dirty = True
+            else:
+                main_window.video_processor.stop_processing()
 
         i = self.get_item_position()
         main_window.targetFacesList.takeItem(i)

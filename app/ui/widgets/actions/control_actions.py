@@ -12,6 +12,7 @@ import qdarktheme
 
 if TYPE_CHECKING:
     from app.ui.main_ui import MainWindow
+from app.processors.utils import platform_support
 from app.ui.widgets.actions import common_actions as common_widget_actions
 
 #'''
@@ -35,6 +36,51 @@ def handle_face_detector_tracking_reset(main_window: "MainWindow", value: bool) 
     common_widget_actions.refresh_frame(main_window)
 
 
+def clear_gpu_memory(main_window: "MainWindow"):
+    """
+    Centralized VRAM management. Stops processing, unloads all backend models,
+    resets UI toggles, and safely reconstructs Denoiser KV maps if required.
+    """
+    main_window.video_processor.stop_processing()
+    main_window.function_worker.clear_gpu_memory()
+    main_window.swapfacesButton.setChecked(False)
+    main_window.editFacesButton.setChecked(False)
+
+    # --- FW-VRAM-RECOVERY: Automatically restore KV maps safely ---
+    # Centralized recovery: restores KV maps if Denoiser is active so the
+    # next frame swap doesn't fail due to missing PyTorch tensor references.
+    denoiser_on = (
+        main_window.control.get("DenoiserUNetEnableBeforeRestorersToggle", False)
+        or main_window.control.get("DenoiserAfterFirstRestorerToggle", False)
+        or main_window.control.get("DenoiserAfterRestorersToggle", False)
+    )
+
+    if (
+        denoiser_on
+        and hasattr(main_window, "target_faces")
+        and main_window.target_faces
+    ):
+        print("[INFO] Denoiser is active. Restoring KV maps after VRAM clear...")
+        for target_face in main_window.target_faces.values():
+            if hasattr(target_face, "calculate_assigned_input_embedding"):
+                target_face.calculate_assigned_input_embedding()
+
+        # Refresh context pointers for the active face so the UI tracks the newly allocated tensors
+        selected_id = getattr(main_window, "selected_target_face_id", None)
+        if selected_id:
+            active_face = main_window.target_faces.get(selected_id)
+            if active_face and hasattr(active_face, "assigned_kv_map"):
+                main_window.current_kv_tensors_map = active_face.assigned_kv_map
+
+    common_widget_actions.update_gpu_memory_progressbar(main_window)
+
+    # main_window.videoSeekSlider.markers = set() # Comment this to keep markers visible after vram clear
+    main_window.videoSeekSlider.update()
+
+    # Push a fresh frame to ensure the UI updates and models are JIT-loaded securely
+    common_widget_actions.refresh_frame(main_window)
+
+
 def change_execution_provider(
     main_window: "MainWindow", new_provider: str | None = None
 ) -> None:
@@ -42,21 +88,43 @@ def change_execution_provider(
     Changes the global execution provider.
     If new_provider is omitted (e.g., during startup initialization), it safely
     falls back to reading the current state from the main_window's control dictionary.
+
+    A provider the current machine cannot supply is downgraded to the best local
+    one rather than raising. Workspaces are portable, so a file saved on an
+    NVIDIA box will ask a Mac for "TensorRT" or "CUDA"; that should not be fatal.
     """
+    supported = platform_support.available_execution_providers()
+    fallback = platform_support.default_execution_provider()
+
     if new_provider is None:
         new_provider = str(
-            main_window.control.get("ProvidersPrioritySelection", "TensorRT")
+            main_window.control.get("ProvidersPrioritySelection", fallback)
         )
+
+    if new_provider not in supported:
+        print(
+            f"[WARN] Execution provider '{new_provider}' is not available on this "
+            f"machine. Falling back to '{fallback}'."
+        )
+        new_provider = fallback
+        main_window.control["ProvidersPrioritySelection"] = new_provider
+        provider_widget = main_window.parameter_widgets.get(
+            "ProvidersPrioritySelection"
+        )
+        if provider_widget and hasattr(provider_widget, "setCurrentText"):
+            provider_widget.setCurrentText(new_provider)
 
     main_window.video_processor.stop_processing()
     main_window.function_worker.switch_providers_priority(new_provider)
-    main_window.function_worker.clear_gpu_memory()
-    common_widget_actions.update_gpu_memory_progressbar(main_window)
+
+    # Route directly through the centralized UI memory cleaner
+    # to guarantee VRAM is wiped and all dependent KV maps are safely restored.
+    clear_gpu_memory(main_window)
 
 
 def change_threads_number(main_window: "MainWindow", new_threads_number: int) -> None:
     main_window.video_processor.set_number_of_threads(new_threads_number)
-    torch.cuda.empty_cache()
+    platform_support.empty_cache()
     common_widget_actions.update_gpu_memory_progressbar(main_window)
 
 
@@ -880,3 +948,91 @@ def handle_ff_auto_quality_toggle(main_window: "MainWindow", new_value: bool) ->
         quality_widget.reset_default_button.setEnabled(manual_enabled)
     if hasattr(quality_widget, "line_edit") and quality_widget.line_edit:
         quality_widget.line_edit.setEnabled(manual_enabled)
+
+
+def handle_sort_embeddings_az_toggle(
+    main_window: "MainWindow", new_value: bool, *args
+) -> None:
+    if not new_value:
+        return
+    try:
+        from app.ui.widgets.actions import list_view_actions
+
+        list_view_actions.sort_embeddings_list_az(main_window)
+    except Exception as e:
+        print(f"[ERROR] sort embeddings: {e}")
+        import traceback
+
+        traceback.print_exc()
+
+
+def handle_seek_bar_thumbnails_toggle(main_window: "MainWindow", enabled: bool):
+    thumb = None
+    composite = None
+
+    for attr in ("compositeTimeline", "composite_timeline", "timelineWidget"):
+        composite = getattr(main_window, attr, None)
+        if composite is not None and hasattr(composite, "thumbnail_track"):
+            thumb = composite.thumbnail_track
+            break
+
+    if thumb is None:
+        slider = getattr(main_window, "videoSeekSlider", None)
+        if slider is not None:
+            parent = slider.parent()
+            if parent is not None and hasattr(parent, "thumbnail_track"):
+                composite = parent
+                thumb = parent.thumbnail_track
+
+    if thumb is None:
+        return
+
+    layout = getattr(composite, "layout", None) if composite is not None else None
+    if layout is not None and not hasattr(layout, "setSpacing"):
+        layout = None
+
+    scroll_area = getattr(main_window, "timelineScrollArea", None)
+
+    if enabled:
+        if layout is not None:
+            layout.setSpacing(2)
+            layout.setContentsMargins(0, 0, 0, 0)
+        thumb.setFixedHeight(40)
+        thumb.setMaximumHeight(40)
+        thumb.setVisible(True)
+        if composite is not None:
+            composite.setMinimumHeight(0)
+            composite.setMaximumHeight(16777215)
+        if scroll_area is not None:
+            scroll_area.setMinimumHeight(0)
+            scroll_area.setMaximumHeight(16777215)
+        thumb.request_thumbnails()
+    else:
+        if getattr(thumb, "worker", None) and thumb.worker.isRunning():
+            thumb.worker.cancel()
+            thumb.worker.wait()
+        thumb.thumbnail_cache.clear()
+        thumb.expected_intervals.clear()
+        thumb.setVisible(False)
+        thumb.setFixedHeight(0)
+        thumb.setMaximumHeight(0)
+        if layout is not None:
+            layout.setSpacing(0)
+            layout.setContentsMargins(0, 0, 0, 0)
+        if composite is not None:
+            # Keep only the slider height (~20-28px typical)
+            slider = getattr(composite, "slider", None) or getattr(
+                main_window, "videoSeekSlider", None
+            )
+            h = slider.height() if slider is not None else 24
+            composite.setFixedHeight(h)
+            composite.setMaximumHeight(h)
+            composite.adjustSize()
+            composite.updateGeometry()
+        if scroll_area is not None:
+            h = composite.height() if composite is not None else 24
+            scroll_area.setFixedHeight(h)
+            scroll_area.setMaximumHeight(h)
+            scroll_area.adjustSize()
+            scroll_area.updateGeometry()
+        thumb.update()

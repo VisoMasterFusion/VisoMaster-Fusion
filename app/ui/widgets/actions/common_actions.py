@@ -42,6 +42,11 @@ def create_and_show_messagebox(
 def create_and_show_toast_message(
     main_window: "MainWindow", title: str, message: str, style_type="information"
 ):
+    if hasattr(main_window, "control") and not main_window.control.get(
+        "EnableMediaToastToggle", True
+    ):
+        return
+
     style_preset_map = {
         "success": ToastPreset.SUCCESS,
         "warning": ToastPreset.WARNING,
@@ -55,7 +60,13 @@ def create_and_show_toast_message(
     toast = Toast(main_window)
     toast.setTitle(title)
     toast.setText(message)
-    toast.setDuration(10000)
+    duration = 2000
+    if hasattr(main_window, "control") and "ToastDurationText" in main_window.control:
+        try:
+            duration = int(float(main_window.control["ToastDurationText"]))
+        except (ValueError, TypeError):
+            pass
+    toast.setDuration(duration)
     toast.setPosition(ToastPosition.TOP_RIGHT)  # Default: ToastPosition.BOTTOM_RIGHT
     toast.applyPreset(style_preset_map[style_type])  # Apply style preset
     toast.show()
@@ -600,17 +611,6 @@ def set_gpu_memory_progressbar_value(
     main_window.vramProgressBar.update()
 
 
-def clear_gpu_memory(main_window: "MainWindow"):
-    main_window.video_processor.stop_processing()
-    main_window.function_worker.clear_gpu_memory()
-    main_window.swapfacesButton.setChecked(False)
-    main_window.editFacesButton.setChecked(False)
-    update_gpu_memory_progressbar(main_window)
-
-    # main_window.videoSeekSlider.markers = set() # Comment this to keep markers visible after vram clear
-    main_window.videoSeekSlider.update()
-
-
 def extract_frame_as_image(
     main_window: "MainWindow",
     media_file_path,
@@ -619,6 +619,7 @@ def extract_frame_as_image(
     webcam_backend=False,
     cache_thumbnail=True,
     scale: tuple[int, int] | None = (70, 70),
+    return_metadata=False,
 ):
     """
     Extracts a frame from a media file and converts it to a QImage for thumbnails.
@@ -669,12 +670,36 @@ def extract_frame_as_image(
         if thumbnail_path:
             frame = misc_helpers.read_image_file(thumbnail_path)
             if frame is not None:
-                return convert_frame_to_image(frame)
+                q_image = convert_frame_to_image(frame)
+                if return_metadata:
+                    metadata = main_window.thumbnail_manager.get_thumbnail_metadata(
+                        thumbnail_path, media_file_path
+                    )
+                    if metadata is not None:
+                        return q_image, metadata
+                    if file_type == "image":
+                        metadata = misc_helpers.probe_media_metadata(
+                            media_file_path, file_type
+                        )
+                        if metadata is not None:
+                            main_window.thumbnail_manager.create_thumbnail(
+                                frame, media_file_path, metadata=metadata
+                            )
+                            return q_image, metadata
+                    thumbnail_path = None
+                else:
+                    return q_image
 
     # If no cache is found, or for webcams, generate the frame from source.
     frame = None
+    metadata = None
     if file_type == "image":
         frame = misc_helpers.read_image_file(media_file_path)
+        if isinstance(frame, np.ndarray):
+            height, width = frame.shape[:2]
+            metadata = misc_helpers.MediaMetadata(
+                width=int(width), height=int(height), total_frames=1
+            )
     elif file_type == "video":
         # Get rotation for thumbnail
         rotation_angle = get_video_rotation(media_file_path)
@@ -690,7 +715,20 @@ def extract_frame_as_image(
                 # Explicitly enable OpenCV's auto-rotation
                 if hasattr(cv2, "CAP_PROP_ORIENTATION_AUTO"):
                     cap.set(cv2.CAP_PROP_ORIENTATION_AUTO, 1)
+                width = int(cap.get(cv2.CAP_PROP_FRAME_WIDTH))
+                height = int(cap.get(cv2.CAP_PROP_FRAME_HEIGHT))
                 total_frames = int(cap.get(cv2.CAP_PROP_FRAME_COUNT))
+                frame_rate = float(cap.get(cv2.CAP_PROP_FPS))
+                bitrate_kbits = float(cap.get(cv2.CAP_PROP_BITRATE))
+                if rotation_angle in (90, 270):
+                    width, height = height, width
+                metadata = misc_helpers.MediaMetadata(
+                    width=max(0, width),
+                    height=max(0, height),
+                    total_frames=max(0, total_frames),
+                    frame_rate=max(0.0, frame_rate),
+                    bitrate_kbits=max(0.0, bitrate_kbits),
+                )
                 if total_frames > 0:
                     middle_frame_no = total_frames // 2
                     cap.set(cv2.CAP_PROP_POS_FRAMES, middle_frame_no)
@@ -716,11 +754,17 @@ def extract_frame_as_image(
     if isinstance(frame, np.ndarray):
         # Create a new thumbnail in the cache for next time.
         if file_type != "webcam" and cache_thumbnail:
-            main_window.thumbnail_manager.create_thumbnail(frame, media_file_path)
+            main_window.thumbnail_manager.create_thumbnail(
+                frame, media_file_path, metadata=metadata
+            )
 
-        # Return the generated thread-safe QImage.
-        return convert_frame_to_image(frame)
+        q_image = convert_frame_to_image(frame)
+        if return_metadata:
+            return q_image, metadata
+        return q_image
 
+    if return_metadata:
+        return None, metadata
     return None  # Return None if everything failed.
 
 

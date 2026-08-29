@@ -285,12 +285,14 @@ def _load_job_target_media(main_window: "MainWindow", data: dict):
     # Validate paths before loading
     valid_target_medias_data = []
     for m in target_medias_data:
-        if "media_path" in m and os.path.exists(m["media_path"]):
+        media_path = m.get("media_path")
+        media_exists, _ = (
+            _path_exists_with_timeout(media_path) if media_path else (False, False)
+        )
+        if media_path and media_exists:
             valid_target_medias_data.append(m)
         else:
-            print(
-                f"[WARN] Target media path not found, skipping: {m.get('media_path')}"
-            )
+            print(f"[WARN] Target media path not found, skipping: {media_path}")
 
     if valid_target_medias_data:
         target_medias_files_list = [m["media_path"] for m in valid_target_medias_data]
@@ -334,12 +336,14 @@ def _load_job_input_faces(main_window: "MainWindow", data: dict):
 
     valid_input_faces_data = {}
     for face_id, f in input_faces_data.items():
-        if "media_path" in f and os.path.exists(f["media_path"]):
+        media_path = f.get("media_path")
+        media_exists, _ = (
+            _path_exists_with_timeout(media_path) if media_path else (False, False)
+        )
+        if media_path and media_exists:
             valid_input_faces_data[face_id] = f
         else:
-            print(
-                f"[WARN] Input face media path not found, skipping: {f.get('media_path')}"
-            )
+            print(f"[WARN] Input face media path not found, skipping: {media_path}")
 
     if valid_input_faces_data:
         input_media_paths = [
@@ -412,6 +416,10 @@ def _load_job_embeddings(main_window: "MainWindow", data: dict):
 def _load_job_target_faces_and_params(main_window: "MainWindow", data: dict):
     """Loads detected target faces, their parameters, and assignments."""
     loaded_target_faces_data = data.get("target_faces_data", {})
+
+    # --- Pull the default schema to sanitize against old job files ---
+    default_params = main_window.default_parameters.data
+
     for face_id_str, target_face_data in loaded_target_faces_data.items():
         face_id = face_id_str  # Use string ID directly
         # Convert list back to numpy array
@@ -427,13 +435,19 @@ def _load_job_target_faces_and_params(main_window: "MainWindow", data: dict):
             main_window, cropped_face, embedding_store, pixmap, face_id
         )
 
-        # Convert the loaded parameters dict into a ParametersDict object
+        # --- Sanitize parameters before injecting them into the UI state ---
+        raw_params = target_face_data.get("parameters", {})
+        sanitized_params = save_load_actions.sanitize_state_dictionary(
+            raw_params, default_params
+        )
+
+        # Convert the sanitized parameters dict into a ParametersDict object
         cast(dict[str, ParametersTypes], main_window.parameters)[cast(str, face_id)] = (
             cast(
                 ParametersTypes,
                 convert_parameters_to_job_type(
                     main_window,
-                    target_face_data.get("parameters", {}),
+                    sanitized_params,
                     misc_helpers.ParametersDict,
                 ),
             )
@@ -489,19 +503,6 @@ def _load_job_controls_and_state(
     # Ensure AutoSwap is off after loading a job
     main_window.control["AutoSwapToggle"] = False
 
-    # Restore swap faces button state
-    swap_faces_state = data.get("swap_faces_enabled", True)
-    main_window.swapfacesButton.setChecked(swap_faces_state)
-    edit_faces_state = data.get("edit_faces_enabled", False)
-    main_window.editFacesButton.setChecked(edit_faces_state)
-    # Keep LivePortrait model lifecycle in sync when restoring button state.
-    control_actions.handle_face_editor_button_click(main_window)
-    # On a batch load, this is harmful and breaks the logic.
-    if swap_faces_state and not is_batch_load:
-        # This will trigger a frame refresh via its own logic
-        video_control_actions.process_swap_faces(main_window)
-    print(f"[INFO] Swap Faces button state restored: {swap_faces_state}")
-
     # Restore misc paths and settings
     main_window.last_target_media_folder_path = data.get(
         "last_target_media_folder_path", ""
@@ -521,7 +522,8 @@ def _load_job_controls_and_state(
     )
     main_window.loaded_embedding_filename = data.get("loaded_embedding_filename", "")
 
-    # Update all control widgets in the "Settings" tab
+    # Update all control widgets in the "Settings" tab FIRST
+    # (This triggers clear_gpu_memory)
     common_widget_actions.set_control_widgets_values(main_window)
 
     # Ensure output folder is set correctly
@@ -535,6 +537,21 @@ def _load_job_controls_and_state(
     common_widget_actions.set_widgets_values_using_face_id_parameters(
         main_window, face_id=None
     )
+
+    # Restore swap faces button state LAST so it is not overwritten by VRAM clears
+    swap_faces_state = data.get("swap_faces_enabled", True)
+    main_window.swapfacesButton.setChecked(swap_faces_state)
+    edit_faces_state = data.get("edit_faces_enabled", False)
+    main_window.editFacesButton.setChecked(edit_faces_state)
+
+    # Keep LivePortrait model lifecycle in sync when restoring button state.
+    control_actions.handle_face_editor_button_click(main_window)
+
+    # On a batch load, this is harmful and breaks the logic.
+    if swap_faces_state and not is_batch_load:
+        # This will trigger a frame refresh via its own logic
+        video_control_actions.process_swap_faces(main_window)
+    print(f"[INFO] Swap Faces button state restored: {swap_faces_state}")
 
     if not is_batch_load:
         layout_actions.fit_image_to_view_onchange(main_window)
@@ -618,6 +635,20 @@ def _restore_state_and_refresh(main_window: "MainWindow", previous_batch_flag: b
     common_widget_actions.refresh_frame(main_window)
 
 
+def _path_exists_with_timeout(path: str, timeout_sec: float = 2.0) -> tuple[bool, bool]:
+    result: list[bool] = []
+
+    def check_path() -> None:
+        result.append(os.path.exists(path))
+
+    checker = threading.Thread(target=check_path, daemon=True)
+    checker.start()
+    checker.join(timeout_sec)
+    if checker.is_alive():
+        return False, True
+    return bool(result[0]) if result else False, False
+
+
 def _validate_job_files_exist(data: dict) -> tuple[bool, str | None]:
     """
     (NEW) Performs a pre-flight check on job data *before* loading.
@@ -644,7 +675,11 @@ def _validate_job_files_exist(data: dict) -> tuple[bool, str | None]:
     # --- SMART PATH RESOLUTION ---
     # Automatically rebuilds paths if folders or sub-folders were moved
     def resolve_path(saved_path: str, is_target: bool) -> str:
-        if not saved_path or os.path.exists(saved_path):
+        if not saved_path:
+            return saved_path
+
+        exists, timed_out = _path_exists_with_timeout(saved_path)
+        if exists or timed_out:
             return saved_path
 
         root_folder = data.get(
@@ -653,15 +688,23 @@ def _validate_job_files_exist(data: dict) -> tuple[bool, str | None]:
             else "last_input_media_folder_path",
             "",
         )
-        if root_folder and os.path.exists(root_folder):
+        root_exists, root_timed_out = (
+            _path_exists_with_timeout(root_folder) if root_folder else (False, False)
+        )
+        if root_exists and not root_timed_out:
             from pathlib import Path
 
             parts = Path(saved_path).parts
             # Try to match the trailing folder structure against the active root folder
             for i in range(1, len(parts)):
                 fallback = os.path.join(root_folder, *parts[-i:])
-                if os.path.exists(fallback):
+                fallback_exists, fallback_timed_out = _path_exists_with_timeout(
+                    fallback
+                )
+                if fallback_exists:
                     return fallback
+                if fallback_timed_out:
+                    break
         return saved_path
 
     # Apply smart resolution in-place to the data payload
@@ -690,9 +733,24 @@ def _validate_job_files_exist(data: dict) -> tuple[bool, str | None]:
                     skip_reason = (
                         f"Selected media ID {job_selected_media_id} has no media path."
                     )
-                elif not os.path.exists(media_path_to_check):
-                    is_job_valid = False
-                    skip_reason = f"Target media file not found: {media_path_to_check}"
+                else:
+                    path_exists, path_timed_out = _path_exists_with_timeout(
+                        media_path_to_check
+                    )
+                    if not path_exists:
+                        is_job_valid = False
+                        if path_timed_out:
+                            skip_reason = (
+                                "Timed out checking target media file: "
+                                f"{media_path_to_check}"
+                            )
+                        else:
+                            skip_reason = (
+                                f"Target media file not found: {media_path_to_check}"
+                            )
+                if not is_job_valid:
+                    found_media = True
+                    break
                 found_media = True
                 break
         if not found_media and is_job_valid:
@@ -722,9 +780,13 @@ def _validate_job_files_exist(data: dict) -> tuple[bool, str | None]:
                 is_job_valid = False
                 skip_reason = f"Input face ID {face_id} has no media path."
                 break
-            if not os.path.exists(face_path):
+            face_exists, face_timed_out = _path_exists_with_timeout(face_path)
+            if not face_exists:
                 is_job_valid = False
-                skip_reason = f"Input face file not found: {face_path}"
+                if face_timed_out:
+                    skip_reason = f"Timed out checking input face file: {face_path}"
+                else:
+                    skip_reason = f"Input face file not found: {face_path}"
                 break
 
         # Check embeddings (just need to exist in the job data)
@@ -757,6 +819,26 @@ def _validate_job_data_for_loading(data: dict) -> tuple[bool, str | None]:
     return _validate_job_files_exist(data)
 
 
+def _wait_for_input_faces_loader(
+    main_window: "MainWindow", timeout_sec: float = 180.0
+) -> None:
+    worker = main_window.input_faces_loader_worker
+    if (
+        not isinstance(worker, ui_workers.InputFacesLoaderWorker)
+        or not worker.isRunning()
+    ):
+        return
+
+    wait_start = time.perf_counter()
+    while worker.isRunning():
+        QtWidgets.QApplication.processEvents()
+        if time.perf_counter() - wait_start > timeout_sec:
+            raise TimeoutError(
+                f"InputFacesLoaderWorker did not finish within {timeout_sec:.0f}s."
+            )
+        time.sleep(0.01)
+
+
 def load_job_workspace(main_window: "MainWindow", job_name: str):
     """
     Main function to load a job workspace. (HEAVY LOAD)
@@ -764,7 +846,6 @@ def load_job_workspace(main_window: "MainWindow", job_name: str):
     This is used by the 'Load Job' button.
     """
 
-    print("[INFO] Loading job workspace...")
     jobs_dir = get_jobs_dir(main_window)
     data_filename = jobs_dir / f"{job_name}.json"
 
@@ -830,13 +911,7 @@ def load_job_workspace(main_window: "MainWindow", job_name: str):
 
         progress_dialog.update_progress(3, total_steps, steps[2])
         _load_job_input_faces(main_window, data)
-
-        # Wait for async face loader so assignments can be restored reliably.
-        worker = main_window.input_faces_loader_worker
-        if isinstance(worker, ui_workers.InputFacesLoaderWorker) and worker.isRunning():
-            loop = QEventLoop()
-            worker.finished.connect(loop.quit)
-            loop.exec()
+        _wait_for_input_faces_loader(main_window)
 
         progress_dialog.update_progress(4, total_steps, steps[3])
         _load_job_embeddings(main_window, data)
@@ -1007,12 +1082,7 @@ def _restore_workspace_from_snapshot(main_window: "MainWindow", data: dict):
         progress_dialog.update_progress(3, total_steps, steps[2])
         _load_job_input_faces(main_window, data)
 
-        # If a worker was started, wait for it to finish before proceeding.
-        worker = main_window.input_faces_loader_worker
-        if isinstance(worker, ui_workers.InputFacesLoaderWorker) and worker.isRunning():
-            loop = QEventLoop()
-            worker.finished.connect(loop.quit)
-            loop.exec()  # Block until the worker's finished signal is emitted
+        _wait_for_input_faces_loader(main_window)
 
         progress_dialog.update_progress(4, total_steps, steps[3])
         _load_job_embeddings(main_window, data)
@@ -1278,6 +1348,30 @@ def save_job_workspace(
 # --- UI Setup and Signal Connections ---
 
 
+def _is_job_processor_running(main_window: "MainWindow") -> bool:
+    job_processor = getattr(main_window, "job_processor", None)
+    return bool(
+        job_processor
+        and hasattr(job_processor, "isRunning")
+        and job_processor.isRunning()
+    )
+
+
+def _update_process_all_button_state(main_window: "MainWindow", job_count: int) -> None:
+    button = getattr(main_window, "buttonProcessAll", None)
+    if button is None:
+        return
+
+    if _is_job_processor_running(main_window):
+        button.setText("Stop Queue")
+        button.setToolTip("Stop the active job queue")
+        button.setEnabled(True)
+    else:
+        button.setText("Process All")
+        button.setToolTip("Process every saved job in the queue")
+        button.setEnabled(job_count > 0)
+
+
 def update_job_manager_buttons(main_window: "MainWindow"):
     """Enable/disable job manager buttons based on selection and job list state."""
     job_list = main_window.jobQueueList
@@ -1296,8 +1390,23 @@ def update_job_manager_buttons(main_window: "MainWindow"):
     if hasattr(main_window, "deleteJobButton"):
         main_window.deleteJobButton.setEnabled(enable_on_multi_selection)
 
-    if hasattr(main_window, "buttonProcessAll"):
-        main_window.buttonProcessAll.setEnabled(job_count > 0)
+    _update_process_all_button_state(main_window, job_count)
+
+
+def handle_process_all_button(main_window: "MainWindow"):
+    """Dynamic Process All button behavior: start queue when idle, stop queue when running."""
+    if _is_job_processor_running(main_window):
+        try:
+            main_window.job_processor.request_cancel(
+                "Cancelled by user via Stop Queue button."
+            )
+        except Exception as e:
+            print(f"[WARN] Failed to request queue cancellation: {e}")
+        finally:
+            update_job_manager_buttons(main_window)
+        return
+
+    start_processing_all_jobs(main_window)
 
 
 def setup_job_manager_ui(main_window: "MainWindow"):
@@ -1335,9 +1444,9 @@ def setup_job_manager_ui(main_window: "MainWindow"):
     connect_job_manager_signals(main_window)
 
     # Initial population and state update
+    main_window.job_processor = None
     refresh_job_list(main_window)
     update_job_manager_buttons(main_window)
-    main_window.job_processor = None
 
 
 def prompt_job_name(main_window: "MainWindow"):
@@ -1449,7 +1558,7 @@ def connect_job_manager_signals(main_window: "MainWindow"):
         )
     if main_window.buttonProcessAll:
         main_window.buttonProcessAll.clicked.connect(
-            lambda: start_processing_all_jobs(main_window)
+            lambda: handle_process_all_button(main_window)
         )
     if main_window.buttonProcessSelected:
         main_window.buttonProcessSelected.clicked.connect(
@@ -1527,13 +1636,7 @@ def load_master_assets(main_window: "MainWindow", master_data: dict):
 
         # We must wait for the InputFacesLoaderWorker to finish before proceeding,
         # otherwise the next job_settings_load might clear its required models.
-        worker = main_window.input_faces_loader_worker
-        if isinstance(worker, ui_workers.InputFacesLoaderWorker) and worker.isRunning():
-            print("[INFO] Waiting for InputFacesLoaderWorker to finish...")
-            loop = QEventLoop()
-            worker.finished.connect(loop.quit)
-            loop.exec()  # Block until the worker's finished signal is emitted
-            print("[INFO] InputFacesLoaderWorker finished.")
+        _wait_for_input_faces_loader(main_window)
 
         progress_dialog.update_progress(4, total_steps, steps[3])
         _load_job_embeddings(main_window, master_data)  # Loads all unique embeddings
@@ -1672,6 +1775,7 @@ def handle_batch_completion(main_window: "MainWindow"):
         return
 
     batch_succeeded = main_window.job_processor.batch_succeeded
+    batch_cancelled = getattr(main_window.job_processor, "batch_cancelled", False)
     skipped_jobs = main_window.job_processor.skipped_jobs
 
     print(f"[INFO] Batch finished (Success: {batch_succeeded}).")
@@ -1708,7 +1812,13 @@ def handle_batch_completion(main_window: "MainWindow"):
         QMessageBox.warning(main_window, "Skipped Jobs", skipped_message)
 
     # Report final status
-    if batch_succeeded:
+    if batch_cancelled:
+        QMessageBox.information(
+            main_window,
+            "Job Processing Stopped",
+            "Job queue was cancelled by user. Remaining jobs were not processed.",
+        )
+    elif batch_succeeded:
         QMessageBox.information(
             main_window,
             "Job Processing Complete",
@@ -1745,6 +1855,8 @@ def handle_batch_completion(main_window: "MainWindow"):
         # Set the object to None to allow the garbage collector to remove it
         main_window.job_processor = None
         print("[INFO] JobProcessor cleaned up.")
+
+    update_job_manager_buttons(main_window)
 
 
 # --- Job Processing Thread ---
@@ -1786,9 +1898,21 @@ def start_job_processor(main_window: "MainWindow", jobs_to_process: list[str] | 
 
     # Ensure no other processor is running
     if main_window.job_processor and main_window.job_processor.isRunning():
-        QMessageBox.warning(
-            main_window, "Already Processing", "A job processor is already running."
+        reply = QMessageBox.question(
+            main_window,
+            "Queue Running",
+            "A job queue is already processing.\n\n"
+            "Do you want to stop the remaining queue now?",
+            QMessageBox.Yes | QMessageBox.No,
+            QMessageBox.No,
         )
+        if reply == QMessageBox.Yes:
+            try:
+                main_window.job_processor.request_cancel(
+                    "Cancelled by user from job processing button."
+                )
+            except Exception as e:
+                print(f"[WARN] Failed to request queue cancellation: {e}")
         return
 
     # Save the current workspace state before starting the batch
@@ -1828,6 +1952,7 @@ def start_job_processor(main_window: "MainWindow", jobs_to_process: list[str] | 
 
     print("[INFO] Starting job_processor thread...")
     main_window.job_processor.start()
+    update_job_manager_buttons(main_window)
 
 
 class JobProcessor(QThread):
@@ -1891,6 +2016,7 @@ class JobProcessor(QThread):
         self.batch_succeeded = (
             False  # Flag to track if the batch finished without errors
         )
+        self.batch_cancelled = False
         self.skipped_jobs: list[str] = []  # Store jobs that fail pre-flight checks
 
         self.completed_dir.mkdir(parents=True, exist_ok=True)
@@ -1902,6 +2028,7 @@ class JobProcessor(QThread):
         self.processing_started_event = threading.Event()
         self.processing_stopped_event = threading.Event()
         self.processing_heartbeat_event = threading.Event()  # For watchdog
+        self.cancel_requested_event = threading.Event()
 
         # Connect to the video processor's signals.
         # We MUST use DirectConnection:
@@ -1941,6 +2068,32 @@ class JobProcessor(QThread):
         # This function runs in the Main Thread (due to DirectConnection)
         # and sets the event that the Worker Thread is waiting on.
         self.processing_heartbeat_event.set()
+
+    def request_cancel(self, reason: str = ""):
+        """Request batch cancellation and unblock any pending waits."""
+        if self.cancel_requested_event.is_set():
+            return
+
+        self.batch_cancelled = True
+        self.cancel_requested_event.set()
+        if reason:
+            print(f"[INFO] JobProcessor cancellation requested: {reason}")
+        else:
+            print("[INFO] JobProcessor cancellation requested.")
+
+        # Unblock all wait points so run() can exit quickly.
+        self.master_assets_loaded_event.set()
+        self.job_settings_loaded_event.set()
+        self.job_settings_cleared_event.set()
+        self.processing_started_event.set()
+        self.processing_stopped_event.set()
+        self.processing_heartbeat_event.set()
+
+        # Stop active processing if one is running.
+        try:
+            self.main_window.video_processor.stop_processing()
+        except Exception as e:
+            print(f"[WARN] Error while stopping active processing for cancel: {e}")
 
     def _read_job_file(self, job_name: str) -> dict | None:
         """Reads and parses a job's JSON file."""
@@ -2126,7 +2279,14 @@ class JobProcessor(QThread):
         )
 
         # --- Wait for Processing to Start ---
+        if self.cancel_requested_event.is_set():
+            print("[INFO] Cancel requested before processing start wait.")
+            return False
+
         if not self.processing_started_event.wait(timeout=self.JOB_START_TIMEOUT):
+            if self.cancel_requested_event.is_set():
+                print("[INFO] Processing start wait interrupted by cancellation.")
+                return False
             error_msg = "Timeout waiting for processing to start signal."
             print(f"[ERROR] {error_msg}")
             # Attempt to toggle off the record button if it got stuck
@@ -2148,6 +2308,10 @@ class JobProcessor(QThread):
         watchdog_timer_start = time.perf_counter()
 
         while True:
+            if self.cancel_requested_event.is_set():
+                print("[INFO] Cancellation requested while waiting for job completion.")
+                return False
+
             # Check if the stop signal was set (e.g., job finished)
             # We must check this *before* waiting.
             if self.processing_stopped_event.is_set():
@@ -2191,6 +2355,17 @@ class JobProcessor(QThread):
             pass
 
         # If the while loop exits, it means self.processing_stopped_event was set.
+        if self.cancel_requested_event.is_set():
+            print("[INFO] Job stop signal received after cancellation request.")
+            return False
+
+        processing_error = getattr(
+            self.main_window.video_processor, "last_processing_error", None
+        )
+        if processing_error:
+            self.job_failed_signal.emit(job_name, processing_error)
+            return False
+
         print("[INFO] JobProcessor received stop signal.")
         return True  # Success
 
@@ -2234,15 +2409,28 @@ class JobProcessor(QThread):
         if not self.master_assets_loaded_event.wait(
             timeout=self.MASTER_ASSETS_LOAD_TIMEOUT
         ):  # Use instance event
+            if self.cancel_requested_event.is_set():
+                print("[INFO] Batch cancelled while waiting for master assets.")
+                self.all_jobs_done_signal.emit()
+                return
             error_msg = "Timeout waiting for master assets to load."
             print(f"[ERROR] {error_msg}")
             self.job_failed_signal.emit("Batch Load", error_msg)
             return  # <-- Fails, batch_succeeded remains False
 
+        if self.cancel_requested_event.is_set():
+            print("[INFO] Batch cancelled after master assets load.")
+            self.all_jobs_done_signal.emit()
+            return
+
         print("[INFO] Master assets loaded event received, load complete.")
 
         # --- 3. Process each job with lightweight loading ---
         for job_data in self.job_data_list:
+            if self.cancel_requested_event.is_set():
+                print("[INFO] Batch cancellation detected before starting next job.")
+                break
+
             job_name = job_data.get("job_name_internal", "Unknown")
             self.current_job_name = job_name
             print(f"[INFO] Beginning processing on job: {job_name}")
@@ -2255,6 +2443,11 @@ class JobProcessor(QThread):
             if not self.job_settings_loaded_event.wait(
                 timeout=self.JOB_SETTINGS_LOAD_TIMEOUT
             ):  # Use instance event
+                if self.cancel_requested_event.is_set():
+                    print(
+                        f"[INFO] Batch cancelled while waiting settings load for '{job_name}'."
+                    )
+                    break
                 error_msg = f"Timeout waiting for job settings '{job_name}' to load."
                 print(f"[ERROR] {error_msg}")
                 self.job_failed_signal.emit(job_name, error_msg)
@@ -2262,6 +2455,11 @@ class JobProcessor(QThread):
 
             # --- 3b. Trigger video processing and wait ---
             if not self._trigger_and_wait_for_processing(job_name):
+                if self.cancel_requested_event.is_set():
+                    print(
+                        f"[INFO] Batch cancelled during processing of job '{job_name}'."
+                    )
+                    break
                 # Job failed (timeout or other error)
                 print(
                     f"[ERROR] Job '{job_name}' failed during processing. Aborting batch."
@@ -2296,6 +2494,11 @@ class JobProcessor(QThread):
             if not self.job_settings_cleared_event.wait(
                 timeout=self.JOB_SETTINGS_CLEAR_TIMEOUT
             ):  # Use instance event
+                if self.cancel_requested_event.is_set():
+                    print(
+                        f"[INFO] Batch cancelled while waiting settings clear for '{job_name}'."
+                    )
+                    break
                 error_msg = f"Timeout waiting for job settings '{job_name}' to clear."
                 print(f"[ERROR] {error_msg}")
                 self.job_failed_signal.emit(job_name, error_msg)
@@ -2306,8 +2509,9 @@ class JobProcessor(QThread):
         else:
             # This 'else' block executes ONLY if the 'for' loop
             # completes without a 'break' statement.
-            print("[INFO] JobProcessor loop completed without errors.")
-            self.batch_succeeded = True
+            if not self.cancel_requested_event.is_set():
+                print("[INFO] JobProcessor loop completed without errors.")
+                self.batch_succeeded = True
 
         # --- 4. Finished ---
         print("[INFO] Finished processing all jobs loop.")

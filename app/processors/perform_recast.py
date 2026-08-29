@@ -176,14 +176,7 @@ class PerformRecast:
                 buffer_ptr=buf.data_ptr(),
             )
 
-        # 3. Synchronize and Execute (Aligned with other HPC pipelines)
-        if mp.device_type == "cuda":
-            torch.cuda.current_stream().synchronize()
-        elif mp.device_type != "cpu":
-            if hasattr(mp, "syncvec"):
-                mp.syncvec.cpu()
-
-        session.run_with_iobinding(io_binding)
+        self.function_worker.run_ort_with_iobinding(session, io_binding)
 
         return out_buffers
 
@@ -233,6 +226,7 @@ class PerformRecast:
     # Model-level API (mirrors scripts/onnx_inference.py)
     # ------------------------------------------------------------------ #
     @staticmethod
+    @torch.no_grad()
     def _to_input(img: torch.Tensor) -> np.ndarray:
         """(C,H,W) uint8/float [0,255] -> (1,3,H,W) float32 [0,1] numpy."""
         # OPTIMIZED: Force a copy to safely detach from the source tensor,
@@ -246,6 +240,7 @@ class PerformRecast:
         # Pinned transfer to host memory
         return x.contiguous().cpu().numpy()
 
+    @torch.no_grad()
     def _to_input_t(self, img: torch.Tensor) -> torch.Tensor:
         """(C,H,W) uint8/float [0,255] -> (1,3,H,W) float32 [0,1] on device."""
         # OPTIMIZED: Use non_blocking transfer and in-place math to prevent intermediate allocations.
@@ -256,6 +251,7 @@ class PerformRecast:
             x = x.unsqueeze(0)
         return x.contiguous()
 
+    @torch.no_grad()
     def extract_appearance(self, img512: torch.Tensor) -> torch.Tensor:
         """F: source crop (C,512,512)[0,255] -> feature_3d (1,32,16,64,64)."""
         out = self._infer(
@@ -265,6 +261,7 @@ class PerformRecast:
         )
         return out["feature_3d"]
 
+    @torch.no_grad()
     def motion(self, img256: torch.Tensor) -> dict[str, torch.Tensor]:
         """M: crop (C,256,256)[0,255] -> raw motion dict as torch tensors.
 
@@ -288,6 +285,7 @@ class PerformRecast:
         kp_info["kp"] = kp_info["kp"].reshape(1, -1, 3)
         return kp_info
 
+    @torch.no_grad()
     def warp_decode(
         self, feature_3d, kp_source: torch.Tensor, kp_driving: torch.Tensor
     ) -> torch.Tensor:
@@ -321,6 +319,7 @@ class PerformRecast:
     _headpose_idx_cache: dict[torch.device, torch.Tensor] = {}
 
     @classmethod
+    @torch.no_grad()
     def _headpose_to_degree(cls, pred: torch.Tensor) -> torch.Tensor:
         """(bs,66) pose logits -> (bs,) degrees. PerformRecast uses *3 - 99."""
         device = pred.device
@@ -336,6 +335,7 @@ class PerformRecast:
         return torch.sum(pred * cls._headpose_idx_cache[device], dim=1) * 3 - 99
 
     @staticmethod
+    @torch.no_grad()
     def _rotation_matrix(
         yaw: torch.Tensor, pitch: torch.Tensor, roll: torch.Tensor
     ) -> torch.Tensor:
@@ -393,6 +393,7 @@ class PerformRecast:
 
         return torch.einsum("bij,bjk,bkm->bim", pitch_mat, yaw_mat, roll_mat)
 
+    @torch.no_grad()
     def build_source_info(
         self, kp_info: dict[str, torch.Tensor]
     ) -> dict[str, torch.Tensor]:
@@ -438,6 +439,7 @@ class PerformRecast:
         )
     )
 
+    @torch.no_grad()
     def compose_driven_keypoints(
         self,
         source_info: dict[str, torch.Tensor],

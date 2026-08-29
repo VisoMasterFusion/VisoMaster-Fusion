@@ -1,3 +1,12 @@
+"""Unit tests for the offline issue scan.
+
+The scan was extracted from VideoProcessor into
+``app.processors.video_utils.issue_scanner.IssueScanner``, which owns the state
+snapshots, the marker-segment resolution and the detection loop. These tests
+drive the scanner directly; the VideoProcessor facade is only covered where it
+still adds behaviour of its own (restoring the live playback position).
+"""
+
 from types import SimpleNamespace
 from unittest.mock import patch
 
@@ -5,41 +14,19 @@ import numpy as np
 import pytest
 
 from app.processors.video_processor import VideoProcessor
+from app.processors.video_utils.issue_scanner import IssueScanner
 from app.processors.video_utils.sequential_detector import SequentialDetector
 
-
-def _setup_sequential_detector(
-    processor,
-    *,
-    last_detected_faces=None,
-    smoothed_kps=None,
-    smoothed_dense_kps=None,
-    smoothed_dense_kps_203=None,
-):
-    """Attach a real SequentialDetector to a bare-constructed processor.
-
-    PR #176 moved the temporal-smoothing state (last_detected_faces /
-    _smoothed_kps / _smoothed_dense_kps / _smoothed_dense_kps_203) and the
-    per-frame detection logic out of VideoProcessor into a dedicated
-    SequentialDetector class. Tests that build their VideoProcessor via
-    __new__() must wire up the corresponding attribute on the processor.
-
-    Returns the attached SequentialDetector so callers can patch its `run`
-    method or read its state in assertions.
-    """
-    sd = SequentialDetector(processor.main_window)
-    sd.last_detected_faces = (
-        list(last_detected_faces) if last_detected_faces is not None else []
-    )
-    sd._smoothed_kps = dict(smoothed_kps) if smoothed_kps is not None else {}
-    sd._smoothed_dense_kps = (
-        dict(smoothed_dense_kps) if smoothed_dense_kps is not None else {}
-    )
-    sd._smoothed_dense_kps_203 = (
-        dict(smoothed_dense_kps_203) if smoothed_dense_kps_203 is not None else {}
-    )
-    processor.sequential_detector = sd
-    return sd
+MARKER_DATA_PATH = (
+    "app.processors.video_utils.issue_scanner"
+    ".video_control_actions._get_marker_data_for_position"
+)
+VIDEO_CAPTURE_PATH = "app.processors.video_utils.issue_scanner.cv2.VideoCapture"
+READ_FRAME_PATH = "app.processors.video_utils.issue_scanner.misc_helpers.read_frame"
+SEEK_FRAME_PATH = "app.processors.video_utils.issue_scanner.misc_helpers.seek_frame"
+RELEASE_CAPTURE_PATH = (
+    "app.processors.video_utils.issue_scanner.misc_helpers.release_capture"
+)
 
 
 class _DummyCapture:
@@ -48,6 +35,67 @@ class _DummyCapture:
 
     def set(self, *_args, **_kwargs):
         return True
+
+
+class _RecordingFunctionWorker:
+    """Minimal function_worker stand-in for the scanner.
+
+    Tracker resets, recognition and cosine matching all go through the
+    function_worker now, so the scan tests observe them here.
+    """
+
+    def __init__(self, embedding=None, cosine_similarity=1.0):
+        self.reset_calls: list[str] = []
+        self.recognize_calls: list[tuple[str, str]] = []
+        self.embedding = (
+            embedding if embedding is not None else np.array([3.0], dtype=np.float32)
+        )
+        self.cosine_similarity = cosine_similarity
+
+    def reset_face_tracker(self):
+        self.reset_calls.append("reset")
+
+    def run_recognize_direct(self, _image, _kps, similarity_type, recognition_model):
+        self.recognize_calls.append((recognition_model, similarity_type))
+        return self.embedding, None
+
+    def findCosineDistance(self, _detected, _target):
+        return self.cosine_similarity
+
+
+def _make_main_window(**overrides):
+    defaults = dict(
+        control={},
+        parameters={},
+        target_faces={},
+        dropped_frames=set(),
+        markers={},
+        job_marker_pairs=[],
+        videoSeekSlider=SimpleNamespace(value=lambda: 0),
+        editFacesButton=SimpleNamespace(isChecked=lambda: False),
+        default_parameters=SimpleNamespace(data={"SimilarityThresholdSlider": 50}),
+        models_processor=SimpleNamespace(device="cpu"),
+        function_worker=_RecordingFunctionWorker(),
+    )
+    defaults.update(overrides)
+    return SimpleNamespace(**defaults)
+
+
+def _make_scanner(
+    *,
+    media_path="dummy.mp4",
+    max_frame_number=100,
+    media_rotation=0,
+    **main_window_overrides,
+) -> IssueScanner:
+    main_window = _make_main_window(**main_window_overrides)
+    return IssueScanner(
+        main_window=main_window,
+        sequential_detector=SequentialDetector(main_window),
+        media_path=media_path,
+        max_frame_number=max_frame_number,
+        media_rotation=media_rotation,
+    )
 
 
 class _DummyTargetFace:
@@ -77,8 +125,24 @@ def _make_target_snapshot(face_id, embeddings_by_model=None):
     }
 
 
+def _scan_patches(scanner, *, read_frame=None, seek_frame=None):
+    """Patch the capture/IO helpers the scan loop reaches for."""
+    read_kwargs = (
+        {"side_effect": read_frame}
+        if callable(read_frame)
+        else {"return_value": (True, np.zeros((4, 4, 3), dtype=np.uint8))}
+    )
+    seek_kwargs = {"side_effect": seek_frame} if callable(seek_frame) else {}
+    return (
+        patch(VIDEO_CAPTURE_PATH, return_value=_DummyCapture()),
+        patch(READ_FRAME_PATH, **read_kwargs),
+        patch(SEEK_FRAME_PATH, **seek_kwargs),
+        patch(RELEASE_CAPTURE_PATH),
+    )
+
+
 def test_filter_scan_control_keeps_only_allowlisted_keys():
-    filtered = VideoProcessor._filter_scan_control(
+    filtered = IssueScanner._filter_scan_control(
         {
             "DetectorScoreSlider": 42,
             "FaceTrackingEnableToggle": True,
@@ -94,7 +158,7 @@ def test_filter_scan_control_keeps_only_allowlisted_keys():
 
 
 def test_filter_scan_face_params_keeps_only_threshold_for_target_faces():
-    filtered = VideoProcessor._filter_scan_face_params(
+    filtered = IssueScanner._filter_scan_face_params(
         {
             "face_1": {
                 "SimilarityThresholdSlider": 61,
@@ -113,7 +177,7 @@ def test_filter_scan_face_params_keeps_only_threshold_for_target_faces():
 
 
 def test_get_issue_scan_unavailable_reason_rejects_marker_enabled_vr180_within_range():
-    reason = VideoProcessor.get_issue_scan_unavailable_reason(
+    reason = _make_scanner().get_issue_scan_unavailable_reason(
         {"VR180ModeEnableToggle": False},
         scan_ranges=[(10, 20)],
         markers={
@@ -129,7 +193,7 @@ def test_get_issue_scan_unavailable_reason_rejects_marker_enabled_vr180_within_r
 
 
 def test_get_issue_scan_unavailable_reason_allows_marker_enabled_vr180_outside_range():
-    reason = VideoProcessor.get_issue_scan_unavailable_reason(
+    reason = _make_scanner().get_issue_scan_unavailable_reason(
         {"VR180ModeEnableToggle": False},
         scan_ranges=[(10, 20)],
         markers={
@@ -145,7 +209,7 @@ def test_get_issue_scan_unavailable_reason_allows_marker_enabled_vr180_outside_r
 
 
 def test_get_issue_scan_unavailable_reason_rejects_mixed_ranges_when_one_uses_vr180():
-    reason = VideoProcessor.get_issue_scan_unavailable_reason(
+    reason = _make_scanner().get_issue_scan_unavailable_reason(
         {"VR180ModeEnableToggle": False},
         scan_ranges=[(0, 5), (10, 20)],
         markers={
@@ -161,7 +225,7 @@ def test_get_issue_scan_unavailable_reason_rejects_mixed_ranges_when_one_uses_vr
 
 
 def test_get_issue_scan_unavailable_reason_allows_range_when_start_marker_turns_vr180_off():
-    reason = VideoProcessor.get_issue_scan_unavailable_reason(
+    reason = _make_scanner().get_issue_scan_unavailable_reason(
         {"VR180ModeEnableToggle": True},
         scan_ranges=[(10, 20)],
         markers={
@@ -183,7 +247,7 @@ def test_get_issue_scan_unavailable_reason_allows_range_when_start_marker_turns_
 
 
 def test_get_issue_scan_unavailable_reason_rejects_live_vr180_when_no_start_marker_override():
-    reason = VideoProcessor.get_issue_scan_unavailable_reason(
+    reason = _make_scanner().get_issue_scan_unavailable_reason(
         {"VR180ModeEnableToggle": True},
         scan_ranges=[(10, 20)],
         markers={
@@ -199,42 +263,23 @@ def test_get_issue_scan_unavailable_reason_rejects_live_vr180_when_no_start_mark
     assert reason == "Issue scans are not supported while VR180 mode is enabled."
 
 
-def test_scan_issue_frames_restores_dense_smoothing_state():
-    processor = VideoProcessor.__new__(VideoProcessor)
-    processor.media_path = "dummy.mp4"
-    processor.media_rotation = 0
-    processor.fps = 30.0
-    processor.current_frame_number = 0
-    processor.main_window = SimpleNamespace(
-        control={},
-        parameters={},
-        target_faces={},
-        dropped_frames=set(),
-        markers={},
-        videoSeekSlider=SimpleNamespace(value=lambda: 7),
-    )
-    sd = _setup_sequential_detector(
-        processor,
-        last_detected_faces=[{"id": 1}],
-        smoothed_kps={1: np.array([[1.0, 2.0]], dtype=np.float32)},
-        smoothed_dense_kps={1: np.array([[3.0, 4.0]], dtype=np.float32)},
-        smoothed_dense_kps_203={1: np.array([[5.0, 6.0]], dtype=np.float32)},
-    )
-    processor._get_target_input_height = lambda: 256
+def test_scan_issue_frames_restores_the_live_sequential_detector_state():
+    scanner = _make_scanner()
+    detector = scanner.sequential_detector
+    detector.last_detected_faces = [{"id": 1}]
+    detector._smoothed_kps = {1: np.array([[1.0, 2.0]], dtype=np.float32)}
+    detector._smoothed_dense_kps = {1: np.array([[3.0, 4.0]], dtype=np.float32)}
+    detector._smoothed_dense_kps_203 = {1: np.array([[5.0, 6.0]], dtype=np.float32)}
 
     with (
-        patch(
-            "app.processors.video_processor.cv2.VideoCapture",
-            return_value=_DummyCapture(),
-        ),
-        patch("app.processors.video_processor.misc_helpers.release_capture"),
+        patch(VIDEO_CAPTURE_PATH, return_value=_DummyCapture()),
+        patch(RELEASE_CAPTURE_PATH),
     ):
-        result = processor.scan_issue_frames(
+        result = scanner.scan_issue_frames(
             scan_ranges=[(1, 0)],
             base_control={},
             base_params={},
             target_faces_snapshot={},
-            reset_frame_number=3,
         )
 
     assert result == {
@@ -244,79 +289,97 @@ def test_scan_issue_frames_restores_dense_smoothing_state():
         "cancelled": False,
     }
     np.testing.assert_array_equal(
-        sd._smoothed_dense_kps[1], np.array([[3.0, 4.0]], dtype=np.float32)
+        detector._smoothed_dense_kps[1], np.array([[3.0, 4.0]], dtype=np.float32)
     )
     np.testing.assert_array_equal(
-        sd._smoothed_kps[1], np.array([[1.0, 2.0]], dtype=np.float32)
+        detector._smoothed_kps[1], np.array([[1.0, 2.0]], dtype=np.float32)
     )
     np.testing.assert_array_equal(
-        sd._smoothed_dense_kps_203[1],
+        detector._smoothed_dense_kps_203[1],
         np.array([[5.0, 6.0]], dtype=np.float32),
     )
-    assert sd.last_detected_faces == [{"id": 1}]
-    assert processor.current_frame_number == 3
+    assert detector.last_detected_faces == [{"id": 1}]
 
 
 def test_scan_issue_frames_rejects_when_marker_enables_vr180():
-    processor = VideoProcessor.__new__(VideoProcessor)
-    processor.media_path = "dummy.mp4"
-    processor.media_rotation = 0
-    processor.fps = 30.0
-    processor.current_frame_number = 0
-    processor.main_window = SimpleNamespace(
+    scanner = _make_scanner(
         control={"VR180ModeEnableToggle": False},
-        parameters={},
-        target_faces={},
-        dropped_frames=set(),
         markers={10: {"control": {"VR180ModeEnableToggle": True}}},
-        videoSeekSlider=SimpleNamespace(value=lambda: 0),
     )
-    _setup_sequential_detector(processor)
 
     with pytest.raises(RuntimeError, match="Issue scans are not supported"):
-        processor.scan_issue_frames(
+        scanner.scan_issue_frames(
             scan_ranges=[(0, 15)],
             base_control={},
             base_params={},
             target_faces_snapshot={},
-            reset_frame_number=0,
         )
 
 
-def test_describe_issue_scan_scope_uses_normalized_effective_ranges():
-    processor = VideoProcessor.__new__(VideoProcessor)
-    processor.max_frame_number = 100
-    processor.main_window = SimpleNamespace(
-        job_marker_pairs=[(20, 30), (10, 25), (40, None)]
+def test_video_processor_restores_the_playback_frame_after_a_scan():
+    """The scanner walks the media with its own capture, so the facade has to
+    put the live playback position back where the user left it."""
+    scan_calls = []
+    scanner = SimpleNamespace(
+        scan_issue_frames=lambda *args: scan_calls.append(args) or {"frames_scanned": 0}
+    )
+    dummy = SimpleNamespace(
+        current_frame_number=99,
+        main_window=SimpleNamespace(videoSeekSlider=SimpleNamespace(value=lambda: 7)),
+        _get_issue_scanner_instance=lambda: scanner,
     )
 
-    scope_text = processor.describe_issue_scan_scope([(10, 30), (40, 100)])
+    result = VideoProcessor.scan_issue_frames(
+        dummy, scan_ranges=[(0, 1)], reset_frame_number=3
+    )
+
+    assert result == {"frames_scanned": 0}
+    assert dummy.current_frame_number == 3
+    # The reset frame stays in the facade; the scanner never receives it.
+    assert scan_calls[0][3] == [(0, 1)]
+    assert len(scan_calls[0]) == 9
+
+
+def test_video_processor_falls_back_to_the_seek_slider_after_a_scan():
+    dummy = SimpleNamespace(
+        current_frame_number=99,
+        main_window=SimpleNamespace(videoSeekSlider=SimpleNamespace(value=lambda: 7)),
+        _get_issue_scanner_instance=lambda: SimpleNamespace(
+            scan_issue_frames=lambda *_args: None
+        ),
+    )
+
+    assert VideoProcessor.scan_issue_frames(dummy) is None
+    assert dummy.current_frame_number == 7
+
+
+def test_describe_issue_scan_scope_uses_normalized_effective_ranges():
+    scanner = _make_scanner(job_marker_pairs=[(20, 30), (10, 25), (40, None)])
+
+    scope_text = scanner.describe_issue_scan_scope([(10, 30), (40, 100)])
 
     assert scope_text == "Scanning 1 marked range and record start frame 40 to end"
 
 
 def test_describe_issue_scan_scope_uses_raw_open_start_when_ranges_merge():
-    processor = VideoProcessor.__new__(VideoProcessor)
-    processor.max_frame_number = 100
-    processor.main_window = SimpleNamespace(job_marker_pairs=[(10, 30), (20, None)])
+    scanner = _make_scanner(job_marker_pairs=[(10, 30), (20, None)])
 
-    scope_text = processor.describe_issue_scan_scope([(10, 100)])
+    scope_text = scanner.describe_issue_scan_scope([(10, 100)])
 
     assert scope_text == "Scanning 1 marked range and record start frame 20 to end"
 
 
 def test_build_issue_scan_state_segments_switches_only_at_marker_boundaries():
-    processor = VideoProcessor.__new__(VideoProcessor)
-    processor.main_window = SimpleNamespace(markers={5: {"id": 5}, 8: {"id": 8}})
+    scanner = _make_scanner(markers={5: {"id": 5}, 8: {"id": 8}})
     resolved_frames = []
 
     def fake_resolve(frame_number, *_args, **_kwargs):
         resolved_frames.append(frame_number)
         return {"frame": frame_number}, {"params": frame_number}
 
-    processor._resolve_scan_state_for_frame = fake_resolve
+    scanner._resolve_scan_state_for_frame = fake_resolve
 
-    segments = processor._build_issue_scan_state_segments(
+    segments = scanner._build_issue_scan_state_segments(
         [(3, 10)],
         {},
         {},
@@ -332,24 +395,19 @@ def test_build_issue_scan_state_segments_switches_only_at_marker_boundaries():
 
 
 def test_resolve_scan_state_uses_control_defaults_snapshot_not_live_widgets():
-    processor = VideoProcessor.__new__(VideoProcessor)
-
     class _FailingWidgets:
         def items(self):
             raise AssertionError(
                 "parameter_widgets should not be read in scan state resolution"
             )
 
-    processor.main_window = SimpleNamespace(
-        markers={},
+    scanner = _make_scanner(
         parameter_widgets=_FailingWidgets(),
         control={"DetectorModelSelection": "live"},
-        default_parameters=SimpleNamespace(data={"SimilarityThresholdSlider": 50}),
-        target_faces={},
     )
 
     with patch(
-        "app.processors.video_processor.video_control_actions._get_marker_data_for_position",
+        MARKER_DATA_PATH,
         return_value={
             "parameters": {},
             "control": {
@@ -358,7 +416,7 @@ def test_resolve_scan_state_uses_control_defaults_snapshot_not_live_widgets():
             },
         },
     ):
-        local_control, local_params = processor._resolve_scan_state_for_frame(
+        local_control, local_params = scanner._resolve_scan_state_for_frame(
             10,
             {"DetectorModelSelection": "base"},
             {},
@@ -378,19 +436,10 @@ def test_resolve_scan_state_uses_control_defaults_snapshot_not_live_widgets():
 
 
 def test_resolve_scan_state_respects_explicitly_empty_target_faces_snapshot():
-    processor = VideoProcessor.__new__(VideoProcessor)
+    scanner = _make_scanner(target_faces={"live-face": object()})
 
-    processor.main_window = SimpleNamespace(
-        markers={},
-        target_faces={"live-face": object()},
-        default_parameters=SimpleNamespace(data={"SimilarityThresholdSlider": 50}),
-    )
-
-    with patch(
-        "app.processors.video_processor.video_control_actions._get_marker_data_for_position",
-        return_value={"parameters": {}, "control": {}},
-    ):
-        _local_control, local_params = processor._resolve_scan_state_for_frame(
+    with patch(MARKER_DATA_PATH, return_value={"parameters": {}, "control": {}}):
+        _local_control, local_params = scanner._resolve_scan_state_for_frame(
             10,
             {},
             {},
@@ -402,9 +451,7 @@ def test_resolve_scan_state_respects_explicitly_empty_target_faces_snapshot():
 
 
 def test_resolve_scan_state_filters_non_scan_face_params_and_fills_defaults():
-    processor = VideoProcessor.__new__(VideoProcessor)
-    processor.main_window = SimpleNamespace(
-        markers={},
+    scanner = _make_scanner(
         target_faces={"live-face": object()},
         default_parameters=SimpleNamespace(
             data={
@@ -415,7 +462,7 @@ def test_resolve_scan_state_filters_non_scan_face_params_and_fills_defaults():
     )
 
     with patch(
-        "app.processors.video_processor.video_control_actions._get_marker_data_for_position",
+        MARKER_DATA_PATH,
         return_value={
             "parameters": {
                 "face_1": {
@@ -426,7 +473,7 @@ def test_resolve_scan_state_filters_non_scan_face_params_and_fills_defaults():
             "control": {"IgnoredControl": "skip"},
         },
     ):
-        local_control, local_params = processor._resolve_scan_state_for_frame(
+        local_control, local_params = scanner._resolve_scan_state_for_frame(
             10,
             {"DetectorScoreSlider": 41, "IgnoredBase": "skip"},
             {"face_2": {"SimilarityThresholdSlider": 63}},
@@ -442,10 +489,7 @@ def test_resolve_scan_state_filters_non_scan_face_params_and_fills_defaults():
 
 
 def test_prepare_issue_scan_match_context_uses_auto_snapshot_embeddings():
-    processor = VideoProcessor.__new__(VideoProcessor)
-    processor.main_window = SimpleNamespace(
-        default_parameters=SimpleNamespace(data={"SimilarityThresholdSlider": 50}),
-    )
+    scanner = _make_scanner()
     target_faces_snapshot = _make_target_snapshot(
         "face_1",
         {
@@ -457,7 +501,7 @@ def test_prepare_issue_scan_match_context_uses_auto_snapshot_embeddings():
         },
     )
 
-    match_context = processor._prepare_issue_scan_match_context(
+    match_context = scanner._prepare_issue_scan_match_context(
         {
             "RecognitionModelSelection": "arcface_128",
             "SimilarityTypeSelection": "Pearl",
@@ -479,9 +523,6 @@ def test_prepare_issue_scan_match_context_uses_auto_snapshot_embeddings():
 
 
 def test_prepare_issue_scan_target_faces_snapshot_uses_auto_similarity_mode():
-    processor = VideoProcessor.__new__(VideoProcessor)
-    run_recognize_calls = []
-
     class _TargetFaceWithoutEmbeddingAccess:
         def __init__(self):
             self.face_id = "face_1"
@@ -492,21 +533,14 @@ def test_prepare_issue_scan_target_faces_snapshot_uses_auto_similarity_mode():
                 "scan target snapshot should not call widget get_embedding"
             )
 
-    def fake_run_recognize_direct(_img, _kps, similarity_type, recognition_model):
-        run_recognize_calls.append((recognition_model, similarity_type))
-        return np.array([3.0], dtype=np.float32), None
-
-    processor.main_window = SimpleNamespace(
+    function_worker = _RecordingFunctionWorker()
+    scanner = _make_scanner(
         target_faces={"face_1": _TargetFaceWithoutEmbeddingAccess()},
-        default_parameters=SimpleNamespace(data={"SimilarityThresholdSlider": 50}),
-        models_processor=SimpleNamespace(
-            device="cpu",
-            run_recognize_direct=fake_run_recognize_direct,
-        ),
+        function_worker=function_worker,
     )
 
     with patch.object(
-        processor,
+        scanner,
         "_build_issue_scan_state_segments",
         return_value=[
             (
@@ -529,14 +563,14 @@ def test_prepare_issue_scan_target_faces_snapshot_uses_auto_similarity_mode():
             ),
         ],
     ):
-        snapshot = processor.prepare_issue_scan_target_faces_snapshot(
+        snapshot = scanner.prepare_issue_scan_target_faces_snapshot(
             [(0, 1)],
             {},
             {},
             {},
         )
 
-    assert run_recognize_calls == [("arcface_128", "Auto")]
+    assert function_worker.recognize_calls == [("arcface_128", "Auto")]
     np.testing.assert_array_equal(
         snapshot["face_1"]["embeddings_by_model"]["arcface_128"]["Auto"],
         np.array([3.0], dtype=np.float32),
@@ -544,27 +578,8 @@ def test_prepare_issue_scan_target_faces_snapshot_uses_auto_similarity_mode():
 
 
 def test_scan_issue_frames_filters_scan_state_before_detection():
-    processor = VideoProcessor.__new__(VideoProcessor)
-    processor.media_path = "dummy.mp4"
-    processor.media_rotation = 0
-    processor.fps = 30.0
-    processor.current_frame_number = 0
-    frame = np.zeros((4, 4, 3), dtype=np.uint8)
+    scanner = _make_scanner()
     captured = {}
-
-    processor.main_window = SimpleNamespace(
-        control={},
-        parameters={},
-        target_faces={},
-        dropped_frames=set(),
-        markers={},
-        videoSeekSlider=SimpleNamespace(value=lambda: 0),
-        editFacesButton=SimpleNamespace(isChecked=lambda: False),
-        default_parameters=SimpleNamespace(data={"SimilarityThresholdSlider": 50}),
-        models_processor=SimpleNamespace(device="cpu"),
-    )
-    sd = _setup_sequential_detector(processor)
-    processor._get_target_input_height = lambda: 256
 
     def fake_run(
         frame_rgb=None,
@@ -580,20 +595,15 @@ def test_scan_issue_frames_filters_scan_state_before_detection():
         captured["detector_control_override"] = detector_control_override
         return _empty_scan_detection_result()
 
+    capture_patch, read_patch, seek_patch, release_patch = _scan_patches(scanner)
     with (
-        patch(
-            "app.processors.video_processor.cv2.VideoCapture",
-            return_value=_DummyCapture(),
-        ),
-        patch(
-            "app.processors.video_processor.misc_helpers.read_frame",
-            return_value=(True, frame.copy()),
-        ),
-        patch("app.processors.video_processor.misc_helpers.seek_frame"),
-        patch("app.processors.video_processor.misc_helpers.release_capture"),
-        patch.object(sd, "run", side_effect=fake_run),
+        capture_patch,
+        read_patch,
+        seek_patch,
+        release_patch,
+        patch.object(scanner.sequential_detector, "run", side_effect=fake_run),
     ):
-        result = processor.scan_issue_frames(
+        result = scanner.scan_issue_frames(
             scan_ranges=[(0, 0)],
             base_control={
                 "DetectorScoreSlider": 42,
@@ -624,47 +634,23 @@ def test_scan_issue_frames_filters_scan_state_before_detection():
 
 
 def test_scan_issue_frames_uses_marker_resolved_resize_per_segment():
-    processor = VideoProcessor.__new__(VideoProcessor)
-    processor.media_path = "dummy.mp4"
-    processor.media_rotation = 0
-    processor.fps = 30.0
-    processor.current_frame_number = 0
-    processor.last_detected_faces = []
-    processor._smoothed_kps = {}
-    processor._smoothed_dense_kps = {}
-    processor._smoothed_dense_kps_203 = {}
-    frame = np.zeros((4, 4, 3), dtype=np.uint8)
+    scanner = _make_scanner()
     preview_heights = []
-
-    processor.main_window = SimpleNamespace(
-        control={},
-        parameters={},
-        target_faces={},
-        dropped_frames=set(),
-        markers={},
-        videoSeekSlider=SimpleNamespace(value=lambda: 0),
-        editFacesButton=SimpleNamespace(isChecked=lambda: False),
-        default_parameters=SimpleNamespace(data={"SimilarityThresholdSlider": 50}),
-        models_processor=SimpleNamespace(device="cpu"),
-    )
 
     def fake_read_frame(_capture, _rotation, preview_target_height=None):
         preview_heights.append(preview_target_height)
-        return True, frame.copy()
+        return True, np.zeros((4, 4, 3), dtype=np.uint8)
 
+    capture_patch, read_patch, seek_patch, release_patch = _scan_patches(
+        scanner, read_frame=fake_read_frame
+    )
     with (
-        patch(
-            "app.processors.video_processor.cv2.VideoCapture",
-            return_value=_DummyCapture(),
-        ),
-        patch(
-            "app.processors.video_processor.misc_helpers.read_frame",
-            side_effect=fake_read_frame,
-        ),
-        patch("app.processors.video_processor.misc_helpers.seek_frame"),
-        patch("app.processors.video_processor.misc_helpers.release_capture"),
+        capture_patch,
+        read_patch,
+        seek_patch,
+        release_patch,
         patch.object(
-            processor,
+            scanner,
             "_build_issue_scan_state_segments",
             return_value=[
                 (0, 0, {"DetectorScoreSlider": 40}, {}),
@@ -698,12 +684,12 @@ def test_scan_issue_frames_uses_marker_resolved_resize_per_segment():
             ],
         ),
         patch.object(
-            processor,
-            "_run_sequential_detection",
+            scanner.sequential_detector,
+            "run",
             return_value=_empty_scan_detection_result(),
         ),
     ):
-        result = processor.scan_issue_frames(
+        result = scanner.scan_issue_frames(
             scan_ranges=[(0, 3)],
             base_control={},
             base_params={},
@@ -720,57 +706,33 @@ def test_scan_issue_frames_uses_marker_resolved_resize_per_segment():
 
 
 def test_scan_issue_frames_uses_explicit_target_height_when_segment_has_no_resize_state():
-    processor = VideoProcessor.__new__(VideoProcessor)
-    processor.media_path = "dummy.mp4"
-    processor.media_rotation = 0
-    processor.fps = 30.0
-    processor.current_frame_number = 0
-    processor.last_detected_faces = []
-    processor._smoothed_kps = {}
-    processor._smoothed_dense_kps = {}
-    processor._smoothed_dense_kps_203 = {}
-    frame = np.zeros((4, 4, 3), dtype=np.uint8)
+    scanner = _make_scanner()
     preview_heights = []
-
-    processor.main_window = SimpleNamespace(
-        control={},
-        parameters={},
-        target_faces={},
-        dropped_frames=set(),
-        markers={},
-        videoSeekSlider=SimpleNamespace(value=lambda: 0),
-        editFacesButton=SimpleNamespace(isChecked=lambda: False),
-        default_parameters=SimpleNamespace(data={"SimilarityThresholdSlider": 50}),
-        models_processor=SimpleNamespace(device="cpu"),
-    )
 
     def fake_read_frame(_capture, _rotation, preview_target_height=None):
         preview_heights.append(preview_target_height)
-        return True, frame.copy()
+        return True, np.zeros((4, 4, 3), dtype=np.uint8)
 
+    capture_patch, read_patch, seek_patch, release_patch = _scan_patches(
+        scanner, read_frame=fake_read_frame
+    )
     with (
-        patch(
-            "app.processors.video_processor.cv2.VideoCapture",
-            return_value=_DummyCapture(),
-        ),
-        patch(
-            "app.processors.video_processor.misc_helpers.read_frame",
-            side_effect=fake_read_frame,
-        ),
-        patch("app.processors.video_processor.misc_helpers.seek_frame"),
-        patch("app.processors.video_processor.misc_helpers.release_capture"),
+        capture_patch,
+        read_patch,
+        seek_patch,
+        release_patch,
         patch.object(
-            processor,
+            scanner,
             "_build_issue_scan_state_segments",
             return_value=[(0, 0, {"DetectorScoreSlider": 40}, {})],
         ),
         patch.object(
-            processor,
-            "_run_sequential_detection",
+            scanner.sequential_detector,
+            "run",
             return_value=_empty_scan_detection_result(),
         ),
     ):
-        processor.scan_issue_frames(
+        scanner.scan_issue_frames(
             scan_ranges=[(0, 0)],
             target_height=256,
             base_control={},
@@ -781,298 +743,48 @@ def test_scan_issue_frames_uses_explicit_target_height_when_segment_has_no_resiz
     assert preview_heights == [256]
 
 
-def test_run_sequential_detection_passes_detector_control_override():
-    processor = VideoProcessor.__new__(VideoProcessor)
-    processor.last_detected_faces = []
-    processor._smoothed_kps = {}
-    processor._smoothed_dense_kps = {}
-    processor._smoothed_dense_kps_203 = {}
-    captured = {}
-
-    def fake_run_detect(*_args, **kwargs):
-        captured["control_override"] = kwargs.get("control_override")
-        return _empty_scan_detection_result()[:3]
-
-    processor.main_window = SimpleNamespace(
-        editFacesButton=SimpleNamespace(isChecked=lambda: False),
-        models_processor=SimpleNamespace(device="cpu", run_detect=fake_run_detect),
-    )
-
-    frame = np.zeros((8, 8, 3), dtype=np.uint8)
-    override = {"FaceTrackingEnableToggle": True, "DetectorScoreSlider": 35}
-
-    result = processor._run_sequential_detection(
-        frame,
-        {
-            "DetectorModelSelection": "RetinaFace",
-            "MaxFacesToDetectSlider": 1,
-            "DetectorScoreSlider": 35,
-            "LandmarkDetectToggle": False,
-            "DetectFromPointsToggle": False,
-            "AutoRotationToggle": False,
-            "LandmarkMeanEyesToggle": False,
-            "KPSSmoothingEnableToggle": False,
-        },
-        {},
-        detector_control_override=override,
-    )
-
-    assert result[0].shape == (0, 4)
-    assert result[1].shape == (0, 5, 2)
-    assert result[2].shape == (0, 68, 2)
-    assert result[3] is None
-    assert captured["control_override"] == override
-
-
-def test_run_sequential_detection_handles_dense_203_shape_mismatch_with_smoothing_enabled():
-    processor = VideoProcessor.__new__(VideoProcessor)
-    processor.last_detected_faces = []
-    processor._smoothed_kps = {}
-    processor._smoothed_dense_kps = {}
-    processor._smoothed_dense_kps_203 = {}
-    processor.current_frame_number = 12
-
-    bboxes = np.array(
-        [[0.0, 0.0, 10.0, 10.0], [20.0, 20.0, 30.0, 30.0]], dtype=np.float32
-    )
-    kpss_5 = np.array(
-        [
-            [[1, 1], [2, 1], [1.5, 2], [1, 3], [2, 3]],
-            [[21, 21], [22, 21], [21.5, 22], [21, 23], [22, 23]],
-        ],
-        dtype=np.float32,
-    )
-    dense_203 = np.zeros((1, 203, 2), dtype=np.float32)
-    dense_203[0, :, 0] = 1.0
-    dense_203[0, :, 1] = 2.0
-
-    def fake_run_detect(*_args, **_kwargs):
-        return bboxes.copy(), kpss_5.copy(), dense_203.copy()
-
-    processor.main_window = SimpleNamespace(
-        editFacesButton=SimpleNamespace(isChecked=lambda: False),
-        models_processor=SimpleNamespace(device="cpu", run_detect=fake_run_detect),
-    )
-
-    frame = np.zeros((64, 64, 3), dtype=np.uint8)
-
-    with patch("builtins.print") as mock_print:
-        bboxes_out, kpss_5_out, _kpss_out, kpss_203_out = (
-            processor._run_sequential_detection(
-                frame,
-                {
-                    "DetectorModelSelection": "RetinaFace",
-                    "MaxFacesToDetectSlider": 2,
-                    "DetectorScoreSlider": 50,
-                    "LandmarkDetectToggle": True,
-                    "LandmarkDetectModelSelection": "203",
-                    "LandmarkDetectScoreSlider": 50,
-                    "DetectFromPointsToggle": False,
-                    "AutoRotationToggle": False,
-                    "LandmarkMeanEyesToggle": False,
-                    "KPSSmoothingEnableToggle": True,
-                    "KPSEmaAlphaSlider": 35,
-                },
-                {"face_1": {"FaceExpressionEnableBothToggle": True}},
-            )
-        )
-
-    assert bboxes_out.shape == (2, 4)
-    assert kpss_5_out.shape == (2, 5, 2)
-    assert isinstance(kpss_203_out, np.ndarray)
-    assert kpss_203_out.shape == (1, 203, 2)
-    assert mock_print.call_count == 2
-    mock_print.assert_any_call(
-        "[WARN] Dense KPS count mismatch on frame 12: "
-        "kpss_5=2, dense_kps=1. Skipping dense smoothing for missing faces."
-    )
-    mock_print.assert_any_call(
-        "[WARN] Dense KPS_203 count mismatch on frame 12: "
-        "kpss_5=2, dense_kps_203=1. Skipping dense 203 smoothing for missing faces."
-    )
-
-
-def test_run_sequential_detection_handles_dense_shape_mismatch_with_single_warning():
-    processor = VideoProcessor.__new__(VideoProcessor)
-    processor.last_detected_faces = []
-    processor._smoothed_kps = {}
-    processor._smoothed_dense_kps = {}
-    processor._smoothed_dense_kps_203 = {}
-    processor.current_frame_number = 34
-
-    bboxes = np.array(
-        [[0.0, 0.0, 10.0, 10.0], [20.0, 20.0, 30.0, 30.0]], dtype=np.float32
-    )
-    kpss_5 = np.array(
-        [
-            [[1, 1], [2, 1], [1.5, 2], [1, 3], [2, 3]],
-            [[21, 21], [22, 21], [21.5, 22], [21, 23], [22, 23]],
-        ],
-        dtype=np.float32,
-    )
-    dense_kps = np.zeros((1, 68, 2), dtype=np.float32)
-    dense_kps[0, :, 0] = 3.0
-    dense_kps[0, :, 1] = 4.0
-
-    def fake_run_detect(*_args, **_kwargs):
-        return bboxes.copy(), kpss_5.copy(), dense_kps.copy()
-
-    processor.main_window = SimpleNamespace(
-        editFacesButton=SimpleNamespace(isChecked=lambda: False),
-        models_processor=SimpleNamespace(device="cpu", run_detect=fake_run_detect),
-    )
-
-    frame = np.zeros((64, 64, 3), dtype=np.uint8)
-
-    with patch("builtins.print") as mock_print:
-        bboxes_out, kpss_5_out, kpss_out, kpss_203_out = (
-            processor._run_sequential_detection(
-                frame,
-                {
-                    "DetectorModelSelection": "RetinaFace",
-                    "MaxFacesToDetectSlider": 2,
-                    "DetectorScoreSlider": 50,
-                    "LandmarkDetectToggle": True,
-                    "LandmarkDetectModelSelection": "68",
-                    "LandmarkDetectScoreSlider": 50,
-                    "DetectFromPointsToggle": False,
-                    "AutoRotationToggle": False,
-                    "LandmarkMeanEyesToggle": False,
-                    "KPSSmoothingEnableToggle": True,
-                    "KPSEmaAlphaSlider": 35,
-                },
-                {},
-            )
-        )
-
-    assert bboxes_out.shape == (2, 4)
-    assert kpss_5_out.shape == (2, 5, 2)
-    assert isinstance(kpss_out, np.ndarray)
-    assert kpss_out.shape == (1, 68, 2)
-    assert kpss_203_out is None
-    mock_print.assert_called_once_with(
-        "[WARN] Dense KPS count mismatch on frame 34: "
-        "kpss_5=2, dense_kps=1. Skipping dense smoothing for missing faces."
-    )
-
-
-def test_run_sequential_detection_does_not_warn_when_dense_counts_match():
-    processor = VideoProcessor.__new__(VideoProcessor)
-    processor.last_detected_faces = []
-    processor._smoothed_kps = {}
-    processor._smoothed_dense_kps = {}
-    processor._smoothed_dense_kps_203 = {}
-    processor.current_frame_number = 56
-
-    bboxes = np.array([[0.0, 0.0, 10.0, 10.0]], dtype=np.float32)
-    kpss_5 = np.array([[[1, 1], [2, 1], [1.5, 2], [1, 3], [2, 3]]], dtype=np.float32)
-    dense_kps = np.zeros((1, 68, 2), dtype=np.float32)
-
-    def fake_run_detect(*_args, **_kwargs):
-        return bboxes.copy(), kpss_5.copy(), dense_kps.copy()
-
-    processor.main_window = SimpleNamespace(
-        editFacesButton=SimpleNamespace(isChecked=lambda: False),
-        models_processor=SimpleNamespace(device="cpu", run_detect=fake_run_detect),
-    )
-
-    frame = np.zeros((64, 64, 3), dtype=np.uint8)
-
-    with patch("builtins.print") as mock_print:
-        bboxes_out, kpss_5_out, kpss_out, kpss_203_out = (
-            processor._run_sequential_detection(
-                frame,
-                {
-                    "DetectorModelSelection": "RetinaFace",
-                    "MaxFacesToDetectSlider": 1,
-                    "DetectorScoreSlider": 50,
-                    "LandmarkDetectToggle": True,
-                    "LandmarkDetectModelSelection": "68",
-                    "LandmarkDetectScoreSlider": 50,
-                    "DetectFromPointsToggle": False,
-                    "AutoRotationToggle": False,
-                    "LandmarkMeanEyesToggle": False,
-                    "KPSSmoothingEnableToggle": True,
-                    "KPSEmaAlphaSlider": 35,
-                },
-                {},
-            )
-        )
-
-    assert bboxes_out.shape == (1, 4)
-    assert kpss_5_out.shape == (1, 5, 2)
-    assert isinstance(kpss_out, np.ndarray)
-    assert kpss_out.shape == (1, 68, 2)
-    assert kpss_203_out is None
-    mock_print.assert_not_called()
-
-
 def test_scan_issue_frames_reports_progress_per_frame_and_skips_dropped_runs():
-    processor = VideoProcessor.__new__(VideoProcessor)
-    processor.media_path = "dummy.mp4"
-    processor.media_rotation = 0
-    processor.fps = 30.0
-    processor.current_frame_number = 0
-    processor.last_detected_faces = []
-    processor._smoothed_kps = {}
-    processor._smoothed_dense_kps = {}
-    processor.main_window = SimpleNamespace(
-        control={},
-        parameters={},
+    scanner = _make_scanner(
         target_faces={
             "1": _DummyTargetFace(
                 "1", {"arcface_128": np.array([1.0], dtype=np.float32)}
             )
         },
         dropped_frames={2, 3, 4, 11},
-        markers={},
-        videoSeekSlider=SimpleNamespace(value=lambda: 0),
-        default_parameters=SimpleNamespace(data={"SimilarityThresholdSlider": 50}),
-        models_processor=SimpleNamespace(device="cpu"),
     )
-    processor._get_target_input_height = lambda: 256
     progress_updates = []
     seek_calls = []
-    frame = np.zeros((4, 4, 3), dtype=np.uint8)
 
-    def fake_read_frame(*_args, **_kwargs):
-        return True, frame.copy()
-
+    capture_patch, read_patch, seek_patch, release_patch = _scan_patches(
+        scanner,
+        seek_frame=lambda _capture, frame_number: seek_calls.append(frame_number),
+    )
     with (
-        patch(
-            "app.processors.video_processor.cv2.VideoCapture",
-            return_value=_DummyCapture(),
-        ),
-        patch(
-            "app.processors.video_processor.misc_helpers.read_frame",
-            side_effect=fake_read_frame,
-        ),
-        patch(
-            "app.processors.video_processor.misc_helpers.seek_frame",
-            side_effect=lambda _capture, frame_number: seek_calls.append(frame_number),
-        ),
-        patch("app.processors.video_processor.misc_helpers.release_capture"),
+        capture_patch,
+        read_patch,
+        seek_patch,
+        release_patch,
         patch.object(
-            processor,
+            scanner,
             "_build_issue_scan_state_segments",
             return_value=[(0, 24, {}, {})],
         ),
         patch.object(
-            processor,
+            scanner,
             "_prepare_issue_scan_match_context",
             return_value={
                 "recognition_model": "arcface_128",
-                "similarity_type": "Opal",
+                "similarity_type": "Auto",
                 "prepared_targets": [],
             },
         ),
         patch.object(
-            processor,
-            "_run_sequential_detection",
+            scanner.sequential_detector,
+            "run",
             return_value=_empty_scan_detection_result(),
         ),
     ):
-        result = processor.scan_issue_frames(
+        result = scanner.scan_issue_frames(
             scan_ranges=[(0, 24)],
             base_control={},
             base_params={},
@@ -1117,61 +829,27 @@ def test_scan_issue_frames_reports_progress_per_frame_and_skips_dropped_runs():
 
 
 def test_scan_issue_frames_emits_incremental_issue_callback():
-    processor = VideoProcessor.__new__(VideoProcessor)
-    processor.media_path = "dummy.mp4"
-    processor.media_rotation = 0
-    processor.fps = 30.0
-    processor.current_frame_number = 0
-    processor.last_detected_faces = []
-    processor._smoothed_kps = {}
-    processor._smoothed_dense_kps = {}
-    frame = np.zeros((4, 4, 3), dtype=np.uint8)
+    scanner = _make_scanner()
     issue_updates = []
 
-    processor.main_window = SimpleNamespace(
-        control={},
-        parameters={},
-        target_faces={},
-        dropped_frames=set(),
-        markers={},
-        videoSeekSlider=SimpleNamespace(value=lambda: 0),
-        default_parameters=SimpleNamespace(data={"SimilarityThresholdSlider": 50}),
-        models_processor=SimpleNamespace(device="cpu"),
-    )
-    processor._get_target_input_height = lambda: 256
-
+    capture_patch, read_patch, seek_patch, release_patch = _scan_patches(scanner)
     with (
-        patch(
-            "app.processors.video_processor.cv2.VideoCapture",
-            return_value=_DummyCapture(),
-        ),
-        patch(
-            "app.processors.video_processor.misc_helpers.read_frame",
-            return_value=(True, frame.copy()),
-        ),
-        patch("app.processors.video_processor.misc_helpers.seek_frame"),
-        patch("app.processors.video_processor.misc_helpers.release_capture"),
+        capture_patch,
+        read_patch,
+        seek_patch,
+        release_patch,
         patch.object(
-            processor,
+            scanner,
             "_build_issue_scan_state_segments",
             return_value=[(0, 0, {}, {})],
         ),
         patch.object(
-            processor,
-            "_prepare_issue_scan_match_context",
-            return_value={
-                "recognition_model": "arcface_128",
-                "similarity_type": "Opal",
-                "prepared_targets": [],
-            },
-        ),
-        patch.object(
-            processor,
-            "_run_sequential_detection",
+            scanner.sequential_detector,
+            "run",
             return_value=_empty_scan_detection_result(),
         ),
     ):
-        result = processor.scan_issue_frames(
+        result = scanner.scan_issue_frames(
             scan_ranges=[(0, 0)],
             base_control={},
             base_params={},
@@ -1191,66 +869,32 @@ def test_scan_issue_frames_emits_incremental_issue_callback():
 
 
 def test_scan_issue_frames_returns_partial_results_on_cancel():
-    processor = VideoProcessor.__new__(VideoProcessor)
-    processor.media_path = "dummy.mp4"
-    processor.media_rotation = 0
-    processor.fps = 30.0
-    processor.current_frame_number = 0
-    processor.last_detected_faces = []
-    processor._smoothed_kps = {}
-    processor._smoothed_dense_kps = {}
-    frame = np.zeros((4, 4, 3), dtype=np.uint8)
+    scanner = _make_scanner()
     issue_updates = []
     cancel_state = {"count": 0}
-
-    processor.main_window = SimpleNamespace(
-        control={},
-        parameters={},
-        target_faces={},
-        dropped_frames=set(),
-        markers={},
-        videoSeekSlider=SimpleNamespace(value=lambda: 0),
-        default_parameters=SimpleNamespace(data={"SimilarityThresholdSlider": 50}),
-        models_processor=SimpleNamespace(device="cpu"),
-    )
-    processor._get_target_input_height = lambda: 256
 
     def should_cancel():
         cancel_state["count"] += 1
         return cancel_state["count"] > 1
 
+    capture_patch, read_patch, seek_patch, release_patch = _scan_patches(scanner)
     with (
-        patch(
-            "app.processors.video_processor.cv2.VideoCapture",
-            return_value=_DummyCapture(),
-        ),
-        patch(
-            "app.processors.video_processor.misc_helpers.read_frame",
-            return_value=(True, frame.copy()),
-        ),
-        patch("app.processors.video_processor.misc_helpers.seek_frame"),
-        patch("app.processors.video_processor.misc_helpers.release_capture"),
+        capture_patch,
+        read_patch,
+        seek_patch,
+        release_patch,
         patch.object(
-            processor,
+            scanner,
             "_build_issue_scan_state_segments",
             return_value=[(0, 1, {}, {})],
         ),
         patch.object(
-            processor,
-            "_prepare_issue_scan_match_context",
-            return_value={
-                "recognition_model": "arcface_128",
-                "similarity_type": "Opal",
-                "prepared_targets": [],
-            },
-        ),
-        patch.object(
-            processor,
-            "_run_sequential_detection",
+            scanner.sequential_detector,
+            "run",
             return_value=_empty_scan_detection_result(),
         ),
     ):
-        result = processor.scan_issue_frames(
+        result = scanner.scan_issue_frames(
             scan_ranges=[(0, 1)],
             base_control={},
             base_params={},
@@ -1270,76 +914,48 @@ def test_scan_issue_frames_returns_partial_results_on_cancel():
     assert issue_updates == [("1", 0)]
 
 
+# --- Tracker lifecycle -------------------------------------------------------
+# Every reset goes through function_worker.reset_face_tracker: once directly and
+# once via SequentialDetector.reset_state(). A scan with tracking enabled
+# therefore resets three times (initial state reset, pre-scan tracker reset and
+# the post-scan restore), plus two more for every tracking (re)configuration.
+
+
 def test_scan_issue_frames_resets_tracker_before_and_after_tracking_scan():
-    processor = VideoProcessor.__new__(VideoProcessor)
-    processor.media_path = "dummy.mp4"
-    processor.media_rotation = 0
-    processor.fps = 30.0
-    processor.current_frame_number = 0
-    processor.last_detected_faces = []
-    processor._smoothed_kps = {}
-    processor._smoothed_dense_kps = {}
-    reset_calls = []
-    frame = np.zeros((4, 4, 3), dtype=np.uint8)
+    function_worker = _RecordingFunctionWorker()
+    control = {
+        "FaceTrackingEnableToggle": True,
+        "DetectorModelSelection": "RetinaFace",
+        "MaxFacesToDetectSlider": 1,
+        "DetectorScoreSlider": 50,
+        "LandmarkDetectToggle": False,
+        "LandmarkDetectModelSelection": "203",
+        "LandmarkDetectScoreSlider": 50,
+        "DetectFromPointsToggle": False,
+        "AutoRotationToggle": False,
+        "LandmarkMeanEyesToggle": False,
+        "KPSSmoothingEnableToggle": False,
+        "RecognitionModelSelection": "arcface_128",
+    }
+    scanner = _make_scanner(control=control, function_worker=function_worker)
 
-    def fake_run_detect(*_args, **_kwargs):
-        return (
-            np.empty((0, 4), dtype=np.float32),
-            np.empty((0, 5, 2), dtype=np.float32),
-            np.empty((0, 68, 2), dtype=np.float32),
-        )
-
-    processor.main_window = SimpleNamespace(
-        control={
-            "FaceTrackingEnableToggle": True,
-            "DetectorModelSelection": "RetinaFace",
-            "MaxFacesToDetectSlider": 1,
-            "DetectorScoreSlider": 50,
-            "LandmarkDetectToggle": False,
-            "LandmarkDetectModelSelection": "203",
-            "LandmarkDetectScoreSlider": 50,
-            "DetectFromPointsToggle": False,
-            "AutoRotationToggle": False,
-            "LandmarkMeanEyesToggle": False,
-            "KPSSmoothingEnableToggle": False,
-            "RecognitionModelSelection": "arcface_128",
-            "SimilarityTypeSelection": "Opal",
-        },
-        parameters={},
-        target_faces={},
-        dropped_frames=set(),
-        markers={},
-        videoSeekSlider=SimpleNamespace(value=lambda: 0),
-        default_parameters=SimpleNamespace(data={"SimilarityThresholdSlider": 50}),
-        editFacesButton=SimpleNamespace(isChecked=lambda: False),
-        models_processor=SimpleNamespace(
-            device="cpu",
-            run_detect=fake_run_detect,
-            face_detectors=SimpleNamespace(
-                reset_tracker=lambda: reset_calls.append("reset")
-            ),
-        ),
-    )
-    processor._get_target_input_height = lambda: 256
-
+    capture_patch, read_patch, seek_patch, release_patch = _scan_patches(scanner)
     with (
-        patch(
-            "app.processors.video_processor.cv2.VideoCapture",
-            return_value=_DummyCapture(),
+        capture_patch,
+        read_patch,
+        seek_patch,
+        release_patch,
+        patch.object(
+            scanner.sequential_detector,
+            "run",
+            return_value=_empty_scan_detection_result(),
         ),
-        patch(
-            "app.processors.video_processor.misc_helpers.read_frame",
-            return_value=(True, frame.copy()),
-        ),
-        patch("app.processors.video_processor.misc_helpers.seek_frame"),
-        patch("app.processors.video_processor.misc_helpers.release_capture"),
     ):
-        result = processor.scan_issue_frames(
+        result = scanner.scan_issue_frames(
             scan_ranges=[(0, 0)],
-            base_control=processor.main_window.control,
+            base_control=control,
             base_params={},
             target_faces_snapshot={},
-            reset_frame_number=0,
         )
 
     assert result == {
@@ -1348,114 +964,73 @@ def test_scan_issue_frames_resets_tracker_before_and_after_tracking_scan():
         "faces_with_issues": 0,
         "cancelled": False,
     }
-    assert reset_calls == ["reset", "reset"]
+    assert function_worker.reset_calls == ["reset"] * 3
 
 
-def test_scan_issue_frames_resets_tracker_when_marker_segment_enables_tracking():
-    processor = VideoProcessor.__new__(VideoProcessor)
-    processor.media_path = "dummy.mp4"
-    processor.media_rotation = 0
-    processor.fps = 30.0
-    processor.current_frame_number = 0
-    processor.last_detected_faces = []
-    processor._smoothed_kps = {}
-    processor._smoothed_dense_kps = {}
-    reset_calls = []
-    frame = np.zeros((4, 4, 3), dtype=np.uint8)
-
-    processor.main_window = SimpleNamespace(
-        control={"FaceTrackingEnableToggle": False},
-        parameters={},
-        target_faces={},
-        dropped_frames=set(),
-        markers={},
-        editFacesButton=SimpleNamespace(isChecked=lambda: False),
-        videoSeekSlider=SimpleNamespace(value=lambda: 0),
-        default_parameters=SimpleNamespace(data={"SimilarityThresholdSlider": 50}),
-        models_processor=SimpleNamespace(
-            device="cpu",
-            face_detectors=SimpleNamespace(
-                reset_tracker=lambda: reset_calls.append("reset")
-            ),
-        ),
+def _run_tracking_segment_scan(segments, scan_ranges):
+    """Run a scan over pre-resolved segments and report the tracker resets."""
+    function_worker = _RecordingFunctionWorker()
+    scanner = _make_scanner(
+        control={"FaceTrackingEnableToggle": False}, function_worker=function_worker
     )
-    processor._get_target_input_height = lambda: 256
+    local_controls_seen = []
 
-    with (
-        patch(
-            "app.processors.video_processor.cv2.VideoCapture",
-            return_value=_DummyCapture(),
-        ),
-        patch(
-            "app.processors.video_processor.misc_helpers.read_frame",
-            return_value=(True, frame.copy()),
-        ),
-        patch("app.processors.video_processor.misc_helpers.seek_frame"),
-        patch("app.processors.video_processor.misc_helpers.release_capture"),
-        patch.object(
-            processor,
-            "_build_issue_scan_state_segments",
-            return_value=[
-                (0, 0, {"FaceTrackingEnableToggle": False}, {}),
-                (1, 1, {"FaceTrackingEnableToggle": True}, {}),
-            ],
-        ),
-        patch.object(
-            processor,
-            "_prepare_issue_scan_match_context",
-            return_value={
-                "recognition_model": "arcface_128",
-                "similarity_type": "Opal",
-                "prepared_targets": [],
-            },
-        ),
-        patch.object(
-            processor,
-            "_run_sequential_detection",
-            return_value=_empty_scan_detection_result(),
-        ),
+    def fake_run(
+        frame_rgb=None,
+        local_control_for_worker=None,
+        detector_control_override=None,
+        **_kwargs,
     ):
-        result = processor.scan_issue_frames(
-            scan_ranges=[(0, 1)],
+        local_controls_seen.append(
+            (dict(local_control_for_worker), dict(detector_control_override or {}))
+        )
+        return _empty_scan_detection_result()
+
+    capture_patch, read_patch, seek_patch, release_patch = _scan_patches(scanner)
+    with (
+        capture_patch,
+        read_patch,
+        seek_patch,
+        release_patch,
+        patch.object(
+            scanner, "_build_issue_scan_state_segments", return_value=segments
+        ),
+        patch.object(scanner.sequential_detector, "run", side_effect=fake_run),
+    ):
+        result = scanner.scan_issue_frames(
+            scan_ranges=scan_ranges,
             base_control={"FaceTrackingEnableToggle": False},
             base_params={},
             target_faces_snapshot={},
-            reset_frame_number=0,
         )
 
-    assert result == {
-        "issue_frames_by_face": {},
-        "frames_scanned": 2,
-        "faces_with_issues": 0,
-        "cancelled": False,
-    }
-    assert reset_calls == ["reset", "reset", "reset"]
+    return result, function_worker.reset_calls, local_controls_seen
+
+
+def test_scan_issue_frames_resets_tracker_when_marker_segment_enables_tracking():
+    result, reset_calls, _ = _run_tracking_segment_scan(
+        [
+            (0, 0, {"FaceTrackingEnableToggle": False}, {}),
+            (1, 1, {"FaceTrackingEnableToggle": True}, {}),
+        ],
+        [(0, 1)],
+    )
+
+    assert result["frames_scanned"] == 2
+    assert reset_calls == ["reset"] * 5
 
 
 @pytest.mark.parametrize(
-    ("changed_key", "first_value", "second_value"),
+    ("changed_key", "second_value"),
     [
-        ("ByteTrackTrackThreshSlider", 40, 55),
-        ("ByteTrackMatchThreshSlider", 80, 65),
-        ("ByteTrackTrackBufferSlider", 30, 45),
+        ("ByteTrackTrackThreshSlider", 55),
+        ("ByteTrackMatchThreshSlider", 65),
+        ("ByteTrackTrackBufferSlider", 45),
     ],
 )
 def test_scan_issue_frames_resets_tracker_when_bytetrack_config_changes_between_tracking_segments(
-    changed_key, first_value, second_value
+    changed_key, second_value
 ):
-    processor = VideoProcessor.__new__(VideoProcessor)
-    processor.media_path = "dummy.mp4"
-    processor.media_rotation = 0
-    processor.fps = 30.0
-    processor.current_frame_number = 0
-    processor.last_detected_faces = []
-    processor._smoothed_kps = {}
-    processor._smoothed_dense_kps = {}
-    processor._smoothed_dense_kps_203 = {}
-    reset_calls = []
-    frame = np.zeros((4, 4, 3), dtype=np.uint8)
-    local_controls_seen = []
-
     first_control = {
         "FaceTrackingEnableToggle": True,
         "ByteTrackTrackThreshSlider": 40,
@@ -1465,88 +1040,13 @@ def test_scan_issue_frames_resets_tracker_when_bytetrack_config_changes_between_
     second_control = dict(first_control)
     second_control[changed_key] = second_value
 
-    processor.main_window = SimpleNamespace(
-        control={"FaceTrackingEnableToggle": False},
-        parameters={},
-        target_faces={},
-        dropped_frames=set(),
-        markers={},
-        editFacesButton=SimpleNamespace(isChecked=lambda: False),
-        videoSeekSlider=SimpleNamespace(value=lambda: 0),
-        default_parameters=SimpleNamespace(data={"SimilarityThresholdSlider": 50}),
-        models_processor=SimpleNamespace(
-            device="cpu",
-            face_detectors=SimpleNamespace(
-                reset_tracker=lambda: reset_calls.append("reset")
-            ),
-        ),
+    result, reset_calls, local_controls_seen = _run_tracking_segment_scan(
+        [(0, 0, first_control, {}), (1, 1, second_control, {})],
+        [(0, 1)],
     )
-    processor._get_target_input_height = lambda: 256
 
-    def fake_run_sequential_detection(
-        _frame_rgb,
-        local_control,
-        _local_params,
-        frame_tensor=None,
-        detector_control_override=None,
-    ):
-        local_controls_seen.append(
-            (
-                dict(local_control),
-                dict(detector_control_override or {}),
-            )
-        )
-        return _empty_scan_detection_result()
-
-    with (
-        patch(
-            "app.processors.video_processor.cv2.VideoCapture",
-            return_value=_DummyCapture(),
-        ),
-        patch(
-            "app.processors.video_processor.misc_helpers.read_frame",
-            return_value=(True, frame.copy()),
-        ),
-        patch("app.processors.video_processor.misc_helpers.seek_frame"),
-        patch("app.processors.video_processor.misc_helpers.release_capture"),
-        patch.object(
-            processor,
-            "_build_issue_scan_state_segments",
-            return_value=[
-                (0, 0, first_control, {}),
-                (1, 1, second_control, {}),
-            ],
-        ),
-        patch.object(
-            processor,
-            "_prepare_issue_scan_match_context",
-            return_value={
-                "recognition_model": "arcface_128",
-                "similarity_type": "Opal",
-                "prepared_targets": [],
-            },
-        ),
-        patch.object(
-            processor,
-            "_run_sequential_detection",
-            side_effect=fake_run_sequential_detection,
-        ),
-    ):
-        result = processor.scan_issue_frames(
-            scan_ranges=[(0, 1)],
-            base_control={"FaceTrackingEnableToggle": False},
-            base_params={},
-            target_faces_snapshot={},
-            reset_frame_number=0,
-        )
-
-    assert result == {
-        "issue_frames_by_face": {},
-        "frames_scanned": 2,
-        "faces_with_issues": 0,
-        "cancelled": False,
-    }
-    assert reset_calls == ["reset", "reset", "reset"]
+    assert result["frames_scanned"] == 2
+    assert reset_calls == ["reset"] * 5
     assert local_controls_seen == [
         (first_control, first_control),
         (second_control, second_control),
@@ -1554,18 +1054,6 @@ def test_scan_issue_frames_resets_tracker_when_bytetrack_config_changes_between_
 
 
 def test_scan_issue_frames_keeps_tracker_when_bytetrack_config_is_unchanged_between_tracking_segments():
-    processor = VideoProcessor.__new__(VideoProcessor)
-    processor.media_path = "dummy.mp4"
-    processor.media_rotation = 0
-    processor.fps = 30.0
-    processor.current_frame_number = 0
-    processor.last_detected_faces = []
-    processor._smoothed_kps = {}
-    processor._smoothed_dense_kps = {}
-    processor._smoothed_dense_kps_203 = {}
-    reset_calls = []
-    frame = np.zeros((4, 4, 3), dtype=np.uint8)
-
     shared_control = {
         "FaceTrackingEnableToggle": True,
         "ByteTrackTrackThreshSlider": 40,
@@ -1573,229 +1061,69 @@ def test_scan_issue_frames_keeps_tracker_when_bytetrack_config_is_unchanged_betw
         "ByteTrackTrackBufferSlider": 30,
     }
 
-    processor.main_window = SimpleNamespace(
-        control={"FaceTrackingEnableToggle": False},
-        parameters={},
-        target_faces={},
-        dropped_frames=set(),
-        markers={},
-        editFacesButton=SimpleNamespace(isChecked=lambda: False),
-        videoSeekSlider=SimpleNamespace(value=lambda: 0),
-        default_parameters=SimpleNamespace(data={"SimilarityThresholdSlider": 50}),
-        models_processor=SimpleNamespace(
-            device="cpu",
-            face_detectors=SimpleNamespace(
-                reset_tracker=lambda: reset_calls.append("reset")
-            ),
-        ),
+    result, reset_calls, _ = _run_tracking_segment_scan(
+        [(0, 0, shared_control, {}), (1, 1, dict(shared_control), {})],
+        [(0, 1)],
     )
-    processor._get_target_input_height = lambda: 256
 
-    with (
-        patch(
-            "app.processors.video_processor.cv2.VideoCapture",
-            return_value=_DummyCapture(),
-        ),
-        patch(
-            "app.processors.video_processor.misc_helpers.read_frame",
-            return_value=(True, frame.copy()),
-        ),
-        patch("app.processors.video_processor.misc_helpers.seek_frame"),
-        patch("app.processors.video_processor.misc_helpers.release_capture"),
-        patch.object(
-            processor,
-            "_build_issue_scan_state_segments",
-            return_value=[
-                (0, 0, shared_control, {}),
-                (1, 1, dict(shared_control), {}),
-            ],
-        ),
-        patch.object(
-            processor,
-            "_prepare_issue_scan_match_context",
-            return_value={
-                "recognition_model": "arcface_128",
-                "similarity_type": "Opal",
-                "prepared_targets": [],
-            },
-        ),
-        patch.object(
-            processor,
-            "_run_sequential_detection",
-            return_value=_empty_scan_detection_result(),
-        ),
-    ):
-        result = processor.scan_issue_frames(
-            scan_ranges=[(0, 1)],
-            base_control={"FaceTrackingEnableToggle": False},
-            base_params={},
-            target_faces_snapshot={},
-            reset_frame_number=0,
-        )
-
-    assert result == {
-        "issue_frames_by_face": {},
-        "frames_scanned": 2,
-        "faces_with_issues": 0,
-        "cancelled": False,
-    }
-    assert reset_calls == ["reset", "reset"]
+    assert result["frames_scanned"] == 2
+    # No mid-scan reconfiguration, so only the three lifecycle resets happen.
+    assert reset_calls == ["reset"] * 3
 
 
 def test_scan_issue_frames_resets_tracker_when_tracking_re_enters_after_disabled_segment():
-    processor = VideoProcessor.__new__(VideoProcessor)
-    processor.media_path = "dummy.mp4"
-    processor.media_rotation = 0
-    processor.fps = 30.0
-    processor.current_frame_number = 0
-    processor.last_detected_faces = []
-    processor._smoothed_kps = {}
-    processor._smoothed_dense_kps = {}
-    reset_calls = []
-    frame = np.zeros((4, 4, 3), dtype=np.uint8)
-
-    processor.main_window = SimpleNamespace(
-        control={"FaceTrackingEnableToggle": False},
-        parameters={},
-        target_faces={},
-        dropped_frames=set(),
-        markers={},
-        editFacesButton=SimpleNamespace(isChecked=lambda: False),
-        videoSeekSlider=SimpleNamespace(value=lambda: 0),
-        default_parameters=SimpleNamespace(data={"SimilarityThresholdSlider": 50}),
-        models_processor=SimpleNamespace(
-            device="cpu",
-            face_detectors=SimpleNamespace(
-                reset_tracker=lambda: reset_calls.append("reset")
-            ),
-        ),
+    result, reset_calls, _ = _run_tracking_segment_scan(
+        [
+            (0, 0, {"FaceTrackingEnableToggle": True}, {}),
+            (1, 1, {"FaceTrackingEnableToggle": False}, {}),
+            (2, 2, {"FaceTrackingEnableToggle": True}, {}),
+        ],
+        [(0, 2)],
     )
-    processor._get_target_input_height = lambda: 256
 
-    with (
-        patch(
-            "app.processors.video_processor.cv2.VideoCapture",
-            return_value=_DummyCapture(),
-        ),
-        patch(
-            "app.processors.video_processor.misc_helpers.read_frame",
-            return_value=(True, frame.copy()),
-        ),
-        patch("app.processors.video_processor.misc_helpers.seek_frame"),
-        patch("app.processors.video_processor.misc_helpers.release_capture"),
-        patch.object(
-            processor,
-            "_build_issue_scan_state_segments",
-            return_value=[
-                (0, 0, {"FaceTrackingEnableToggle": True}, {}),
-                (1, 1, {"FaceTrackingEnableToggle": False}, {}),
-                (2, 2, {"FaceTrackingEnableToggle": True}, {}),
-            ],
-        ),
-        patch.object(
-            processor,
-            "_prepare_issue_scan_match_context",
-            return_value={
-                "recognition_model": "arcface_128",
-                "similarity_type": "Opal",
-                "prepared_targets": [],
-            },
-        ),
-        patch.object(
-            processor,
-            "_run_sequential_detection",
-            return_value=_empty_scan_detection_result(),
-        ),
-    ):
-        result = processor.scan_issue_frames(
-            scan_ranges=[(0, 2)],
-            base_control={"FaceTrackingEnableToggle": False},
-            base_params={},
-            target_faces_snapshot={},
-            reset_frame_number=0,
-        )
-
-    assert result == {
-        "issue_frames_by_face": {},
-        "frames_scanned": 3,
-        "faces_with_issues": 0,
-        "cancelled": False,
-    }
-    assert reset_calls == ["reset", "reset", "reset"]
+    assert result["frames_scanned"] == 3
+    assert reset_calls == ["reset"] * 5
 
 
 def test_scan_issue_frames_clears_sequential_state_when_tracking_re_enters():
-    processor = VideoProcessor.__new__(VideoProcessor)
-    processor.media_path = "dummy.mp4"
-    processor.media_rotation = 0
-    processor.fps = 30.0
-    processor.current_frame_number = 0
-    processor.last_detected_faces = [{"persisted": True}]
-    processor._smoothed_kps = {1: np.array([[1.0, 2.0]], dtype=np.float32)}
-    processor._smoothed_dense_kps = {1: np.array([[3.0, 4.0]], dtype=np.float32)}
-    processor._smoothed_dense_kps_203 = {1: np.array([[5.0, 6.0]], dtype=np.float32)}
-    reset_state_snapshots = []
-    frame = np.zeros((4, 4, 3), dtype=np.uint8)
+    scanner = _make_scanner(control={"FaceTrackingEnableToggle": False})
+    detector = scanner.sequential_detector
+    detector.last_detected_faces = [{"persisted": True}]
+    detector._smoothed_kps = {1: np.array([[1.0, 2.0]], dtype=np.float32)}
+    detector._smoothed_dense_kps = {1: np.array([[3.0, 4.0]], dtype=np.float32)}
+    detector._smoothed_dense_kps_203 = {1: np.array([[5.0, 6.0]], dtype=np.float32)}
+    state_snapshots = []
+    frame_counter = {"value": 0}
 
-    processor.main_window = SimpleNamespace(
-        control={"FaceTrackingEnableToggle": False},
-        parameters={},
-        target_faces={},
-        dropped_frames=set(),
-        markers={},
-        editFacesButton=SimpleNamespace(isChecked=lambda: False),
-        videoSeekSlider=SimpleNamespace(value=lambda: 0),
-        default_parameters=SimpleNamespace(data={"SimilarityThresholdSlider": 50}),
-        models_processor=SimpleNamespace(
-            device="cpu",
-            face_detectors=SimpleNamespace(reset_tracker=lambda: None),
-        ),
-    )
-    processor._get_target_input_height = lambda: 256
-
-    def fake_prepare_issue_scan_match_context(*_args, **_kwargs):
-        return {
-            "recognition_model": "arcface_128",
-            "similarity_type": "Opal",
-            "prepared_targets": [],
-        }
-
-    def fake_run_sequential_detection(*_args, **_kwargs):
-        reset_state_snapshots.append(
+    def fake_run(**_kwargs):
+        state_snapshots.append(
             (
-                list(processor.last_detected_faces),
-                dict(processor._smoothed_kps),
-                dict(processor._smoothed_dense_kps),
-                dict(processor._smoothed_dense_kps_203),
+                list(detector.last_detected_faces),
+                dict(detector._smoothed_kps),
+                dict(detector._smoothed_dense_kps),
+                dict(detector._smoothed_dense_kps_203),
             )
         )
-        processor.last_detected_faces = [
-            {"from_segment": processor.current_frame_number}
-        ]
-        processor._smoothed_kps = {
-            processor.current_frame_number: np.array([[9.0, 9.0]], dtype=np.float32)
+        marker = frame_counter["value"]
+        frame_counter["value"] += 1
+        detector.last_detected_faces = [{"from_segment": marker}]
+        detector._smoothed_kps = {marker: np.array([[9.0, 9.0]], dtype=np.float32)}
+        detector._smoothed_dense_kps = {
+            marker: np.array([[8.0, 8.0]], dtype=np.float32)
         }
-        processor._smoothed_dense_kps = {
-            processor.current_frame_number: np.array([[8.0, 8.0]], dtype=np.float32)
-        }
-        processor._smoothed_dense_kps_203 = {
-            processor.current_frame_number: np.array([[7.0, 7.0]], dtype=np.float32)
+        detector._smoothed_dense_kps_203 = {
+            marker: np.array([[7.0, 7.0]], dtype=np.float32)
         }
         return _empty_scan_detection_result()
 
+    capture_patch, read_patch, seek_patch, release_patch = _scan_patches(scanner)
     with (
-        patch(
-            "app.processors.video_processor.cv2.VideoCapture",
-            return_value=_DummyCapture(),
-        ),
-        patch(
-            "app.processors.video_processor.misc_helpers.read_frame",
-            return_value=(True, frame.copy()),
-        ),
-        patch("app.processors.video_processor.misc_helpers.seek_frame"),
-        patch("app.processors.video_processor.misc_helpers.release_capture"),
+        capture_patch,
+        read_patch,
+        seek_patch,
+        release_patch,
         patch.object(
-            processor,
+            scanner,
             "_build_issue_scan_state_segments",
             return_value=[
                 (0, 0, {"FaceTrackingEnableToggle": True}, {}),
@@ -1803,34 +1131,22 @@ def test_scan_issue_frames_clears_sequential_state_when_tracking_re_enters():
                 (2, 2, {"FaceTrackingEnableToggle": True}, {}),
             ],
         ),
-        patch.object(
-            processor,
-            "_prepare_issue_scan_match_context",
-            side_effect=fake_prepare_issue_scan_match_context,
-        ),
-        patch.object(
-            processor,
-            "_run_sequential_detection",
-            side_effect=fake_run_sequential_detection,
-        ),
+        patch.object(scanner.sequential_detector, "run", side_effect=fake_run),
     ):
-        result = processor.scan_issue_frames(
+        result = scanner.scan_issue_frames(
             scan_ranges=[(0, 2)],
             base_control={"FaceTrackingEnableToggle": False},
             base_params={},
             target_faces_snapshot={},
-            reset_frame_number=0,
         )
 
-    assert result == {
-        "issue_frames_by_face": {},
-        "frames_scanned": 3,
-        "faces_with_issues": 0,
-        "cancelled": False,
-    }
-    assert reset_state_snapshots[0] == ([], {}, {}, {})
-    assert reset_state_snapshots[2] == ([], {}, {}, {})
+    assert result["frames_scanned"] == 3
+    # Cleared once up front and again when tracking re-enters.
+    assert state_snapshots[0] == ([], {}, {}, {})
+    assert state_snapshots[2] == ([], {}, {}, {})
+    # The live state the user left behind survives the scan untouched.
     np.testing.assert_array_equal(
-        processor._smoothed_dense_kps_203[1],
+        detector._smoothed_dense_kps_203[1],
         np.array([[5.0, 6.0]], dtype=np.float32),
     )
+    assert detector.last_detected_faces == [{"persisted": True}]

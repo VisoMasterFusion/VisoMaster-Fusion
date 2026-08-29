@@ -1,11 +1,12 @@
 import threading
+from collections import OrderedDict
+
 import numpy as np
 import torch
 import torch.nn.functional as F
 from torchvision import transforms
-from collections import OrderedDict
-from typing import Optional
 
+from app.helpers.vr_geometry import VRGeometry
 
 # Assuming Equirec2Perspec_vr and Perspec2Equirec_vr are in app.processors.external
 from app.processors.external.Equirec2Perspec_vr import (
@@ -53,11 +54,19 @@ def _get_sobel_kernels(device):
 
 
 class EquirectangularConverter:
-    def __init__(self, equirect_image_data_rgb_uint8: np.ndarray, device: torch.device):
+    def __init__(
+        self,
+        equirect_image_data_rgb_uint8: np.ndarray,
+        device: torch.device,
+        geometry: VRGeometry | None = None,
+    ):
         """
         Initializes with equirectangular image data.
         :param equirect_image_data_rgb_uint8: NumPy array (H, W, C) in RGB, uint8 format.
         :param device: PyTorch device to use.
+        :param geometry: how the frame's pixels map to directions.  Defaults to the
+            historical VR180 side-by-side assumption (each eye 180°, whole frame a
+            360°×180° equirect).
         """
 
         self.device = device
@@ -71,41 +80,61 @@ class EquirectangularConverter:
         self.channels, self.height, self.width = (
             self.equirect_tensor_cxhxw_rgb_uint8.shape
         )
+        self.geometry = geometry or VRGeometry(
+            frame_height=self.height, frame_width=self.width
+        )
         self.e2p_instance = E2P_Equirectangular(self.equirect_tensor_cxhxw_rgb_uint8)
 
     def calculate_theta_phi_from_bbox(self, bbox_np: np.ndarray):
+        # Truncating to int matches the detector's pixel-grid resolution and keeps
+        # the angles stable frame to frame for a stationary face.
         x1, y1, x2, y2 = map(int, bbox_np)
-        x_center = (x1 + x2) / 2
-        y_center = (y1 + y2) / 2
-
-        theta = (x_center / self.width - 0.5) * 360.0
-        phi = (
-            -(y_center / self.height - 0.5) * 180.0
-        )  # Negative because image y is top-to-bottom
-
-        return theta, phi
+        return self.geometry.bbox_to_theta_phi((x1, y1, x2, y2))
 
     def get_perspective_crop(
-        self, FOV: float, THETA: float, PHI: float, height: int, width: int
+        self,
+        FOV: float,
+        THETA: float,
+        PHI: float,
+        height: int,
+        width: int,
+        is_left_eye: bool | None = None,
     ) -> torch.Tensor:
         """
         Returns a perspective crop as a Torch tensor (C, H, W) in RGB, uint8 format, on GPU.
+
+        :param is_left_eye: which eye THETA falls in, or None to derive it from THETA.
+            Only consulted for projections that are defined per-eye (fisheye) or when
+            coverage is partial, where the crop must not sample the neighbouring eye.
         """
+        if is_left_eye is None:
+            is_left_eye = self.geometry.eye_of_theta(THETA)
         # E2P_Equirectangular.GetPerspective now returns a Torch tensor (CHW, RGB, uint8)
         persp_torch_cxhxw_rgb_uint8 = self.e2p_instance.GetPerspective(
-            FOV, THETA, PHI, height, width
+            FOV,
+            THETA,
+            PHI,
+            height,
+            width,
+            geometry=self.geometry,
+            is_left_eye=is_left_eye,
         )
         return persp_torch_cxhxw_rgb_uint8
 
 
 class PerspectiveConverter:
     def __init__(
-        self, base_equirect_image_data_rgb_uint8: np.ndarray, device: torch.device
+        self,
+        base_equirect_image_data_rgb_uint8: np.ndarray,
+        device: torch.device,
+        geometry: VRGeometry | None = None,
     ):
         """
         Initializes with the base equirectangular image data (used for dimensions and as background).
         :param base_equirect_image_data_rgb_uint8: NumPy array (H, W, C) in RGB, uint8 format.
         :param device: PyTorch device to use.
+        :param geometry: how the frame's pixels map to directions.  Defaults to the
+            historical VR180 side-by-side assumption.
         """
 
         self.device = device
@@ -116,6 +145,7 @@ class PerspectiveConverter:
         self.orig_height: int = h
         self.orig_width: int = w
         self.orig_channels: int = c
+        self.geometry = geometry or VRGeometry(frame_height=h, frame_width=w)
         self.sobel_x_kernel, self.sobel_y_kernel = _get_sobel_kernels(self.device)
         # Bounded LRU cache for GaussianBlur instances (keyed by kernel_size, sigma).
         # A plain dict would grow unbounded across frames with varying face sizes.
@@ -192,7 +222,7 @@ class PerspectiveConverter:
         theta: float,
         phi: float,
         fov: float,
-        is_left_eye: Optional[bool],  # None = single-eye (full-frame) mode
+        is_left_eye: bool | None,  # None = single-eye (full-frame) mode
     ):
         """
         Stitches a single processed perspective crop back into the target equirectangular image.
@@ -208,7 +238,12 @@ class PerspectiveConverter:
             return
 
         p2e_instance = P2E_Perspective(
-            processed_crop_torch_cxhxw_rgb_uint8, FOV=fov, THETA=theta, PHI=phi
+            processed_crop_torch_cxhxw_rgb_uint8,
+            FOV=fov,
+            THETA=theta,
+            PHI=phi,
+            geometry=self.geometry,
+            is_left_eye=is_left_eye,
         )
         equirect_component_torch, mask_torch_original_shape = p2e_instance.GetEquirec(
             self.orig_height, self.orig_width
@@ -226,6 +261,9 @@ class PerspectiveConverter:
         # mask 4× per frame × 8 workers — a third of a gigabyte of PCIe traffic
         # per frame, with each upload's sync spin-waiting on CUDA 13/Windows
         # and saturating CPU cores instead of waking them.
+        # The mask is derived from the projected component, so it also depends on the
+        # projection and coverage — those are part of the key so that changing the
+        # coverage slider mid-session cannot reuse the previous geometry's mask.
         _fmask_key = (
             round(theta, 3),
             round(phi, 3),
@@ -233,6 +271,7 @@ class PerspectiveConverter:
             is_left_eye,
             self.orig_height,
             self.orig_width,
+            self.geometry,
             str(_mask_device),
         )
         # Thread-safe cache lookup: hold the lock only for the dict read so concurrent
