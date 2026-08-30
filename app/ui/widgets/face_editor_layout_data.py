@@ -48,6 +48,11 @@ FACE_EDITOR_LAYOUT_DATA: Any = {  # noqa: F811
             "label": "Enable Face Pose/Expression Editor",
             "default": False,
             "help": "Enable Face Pose/Expression Editor.",
+            "below_row_button": {
+                "label": "🔁 Reset All Expression Editor Settings",
+                "help": "Reset all face pose/expression editor values to defaults.",
+                "exec_function": control_actions.reset_face_editor_expression_params,
+            },
         },
         "FaceEditorTypeSelection": {
             "level": 2,
