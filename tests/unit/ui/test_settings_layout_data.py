@@ -236,7 +236,20 @@ def test_landmark_dropdown_options_are_all_mapped_to_models():
                 f"{cat}/{name}: dropdown option {option!r} has no "
                 f"landmark_model_mapping entry"
             )
-        # The TUFA / ORFormer additions must be reachable from the UI.
+        # The TUFA / ORFormer / HRFFA additions must be reachable from the UI.
         assert "tufa98" in entry["options"]
         assert "tufa314" in entry["options"]
         assert "orformer98" in entry["options"]
+        assert "hrffa" in entry["options"]
+
+
+def test_the_hrffa_head_detector_is_not_a_selectable_face_detector():
+    """DEIMv2-Wholebody49 backs the 'hrffa' landmark mode, but it emits head boxes and
+    no keypoints. Exposing it in DetectorModelSelection would hand the swapper
+    synthesised keypoints planted inside a head-sized box."""
+    for cat, name, entry in _all_widget_entries():
+        if name != "DetectorModelSelection":
+            continue
+        assert not any("deim" in str(option).lower() for option in entry["options"]), (
+            f"{cat}/{name}: the HRFFA head detector must stay internal"
+        )

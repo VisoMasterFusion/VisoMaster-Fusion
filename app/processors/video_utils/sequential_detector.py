@@ -369,6 +369,15 @@ class SequentialDetector:
         filtered_kpss = []
         filtered_kpss_203 = []
 
+        # 'hrffa' predicts on a whole-head crop, so it needs DEIMv2-Wholebody49 head
+        # boxes. Those are a property of the frame, not of the face, so run the head
+        # detector once here rather than once per face inside the landmark call.
+        head_bboxes = None
+        if use_landmark and landmark_mode == "hrffa" and num_targets > 0:
+            head_bboxes = self.main_window.function_worker.run_detect_head_bboxes(
+                frame_tensor
+            )
+
         for i in range(num_targets):
             current_bbox = filtered_bboxes[i]
             current_kps5 = filtered_kpss_5[i]
@@ -423,6 +432,7 @@ class SequentialDetector:
                             score=control.get("LandmarkDetectScoreSlider", 50) / 100.0,
                             use_mean_eyes=control.get("LandmarkMeanEyesToggle", False),
                             from_points=from_points,
+                            head_bboxes=head_bboxes,
                         )
                     )
                     if len(lm_kpss) > 0:
