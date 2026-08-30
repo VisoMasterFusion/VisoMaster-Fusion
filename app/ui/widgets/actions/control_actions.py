@@ -1036,3 +1036,43 @@ def handle_seek_bar_thumbnails_toggle(main_window: "MainWindow", enabled: bool):
             scroll_area.adjustSize()
             scroll_area.updateGeometry()
         thumb.update()
+
+def reset_face_editor_expression_params(main_window: "MainWindow"):
+    from app.ui.widgets.actions import common_actions as common_widget_actions
+
+    defaults = {
+        "EyesOpenRatioDecimalSlider": 0.00,
+        "LipsOpenRatioDecimalSlider": 0.00,
+        "HeadPitchSlider": 0,
+        "HeadYawSlider": 0,
+        "HeadRollSlider": 0,
+        "XAxisMovementDecimalSlider": 0.00,
+        "YAxisMovementDecimalSlider": 0.00,
+        "ZAxisMovementDecimalSlider": 1.00,
+        "MouthPoutingDecimalSlider": 0.00,
+        "MouthPursingDecimalSlider": 0.00,
+        "MouthGrinDecimalSlider": 0.00,
+        "LipsCloseOpenSlider": 0,
+        "MouthSmileDecimalSlider": 0.00,
+        "EyeWinkDecimalSlider": 0.00,
+        "EyeBrowsDirectionDecimalSlider": 0.00,
+        "EyeGazeHorizontalDecimalSlider": 0.00,
+        "EyeGazeVerticalDecimalSlider": 0.00,
+    }
+
+    previous_batch = getattr(main_window, "_batch_update_in_progress", False)
+    main_window._batch_update_in_progress = True
+    try:
+        for name, value in defaults.items():
+            common_widget_actions.update_parameter(
+                main_window, name, value, enable_refresh_frame=False
+            )
+            widget = main_window.parameter_widgets.get(name)
+            if widget:
+                widget.enable_refresh_frame = False
+                common_widget_actions._set_single_widget_value(widget, value)
+                widget.enable_refresh_frame = True
+    finally:
+        main_window._batch_update_in_progress = previous_batch
+        if not previous_batch:
+            common_widget_actions.refresh_frame(main_window)
