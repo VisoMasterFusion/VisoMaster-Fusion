@@ -1,4 +1,5 @@
 from typing import Any
+from app.ui.widgets.actions import control_actions
 
 FACE_EDITOR_LAYOUT_DATA: Any = {  # noqa: F811
     "": {
