@@ -59,7 +59,8 @@ def add_widgets_to_tab_layout(
         if "fixed_width" in button_data:
             action_button.setFixedWidth(cast(int, button_data["fixed_width"]))
         else:
-            action_button.setMaximumWidth(55)
+            action_button.adjustSize()
+            action_button.setMinimumWidth(action_button.sizeHint().width() + 16)
         if "exec_function" in button_data:
             action_button.clicked.connect(
                 partial(cast(Callable, button_data["exec_function"]), main_window)
