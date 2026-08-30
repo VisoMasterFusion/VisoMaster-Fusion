@@ -23,6 +23,15 @@ alphaface_repo = (
 )
 tufa_repo = "https://github.com/Glat0s/TUFA-onnx/releases/download/v0.0.1"
 orformer_repo = "https://github.com/Glat0s/ORFormer-onnx/releases/download/v0.0.1"
+# HRFFA and its DEIMv2-Wholebody49 head detector are linked straight at the
+# author's release instead of being re-hosted like tufa_repo / orformer_repo.
+# HRFFA ships the students under MIT but asks distributors to check the
+# derived-work terms of the DINOv3 teacher first; linking upstream means we never
+# redistribute the weights, so that question does not arise. See docs/hrffa.md.
+hrffa_repo = (
+    "https://github.com/PINTO0309/High-Angle_Robust_Fast_FaceAlignment"
+    "/releases/download/weights"
+)
 
 ARCFACE_DST = np.array(
     [
@@ -231,6 +240,13 @@ landmark_model_mapping = {
     # TUFA's own dense 314-point set — not a dataset topology, hence its own
     # converter (faceutil.convert_face_landmark_314_to_5).
     "tufa314": "FaceLandmarkTUFA314",
+    # ibug68, the same topology as FaceLandmark68 (2dfan4), so it reuses
+    # faceutil.convert_face_landmark_68_to_5. This mode also drives a second graph,
+    # DEIMv2Wholebody49Head, for the whole-head box it crops from; that dependency is
+    # force-loaded by FaceLandmarkDetectors the way 478 force-loads FaceBlendShapes,
+    # and is deliberately NOT in this table (it is not a landmark model and must not
+    # become the value control_actions loads/unloads for the mode).
+    "hrffa": "FaceLandmarkHRFFA",
 }
 
 # Point count per landmark_model_mapping key. The mode string used to double as the
@@ -247,6 +263,7 @@ landmark_point_counts = {
     "tufa98": 98,
     "orformer98": 98,
     "tufa314": 314,
+    "hrffa": 68,
 }
 
 # Models listed here get trt_fp16_enable=True on the TensorRT EP.
@@ -264,6 +281,12 @@ landmark_point_counts = {
 #     0xC000041D x1). Its fp32 build succeeds first try in ~97 s.
 # In fp32 both are fast enough (3.9 ms and 5.9 ms per face on an RTX 4090).
 # See onnx-export-notes.md in the repo root for the full measurements.
+#
+# FaceLandmarkHRFFA and DEIMv2Wholebody49Head are absent for the same reason, but
+# unmeasured rather than measured: HRFFA-vitt is a ViT regression head (the shape that
+# fails silently for TUFA) and DEIMv2 is a DETR-style decoder (the shape whose fp16
+# build killed ORFormer). Both are cheap enough in fp32 that guessing is not worth the
+# risk of a silent ~70 px error. Measure before adding either.
 fp16_safe_models_list = [
     # --- LivePortrait ---
     "LivePortraitAppearanceFeatureExtractor",
@@ -541,6 +564,53 @@ models_list = [
         "local_path": f"{models_dir}/orformer_hgnet_wflw_98pt_256.onnx",
         "hash": "219835e107a44cebf73ce3b8d592b0ed8e2f25400bee918e8fccab36fbb43f1b",
         "url": f"{orformer_repo}/orformer_hgnet_wflw_98pt_256.onnx",
+    },
+    {
+        # HRFFA (High-Angle Robust Fast FaceAlignment), 68-point ibug topology — the
+        # same layout FaceLandmark68 (2dfan4) emits, so it reuses
+        # faceutil.convert_face_landmark_68_to_5.
+        # This is the `vitt` student (ViT-T/16, DINOv3-ViT-L teacher distilled away):
+        # the most accurate model the author publishes as ONNX apart from the 1.2 GB
+        # teacher, which additionally carries Meta's DINOv3 licence.
+        # Unlike every other landmark model here it is trained on WHOLE-HEAD crops,
+        # not face crops — hence the DEIMv2Wholebody49Head dependency below. Feeding
+        # it a face-tight crop is out of distribution and throws away the high-angle
+        # robustness that is the entire point of the model.
+        # Input "images": RGB float32, NCHW 1x3x256x256, center05 normalised
+        # ((x/255 - 0.5) / 0.5); the graph folds nothing.
+        # Outputs: "points" (1,68,2) NORMALISED to the crop — multiply by 256 — and
+        # "vis_logits" (1,68,3) per-point visibility (0=outside image / 1=occluded /
+        # 2=visible), which we leave unbound so ORT prunes it.
+        # NOT fp16-safe: see the note above fp16_safe_models_list.
+        "model_name": "FaceLandmarkHRFFA",
+        "local_path": f"{models_dir}/hrffa_vitt_ibug68_1x3x256x256.onnx",
+        "hash": "f849af432427ae6d2e9fc1ce2d9bd27134af6e2e3a00060d0d7d312ccfc1d602",
+        "url": f"{hrffa_repo}/hrffa_vitt_ibug68_1x3x256x256.onnx",
+    },
+    {
+        # DEIMv2-Wholebody49 head detector — not a face detector and deliberately
+        # absent from FaceDetectors.detector_map. It exists only to give
+        # FaceLandmarkHRFFA the whole-head box it crops from, and is force-loaded by
+        # FaceLandmarkDetectors the way 478 force-loads FaceBlendShapes.
+        # This is the hgnetv2_n variant: PP-HGNetV2 backbone, so the lineage is
+        # Apache-2.0 with no DINOv3 licence attached, and it is both the smallest and
+        # the fastest of the three boxes-only exports.
+        # Input "images": RGB float32 /255 (no mean/std), NCHW with a fixed H/W read
+        # off the graph, produced by a DIRECT resize — the aspect-preserving letterbox
+        # in FaceDetectors._prepare_detection_image is not what this model expects.
+        # Some exports add an "orig_target_sizes" (1,2) float32 = [W, H] input, in
+        # which case the boxes come out in absolute pixels; without it they are
+        # normalised to [0,1]. The reader introspects the session and handles both.
+        # Output "label_xyxy_score" (1,Q,6) = (class, x1, y1, x2, y2, score). DETR-
+        # style one-to-one matching, so it is already NMS-free. Class 7 = head, in
+        # both the Wholebody49 and Wholebody34 vocabularies.
+        # NOT fp16-safe: see the note above fp16_safe_models_list.
+        "model_name": "DEIMv2Wholebody49Head",
+        "local_path": (
+            f"{models_dir}/deimv2_hgnetv2_n_wholebody49_boxes_only_webgpu.onnx"
+        ),
+        "hash": "f24d8fa18583c75ce8d802e3d983af9d13a07fdc294267968a206dc79df85d36",
+        "url": (f"{hrffa_repo}/deimv2_hgnetv2_n_wholebody49_boxes_only_webgpu.onnx"),
     },
     {
         "model_name": "FaceBlendShapes",

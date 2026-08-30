@@ -702,15 +702,15 @@ VisoMaster Fusion includes a configurable landmark detector that can be used to 
 | Setting | Description |
 |---|---|
 | **Enable Landmark Detection** | Activates landmark detection alongside face detection. |
-| **Landmark Detect Model** | Selects the landmark model by number of points: **5**, **68**, **3d68**, **98**, **106**, **203**, or **478**. More points provide finer landmark coverage at a greater computational cost. The 5-point model is the fastest and covers the key facial anchor positions. The 478-point model provides the most detailed mesh. Three additional models — **tufa98**, **tufa314** and **orformer98** — are also available; see below. |
-| **Landmark Detect Score** | Minimum confidence threshold for landmark detections to be accepted. Ignored by **478** and **orformer98**, whose per-point values are not detection confidences. |
-| **Detect From Points** | Uses the detected landmarks as the face crop reference rather than the bounding box from the face detector. Ignored by **tufa98**, **tufa314** and **orformer98**, which always use their own crop. |
+| **Landmark Detect Model** | Selects the landmark model by number of points: **5**, **68**, **3d68**, **98**, **106**, **203**, or **478**. More points provide finer landmark coverage at a greater computational cost. The 5-point model is the fastest and covers the key facial anchor positions. The 478-point model provides the most detailed mesh. Four additional models — **tufa98**, **tufa314**, **orformer98** and **hrffa** — are also available; see below. |
+| **Landmark Detect Score** | Minimum confidence threshold for landmark detections to be accepted. Ignored by **478** and **orformer98**, whose per-point values are not detection confidences, and by **hrffa**, which reports none. |
+| **Detect From Points** | Uses the detected landmarks as the face crop reference rather than the bounding box from the face detector. Ignored by **tufa98**, **tufa314**, **orformer98** and **hrffa**, which always use their own crop. |
 | **Use Mean Eyes** | Averages the eye landmark positions to produce a more stable eye-centre estimate, reducing jitter in per-frame alignment. |
 | **Show Landmarks** | Overlays the detected landmark points on the preview frame. Useful for verifying detection accuracy. |
 
-#### tufa98, tufa314 and orformer98
+#### tufa98, tufa314, orformer98 and hrffa
 
-Three extra options target the case where the older models struggle most:
+Four extra options target the cases where the older models struggle most:
 faces turned well away from the camera, and faces that are partly hidden.
 
 | Model | Paper | What it is for | Cost per face |
@@ -718,13 +718,16 @@ faces turned well away from the camera, and faces that are partly hidden.
 | **tufa98** | TUFA, IJCV 2025 | The most accurate of the available models on strongly angled faces. Start here if landmarks drift apart as the head turns. | ~4 ms |
 | **tufa314** | TUFA, IJCV 2025 | The same network asked for its dense 314-point set instead of 98. Same accuracy and same cost; useful when you want a detailed overlay to judge alignment. | ~4 ms |
 | **orformer98** | ORFormer, WACV 2025 oral | Built for occlusion — it detects which parts of the face are not visible and reconstructs those landmarks from the visible ones. | ~6 ms |
+| **hrffa** | HRFFA, 2026 | The only model here that works from a whole-head crop instead of a face crop. Reach for it when a head is turned past roughly 60°, tipped far up or down, or rolled onto its side — the poses where every other model, `tufa98` included, comes apart. | ~4 ms, plus a ~3.5 ms head pass once per frame |
 
 `tufa98` and `orformer98` use the 98-point layout, so they are interchangeable with the
-existing **98** option. All three replace the frontal-template crop with the upright
-square crop they were trained on, so **Detect From Points** has no effect on them.
+existing **98** option, and `hrffa` uses the same 68-point layout as the existing **68**
+option. All four replace the frontal-template crop with the crop they were trained on,
+so **Detect From Points** has no effect on them.
 
-Timings are for an RTX 4090 with TensorRT. All three run in FP32 by design: FP16 breaks
-them, so they are deliberately excluded from the FP16 fast path.
+Timings are for an RTX 4090 with TensorRT. All four run in FP32 by design: FP16 breaks
+the TUFA and ORFormer graphs outright, and the two HRFFA graphs are the same shapes that
+failed, so they are all excluded from the FP16 fast path.
 
 `orformer98` is somewhat more sensitive to how the face bounding box is framed than
 `tufa98` (roughly 3% vs 1.4% landmark movement for a 15% change in box size), so if
@@ -736,6 +739,15 @@ because the shared image encoder dominates, and the swap alignment itself uses t
 five points either way — choose `tufa314` for the denser **Show Landmarks** overlay,
 not for a different swap result. Its 314 points are TUFA's own dense definition rather
 than a standard dataset layout, so the numbering does not match any other model here.
+
+`hrffa` is the odd one out. Every other landmark model here is handed a crop of the
+**face** box; HRFFA was trained on crops of the whole **head**, which is exactly where
+its robustness comes from, so it runs a head detector (DEIMv2-Wholebody49) over the
+frame first and crops the head box it finds. That head pass happens once per frame, not
+once per face, so the extra cost does not grow with the number of faces. If the head
+detector is missing or fails to load, `hrffa` estimates a head box from the face box
+instead and keeps working, just less accurately — it will say so once in the console.
+See [hrffa.md](hrffa.md) for the details.
 
 ### 15.5 Appearance
 
@@ -855,7 +867,7 @@ VisoMaster Fusion has two separate model optimisation processes:
 | **GhostFace** | A family of lightweight face swap models (GhostFace-v1, GhostFace-v2, GhostFace-v3) available in VisoMaster Fusion. All variants use GhostArcFace for recognition. |
 | **InStyleSwapper** | A set of 256 px face swap models (variants A, B, C) derived from the Inswapper architecture and trained using a custom technique. Uses Inswapper128ArcFace for recognition. |
 | **Inswapper128** | The default face swap model. Fast and versatile, with configurable internal resolution (128-512 px via Swapper Resolution or Auto Resolution). Uses Inswapper128ArcFace. |
-| **Landmark** | A keypoint detected on the face, such as the corner of an eye or the tip of the nose. Used for face alignment, crop warping, and expression transfer. VisoMaster Fusion supports landmark models detecting 5, 68, 3D-68, 98, 106, 203, or 478 points, plus the 98-point `tufa98` and `orformer98` models and the 314-point `tufa314`. |
+| **Landmark** | A keypoint detected on the face, such as the corner of an eye or the tip of the nose. Used for face alignment, crop warping, and expression transfer. VisoMaster Fusion supports landmark models detecting 5, 68, 3D-68, 98, 106, 203, or 478 points, plus the 98-point `tufa98` and `orformer98` models, the 314-point `tufa314`, and the 68-point `hrffa`, which predicts from a whole-head crop for extreme head angles. |
 | **LivePortrait** | A neural animation pipeline used by both the Face Expression Restorer (Section 7) and the Face Pose/Expression Editor (Section 8). Extracts motion keypoints from a driving face and applies them to the target. |
 | **Mask view selection** | A Face Swap preview control that changes which mask visualization is shown: `swap_mask`, `diff`, or `texture`. |
 | **Micro-Expression Boost** | A multiplier in the Face Expression Restorer's Advanced mode (Section 7.5) that amplifies subtle facial movements, such as small squints, slight smirks, and minor brow furrows, that may be compressed or lost during swapping and normalization. Operates when Relative Position is active for any region. |

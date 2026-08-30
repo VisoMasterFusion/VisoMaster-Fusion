@@ -514,6 +514,7 @@ SETTINGS_LAYOUT_DATA: Any = {
                 "tufa98",
                 "tufa314",
                 "orformer98",
+                "hrffa",
             ],
             "default": "203",
             "parentToggle": "LandmarkDetectToggle",
@@ -528,9 +529,17 @@ SETTINGS_LAYOUT_DATA: Any = {
                 "the same 5 points, so pick it for a denser overlay rather than for a "
                 "better swap.\n"
                 "orformer98 - ORFormer (WACV 2025), 98 points. Built for occluded faces "
-                "and also estimates which regions are hidden. ~5.9 ms/face.\n\n"
-                "All three use their own upright square crop and ignore "
-                "'Detect From Points'."
+                "and also estimates which regions are hidden. ~5.9 ms/face.\n"
+                "hrffa - HRFFA, 68 points. The only model here that works on a whole-head "
+                "crop instead of a face crop, which is why it holds up past +-60 deg yaw "
+                "and through heavy pitch or a fully rolled head where the others "
+                "collapse. It runs a DEIMv2-Wholebody49 head detection pass first, so it "
+                "costs one extra inference per frame; if that model is missing it falls "
+                "back to a head box estimated from the face box and gets less "
+                "accurate.\n\n"
+                "All four use their own upright square crop and ignore "
+                "'Detect From Points'. hrffa additionally ignores the 'Landmark Detect "
+                "Score' slider - it reports no per-point confidence."
             ),
             "exec_function": control_actions.handle_landmark_model_selection_change,
             "exec_function_args": ["LandmarkDetectModelSelection"],

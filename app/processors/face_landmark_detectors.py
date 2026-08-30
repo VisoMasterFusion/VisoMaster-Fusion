@@ -215,6 +215,10 @@ class FaceLandmarkDetectors:
                 "model_name": "FaceLandmarkTUFA314",
                 "function": self.detect_face_landmark_tufa314,
             },
+            "hrffa": {
+                "model_name": "FaceLandmarkHRFFA",
+                "function": self.detect_face_landmark_hrffa,
+            },
         }
 
     @torch.no_grad()
@@ -965,6 +969,242 @@ class FaceLandmarkDetectors:
         pred = faceutil.trans_points2d(pred, IM)
 
         landmark_5, _ = faceutil.convert_face_landmark_314_to_5(pred, np.zeros(314))
+        return landmark_5, pred, []
+
+    # --- HRFFA -------------------------------------------------------------
+    # Every other landmark model here crops a face box. HRFFA is trained on WHOLE-HEAD
+    # crops, which is where its high-angle robustness comes from, so it needs a head
+    # detector in front of it. DEIMv2-Wholebody49 (class 7 = head) is that detector,
+    # force-loaded as a dependency exactly the way 478 force-loads FaceBlendShapes.
+    #
+    # Class id 7 is "head" in both the Wholebody49 and Wholebody34 vocabularies.
+    HRFFA_HEAD_CLASS_ID = 7
+    # Upstream's demo defaults to 0.50. We use a looser threshold on purpose: a head
+    # box is only ever used if it actually contains the already-confirmed face box
+    # (_head_bbox_for_face), so a false positive elsewhere in the frame costs nothing,
+    # while a miss drops us onto the approximate fallback crop.
+    HRFFA_HEAD_SCORE_THRESHOLD = 0.30
+    # Square side = max(w, h) * (1 + 2 * pad) with the training value pad = 0.05.
+    HRFFA_CROP_SCALE = 1.1
+
+    def detect_head_bboxes_wholebody49(
+        self,
+        img: torch.Tensor,
+        score_threshold: float | None = None,
+    ) -> np.ndarray:
+        """
+        Whole-head boxes for a full frame, via DEIMv2-Wholebody49.
+
+        Returns (N, 5) float32 of [x1, y1, x2, y2, score] in original-frame pixels,
+        sorted by descending score. Returns an empty (0, 5) array -- never None -- when
+        the model is unavailable or finds nothing, so callers can fall back without a
+        null check.
+
+        Not a face detector and deliberately not in FaceDetectors.detector_map: it
+        emits heads and no keypoints, and routing it through FaceDetectors would evict
+        the resident face detector (FaceDetectors.current_detector_model keeps only one
+        alive at a time).
+        """
+        empty = np.empty((0, 5), dtype=np.float32)
+        model_name = "DEIMv2Wholebody49Head"
+
+        if not self.models_processor.models.get(model_name):
+            if not self.models_processor.load_model(model_name):
+                print(
+                    f"[ERROR] Failed to load dependency '{model_name}'. HRFFA will "
+                    "fall back to a head box estimated from the face box; run "
+                    "download_models.py if the file is missing."
+                )
+                return empty
+
+        # Registered on every call rather than only on the load transition: a deferred
+        # unload ("Smart Unload" during playback) drops the name from
+        # active_landmark_models while the session is still resident, and it has to go
+        # back in or unload_models() will never free it.
+        self.active_landmark_models.add(model_name)
+
+        session = self.models_processor.models.get(model_name)
+        if session is None:
+            return empty
+
+        inp = session.get_inputs()[0]
+        shape = inp.shape
+        # Fixed 640x640 in the published export; fall back if a dynamic one turns up.
+        in_h = shape[2] if isinstance(shape[2], int) else 640
+        in_w = shape[3] if isinstance(shape[3], int) else 640
+
+        img_h, img_w = int(img.shape[1]), int(img.shape[2])
+
+        # A DIRECT resize, not the aspect-preserving letterbox in
+        # FaceDetectors._prepare_detection_image: the model was exported for a plain
+        # squash to its input square, and the normalised boxes it returns are relative
+        # to the ORIGINAL frame, so undoing a letterbox would be wrong anyway.
+        det_img = v2.functional.resize(
+            img,
+            [in_h, in_w],
+            interpolation=v2.InterpolationMode.BILINEAR,
+            antialias=True,
+        )
+        # RGB in [0, 1]; this graph applies no mean/std of its own.
+        det_img = (
+            torch.div(det_img.to(dtype=torch.float32), 255.0).unsqueeze(0).contiguous()
+        )
+
+        feed: Dict[str, torch.Tensor] = {inp.name: det_img}
+        input_names = {i.name for i in session.get_inputs()}
+        absolute = "orig_target_sizes" in input_names
+        if absolute:
+            # Present on some exports; the boxes then come out in absolute pixels.
+            feed["orig_target_sizes"] = torch.tensor(
+                [[float(img_w), float(img_h)]],
+                dtype=torch.float32,
+                device=self.models_processor.device,
+            ).contiguous()
+
+        net_outs = self._run_onnx_binding(model_name, feed, ["label_xyxy_score"])
+        if not net_outs or len(net_outs) < 1:
+            return empty
+
+        pred = np.asarray(net_outs[0]).reshape(-1, 6)
+        if score_threshold is None:
+            score_threshold = self.HRFFA_HEAD_SCORE_THRESHOLD
+
+        # DETR-style one-to-one matching, so the output is already NMS-free.
+        keep = (pred[:, 0].astype(np.int64) == self.HRFFA_HEAD_CLASS_ID) & (
+            pred[:, 5] >= score_threshold
+        )
+        pred = pred[keep]
+        if len(pred) == 0:
+            return empty
+
+        boxes = pred[:, 1:5].astype(np.float32)
+        if not absolute:
+            boxes[:, [0, 2]] *= img_w
+            boxes[:, [1, 3]] *= img_h
+        boxes[:, [0, 2]] = np.clip(boxes[:, [0, 2]], 0, img_w - 1)
+        boxes[:, [1, 3]] = np.clip(boxes[:, [1, 3]], 0, img_h - 1)
+
+        # Degenerate slivers are useless as a crop source.
+        valid = ((boxes[:, 2] - boxes[:, 0]) >= 2.0) & (
+            (boxes[:, 3] - boxes[:, 1]) >= 2.0
+        )
+        boxes, scores = boxes[valid], pred[valid, 5].astype(np.float32)
+        if len(boxes) == 0:
+            return empty
+
+        head_bboxes = np.concatenate([boxes, scores[:, None]], axis=1)
+        return head_bboxes[np.argsort(-head_bboxes[:, 4])]
+
+    @staticmethod
+    def _head_bbox_for_face(
+        head_bboxes: np.ndarray | list | None, face_bbox: np.ndarray
+    ) -> np.ndarray:
+        """
+        Pick the detected head box belonging to face_bbox, or synthesise one.
+
+        Matching is by CONTAINMENT (intersection / face area), not IoU: a correct head
+        box swallows the face box almost entirely while being far larger, which drags
+        IoU down to roughly 0.25-0.4 and would make an IoU ranking prefer a wrong but
+        similarly-sized box. Ties break on centre distance.
+
+        The fallback keeps this landmark mode usable when the head detector is missing,
+        failed its TensorRT build, or simply missed: a square of 1.5 * max(w, h) about
+        the face centre, shifted up by 0.08 * h because a head extends much further
+        above a face box than below it. It only approximates the training crop, so
+        landmarks are worse than with a real head box but still sane.
+        """
+        face_bbox = np.asarray(face_bbox, dtype=np.float32)
+        fx1, fy1, fx2, fy2 = (float(v) for v in face_bbox[:4])
+        face_area = max((fx2 - fx1), 0.0) * max((fy2 - fy1), 0.0)
+
+        best: np.ndarray | None = None
+        if head_bboxes is not None and len(head_bboxes) > 0 and face_area > 0.0:
+            heads = np.asarray(head_bboxes, dtype=np.float32).reshape(-1, 5)
+            ix1 = np.maximum(heads[:, 0], fx1)
+            iy1 = np.maximum(heads[:, 1], fy1)
+            ix2 = np.minimum(heads[:, 2], fx2)
+            iy2 = np.minimum(heads[:, 3], fy2)
+            inter = np.clip(ix2 - ix1, 0, None) * np.clip(iy2 - iy1, 0, None)
+            containment = inter / face_area
+
+            candidates = np.flatnonzero(containment >= 0.5)
+            if len(candidates) > 0:
+                fcx, fcy = (fx1 + fx2) / 2.0, (fy1 + fy2) / 2.0
+                hcx = (heads[candidates, 0] + heads[candidates, 2]) / 2.0
+                hcy = (heads[candidates, 1] + heads[candidates, 3]) / 2.0
+                dist = np.hypot(hcx - fcx, hcy - fcy)
+                # Highest containment wins; centre distance only breaks near-ties.
+                order = np.lexsort((dist, -containment[candidates]))
+                best = heads[candidates[order[0]], :4].copy()
+
+        if best is not None:
+            return best
+
+        w, h = fx2 - fx1, fy2 - fy1
+        cx, cy = (fx1 + fx2) / 2.0, (fy1 + fy2) / 2.0 - 0.08 * h
+        half = 0.5 * 1.5 * max(w, h)
+        return np.array([cx - half, cy - half, cx + half, cy + half], dtype=np.float32)
+
+    def detect_face_landmark_hrffa(
+        self, img, bbox, det_kpss, from_points=False, **kwargs
+    ):
+        """
+        HRFFA, 68-point ibug topology, predicted on a whole-head crop.
+
+        det_kpss is passed to _prepare_crop as None on purpose. That helper derives its
+        roll angle from the eye keypoints, and None pins the angle to 0, which is
+        exactly the axis-aligned crop HRFFA trained on. TUFA / ORFormer do want the
+        uprighting (they only saw +-15 deg of rotation augmentation); HRFFA is robust
+        through a full 360 deg of roll, and at the poses this mode exists for the 5
+        keypoints are the least trustworthy thing available.
+
+        from_points is ignored for the same reason it is ignored for TUFA and ORFormer:
+        the model has never seen a 5-point similarity warp onto a frontal ArcFace
+        template.
+
+        head_bboxes may be supplied via kwargs by callers that already ran the head
+        detector once for the whole frame (see the per-face loops in
+        sequential_detector and frame_worker_standard). Without it we run the detector
+        ourselves, which is correct but costs one extra inference per face.
+        """
+        head_bboxes = kwargs.get("head_bboxes")
+        if head_bboxes is None:
+            head_bboxes = self.detect_head_bboxes_wholebody49(img)
+        head_bbox = self._head_bbox_for_face(head_bboxes, bbox)
+
+        aimg, _M, IM = self._prepare_crop(
+            img,
+            head_bbox,
+            det_kpss=None,
+            from_points=False,
+            target_size=256,
+            scale=self.HRFFA_CROP_SCALE,
+        )
+        if aimg is None:
+            return [], [], []
+
+        # center05: (x / 255 - 0.5) / 0.5, i.e. x / 127.5 - 1. Nothing is folded into
+        # the graph, unlike TUFA / ORFormer.
+        aimg = (
+            aimg.to(dtype=torch.float32).div(127.5).sub(1.0).unsqueeze(0).contiguous()
+        )
+
+        # "vis_logits" is left unbound so ORT prunes it; visibility is not surfaced.
+        net_outs = self._run_onnx_binding(
+            "FaceLandmarkHRFFA", {"images": aimg}, ["points"]
+        )
+        if not net_outs or len(net_outs) < 1:
+            return [], [], []
+
+        # "points" is normalised to the crop, hence the * 256.0.
+        pred = net_outs[0].reshape((-1, 2)) * 256.0
+        pred = faceutil.trans_points2d(pred, IM)
+
+        # ibug68 is the same topology FaceLandmark68 (2dfan4) emits. HRFFA exposes no
+        # per-point confidence here, so scores stay empty and run_detect_landmark
+        # passes the result through unfiltered (same as TUFA / 106 / 203); the
+        # converter still needs a score array positionally, hence the zeros.
+        landmark_5, _ = faceutil.convert_face_landmark_68_to_5(pred, np.zeros(68))
         return landmark_5, pred, []
 
     def detect_face_landmark_orformer98(

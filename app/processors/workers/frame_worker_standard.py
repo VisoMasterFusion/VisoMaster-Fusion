@@ -296,6 +296,14 @@ class StandardProcessor:
             # --- STEP 3: Fallback for standard landmarks (UI Display & Swap Alignment) ---
             if use_landmark and not has_valid_dense_kpss and len(bboxes) > 0:
                 kpss_list = []
+                # 'hrffa' predicts on a whole-head crop, so it needs
+                # DEIMv2-Wholebody49 head boxes. Those belong to the frame, not to a
+                # face, so run the head detector once here instead of once per face.
+                head_bboxes = None
+                if landmark_mode == "hrffa":
+                    head_bboxes = self.worker.function_worker.run_detect_head_bboxes(
+                        img
+                    )
                 for idx in range(len(bboxes)):
                     # Smart reuse: If Step 2 just computed 203 landmarks, use them
                     # to avoid a redundant neural network forward pass.
@@ -319,6 +327,7 @@ class StandardProcessor:
                                     "LandmarkMeanEyesToggle", False
                                 ),
                                 from_points=from_points,
+                                head_bboxes=head_bboxes,
                             )
                         )
 

@@ -307,6 +307,21 @@ class FunctionWorker:
             img, bbox, det_kpss, detect_mode, score, from_points, **kwargs
         )
 
+    def run_detect_head_bboxes(
+        self,
+        img: torch.Tensor,
+        score_threshold: float | None = None,
+    ) -> np.ndarray:
+        """
+        Whole-head boxes for a full frame (DEIMv2-Wholebody49), for the 'hrffa'
+        landmark mode. Callers with a per-face loop run this once per frame and hand
+        the result to run_detect_landmark as head_bboxes=, so the head detector fires
+        once instead of once per face.
+        """
+        return self.face_landmark_detectors.detect_head_bboxes_wholebody49(
+            img, score_threshold
+        )
+
     def get_arcface_model(self, face_swapper_model: str) -> str:
         if face_swapper_model in arcface_mapping_model_dict:
             return arcface_mapping_model_dict[face_swapper_model]
