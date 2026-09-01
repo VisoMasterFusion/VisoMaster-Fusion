@@ -1076,3 +1076,16 @@ def reset_face_editor_expression_params(main_window: "MainWindow"):
         main_window._batch_update_in_progress = previous_batch
         if not previous_batch:
             common_widget_actions.refresh_frame(main_window)
+
+def handle_auto_load_target_folder_toggle(main_window: "MainWindow", enabled: bool):
+    from app.ui.widgets.actions import list_view_actions
+
+    list_view_actions.set_target_folder_auto_watch(main_window, bool(enabled))
+
+
+def on_target_folder_path_changed(main_window: "MainWindow"):
+    """Re-bind watcher when the target folder path changes."""
+    from app.ui.widgets.actions import list_view_actions
+
+    enabled = bool(main_window.control.get("AutoLoadTargetFolderToggle", False))
+    list_view_actions.set_target_folder_auto_watch(main_window, enabled)
