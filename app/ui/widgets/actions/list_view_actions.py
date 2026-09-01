@@ -1193,3 +1193,128 @@ def show_about(main_window: "MainWindow"):
     layout.addWidget(close_button, alignment=QtCore.Qt.AlignmentFlag.AlignRight)
 
     dialog.exec()
+
+def _get_target_folder_path(main_window: "MainWindow") -> str:
+    path = ""
+    line = getattr(main_window, "targetVideosPathLineEdit", None)
+    if line is not None:
+        path = (line.text() or "").strip()
+    if not path:
+        path = (getattr(main_window, "last_target_media_folder_path", "") or "").strip()
+    return path if path and os.path.isdir(path) else ""
+
+
+def _existing_target_media_paths(main_window: "MainWindow") -> set[str]:
+    paths = set()
+    for button in (main_window.target_videos or {}).values():
+        media_path = getattr(button, "media_path", None)
+        if media_path:
+            paths.add(os.path.abspath(media_path))
+    return paths
+
+
+def _collect_watch_dirs(folder: str, recursive: bool) -> list[str]:
+    dirs = [folder]
+    if recursive:
+        for dirpath, dirnames, _ in os.walk(folder):
+            for d in dirnames:
+                dirs.append(os.path.join(dirpath, d))
+    return dirs
+
+
+def scan_and_append_new_target_media(main_window: "MainWindow"):
+    """Append only new media files from the configured target folder."""
+    from app.ui.widgets.actions import video_control_actions
+    import app.helpers.miscellaneous as misc_helpers
+    from app.ui.widgets import ui_workers
+
+    if video_control_actions.block_if_issue_scan_active(
+        main_window, "auto-load target media"
+    ):
+        return
+
+    folder = _get_target_folder_path(main_window)
+    if not folder:
+        return
+
+    recursive = bool(
+        main_window.control.get("AutoLoadTargetFolderRecursiveToggle", False)
+    )
+    if recursive:
+        media_files = []
+        for dirpath, _, filenames in os.walk(folder):
+            for filename in filenames:
+                full = os.path.abspath(os.path.join(dirpath, filename))
+                if misc_helpers.get_file_type(full):
+                    media_files.append(full)
+    else:
+        media_files = [
+            os.path.abspath(p)
+            for p in (
+                misc_helpers.get_video_files(folder, False)
+                + misc_helpers.get_image_files(folder, False)
+            )
+        ]
+
+    existing = _existing_target_media_paths(main_window)
+    new_files = [p for p in media_files if p not in existing]
+    if not new_files:
+        return
+
+    if main_window.video_loader_worker is not None and main_window.video_loader_worker.isRunning():
+        return
+
+    main_window.video_loader_worker = ui_workers.TargetMediaLoaderWorker(
+        main_window=main_window,
+        files_list=new_files,
+        sort_files_list_by_name=True,
+    )
+    main_window.video_loader_worker.thumbnail_ready.connect(
+        partial(add_media_thumbnail_to_target_videos_list, main_window)
+    )
+    main_window.video_loader_worker.finished.connect(
+        partial(filter_target_videos, main_window)
+    )
+    main_window.video_loader_worker.start()
+
+
+def set_target_folder_auto_watch(main_window: "MainWindow", enabled: bool):
+    watcher = getattr(main_window, "_target_folder_watcher", None)
+    timer = getattr(main_window, "_target_folder_watch_timer", None)
+
+    if watcher is None:
+        watcher = QtCore.QFileSystemWatcher(main_window)
+        main_window._target_folder_watcher = watcher
+
+        def _on_dir_changed(path: str):
+            t = getattr(main_window, "_target_folder_watch_timer", None)
+            if t is not None:
+                t.start()
+
+        watcher.directoryChanged.connect(_on_dir_changed)
+
+    if timer is None:
+        timer = QtCore.QTimer(main_window)
+        timer.setSingleShot(True)
+        timer.setInterval(800)
+        timer.timeout.connect(partial(scan_and_append_new_target_media, main_window))
+        main_window._target_folder_watch_timer = timer
+
+    for d in list(watcher.directories()):
+        watcher.removePath(d)
+
+    if not enabled:
+        timer.stop()
+        return
+
+    folder = _get_target_folder_path(main_window)
+    if not folder:
+        return
+
+    recursive = bool(
+        main_window.control.get("AutoLoadTargetFolderRecursiveToggle", False)
+    )
+    for d in _collect_watch_dirs(folder, recursive):
+        watcher.addPath(d)
+
+    scan_and_append_new_target_media(main_window)
