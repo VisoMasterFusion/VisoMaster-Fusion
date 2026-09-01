@@ -5,6 +5,7 @@ from pathlib import Path
 import sys
 import os
 import subprocess
+import time
 
 from PySide6 import QtWidgets, QtGui, QtCore
 
@@ -642,6 +643,12 @@ def select_target_medias(
     )
     main_window.video_loader_worker.start()
 
+    # Re-bind auto-watch to the newly selected folder
+    set_target_folder_auto_watch(
+        main_window,
+        bool(main_window.control.get("AutoLoadTargetFolderToggle", False)),
+    )
+
 
 @QtCore.Slot()
 def filter_target_videos(main_window):
@@ -1222,6 +1229,55 @@ def _collect_watch_dirs(folder: str, recursive: bool) -> list[str]:
     return dirs
 
 
+def _is_target_media_file_stable(
+    main_window: "MainWindow", path: str
+) -> bool:
+    """True once ``path`` has been observed at the same non-zero size across
+    two consecutive scans.
+
+    Files inside a watched folder (e.g. the destination of an in-progress
+    browser download) can appear in a ``directoryChanged`` event before all
+    their bytes are written to disk. Reading such a file yields a
+    truncated/empty buffer, which surfaces downstream as
+    ``cv2.imdecode`` raising "(-215:Assertion failed) !buf.empty()".
+    Requiring the size to be stable across two scan passes (roughly one
+    debounce interval apart) avoids handing a still-writing file to the
+    loader.
+    """
+    size_cache = getattr(main_window, "_target_folder_pending_sizes", None)
+    if size_cache is None:
+        size_cache = {}
+        main_window._target_folder_pending_sizes = size_cache
+
+    try:
+        size = os.path.getsize(path)
+    except OSError:
+        # File briefly inaccessible (still being created/locked) — not stable yet.
+        return False
+
+    if size == 0:
+        size_cache[path] = (size, size_cache.get(path, (0, time.monotonic()))[1])
+        return False
+
+    prev = size_cache.get(path)
+    if prev is not None and prev[0] == size:
+        size_cache.pop(path, None)
+        return True
+
+    # First time seeing this file, or its size changed since last scan —
+    # remember the size (and first-seen time) and check again next cycle.
+    first_seen = prev[1] if prev is not None else time.monotonic()
+    size_cache[path] = (size, first_seen)
+    return False
+
+
+# Files pending longer than this are loaded anyway on the next scan rather
+# than polled forever (e.g. a stalled/failed download that will never
+# finish) — the existing read_image_file error handling covers a genuine
+# failure at that point, same as before this stability check existed.
+_TARGET_MEDIA_STABILITY_TIMEOUT_SECONDS = 30.0
+
+
 def scan_and_append_new_target_media(main_window: "MainWindow"):
     """Append only new media files from the configured target folder."""
     from app.ui.widgets.actions import video_control_actions
@@ -1261,12 +1317,43 @@ def scan_and_append_new_target_media(main_window: "MainWindow"):
     if not new_files:
         return
 
+    ready_files = []
+    pending = False
+    for p in new_files:
+        if _is_target_media_file_stable(main_window, p):
+            ready_files.append(p)
+            continue
+
+        # Still changing size (or briefly unreadable). Give up waiting and
+        # load it anyway once it's been pending too long.
+        size_cache = getattr(main_window, "_target_folder_pending_sizes", {})
+        first_seen = size_cache.get(p, (None, time.monotonic()))[1]
+        if time.monotonic() - first_seen >= _TARGET_MEDIA_STABILITY_TIMEOUT_SECONDS:
+            print(
+                f"[WARN] '{p}' has not finished writing after "
+                f"{_TARGET_MEDIA_STABILITY_TIMEOUT_SECONDS:.0f}s — loading it anyway."
+            )
+            ready_files.append(p)
+            size_cache.pop(p, None)
+        else:
+            pending = True
+
+    if pending:
+        # Re-check the still-writing file(s) on the next debounce cycle
+        # instead of failing to load them now.
+        timer = getattr(main_window, "_target_folder_watch_timer", None)
+        if timer is not None:
+            timer.start()
+
+    if not ready_files:
+        return
+
     if main_window.video_loader_worker is not None and main_window.video_loader_worker.isRunning():
         return
 
     main_window.video_loader_worker = ui_workers.TargetMediaLoaderWorker(
         main_window=main_window,
-        files_list=new_files,
+        files_list=ready_files,
         sort_files_list_by_name=True,
     )
     main_window.video_loader_worker.thumbnail_ready.connect(
