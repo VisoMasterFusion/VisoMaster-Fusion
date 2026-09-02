@@ -510,6 +510,35 @@ def initialize_embeddings_list_widget(main_window: "MainWindow"):
     inputEmbeddingsList.setVerticalScrollMode(
         QtWidgets.QAbstractItemView.ScrollPerPixel
     )
+    
+    # Smooth / slower wheel scrolling so embedding cards are easier to hit
+    class _SmoothWheelFilter(QtCore.QObject):
+        def __init__(self, list_widget: QtWidgets.QListWidget):
+            super().__init__(list_widget)
+            self._list = list_widget
+            self._step_px = 24  # pixels per wheel notch (lower = slower)
+
+        def eventFilter(self, obj, event):
+            if event.type() == QtCore.QEvent.Type.Wheel:
+                delta = event.angleDelta().y()
+                if delta == 0:
+                    delta = event.angleDelta().x()
+                # Prefer horizontal bar when content is laid out left-to-right
+                hbar = self._list.horizontalScrollBar()
+                vbar = self._list.verticalScrollBar()
+                steps = -1 if delta > 0 else 1
+                if hbar.maximum() > 0:
+                    hbar.setValue(hbar.value() + steps * self._step_px)
+                elif vbar.maximum() > 0:
+                    vbar.setValue(vbar.value() + steps * self._step_px)
+                return True
+            return super().eventFilter(obj, event)
+
+    if not getattr(inputEmbeddingsList, "_smooth_wheel_filter", None):
+        filt = _SmoothWheelFilter(inputEmbeddingsList)
+        inputEmbeddingsList.viewport().installEventFilter(filt)
+        inputEmbeddingsList._smooth_wheel_filter = filt
+    
     inputEmbeddingsList.setHorizontalScrollMode(
         QtWidgets.QAbstractItemView.ScrollPerPixel
     )
