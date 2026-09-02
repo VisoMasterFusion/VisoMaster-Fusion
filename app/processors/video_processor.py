@@ -1011,6 +1011,10 @@ class VideoProcessor(QObject):
             if not self.stop_processing():
                 print("[WARN] Could not stop active processing cleanly.")
 
+        # No media loaded (cleared / deselected) — do not attempt to read
+        if not self.media_path or self.file_type is None:
+            return None
+
         # Seed global PyTorch/CUDA RNG...
         _denoiser_seed = int(
             self.main_window.control.get("DenoiserBaseSeedSlider", 220)
