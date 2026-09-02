@@ -884,6 +884,82 @@ def clear_all_embeddings(main_window: "MainWindow") -> bool:
     card_actions.clear_merged_embeddings(main_window)
     return True
 
+def delete_all_target_media_to_trash(main_window: "MainWindow") -> bool:
+    from app.ui.widgets.actions import video_control_actions
+    from send2trash import send2trash
+    import gc
+    import torch
+
+    if video_control_actions.block_if_issue_scan_active(
+        main_window, "delete all target media"
+    ):
+        return False
+
+    # Only real files currently in the target pane (skip webcams / missing paths)
+    buttons = [
+        b
+        for b in (main_window.target_videos or {}).values()
+        if not getattr(b, "is_webcam", False)
+        and getattr(b, "media_path", None)
+        and os.path.exists(b.media_path)
+    ]
+    if not buttons:
+        return False
+
+    if not main_window.control.get("SkipClearConfirmationToggle", False):
+        confirmed = _confirm_panel_clear(
+            main_window,
+            "Delete All Target Files",
+            f"Send {len(buttons)} file(s) from the Target Media pane to the recycle bin?\n\n"
+            "This cannot be undone from the app (files go to the system trash).",
+        )
+        if not confirmed:
+            return False
+
+    clear_stop_loading_target_media(main_window, clear_list=False)
+
+    vp = main_window.video_processor
+    vp.stop_processing()
+    vp.media_path = None
+    vp.file_type = None
+    vp.current_frame = None
+    if vp.media_capture:
+        try:
+            vp.media_capture.release()
+        except Exception:
+            pass
+        vp.media_capture = None
+    vp._clear_single_frame_preview_caches()
+
+    for button in list(main_window.target_videos.values()):
+        path = getattr(button, "media_path", None)
+        is_webcam = getattr(button, "is_webcam", False)
+        if path and not is_webcam and os.path.exists(path):
+            try:
+                send2trash(path)
+                print(f"[INFO] {path} has been sent to the trash.")
+            except Exception as e:
+                print(f"[ERROR] Failed to trash {path}: {e}")
+        button.remove_target_media_from_list()
+
+    if main_window.target_faces:
+        card_actions.clear_target_faces(main_window, refresh_frame=False)
+
+    main_window.target_videos.clear()
+    main_window.selected_video_button = None
+    main_window.scene.clear()
+    main_window.graphicsViewFrame.update()
+
+    _set_path_line_edit_value(main_window.targetVideosPathLineEdit, "")
+    main_window.last_target_media_folder_path = ""
+    main_window.placeholder_update_signal.emit(main_window.targetVideosList, False)
+
+    if not getattr(main_window, "is_batch_processing", False):
+        gc.collect()
+        if torch.cuda.is_available():
+            torch.cuda.empty_cache()
+
+    return True
 
 def _build_panel_context_menu(
     main_window: "MainWindow",
@@ -899,16 +975,31 @@ def _build_panel_context_menu(
         clear_action = QtGui.QAction("Clear All Media", menu)
         clear_action.setEnabled(bool(main_window.target_videos) and not scan_active)
         clear_action.triggered.connect(partial(clear_all_target_media, main_window))
+        menu.addAction(clear_action)
+
+        delete_action = QtGui.QAction("⚠ Delete all files to recycle bin", menu)
+        has_files = any(
+            not getattr(b, "is_webcam", False)
+            and getattr(b, "media_path", None)
+            and os.path.exists(b.media_path)
+            for b in (main_window.target_videos or {}).values()
+        )
+        delete_action.setEnabled(has_files and not scan_active)
+        delete_action.triggered.connect(
+            partial(delete_all_target_media_to_trash, main_window)
+        )
+        menu.addAction(delete_action)
     elif panel_type == "input_faces":
         clear_action = QtGui.QAction("Clear All Faces", menu)
         clear_action.setEnabled(bool(main_window.input_faces) and not scan_active)
         clear_action.triggered.connect(partial(clear_all_input_faces, main_window))
+        menu.addAction(clear_action)
     else:
         clear_action = QtGui.QAction("Clear All Embeddings", menu)
         clear_action.setEnabled(bool(main_window.merged_embeddings) and not scan_active)
         clear_action.triggered.connect(partial(clear_all_embeddings, main_window))
+        menu.addAction(clear_action)
 
-    menu.addAction(clear_action)
     return menu
 
 
