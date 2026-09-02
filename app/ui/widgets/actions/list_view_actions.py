@@ -730,6 +730,8 @@ def _confirm_panel_clear(main_window: "MainWindow", title: str, message: str) ->
 
 def clear_all_target_media(main_window: "MainWindow") -> bool:
     from app.ui.widgets.actions import video_control_actions
+    import gc
+    import torch
 
     if video_control_actions.block_if_issue_scan_active(main_window, "clear all media"):
         return False
@@ -749,6 +751,22 @@ def clear_all_target_media(main_window: "MainWindow") -> bool:
 
     clear_stop_loading_target_media(main_window, clear_list=False)
 
+    # Stop processor first so nothing tries to read a cleared path
+    vp = main_window.video_processor
+    vp.stop_processing()
+    vp.media_path = None
+    vp.file_type = None
+    vp.current_frame = None
+    if vp.media_capture:
+        try:
+            vp.media_capture.release()
+        except Exception:
+            pass
+        vp.media_capture = None
+    vp._clear_single_frame_preview_caches()
+
+    # Remove items WHILE selected_video_button is still set so deselect
+    # clears the preview for the active item
     for target_media_button in list(main_window.target_videos.values()):
         target_media_button.remove_target_media_from_list()
 
@@ -757,11 +775,28 @@ def clear_all_target_media(main_window: "MainWindow") -> bool:
 
     main_window.target_videos.clear()
     main_window.selected_video_button = None
+
+    # Ensure preview is cleared even if nothing was selected
+    main_window.scene.clear()
+    main_window.graphicsViewFrame.update()
+    if hasattr(main_window, "timelineContainer"):
+        main_window.timelineContainer.thumbnail_track.request_thumbnails()
+    main_window.videoSeekSlider.blockSignals(True)
+    main_window.videoSeekSlider.setMaximum(1)
+    main_window.videoSeekSlider.setValue(0)
+    main_window.videoSeekSlider.blockSignals(False)
+
     _set_path_line_edit_value(main_window.targetVideosPathLineEdit, "")
     main_window.last_target_media_folder_path = ""
     main_window.placeholder_update_signal.emit(main_window.targetVideosList, False)
-    return True
 
+    # Free media-related GPU memory only (keep models loaded)
+    if not getattr(main_window, "is_batch_processing", False):
+        gc.collect()
+        if torch.cuda.is_available():
+            torch.cuda.empty_cache()
+
+    return True
 
 def clear_all_input_faces(main_window: "MainWindow") -> bool:
     from app.ui.widgets.actions import video_control_actions
