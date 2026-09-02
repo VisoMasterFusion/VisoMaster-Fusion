@@ -525,56 +525,59 @@ class TargetMediaCardButton(CardButton):
         if main_window.selected_video_button == self:
             self.reset_media_state()
 
-            # Reset the frame counter
+            # Reset the frame counter / media state
             main_window.video_processor.current_frame_number = 0
-            main_window.video_processor.media_path = False
+            main_window.video_processor.media_path = None
             main_window.parameters = {}
             main_window.selected_target_face_id = None
 
-            main_window.video_processor.media_capture = False
-            main_window.video_processor.current_frame = []
+            if main_window.video_processor.media_capture:
+                try:
+                    main_window.video_processor.media_capture.release()
+                except Exception:
+                    pass
+            main_window.video_processor.media_capture = None
+            main_window.video_processor.current_frame = None
             main_window.video_processor.fps = 0
             main_window.video_processor.max_frame_number = 0
+            main_window.video_processor.file_type = None
+            main_window.video_processor._clear_single_frame_preview_caches()
 
             self.main_window.scene.clear()
-
             self.reset_related_widgets_and_values()
 
-            main_window.videoSeekSlider.blockSignals(
-                True
-            )  # Block signals to prevent unnecessary updates
+            main_window.videoSeekSlider.blockSignals(True)
             main_window.videoSeekSlider.setMaximum(1)
-            main_window.videoSeekSlider.setValue(
-                0
-            )  # Set the slider to 0 for the new video
-            main_window.videoSeekSlider.blockSignals(False)  # Unblock signals
+            main_window.videoSeekSlider.setValue(0)
+            main_window.videoSeekSlider.blockSignals(False)
 
-            # --- FORCE TIMELINE & THUMBNAILS TO REFRESH ---
             main_window.videoSeekSlider.rangeChanged.emit(0, 1)
             if hasattr(main_window, "timelineContainer"):
                 main_window.timelineContainer.thumbnail_track.request_thumbnails()
 
-            # Hide timeline UI elements when no media is selected
             self._toggle_timeline_visibility(main_window, False)
 
-            # Append the selected video button to the list
-            main_window.selected_video_button = False
-
-            # Update the graphics frame after the reset
+            main_window.selected_video_button = None
             main_window.graphicsViewFrame.update()
 
-            main_window.video_processor.file_type = None
-
             if self.media_capture:
-                self.media_capture.release()
-                self.media_capture = False
+                try:
+                    self.media_capture.release()
+                except Exception:
+                    pass
+                self.media_capture = None
+
+            # Free media-related GPU memory only (keep models loaded)
+            if not getattr(main_window, "is_batch_processing", False):
+                gc.collect()
+                if torch.cuda.is_available():
+                    torch.cuda.empty_cache()
 
         i = self.get_item_position()
         if i is not None:
             main_window.targetVideosList.takeItem(i)
         main_window.target_videos.pop(self.media_id, None)
 
-        # If the target media list is empty, show the placeholder text
         if not main_window.target_videos:
             main_window.placeholder_update_signal.emit(
                 self.main_window.targetVideosList, False
