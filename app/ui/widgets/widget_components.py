@@ -655,8 +655,13 @@ class TargetMediaCardButton(CardButton):
         )
         self.popMenu.addAction(self.clear_all_media_action)
 
+        self.delete_all_files_action = QtGui.QAction("⚠ Delete all files to recycle bin", self)
+        self.delete_all_files_action.triggered.connect(
+            partial(list_view_actions.delete_all_target_media_to_trash, self.main_window)
+        )
+        self.popMenu.addAction(self.delete_all_files_action)
+
     def on_context_menu(self, point):
-        # show context menu
         self.create_context_menu()
         try:
             scan_active = video_control_actions.is_issue_scan_active(self.main_window)
@@ -665,6 +670,13 @@ class TargetMediaCardButton(CardButton):
             self.clear_all_media_action.setEnabled(
                 bool(self.main_window.target_videos) and not scan_active
             )
+            has_files = any(
+                not getattr(b, "is_webcam", False)
+                and getattr(b, "media_path", None)
+                and os.path.exists(b.media_path)
+                for b in (self.main_window.target_videos or {}).values()
+            )
+            self.delete_all_files_action.setEnabled(has_files and not scan_active)
             self._exec_context_menu(point)
         finally:
             self._release_context_menu(
@@ -672,6 +684,7 @@ class TargetMediaCardButton(CardButton):
                 "delete_action",
                 "open_path_action",
                 "clear_all_media_action",
+                "delete_all_files_action",
             )
 
 
