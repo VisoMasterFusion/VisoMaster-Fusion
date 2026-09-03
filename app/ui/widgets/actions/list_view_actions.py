@@ -654,7 +654,7 @@ def select_target_medias(
         main_window.targetVideosPathLineEdit.setText(file_dir)
         main_window.targetVideosPathLineEdit.setToolTip(file_dir)
         main_window.last_target_media_folder_path = file_dir
-
+    main_window._target_folder_ignored_paths = set()
     clear_stop_loading_target_media(main_window)
     card_actions.clear_target_faces(main_window)
 
@@ -794,6 +794,11 @@ def clear_all_target_media(main_window: "MainWindow") -> bool:
         vp.media_capture = None
     vp._clear_single_frame_preview_caches()
 
+    # Don't auto-readd these while they still exist on disk
+    main_window._target_folder_ignored_paths = _existing_target_media_paths(
+        main_window
+    )
+
     # Remove items WHILE selected_video_button is still set so deselect
     # clears the preview for the active item
     for target_media_button in list(main_window.target_videos.values()):
@@ -815,9 +820,12 @@ def clear_all_target_media(main_window: "MainWindow") -> bool:
     main_window.videoSeekSlider.setValue(0)
     main_window.videoSeekSlider.blockSignals(False)
 
-    _set_path_line_edit_value(main_window.targetVideosPathLineEdit, "")
-    main_window.last_target_media_folder_path = ""
     main_window.placeholder_update_signal.emit(main_window.targetVideosList, False)
+
+    set_target_folder_auto_watch(
+        main_window,
+        bool(main_window.control.get("AutoLoadTargetFolderToggle", False)),
+    )
 
     # Free media-related GPU memory only (keep models loaded)
     if not getattr(main_window, "is_batch_processing", False):
@@ -1468,8 +1476,16 @@ def scan_and_append_new_target_media(main_window: "MainWindow"):
             )
         ]
 
+    ignored = getattr(main_window, "_target_folder_ignored_paths", None)
+    if ignored is None:
+        ignored = set()
+        main_window._target_folder_ignored_paths = ignored
+    else:
+        # Drop ignores for files no longer on disk so a re-added file can load
+        ignored.intersection_update(p for p in list(ignored) if os.path.exists(p))
+
     existing = _existing_target_media_paths(main_window)
-    new_files = [p for p in media_files if p not in existing]
+    new_files = [p for p in media_files if p not in existing and p not in ignored]
     if not new_files:
         return
 
@@ -1480,8 +1496,6 @@ def scan_and_append_new_target_media(main_window: "MainWindow"):
             ready_files.append(p)
             continue
 
-        # Still changing size (or briefly unreadable). Give up waiting and
-        # load it anyway once it's been pending too long.
         size_cache = getattr(main_window, "_target_folder_pending_sizes", {})
         first_seen = size_cache.get(p, (None, time.monotonic()))[1]
         if time.monotonic() - first_seen >= _TARGET_MEDIA_STABILITY_TIMEOUT_SECONDS:
@@ -1495,8 +1509,6 @@ def scan_and_append_new_target_media(main_window: "MainWindow"):
             pending = True
 
     if pending:
-        # Re-check the still-writing file(s) on the next debounce cycle
-        # instead of failing to load them now.
         timer = getattr(main_window, "_target_folder_watch_timer", None)
         if timer is not None:
             timer.start()
@@ -1504,7 +1516,10 @@ def scan_and_append_new_target_media(main_window: "MainWindow"):
     if not ready_files:
         return
 
-    if main_window.video_loader_worker is not None and main_window.video_loader_worker.isRunning():
+    if (
+        main_window.video_loader_worker is not None
+        and main_window.video_loader_worker.isRunning()
+    ):
         return
 
     main_window.video_loader_worker = ui_workers.TargetMediaLoaderWorker(
