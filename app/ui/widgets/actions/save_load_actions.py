@@ -987,6 +987,14 @@ def load_saved_workspace(
             common_widget_actions.create_control(
                 main_window, "OutputMediaFolder", output_folder
             )
+            
+            from app.ui.widgets.actions import list_view_actions as _lva
+
+            _lva.set_target_folder_auto_watch(
+                main_window,
+                bool(main_window.control.get("AutoLoadTargetFolderToggle", False)),
+            )
+            
             # Also use .get() when setting the line edit text
             main_window.outputFolderLineEdit.setText(output_folder)
 
