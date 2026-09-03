@@ -1104,7 +1104,19 @@ def reset_face_editor_expression_params(main_window: "MainWindow"):
 def handle_auto_load_target_folder_toggle(main_window: "MainWindow", enabled: bool):
     from app.ui.widgets.actions import list_view_actions
 
-    list_view_actions.set_target_folder_auto_watch(main_window, bool(enabled))
+    enabled = bool(enabled)
+
+    # Restore path into the line edit if only last_target_media_folder_path is set
+    if enabled:
+        line = getattr(main_window, "targetVideosPathLineEdit", None)
+        current = (line.text() or "").strip() if line is not None else ""
+        last = (getattr(main_window, "last_target_media_folder_path", "") or "").strip()
+        if not current and last and os.path.isdir(last):
+            if line is not None:
+                line.setText(last)
+                line.setToolTip(last)
+
+    list_view_actions.set_target_folder_auto_watch(main_window, enabled)
 
 
 def on_target_folder_path_changed(main_window: "MainWindow"):
