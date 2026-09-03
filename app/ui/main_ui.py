@@ -1138,6 +1138,22 @@ class MainWindow(QtWidgets.QMainWindow, Ui_MainWindow):
         # Optionally handle the event if needed
         event.accept()
 
+    def _restore_target_folder_auto_watch(self) -> None:
+        import os
+        from app.ui.widgets.actions import list_view_actions
+
+        enabled = bool(self.control.get("AutoLoadTargetFolderToggle", False))
+        line = getattr(self, "targetVideosPathLineEdit", None)
+        path = (line.text() or "").strip() if line is not None else ""
+        if not path:
+            path = (getattr(self, "last_target_media_folder_path", "") or "").strip()
+        if enabled and path and os.path.isdir(path):
+            if line is not None and not (line.text() or "").strip():
+                line.setText(path)
+                line.setToolTip(path)
+        list_view_actions.set_target_folder_auto_watch(self, enabled)
+
+
     def load_last_workspace(self) -> None:
         """
         Loads the last used workspace if available.
@@ -1205,6 +1221,8 @@ class MainWindow(QtWidgets.QMainWindow, Ui_MainWindow):
         # Re-populate and set current selection for dynamic widgets like DenoiserUNetModelSelection
         self._populate_denoiser_unet_models()
         self._populate_reference_kv_tensors()
+        # Resume target-folder auto-watch if it was left enabled
+        self._restore_target_folder_auto_watch()
 
     def register_parameter_section(
         self,
