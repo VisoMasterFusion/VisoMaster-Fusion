@@ -949,15 +949,16 @@ def delete_all_target_media_to_trash(main_window: "MainWindow") -> bool:
     main_window.selected_video_button = None
     main_window.scene.clear()
     main_window.graphicsViewFrame.update()
-
-    _set_path_line_edit_value(main_window.targetVideosPathLineEdit, "")
-    main_window.last_target_media_folder_path = ""
     main_window.placeholder_update_signal.emit(main_window.targetVideosList, False)
 
     if not getattr(main_window, "is_batch_processing", False):
         gc.collect()
         if torch.cuda.is_available():
             torch.cuda.empty_cache()
+        set_target_folder_auto_watch(
+        main_window,
+        bool(main_window.control.get("AutoLoadTargetFolderToggle", False)),
+    )
 
     return True
 
