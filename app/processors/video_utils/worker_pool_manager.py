@@ -139,12 +139,18 @@ class WorkerPoolManager(QObject):
         Sends poison pills to wake blocked workers and enforces strict VRAM cleanup.
 
         Args:
-            clear_module_caches: If True, clears module-level VR caches. Set to False
-                                 during mid-job pool restarts to keep caches warm.
+            clear_module_caches: If True, clears module-level VR and tensor caches. Set to
+                                 False during mid-job pool restarts to keep caches warm.
         """
-        active_threads = self.worker_threads
+        active_threads: List[FrameWorker] = list(self.worker_threads)
+
         if not active_threads:
-            return  # Nothing to do
+            if clear_module_caches:
+                self._clear_module_vram_caches()
+                gc.collect()
+                if torch.cuda.is_available() and torch.cuda.is_initialized():
+                    torch.cuda.empty_cache()
+            return
 
         print(
             f"[INFO] WorkerPoolManager: Signaling {len(active_threads)} active worker(s) to stop..."
@@ -187,26 +193,43 @@ class WorkerPoolManager(QObject):
         self.worker_threads.clear()
         self.worker_streams.clear()
 
-        # 5. Strict VRAM Garbage Collection
-        # Release GPU memory held by the now-dead workers (kernel tensors, etc.).
+        # 5. Release module-level VR and pipeline tensor caches BEFORE running allocator cleanup
+        if clear_module_caches:
+            self._clear_module_vram_caches()
+
+        # 6. Strict VRAM Garbage Collection
+        # Enforce GC and empty_cache AFTER releasing all cached tensor references.
         gc.collect()
         # PROTECTED: Only empty cache if CUDA is already awake.
         # Calling empty_cache() on an asleep GPU forces a 2GB context initialization.
         if torch.cuda.is_available() and torch.cuda.is_initialized():
             torch.cuda.empty_cache()
 
-        # 6. Release module-level VR caches (Prevents RAM memory leak across jobs)
-        if clear_module_caches:
-            try:
-                from app.processors.external.Equirec2Perspec_vr import clear_persp_cache
-                from app.processors.external.Perspec2Equirec_vr import clear_p2e_caches
-                from app.helpers.vr_utils import clear_feathered_mask_cache
+    def _clear_module_vram_caches(self) -> None:
+        """Purges all module-level LRU tensor caches and external VR reprojection tables."""
+        try:
+            from app.processors.external.Equirec2Perspec_vr import clear_persp_cache
 
-                clear_persp_cache()
-                clear_p2e_caches()
-                clear_feathered_mask_cache()
-            except Exception:
-                pass
+            clear_persp_cache()
+        except Exception:
+            pass
+
+        try:
+            from app.processors.external.Perspec2Equirec_vr import clear_p2e_caches
+
+            clear_p2e_caches()
+        except Exception:
+            pass
+
+        try:
+            from app.processors.utils import platform_support
+
+            device_type: str = str(
+                getattr(self.main_window.models_processor, "device_type", "cuda")
+            )
+            platform_support.clear_all_vram_caches(device_type)
+        except Exception as e:
+            print(f"[WARN] WorkerPoolManager: Error clearing module VRAM caches: {e}")
 
     def _trigger_smart_single_frame_gc(self) -> None:
         """

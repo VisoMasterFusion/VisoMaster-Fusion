@@ -534,6 +534,7 @@ class IssueScanner:
                 best_target = target_face_id
         return best_target
 
+    @torch.no_grad()
     def _build_issue_scan_target_embedding(
         self, target_face: Any, recognition_model: str, similarity_type: str
     ) -> numpy.ndarray:
@@ -617,6 +618,7 @@ class IssueScanner:
             }
         return target_faces_snapshot
 
+    @torch.no_grad()
     def scan_issue_frames(
         self,
         progress_callback=None,

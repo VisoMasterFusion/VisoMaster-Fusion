@@ -469,6 +469,14 @@ FACE_EDITOR_LAYOUT_DATA: Any = {  # noqa: F811
             "default": False,
             "help": "Enable 2D mesh deformation for face slimming and cosmetic shaping.",
         },
+        "FaceShapingPreSwapToggle": {
+            "level": 2,
+            "label": "Apply Before Swap (Target Prep)",
+            "default": False,
+            "parentToggle": "FaceShapingEnableToggle",
+            "requiredToggleValue": True,
+            "help": "Deforms the target face before passing it to the swapper so proportions adapt naturally.",
+        },
         "FaceShapingFaceSlimSlider": {
             "level": 2,
             "label": "Face Slimming",

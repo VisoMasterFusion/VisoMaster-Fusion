@@ -1,12 +1,14 @@
 import math
 from math import sin, cos, acos, degrees
+from typing import Any
+import threading
+from collections import OrderedDict
 
 import numpy as np
 import cv2
 from skimage import transform as trans
 import torch
 import torch.nn.functional as F
-import threading
 
 import torchvision
 from torchvision.transforms import v2
@@ -164,8 +166,16 @@ _XYZ_TO_RGB = torch.tensor(
 )
 
 # --- Thread-safe caches for deterministic geometric masks & kernels ---
-_faded_mask_cache: dict[tuple, torch.Tensor] = {}
+_FADED_MASK_CACHE_MAX = 32
+_faded_mask_cache: OrderedDict[tuple, torch.Tensor] = OrderedDict()
 _faded_mask_lock = threading.Lock()
+
+
+def clear_faded_mask_cache() -> None:
+    """Explicitly releases all cached faded inner mask tensors from GPU VRAM."""
+    with _faded_mask_lock:
+        _faded_mask_cache.clear()
+
 
 _gaussian_kernel_cache: dict[tuple, torch.Tensor] = {}
 _gaussian_kernel_lock = threading.Lock()
@@ -858,26 +868,57 @@ LANDMARK_314_EYE_LEFT_CORNERS = [28, 126]  # WFLW 60 (outer), 64 (inner)
 LANDMARK_314_EYE_RIGHT_CORNERS = [186, 283]  # WFLW 68 (inner), 72 (outer)
 
 
-def convert_face_landmark_314_to_5(face_landmark_314, face_landmark_314_score):
-    face_landmark_5 = np.array(
-        [
-            face_landmark_314[LANDMARK_314_EYE_LEFT],  # eye left
-            face_landmark_314[LANDMARK_314_EYE_RIGHT],  # eye-right
-            face_landmark_314[LANDMARK_314_NOSE_TIP],  # nose,
-            face_landmark_314[LANDMARK_314_LIP_LEFT],  # lip left
-            face_landmark_314[LANDMARK_314_LIP_RIGHT],  # lip right
-        ]
-    )
+def convert_face_landmark_314_to_5(
+    face_landmark_314: np.ndarray,
+    face_landmark_314_score: np.ndarray,
+    use_mean_eyes: bool = False,
+) -> tuple[np.ndarray, np.ndarray]:
+    """Converts 314-point dense landmarks to canonical 5-point ArcFace layout."""
+    if use_mean_eyes:
+        eye_left = np.mean(face_landmark_314[LANDMARK_314_EYE_LEFT_CORNERS], axis=0)
+        eye_right = np.mean(face_landmark_314[LANDMARK_314_EYE_RIGHT_CORNERS], axis=0)
+        eye_left_score = (
+            np.mean(face_landmark_314_score[LANDMARK_314_EYE_LEFT_CORNERS])
+            if len(face_landmark_314_score) > 0
+            else 0.0
+        )
+        eye_right_score = (
+            np.mean(face_landmark_314_score[LANDMARK_314_EYE_RIGHT_CORNERS])
+            if len(face_landmark_314_score) > 0
+            else 0.0
+        )
+    else:
+        eye_left = face_landmark_314[LANDMARK_314_EYE_LEFT]
+        eye_right = face_landmark_314[LANDMARK_314_EYE_RIGHT]
+        eye_left_score = (
+            face_landmark_314_score[LANDMARK_314_EYE_LEFT]
+            if len(face_landmark_314_score) > 0
+            else 0.0
+        )
+        eye_right_score = (
+            face_landmark_314_score[LANDMARK_314_EYE_RIGHT]
+            if len(face_landmark_314_score) > 0
+            else 0.0
+        )
 
-    face_landmark_5_score = np.array(
-        [
-            face_landmark_314_score[LANDMARK_314_EYE_LEFT],  # eye left
-            face_landmark_314_score[LANDMARK_314_EYE_RIGHT],  # eye-right
-            face_landmark_314_score[LANDMARK_314_NOSE_TIP],  # nose,
-            face_landmark_314_score[LANDMARK_314_LIP_LEFT],  # lip left
-            face_landmark_314_score[LANDMARK_314_LIP_RIGHT],  # lip right
-        ]
-    )
+    nose = face_landmark_314[LANDMARK_314_NOSE_TIP]
+    lip_left = face_landmark_314[LANDMARK_314_LIP_LEFT]
+    lip_right = face_landmark_314[LANDMARK_314_LIP_RIGHT]
+
+    face_landmark_5 = np.array([eye_left, eye_right, nose, lip_left, lip_right])
+
+    if len(face_landmark_314_score) > 0:
+        face_landmark_5_score = np.array(
+            [
+                eye_left_score,
+                eye_right_score,
+                face_landmark_314_score[LANDMARK_314_NOSE_TIP],
+                face_landmark_314_score[LANDMARK_314_LIP_LEFT],
+                face_landmark_314_score[LANDMARK_314_LIP_RIGHT],
+            ]
+        )
+    else:
+        face_landmark_5_score = np.array([])
 
     return face_landmark_5, face_landmark_5_score
 
@@ -953,8 +994,10 @@ def convert_face_landmark_x_to_5(pts, **kwargs):
             face_landmark_98=pts, face_landmark_98_score=pts_score
         )
     elif pts.shape[0] == 314:
-        pt5 = convert_face_landmark_314_to_5(
-            face_landmark_314=pts, face_landmark_314_score=pts_score
+        pt5, _ = convert_face_landmark_314_to_5(
+            face_landmark_314=pts,
+            face_landmark_314_score=pts_score,
+            use_mean_eyes=use_mean_eyes,
         )
     elif pts.shape[0] == 106:
         pt5 = convert_face_landmark_106_to_5(face_landmark_106=pts)
@@ -1641,6 +1684,19 @@ def parse_rect_from_landmark(
     rpts = (pts - center0) @ M.T  # (M @ P.T).T = P @ M.T
     lt_pt = np.min(rpts, axis=0)
     rb_pt = np.max(rpts, axis=0)
+
+    # Models without forehead points (68, 98, 314, 5) stop at the eyebrows.
+    # Synthesize the missing upper forehead bounds so crop scale and vertical
+    # centering align identically with full-head 203 models.
+    num_pts = pts.shape[0]
+    if num_pts in (5, 68, 98, 314):
+        # pt2 in rotated coordinates
+        r_pt2 = (pt2 - center0) @ M.T
+        eye_lip_dist = float(r_pt2[1, 1] - r_pt2[0, 1])
+        # Extrapolate forehead upward from eye line by 0.65x eye-lip distance
+        forehead_y = float(r_pt2[0, 1] - 0.65 * eye_lip_dist)
+        lt_pt[1] = min(lt_pt[1], forehead_y)
+
     center1 = (lt_pt + rb_pt) / 2
 
     size = rb_pt - lt_pt
@@ -1701,14 +1757,29 @@ def parse_bbox_from_landmark(pts, **kwargs):
 
 # imported from https://github.com/KwaiVGI/LivePortrait/blob/main/src/utils/crop.py
 def _estimate_similar_transform_from_pts(
-    pts, dsize, scale=1.5, vx_ratio=0, vy_ratio=-0.1, flag_do_rot=True, **kwargs
-):
-    """calculate the affine matrix of the cropped image from sparse points, the original image to the cropped image, the inverse is the cropped image to the original image
-    pts: landmark, 101 or 68 points or other points, Nx2
-    scale: the larger scale factor, the smaller face ratio
-    vx_ratio: x shift
-    vy_ratio: y shift, the smaller the y shift, the lower the face region
-    rot_flag: if it is true, conduct correction
+    pts: np.ndarray,
+    dsize: int,
+    scale: float = 1.5,
+    vx_ratio: float = 0.0,
+    vy_ratio: float = -0.1,
+    flag_do_rot: bool = True,
+    **kwargs: Any,
+) -> tuple[np.ndarray, np.ndarray]:
+    """
+    Calculate the affine matrix of the cropped image from sparse landmark points.
+    M_INV transforms from the original image to the crop; M transforms from crop to original.
+
+    Args:
+        pts: Landmark array of shape (N, 2).
+        dsize: Target crop dimension (height and width in pixels).
+        scale: Bounding box scale multiplier (higher value captures more surroundings).
+        vx_ratio: Horizontal shift ratio along the pupil axis.
+        vy_ratio: Vertical shift ratio along the pupil axis.
+        flag_do_rot: If True, rotates the crop to upright eye orientation.
+        **kwargs: Forwarded to parse_rect_from_landmark (e.g. use_lip, use_mean_eyes).
+
+    Returns:
+        tuple[np.ndarray, np.ndarray]: (M_INV, M) affine transformation matrices of shape (2, 3).
     """
     center, size, angle = parse_rect_from_landmark(
         pts,
@@ -1720,12 +1791,15 @@ def _estimate_similar_transform_from_pts(
     )
 
     s = dsize / size[0]  # scale
-    tgt_center = np.array([dsize / 2, dsize / 2], dtype=np.float32)  # center of dsize
+    tgt_center = np.array(
+        [dsize / 2.0, dsize / 2.0], dtype=np.float32
+    )  # center of dsize
 
     if flag_do_rot:
         costheta, sintheta = cos(angle), sin(angle)
         cx, cy = center[0], center[1]  # ori center
         tcx, tcy = tgt_center[0], tgt_center[1]  # target center
+
         # need to infer
         M_INV = np.array(
             [
@@ -1741,58 +1815,80 @@ def _estimate_similar_transform_from_pts(
     else:
         M_INV = np.array(
             [
-                [s, 0, tgt_center[0] - s * center[0]],
-                [0, s, tgt_center[1] - s * center[1]],
+                [s, 0.0, tgt_center[0] - s * center[0]],
+                [0.0, s, tgt_center[1] - s * center[1]],
             ],
             dtype=np.float32,
         )
 
-    M_INV_H = np.vstack([M_INV, np.array([0, 0, 1])])
+    M_INV_H = np.vstack([M_INV, np.array([0.0, 0.0, 1.0], dtype=np.float32)])
     M = np.linalg.inv(M_INV_H)
 
     # M_INV is from the original image to the cropped image, M is from the cropped image to the original image
     return M_INV, M[:2, ...]
 
 
-def warp_face_by_face_landmark_x(img, pts, **kwargs):
+@torch.no_grad()
+def warp_face_by_face_landmark_x(
+    img: torch.Tensor,
+    pts: np.ndarray,
+    **kwargs: Any,
+) -> tuple[torch.Tensor, np.ndarray, np.ndarray]:
     """
-    OPTIMIZED: Uses Kornia (GPU) instead of torchvision+scikit-image for affine transformation.
-    Eliminates CPU-bound trigonometry and matrix decomposition bottlenecks.
-    """
-    dsize = kwargs.get("dsize", 224)  # Default LivePortrait size
-    scale = kwargs.get("scale", 1.5)
-    vy_ratio = kwargs.get("vy_ratio", -0.1)
-    # Out-of-bounds sampling fill. Defaults to "zeros" (unchanged behaviour).
-    # Callers that crop with a wide scale and/or a face near the image edge
-    # (e.g. the VR180 perspective crops fed to PerformRecast) can pass
-    # "border" to replicate edge pixels instead of producing black borders,
-    # which otherwise yield all/mostly-black face crops.
-    padding_mode = kwargs.get("padding_mode", "zeros")
+    Affine face crop using Kornia GPU warping based on arbitrary landmark topologies.
+    Pops consumed arguments to eliminate keyword collision in downstream matrix estimation.
 
-    # Pad image if necessary
+    Args:
+        img: Input image tensor of shape (C, H, W).
+        pts: Landmark array of shape (N, 2).
+        **kwargs: Optional cropping arguments:
+            - dsize (int): Output crop size in pixels (default: 224).
+            - scale (float): Bounding box scale multiplier (default: 1.5).
+            - vy_ratio (float): Vertical center offset ratio (default: -0.1).
+            - vx_ratio (float): Horizontal center offset ratio (default: 0.0).
+            - flag_do_rot (bool): Whether to rotate crop to eye axis (default: True).
+            - padding_mode (str): Kornia out-of-bounds fill mode ('zeros' or 'border').
+            - use_mean_eyes (bool): Average eye points for rotation axis.
+            - use_lip (bool): Use lips for vertical orientation axis.
+
+    Returns:
+        tuple[torch.Tensor, np.ndarray, np.ndarray]: (warped_img, M_o2c, M_c2o)
+    """
+    # Pop consumed arguments to prevent duplicate keyword conflicts in _estimate_similar_transform_from_pts
+    transform_kwargs = dict(kwargs)
+    dsize: int = int(transform_kwargs.pop("dsize", 224))
+    scale: float = float(transform_kwargs.pop("scale", 1.5))
+    vy_ratio: float = float(transform_kwargs.pop("vy_ratio", -0.1))
+    vx_ratio: float = float(transform_kwargs.pop("vx_ratio", 0.0))
+    flag_do_rot: bool = bool(transform_kwargs.pop("flag_do_rot", True))
+    padding_mode: str = str(transform_kwargs.pop("padding_mode", "zeros"))
+
+    # Unused rendering parameters safely purged from downstream kwargs
+    transform_kwargs.pop("interpolation", None)
+
+    # Pad image if necessary to prevent out-of-bounds indexing
     img = pad_image_by_size(img, dsize)
 
-    # Calculate matrix from landmarks (Fast CPU operation, no bottleneck here)
+    # Estimate similarity transform matrix
     M_o2c, M_c2o = _estimate_similar_transform_from_pts(
         pts,
         dsize=dsize,
         scale=scale,
+        vx_ratio=vx_ratio,
         vy_ratio=vy_ratio,
-        flag_do_rot=kwargs.get("flag_do_rot", True),
+        flag_do_rot=flag_do_rot,
+        **transform_kwargs,
     )
 
-    # 100% GPU Warping using Kornia
-    # Bypasses the slow t = trans.SimilarityTransform() completely
+    # GPU-accelerated affine warp via Kornia
     warped_img = transform_img_kgm(
         img.float(), M_o2c, dsize=dsize, padding_mode=padding_mode
     )
 
-    # Ensure we return the original dtype (usually uint8 or float32 depending on pipeline)
-    warped_img = warped_img.to(img.dtype)
-
-    return warped_img, M_o2c, M_c2o
+    return warped_img.to(img.dtype), M_o2c, M_c2o
 
 
+@torch.no_grad()
 def create_faded_inner_mask(
     size: tuple[int, int],
     border_thickness: int,
@@ -1804,9 +1900,7 @@ def create_faded_inner_mask(
     Create a mask with a thick black border and a faded white center towards the border.
     The white edges are smoothed using Gaussian blur.
 
-    OPTIMIZED: Added thread-safe caching. Generating 512x512 meshgrids and running
-    Gaussian blurs dynamically 60 times a second severely fragments VRAM.
-    This caches the final tensor based on its deterministic parameters.
+    OPTIMIZED: Thread-safe bounded LRU caching prevents unbounded VRAM retention.
     Parameters:
     - size: Tuple (height, width) for the mask size.
     - border_thickness: The thickness of the outer black border.
@@ -1818,16 +1912,17 @@ def create_faded_inner_mask(
     - mask: A PyTorch tensor containing the mask.
     """
     cache_key = (
-        size[0],
-        size[1],
-        border_thickness,
-        fade_thickness,
-        blur_radius,
+        int(size[0]),
+        int(size[1]),
+        int(border_thickness),
+        int(fade_thickness),
+        int(blur_radius),
         str(device),
     )
 
     with _faded_mask_lock:
         if cache_key in _faded_mask_cache:
+            _faded_mask_cache.move_to_end(cache_key)
             return _faded_mask_cache[cache_key]
 
     height, width = size
@@ -1872,15 +1967,21 @@ def create_faded_inner_mask(
     mask = torchvision.transforms.functional.gaussian_blur(
         mask, kernel_size=(blur_radius, blur_radius), sigma=(blur_radius / 2)
     )
-    mask = mask[0, 0, :, :]  # Rimuovi batch e channel
+    mask = mask[0, 0, :, :].contiguous()
 
     with _faded_mask_lock:
-        _faded_mask_cache[cache_key] = mask
+        if cache_key not in _faded_mask_cache:
+            if len(_faded_mask_cache) >= _FADED_MASK_CACHE_MAX:
+                _faded_mask_cache.popitem(last=False)
+            _faded_mask_cache[cache_key] = mask
+        else:
+            _faded_mask_cache.move_to_end(cache_key)
 
     return mask
 
 
 # imported from https://github.com/KwaiVGI/LivePortrait/blob/main/src/utils/crop.py
+@torch.no_grad()
 def prepare_paste_back(
     mask_crop, crop_M_c2o, dsize, interpolation=v2.InterpolationMode.BILINEAR
 ):
@@ -1897,6 +1998,7 @@ def prepare_paste_back(
 
 
 # imported from https://github.com/KwaiVGI/LivePortrait/blob/main/src/utils/crop.py
+@torch.no_grad()
 def paste_back(
     img_crop, M_c2o, img_ori, mask_ori, interpolation=v2.InterpolationMode.BILINEAR
 ):
@@ -2020,6 +2122,7 @@ def paste_back_adv(
     return img
 
 
+@torch.no_grad()
 def paste_back_kgm(img_crop, M_c2o, img_ori, mask_ori):
     """paste back the image"""
     dsize = (img_ori.shape[1], img_ori.shape[2])
@@ -2034,6 +2137,7 @@ def paste_back_kgm(img_crop, M_c2o, img_ori, mask_ori):
     return img_back.to(torch.uint8)
 
 
+@torch.no_grad()
 def transform_img_kgm(
     img,
     M,
@@ -2652,6 +2756,7 @@ def _map_jpeg_quality(
     return q_eff
 
 
+@torch.no_grad()
 def jpegBlur(img: torch.Tensor, q: int) -> torch.Tensor:
     """
     img: [3,H,W], float32 (0..255) ODER (0..1) ODER uint8 (0..255)
@@ -2683,6 +2788,7 @@ def jpegBlur(img: torch.Tensor, q: int) -> torch.Tensor:
     return out_chw.to(device=device, dtype=torch.float32)
 
 
+@torch.no_grad()
 def histogram_matching(
     source_image: torch.Tensor, target_image: torch.Tensor, diffslider: float
 ) -> torch.Tensor:
@@ -2770,6 +2876,7 @@ def histogram_matching(
     return final_image_out.to(dtype=dtype)
 
 
+@torch.no_grad()
 def histogram_matching_withmask(
     source_image: torch.Tensor,
     target_image: torch.Tensor,
@@ -2865,6 +2972,7 @@ def histogram_matching_withmask(
     return final_image_out.to(dtype=dtype)
 
 
+@torch.no_grad()
 def apply_reinhard_color_transfer(
     source_image: torch.Tensor,
     target_image: torch.Tensor,

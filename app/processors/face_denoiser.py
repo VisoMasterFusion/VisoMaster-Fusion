@@ -354,7 +354,7 @@ class FaceDenoiser:
     def apply_denoiser_unet(
         self,
         image_cxhxw_uint8: torch.Tensor,
-        reference_kv_map: Dict | None,
+        reference_kv_map: Optional[Dict[str, Dict[str, torch.Tensor]]],
         use_reference_exclusive_path: bool,
         denoiser_mode: str = "Single Step (Fast)",
         denoiser_single_step_t: int = 1,
@@ -364,28 +364,33 @@ class FaceDenoiser:
         base_seed: int = 220,
         latent_sharpening_strength: float = 0.0,
         enable_color_correction: bool = True,
-        color_mask: torch.Tensor | None = None,
+        color_mask: Optional[torch.Tensor] = None,
+        coarse_grain_reduction: float = 0.0,
+        micro_grain_strength: float = 0.0,
     ) -> torch.Tensor:
         """
         Runs the Diffusion-based Denoiser/Restorer (ReF-LDM).
         Supports 'Single Step' (Fast) and 'Full Restore' (DDIM) modes.
-        Handles pixel sharpening and optional Reinhard masked color anchor.
+        Features NaN-safe DDIM scheduling and post-VAE hot-pixel blowout neutralization.
         """
+        import math
+
         # --- CONFIGURATION ---
-        ENABLE_PIXEL_SHARPENING = latent_sharpening_strength > 0.0
-        PIXEL_SHARPEN_STRENGTH = latent_sharpening_strength
+        ENABLE_PIXEL_SHARPENING: bool = latent_sharpening_strength > 0.0
+        PIXEL_SHARPEN_STRENGTH: float = latent_sharpening_strength
+        ENABLE_COLOR_MATCH: bool = enable_color_correction
+        COARSE_GRAIN_LAMBDA: float = max(0.0, min(1.0, float(coarse_grain_reduction)))
+        MICRO_GRAIN_STRENGTH: float = max(0.0, min(1.0, float(micro_grain_strength)))
 
-        ENABLE_COLOR_MATCH = enable_color_correction
-
-        # P2-04: enable debug output via env var: set VISOMASTER_DEBUG_DENOISER=1
-        DEBUG_DENOISER = os.environ.get("VISOMASTER_DEBUG_DENOISER", "0") == "1"
-        unet_model_name = self.models_processor.main_window.fixed_unet_model_name
-        vae_encoder_name = "RefLDMVAEEncoder"
-        vae_decoder_name = "RefLDMVAEDecoder"
+        DEBUG_DENOISER: bool = os.environ.get("VISOMASTER_DEBUG_DENOISER", "0") == "1"
+        unet_model_name: str = self.models_processor.main_window.fixed_unet_model_name
+        vae_encoder_name: str = "RefLDMVAEEncoder"
+        vae_decoder_name: str = "RefLDMVAEDecoder"
 
         if DEBUG_DENOISER:
             print(
-                f"\n--- Denoiser Pass Start: Mode='{denoiser_mode}', CFG Scale={denoiser_cfg_scale}, VAE Scale Factor={self.vae_scale_factor} ---"
+                f"\n--- Denoiser Pass Start: Mode='{denoiser_mode}', CFG Scale={denoiser_cfg_scale}, "
+                f"CoarseReduction={COARSE_GRAIN_LAMBDA}, MicroGrain={MICRO_GRAIN_STRENGTH} ---"
             )
             self.print_tensor_stats(
                 image_cxhxw_uint8, "Initial input image_cxhxw_uint8", DEBUG_DENOISER
@@ -400,7 +405,7 @@ class FaceDenoiser:
             if not (unet_session and vae_enc_session and vae_dec_session):
                 return image_cxhxw_uint8
 
-        kv_tensor_map_for_this_run: Dict[str, Dict[str, torch.Tensor]] | None = None
+        kv_tensor_map_for_this_run: Optional[Dict[str, Dict[str, torch.Tensor]]] = None
         if reference_kv_map:
             try:
                 kv_tensor_map_for_this_run = {
@@ -411,7 +416,7 @@ class FaceDenoiser:
                     and isinstance(tens_dict.get("v"), torch.Tensor)
                 }
             except Exception as e:
-                print(f"[ERROR] Denoiser: Error deep copying K/V map: {e}. Skipping.")
+                print(f"[ERROR] Denoiser: Error copying K/V map: {e}. Skipping.")
                 return image_cxhxw_uint8
 
         if (
@@ -433,10 +438,10 @@ class FaceDenoiser:
             )
             return image_cxhxw_uint8
 
-        target_proc_dim = 512
+        target_proc_dim: int = 512
         _, h_input, w_input = image_cxhxw_uint8.shape
         if h_input != target_proc_dim or w_input != target_proc_dim:
-            image_to_process_cxhxw_uint8 = v2.functional.resize(
+            image_to_process_cxhxw_uint8: torch.Tensor = v2.functional.resize(
                 image_cxhxw_uint8,
                 [target_proc_dim, target_proc_dim],
                 interpolation=v2.InterpolationMode.BILINEAR,
@@ -445,24 +450,24 @@ class FaceDenoiser:
         else:
             image_to_process_cxhxw_uint8 = image_cxhxw_uint8
 
-        h_proc, w_proc = (
-            image_to_process_cxhxw_uint8.shape[1],
-            image_to_process_cxhxw_uint8.shape[2],
-        )
+        h_proc: int = image_to_process_cxhxw_uint8.shape[1]
+        w_proc: int = image_to_process_cxhxw_uint8.shape[2]
 
-        # Fused in-place math and non-blocking transfer
-        image_srgb_float_minus1_1_batched = (
+        # Normalized input tensor in [-1.0, 1.0]
+        input_srgb_float_minus1_1: torch.Tensor = (
             image_to_process_cxhxw_uint8.to(
                 dtype=torch.float32, copy=True, non_blocking=True
             )
             .mul_(1.0 / 127.5)
             .sub_(1.0)
-            .unsqueeze(0)
-            .contiguous()
+        )
+        image_srgb_float_minus1_1_batched: torch.Tensor = (
+            input_srgb_float_minus1_1.unsqueeze(0).contiguous()
         )
 
-        latent_h, latent_w = h_proc // 8, w_proc // 8
-        encoded_latent_direct_vae_out_bchw = torch.empty(
+        latent_h: int = h_proc // 8
+        latent_w: int = w_proc // 8
+        encoded_latent_direct_vae_out_bchw: torch.Tensor = torch.empty(
             (1, 8, latent_h, latent_w),
             dtype=torch.float32,
             device=self.models_processor.device,
@@ -472,15 +477,15 @@ class FaceDenoiser:
             image_srgb_float_minus1_1_batched, encoded_latent_direct_vae_out_bchw
         )
 
-        lq_latent_x0_scaled_for_unet = (
+        lq_latent_x0_scaled_for_unet: torch.Tensor = (
             encoded_latent_direct_vae_out_bchw * self.vae_scale_factor
         )
         del encoded_latent_direct_vae_out_bchw
         del image_srgb_float_minus1_1_batched
-        final_denoised_latent_x0_scaled = None
+        final_denoised_latent_x0_scaled: Optional[torch.Tensor] = None
 
         if use_reference_exclusive_path:
-            is_ref_flag_tensor_for_unet = torch.ones(
+            is_ref_flag_tensor_for_unet: torch.Tensor = torch.ones(
                 1, dtype=torch.bool, device=self.models_processor.device
             )
         else:
@@ -488,51 +493,49 @@ class FaceDenoiser:
                 1, dtype=torch.bool, device=self.models_processor.device
             )
 
-        actual_use_exclusive_path_tensor_for_unet = is_ref_flag_tensor_for_unet
-        false_tensor_for_unet = torch.zeros(
+        actual_use_exclusive_path_tensor_for_unet: torch.Tensor = (
+            is_ref_flag_tensor_for_unet
+        )
+        false_tensor_for_unet: torch.Tensor = torch.zeros(
             1, dtype=torch.bool, device=self.models_processor.device
         )
 
-        rng = torch.Generator(device=self.models_processor.device)
+        rng: torch.Generator = torch.Generator(device=self.models_processor.device)
         rng.manual_seed(base_seed)
 
         # --- PROCESS: Single Step ---
         if denoiser_mode == "Single Step (Fast)":
             rng.manual_seed(base_seed + denoiser_single_step_t)
-            noise_sample = torch.randn(
+            noise_sample: torch.Tensor = torch.randn(
                 lq_latent_x0_scaled_for_unet.shape,
                 device=self.models_processor.device,
                 dtype=lq_latent_x0_scaled_for_unet.dtype,
                 generator=rng,
             )
 
-            current_t_idx = min(
+            current_t_idx: int = min(
                 max(0, denoiser_single_step_t), len(self.alphas_cumprod_np) - 1
             )
-            alpha_t_bar_val = float(self.alphas_cumprod_np[current_t_idx])
+            alpha_t_bar_val: float = float(self.alphas_cumprod_np[current_t_idx])
 
-            # Calculate scalars on CPU and let PyTorch broadcast them in C++.
-            # Eliminates torch.full() allocations.
-            import math
+            sqrt_a: float = math.sqrt(alpha_t_bar_val)
+            sqrt_one_minus_a: float = math.sqrt(1.0 - alpha_t_bar_val)
 
-            sqrt_a = math.sqrt(alpha_t_bar_val)
-            sqrt_one_minus_a = math.sqrt(1.0 - alpha_t_bar_val)
-
-            xt_noisy_scaled_8_channel = (
+            xt_noisy_scaled_8_channel: torch.Tensor = (
                 lq_latent_x0_scaled_for_unet * sqrt_a + noise_sample * sqrt_one_minus_a
             )
-            unet_input_16_channel = torch.cat(
+            unet_input_16_channel: torch.Tensor = torch.cat(
                 (xt_noisy_scaled_8_channel, lq_latent_x0_scaled_for_unet), dim=1
             )
 
-            timesteps_tensor_unet = torch.full(
+            timesteps_tensor_unet: torch.Tensor = torch.full(
                 (1,),
                 current_t_idx,
                 dtype=torch.int64,
                 device=self.models_processor.device,
             )
 
-            predicted_noise_from_unet = torch.empty(
+            predicted_noise_from_unet: torch.Tensor = torch.empty(
                 (1, 8, latent_h, latent_w),
                 dtype=torch.float32,
                 device=self.models_processor.device,
@@ -549,15 +552,35 @@ class FaceDenoiser:
                 kv_tensor_map=kv_tensor_map_for_this_run,
                 output_unet_tensor=predicted_noise_from_unet,
             )
-            final_denoised_latent_x0_scaled = (
-                xt_noisy_scaled_8_channel - sqrt_one_minus_a * predicted_noise_from_unet
-            ) / sqrt_a
+
+            predicted_noise_sanitized: torch.Tensor = torch.nan_to_num(
+                predicted_noise_from_unet, nan=0.0, posinf=4.0, neginf=-4.0
+            )
+
+            raw_estimated_x0: torch.Tensor = (
+                xt_noisy_scaled_8_channel - sqrt_one_minus_a * predicted_noise_sanitized
+            ) / max(sqrt_a, 1e-6)
+
+            if COARSE_GRAIN_LAMBDA > 0.0:
+                latent_delta: torch.Tensor = (
+                    raw_estimated_x0 - lq_latent_x0_scaled_for_unet
+                )
+                # Soft-clamp uncancelled residual noise spikes to suppress macro-grain
+                clamped_delta: torch.Tensor = torch.clamp(latent_delta, -2.5, 2.5)
+                effective_delta: torch.Tensor = torch.lerp(
+                    latent_delta, clamped_delta, COARSE_GRAIN_LAMBDA
+                )
+                final_denoised_latent_x0_scaled = (
+                    lq_latent_x0_scaled_for_unet + effective_delta
+                )
+            else:
+                final_denoised_latent_x0_scaled = raw_estimated_x0
 
         # --- PROCESS: Full Restore (DDIM) ---
         elif denoiser_mode == "Full Restore (DDIM)":
-            num_ddpm_timesteps = self.alphas_cumprod_np.shape[0]
+            num_ddpm_timesteps: int = self.alphas_cumprod_np.shape[0]
 
-            _ddim_raw_ddpm_timesteps_np = self.make_ddim_timesteps(
+            _ddim_raw_ddpm_timesteps_np: np.ndarray = self.make_ddim_timesteps(
                 ddim_discr_method="uniform",
                 num_ddim_timesteps=denoiser_ddim_steps,
                 num_ddpm_timesteps=num_ddpm_timesteps,
@@ -572,81 +595,103 @@ class FaceDenoiser:
                 )
             )
 
-            ddim_sigmas = (
+            ddim_sigmas: torch.Tensor = (
                 torch.from_numpy(_ddim_sigmas_np)
                 .float()
                 .to(self.models_processor.device, non_blocking=True)
             )
-            ddim_alphas = (
+            ddim_alphas: torch.Tensor = (
                 torch.from_numpy(_ddim_alphas_np)
                 .float()
                 .to(self.models_processor.device, non_blocking=True)
             )
-            ddim_alphas_prev = (
+            ddim_alphas_prev: torch.Tensor = (
                 torch.from_numpy(_ddim_alphas_prev_np)
                 .float()
                 .to(self.models_processor.device, non_blocking=True)
             )
 
-            ddim_sqrt_one_minus_alphas = torch.sqrt(
+            ddim_sqrt_one_minus_alphas: torch.Tensor = torch.sqrt(
                 torch.clamp(1.0 - ddim_alphas, min=0.0)
             )
 
             # --- OPTIMIZATION: Pre-view schedule tensors for O(1) direct indexing ---
             # We reshape to (N, 1, 1, 1) so PyTorch automatically broadcasts to (1, 8, H, W)
-            view_shape = (-1, 1, 1, 1)
-            ddim_alphas_view = ddim_alphas.view(view_shape)
-            ddim_alphas_prev_view = ddim_alphas_prev.view(view_shape)
-            ddim_sigmas_view = ddim_sigmas.view(view_shape)
-            ddim_sqrt_one_minus_alphas_view = ddim_sqrt_one_minus_alphas.view(
-                view_shape
+            view_shape: tuple[int, int, int, int] = (-1, 1, 1, 1)
+            ddim_alphas_view: torch.Tensor = ddim_alphas.view(view_shape)
+            ddim_alphas_prev_view: torch.Tensor = ddim_alphas_prev.view(view_shape)
+            ddim_sigmas_view: torch.Tensor = ddim_sigmas.view(view_shape)
+            ddim_sqrt_one_minus_alphas_view: torch.Tensor = (
+                ddim_sqrt_one_minus_alphas.view(view_shape)
             )
 
-            current_latent_xt_scaled = torch.randn(
+            time_range_ddpm_indices: np.ndarray = np.flip(
+                _ddim_raw_ddpm_timesteps_np
+            ).copy()
+            total_steps: int = len(time_range_ddpm_indices)
+
+            noise_init: torch.Tensor = torch.randn(
                 lq_latent_x0_scaled_for_unet.shape,
                 device=self.models_processor.device,
                 dtype=lq_latent_x0_scaled_for_unet.dtype,
                 generator=rng,
             )
-            time_range_ddpm_indices = np.flip(_ddim_raw_ddpm_timesteps_np).copy()
-            total_steps = len(time_range_ddpm_indices)
 
-            pred_x0_scaled_current_step = torch.empty_like(lq_latent_x0_scaled_for_unet)
+            if COARSE_GRAIN_LAMBDA > 0.0:
+                init_step_idx: int = int(time_range_ddpm_indices[0])
+                init_alpha_val: float = float(self.alphas_cumprod_np[init_step_idx])
+                init_sqrt_a: float = math.sqrt(init_alpha_val)
+                init_sqrt_one_minus_a: float = math.sqrt(1.0 - init_alpha_val)
+                sdedit_init: torch.Tensor = (
+                    lq_latent_x0_scaled_for_unet * init_sqrt_a
+                    + noise_init * init_sqrt_one_minus_a
+                )
+                current_latent_xt_scaled = torch.lerp(
+                    noise_init, sdedit_init, COARSE_GRAIN_LAMBDA
+                )
+            else:
+                current_latent_xt_scaled = noise_init
 
-            ts_unet = torch.empty(
+            pred_x0_scaled_current_step: torch.Tensor = torch.empty_like(
+                lq_latent_x0_scaled_for_unet
+            )
+            ts_unet: torch.Tensor = torch.empty(
                 (1,), dtype=torch.int64, device=self.models_processor.device
             )
-            e_t_cond = torch.empty_like(lq_latent_x0_scaled_for_unet)
-            e_t_uncond = (
+            e_t_cond: torch.Tensor = torch.empty_like(lq_latent_x0_scaled_for_unet)
+            e_t_uncond: Optional[torch.Tensor] = (
                 torch.empty_like(lq_latent_x0_scaled_for_unet)
                 if denoiser_cfg_scale != 1.0
                 else None
             )
-            noise_ddim_buffer = torch.empty_like(lq_latent_x0_scaled_for_unet)
+            noise_ddim_buffer: torch.Tensor = torch.empty_like(
+                lq_latent_x0_scaled_for_unet
+            )
 
             # Pre-allocate the 16-channel UNet input buffer once.
-            unet_input_16_channel = torch.empty(
+            ddim_unet_input_16_channel: torch.Tensor = torch.empty(
                 (1, 16, latent_h, latent_w),
                 dtype=torch.float32,
                 device=self.models_processor.device,
             ).contiguous()
 
             # The condition (LQ image) remains static. Write it to channels 8-15 once.
-            unet_input_16_channel[:, 8:16] = lq_latent_x0_scaled_for_unet
+            ddim_unet_input_16_channel[:, 8:16] = lq_latent_x0_scaled_for_unet
+
+            # Biological latent dynamic envelope for VQGAN (codebook upper bound is ~2.8)
+            LATENT_DYNAMIC_BOUND: float = 2.8
 
             for i, step_ddpm_idx in enumerate(time_range_ddpm_indices):
-                index_for_schedules = total_steps - 1 - i
-
+                index_for_schedules: int = total_steps - 1 - i
                 ts_unet.fill_(step_ddpm_idx)
-
                 # Update only the dynamic noisy channels (0-7) in-place.
-                unet_input_16_channel[:, :8] = current_latent_xt_scaled
+                ddim_unet_input_16_channel[:, :8] = current_latent_xt_scaled
 
                 if torch.cuda.is_available():
                     platform_support.blocking_stream_sync()
 
                 self.function_worker.run_ref_ldm_unet(
-                    x_noisy_plus_lq_latent=unet_input_16_channel,
+                    x_noisy_plus_lq_latent=ddim_unet_input_16_channel,
                     timesteps_tensor=ts_unet,
                     is_ref_flag_tensor=is_ref_flag_tensor_for_unet,
                     use_reference_exclusive_path_globally_tensor=actual_use_exclusive_path_tensor_for_unet,
@@ -654,27 +699,31 @@ class FaceDenoiser:
                     output_unet_tensor=e_t_cond,
                 )
 
-                if denoiser_cfg_scale != 1.0:
+                if denoiser_cfg_scale != 1.0 and e_t_uncond is not None:
                     if torch.cuda.is_available():
                         platform_support.blocking_stream_sync()
 
-                    # We re-use unet_input_16_channel directly.
+                    # We re-use ddim_unet_input_16_channel directly.
                     self.function_worker.run_ref_ldm_unet(
-                        x_noisy_plus_lq_latent=unet_input_16_channel,
+                        x_noisy_plus_lq_latent=ddim_unet_input_16_channel,
                         timesteps_tensor=ts_unet,
                         is_ref_flag_tensor=is_ref_flag_tensor_for_unet,
                         use_reference_exclusive_path_globally_tensor=false_tensor_for_unet,
                         kv_tensor_map=None,
                         output_unet_tensor=e_t_uncond,
                     )
-                    # In-place CFG math to save memory overhead
-                    e_t = (
-                        e_t_cond.sub_(e_t_uncond)
-                        .mul_(denoiser_cfg_scale)
-                        .add_(e_t_uncond)
+
+                    # Sanitized CFG delta calculation to prevent contrast runaway
+                    cond_clean = torch.nan_to_num(
+                        e_t_cond, nan=0.0, posinf=3.5, neginf=-3.5
                     )
+                    uncond_clean = torch.nan_to_num(
+                        e_t_uncond, nan=0.0, posinf=3.5, neginf=-3.5
+                    )
+                    cfg_diff = torch.clamp(cond_clean - uncond_clean, -2.5, 2.5)
+                    e_t = uncond_clean + cfg_diff * denoiser_cfg_scale
                 else:
-                    e_t = e_t_cond
+                    e_t = torch.nan_to_num(e_t_cond, nan=0.0, posinf=3.5, neginf=-3.5)
 
                 # --- OPTIMIZATION: Direct indexing replaces extract_into_tensor_torch ---
                 a_t = ddim_alphas_view[index_for_schedules]
@@ -684,24 +733,57 @@ class FaceDenoiser:
                     index_for_schedules
                 ]
 
-                pred_x0_scaled_current_step = (
+                sqrt_a_t: torch.Tensor = torch.sqrt(a_t).clamp(min=1e-8)
+                pred_x0_raw: torch.Tensor = (
                     current_latent_xt_scaled - sqrt_one_minus_a_t * e_t
-                ) / torch.sqrt(a_t).clamp(min=1e-8)
+                ) / sqrt_a_t
 
-                dir_xt = (
-                    torch.sqrt(torch.clamp(1.0 - a_prev - sigma_t**2, min=1e-8)) * e_t
-                )
+                # Arrest early-step division explosion and sanitize NaNs
+                pred_x0_scaled_current_step = torch.nan_to_num(
+                    pred_x0_raw,
+                    nan=0.0,
+                    posinf=LATENT_DYNAMIC_BOUND,
+                    neginf=-LATENT_DYNAMIC_BOUND,
+                ).clamp_(-LATENT_DYNAMIC_BOUND, LATENT_DYNAMIC_BOUND)
 
-                noise_ddim_buffer.normal_(generator=rng)
-                noise_ddim = sigma_t * noise_ddim_buffer
+                e_t_consistent: torch.Tensor = (
+                    current_latent_xt_scaled - sqrt_a_t * pred_x0_scaled_current_step
+                ) / sqrt_one_minus_a_t.clamp(min=1e-8)
 
-                current_latent_xt_scaled = (
+                dir_xt = torch.sqrt(
+                    torch.clamp(1.0 - a_prev - sigma_t**2, min=1e-8)
+                ) * torch.nan_to_num(e_t_consistent, nan=0.0, posinf=3.5, neginf=-3.5)
+
+                if denoiser_ddim_eta > 0.0:
+                    noise_ddim_buffer.normal_(generator=rng)
+                    noise_ddim = sigma_t * noise_ddim_buffer
+                else:
+                    noise_ddim = 0.0
+
+                current_latent_xt_scaled = torch.nan_to_num(
                     torch.sqrt(a_prev) * pred_x0_scaled_current_step
                     + dir_xt
-                    + noise_ddim
+                    + noise_ddim,
+                    nan=0.0,
+                    posinf=LATENT_DYNAMIC_BOUND,
+                    neginf=-LATENT_DYNAMIC_BOUND,
                 )
 
-            final_denoised_latent_x0_scaled = pred_x0_scaled_current_step
+            if COARSE_GRAIN_LAMBDA > 0.0:
+                latent_delta_ddim: torch.Tensor = (
+                    pred_x0_scaled_current_step - lq_latent_x0_scaled_for_unet
+                )
+                clamped_delta_ddim: torch.Tensor = torch.clamp(
+                    latent_delta_ddim, -2.2, 2.2
+                )
+                effective_delta_ddim: torch.Tensor = torch.lerp(
+                    latent_delta_ddim, clamped_delta_ddim, COARSE_GRAIN_LAMBDA
+                )
+                final_denoised_latent_x0_scaled = (
+                    lq_latent_x0_scaled_for_unet + effective_delta_ddim
+                )
+            else:
+                final_denoised_latent_x0_scaled = pred_x0_scaled_current_step
         else:
             print(
                 f"[ERROR] Denoiser: Unknown mode '{denoiser_mode}'. Skipping denoiser pass."
@@ -711,38 +793,73 @@ class FaceDenoiser:
         if final_denoised_latent_x0_scaled is None:
             return image_cxhxw_uint8
 
-        latent_for_vae_decoder = final_denoised_latent_x0_scaled / self.vae_scale_factor
+        # Hard safety clamp on final latent prior to VAE decode
+        final_latent_sanitized: torch.Tensor = torch.nan_to_num(
+            final_denoised_latent_x0_scaled / self.vae_scale_factor,
+            nan=0.0,
+            posinf=2.8,
+            neginf=-2.8,
+        ).clamp_(-2.8, 2.8)
+
         del final_denoised_latent_x0_scaled
-        decoded_image_normalized_bchw = torch.empty(
+
+        decoded_image_normalized_bchw: torch.Tensor = torch.empty(
             (1, 3, h_proc, w_proc),
             dtype=torch.float32,
             device=self.models_processor.device,
         ).contiguous()
 
         self.function_worker.run_vae_decoder(
-            latent_for_vae_decoder, decoded_image_normalized_bchw
+            final_latent_sanitized, decoded_image_normalized_bchw
         )
-        del latent_for_vae_decoder
+        del final_latent_sanitized
 
-        # Use in-place tanh_() on the pre-allocated output buffer,
-        # then chain in-place math to reach [0, 1] without creating temp tensors.
+        # --- POST-DECODER HOT-PIXEL & NAN NEUTRALIZATION ---
+        # Eliminate any raw NaN or Inf created by VAE FP16 attention/GroupNorm overflow
+        decoded_image_normalized_bchw = torch.nan_to_num(
+            decoded_image_normalized_bchw, nan=0.0, posinf=1.0, neginf=-1.0
+        )
+
         decoded_image_normalized_bchw.tanh_()
-        image_after_postproc_float_0_1 = (
+        image_after_postproc_float_0_1: torch.Tensor = (
             decoded_image_normalized_bchw.squeeze(0)
             .add_(1.0)
             .mul_(0.5)
             .clamp_(0.0, 1.0)
         )
 
+        # Cavity Hot-Spot Neutralization:
+        # Replaces any runaway pixel blowout where output is bright (>0.75) but original input
+        # is deep cavity shadow (<0.20), such as nostril interiors or dark tear ducts.
+        input_ref_float_0_1: torch.Tensor = image_to_process_cxhxw_uint8.float() / 255.0
+        input_luma: torch.Tensor = (
+            0.299 * input_ref_float_0_1[0:1]
+            + 0.587 * input_ref_float_0_1[1:2]
+            + 0.114 * input_ref_float_0_1[2:3]
+        )
+        output_luma: torch.Tensor = (
+            0.299 * image_after_postproc_float_0_1[0:1]
+            + 0.587 * image_after_postproc_float_0_1[1:2]
+            + 0.114 * image_after_postproc_float_0_1[2:3]
+        )
+
+        hot_spot_mask: torch.Tensor = (input_luma < 0.20) & (output_luma > 0.75)
+        if hot_spot_mask.any():
+            image_after_postproc_float_0_1 = torch.where(
+                hot_spot_mask.expand_as(image_after_postproc_float_0_1),
+                input_ref_float_0_1,
+                image_after_postproc_float_0_1,
+            )
+
         # --- COLOR MATCHING BLOCK ---
         if ENABLE_COLOR_MATCH:
             # We scale res_tensor to [0, 255] float32 as expected by faceutil modules
-            ref_tensor = image_to_process_cxhxw_uint8
-            res_tensor = image_after_postproc_float_0_1 * 255.0
+            ref_tensor: torch.Tensor = image_to_process_cxhxw_uint8
+            res_tensor: torch.Tensor = image_after_postproc_float_0_1 * 255.0
 
             # Secure mask formatting and scaling alignment
             if color_mask is not None:
-                mask = color_mask.clone()
+                mask: torch.Tensor = color_mask.clone()
                 if mask.dim() == 2:
                     mask = mask.unsqueeze(0)
                 if mask.shape[-1] != ref_tensor.shape[-1]:
@@ -759,30 +876,85 @@ class FaceDenoiser:
             try:
                 # Fast, lightweight Reinhard statistical transfer in LAB space.
                 # Locked to 100% blend strength using the facial region mask.
-                matched_result = faceutil.apply_reinhard_color_transfer(
+                matched_result: torch.Tensor = faceutil.apply_reinhard_color_transfer(
                     ref_tensor, res_tensor, 100.0, mask
                 )
                 image_after_postproc_float_0_1 = matched_result / 255.0
-
             except Exception as e:
                 print(f"[WARN] Denoiser Color matching execution failed: {e}")
 
+        # --- PIXEL SHARPENING (With Controllable Amplitude Coring) ---
         if ENABLE_PIXEL_SHARPENING:
-            blurred = v2.functional.gaussian_blur(
-                image_after_postproc_float_0_1.unsqueeze(0), [5, 5], [1.0, 1.0]
+            blurred: torch.Tensor = v2.functional.gaussian_blur(
+                image_after_postproc_float_0_1.unsqueeze(0), [3, 3], [0.8, 0.8]
             ).squeeze(0)
-            detail = image_after_postproc_float_0_1 - blurred
+            raw_detail: torch.Tensor = image_after_postproc_float_0_1 - blurred
+
+            if COARSE_GRAIN_LAMBDA > 0.0:
+                coring_gate: torch.Tensor = torch.clamp(
+                    (torch.abs(raw_detail) - 0.015) / 0.035, 0.0, 1.0
+                )
+                gated_detail: torch.Tensor = raw_detail * coring_gate
+                effective_detail: torch.Tensor = torch.lerp(
+                    raw_detail, gated_detail, COARSE_GRAIN_LAMBDA
+                )
+            else:
+                effective_detail = raw_detail
+
             image_after_postproc_float_0_1 = (
-                image_after_postproc_float_0_1 + detail * PIXEL_SHARPEN_STRENGTH
+                image_after_postproc_float_0_1
+                + effective_detail * PIXEL_SHARPEN_STRENGTH
+            ).clamp_(0.0, 1.0)
+
+        # --- POST-VAE SUB-PIXEL MICRO-GRAIN SYNTHESIS FILTER ---
+        if MICRO_GRAIN_STRENGTH > 0.0:
+            # Monochromatic sub-pixel noise on GPU
+            grain_noise: torch.Tensor = torch.randn(
+                (1, 1, h_proc, w_proc),
+                device=self.models_processor.device,
+                dtype=torch.float32,
+                generator=rng,
             )
-            image_after_postproc_float_0_1 = image_after_postproc_float_0_1.clamp(
-                0.0, 1.0
+            # Slight spatial shaping gives natural film/pore structure rather than raw salt-and-pepper noise
+            grain_shaped: torch.Tensor = v2.functional.gaussian_blur(
+                grain_noise, kernel_size=[3, 3], sigma=[0.5, 0.5]
+            ).squeeze(0)
+
+            # Rec.709 Luminance Response: grain naturally appears in midtones, fading out in crushed darks and highlights
+            luma: torch.Tensor = (
+                0.2126 * image_after_postproc_float_0_1[0:1]
+                + 0.7152 * image_after_postproc_float_0_1[1:2]
+                + 0.0722 * image_after_postproc_float_0_1[2:3]
+            )
+            luma_gate: torch.Tensor = torch.clamp(4.0 * luma * (1.0 - luma), 0.0, 1.0)
+
+            grain_delta: torch.Tensor = (
+                grain_shaped * (MICRO_GRAIN_STRENGTH * 0.08) * luma_gate
             )
 
-        final_image_uint8 = (image_after_postproc_float_0_1 * 255.0).byte()
+            # If a facial mask is provided, confine grain strictly within the face boundary
+            if color_mask is not None:
+                g_mask: torch.Tensor = color_mask.clone()
+                if g_mask.dim() == 2:
+                    g_mask = g_mask.unsqueeze(0)
+                if g_mask.shape[-1] != w_proc or g_mask.shape[-2] != h_proc:
+                    g_mask = v2.functional.resize(
+                        g_mask, [h_proc, w_proc], antialias=True
+                    )
+                if g_mask.dim() == 3 and g_mask.shape[0] != 1:
+                    g_mask = g_mask[0:1]
+                grain_delta = grain_delta * g_mask.clamp(0.0, 1.0)
+
+            image_after_postproc_float_0_1 = (
+                image_after_postproc_float_0_1 + grain_delta
+            ).clamp_(0.0, 1.0)
+
+        final_image_uint8: torch.Tensor = (
+            image_after_postproc_float_0_1 * 255.0
+        ).byte()
 
         if h_proc != h_input or w_proc != w_input:
-            output_image_cxhxw_uint8 = v2.functional.resize(
+            output_image_cxhxw_uint8: torch.Tensor = v2.functional.resize(
                 final_image_uint8,
                 [h_input, w_input],
                 interpolation=v2.InterpolationMode.BILINEAR,

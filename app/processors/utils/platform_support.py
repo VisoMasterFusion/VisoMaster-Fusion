@@ -232,3 +232,19 @@ def empty_cache(device_type: str = "") -> None:
         torch.cuda.empty_cache()
     elif has_mps():
         torch.mps.empty_cache()
+
+
+def clear_all_vram_caches(device_type: str = "") -> None:
+    """Release all module-level GPU tensor caches across the pipeline and free allocator memory.
+
+    Pushes all resident LRU tensor caches (static grids, faded masks, VR feathered masks)
+    to empty and triggers the device caching allocator cleanup.
+    """
+    from app.helpers.miscellaneous import clear_static_grid_cache
+    from app.processors.utils.faceutil import clear_faded_mask_cache
+    from app.helpers.vr_utils import clear_feathered_mask_cache
+
+    clear_static_grid_cache()
+    clear_faded_mask_cache()
+    clear_feathered_mask_cache()
+    empty_cache(device_type)
