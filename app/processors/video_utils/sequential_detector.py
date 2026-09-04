@@ -127,10 +127,28 @@ class SequentialDetector:
                         or face_params.get("LipsMakeupEnableToggle", False)
                     )
 
+                    # PerformRecast ("Recast") uses 49 implicit latents and does not require 203 points.
+                    # LivePortrait ("Simple", "Advanced") strictly requires 203 landmarks for eye/lip ratio tracking.
+                    exp_mode = str(
+                        face_params.get("FaceExpressionModeSelection", "Advanced")
+                    )
+                    is_lp_expression_active = is_expression_active and (
+                        exp_mode != "Recast"
+                    )
+
+                    auto_mouth_mode = str(
+                        face_params.get(
+                            "AutoMouthRestoreModeSelection", "Expression Restorer"
+                        )
+                    )
+                    is_auto_mouth_lp = is_auto_mouth_active and (
+                        auto_mouth_mode != "Face Parser Only"
+                    )
+
                     if (
                         is_face_editor_active
-                        or is_expression_active
-                        or is_auto_mouth_active
+                        or is_lp_expression_active
+                        or is_auto_mouth_lp
                         or is_makeup_active
                     ):
                         requires_203 = True

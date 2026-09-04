@@ -114,6 +114,18 @@ class PipelineProcessor:
         # Global Color Correction toggle (applied equally to all active passes)
         enable_color = control.get("DenoiserColorCorrectionToggle", True)
 
+        # Coarse grain mitigation and micro-grain synthesis controls
+        coarse_grain_reduction_val: float = (
+            float(control.get("DenoiserCoarseGrainAmountDecimalSlider", 0.85))
+            if control.get("DenoiserCoarseGrainReductionToggle", True)
+            else 0.0
+        )
+        micro_grain_val: float = (
+            float(control.get("DenoiserMicroGrainStrengthDecimalSlider", 0.15))
+            if control.get("DenoiserMicroGrainToggle", False)
+            else 0.0
+        )
+
         if not kv_map and use_exclusive_path:
             return image_tensor_cxhxw_uint8
 
@@ -129,6 +141,8 @@ class PipelineProcessor:
             latent_sharpening_strength=sharpen_val,
             enable_color_correction=enable_color,
             color_mask=color_mask,
+            coarse_grain_reduction=coarse_grain_reduction_val,
+            micro_grain_strength=micro_grain_val,
         )
 
         denoised_image = torch.clamp(denoised_image, 0, 255)
@@ -1689,6 +1703,112 @@ class PipelineProcessor:
         return _p
 
     @torch.no_grad()
+    def _blend_frequency_separation(
+        self,
+        primary_face: torch.Tensor,
+        secondary_face: torch.Tensor,
+        alpha: float,
+        radius: int = 4,
+        coring_limit: float = 16.0,
+    ) -> torch.Tensor:
+        """
+        Transfers high-frequency micro-texture from secondary_face onto primary_face
+        in CIE-LAB color space while locking macro facial geometry and shape.
+
+        Args:
+            primary_face:   Base structural face tensor [3, H, W] in range [0..255].
+            secondary_face: Detailed texture face tensor [3, H, W] in range [0..255].
+            alpha:          Texture injection strength [0.0..1.0].
+            radius:         Gaussian blur radius controlling separation frequency.
+            coring_limit:   Soft-knee amplitude threshold in 8-bit scale [1.0..50.0].
+
+        Returns:
+            Blended tensor [3, H, W] in primary_face.dtype.
+        """
+        if alpha <= 0.0:
+            return primary_face
+
+        device: torch.device = primary_face.device
+        p_f: torch.Tensor = primary_face.float().clamp(0.0, 255.0) / 255.0
+        s_f: torch.Tensor = secondary_face.float().clamp(0.0, 255.0) / 255.0
+
+        # 1. Convert to CIE-LAB color space: L in [0..100], A/B in [-128..127]
+        p_lab: torch.Tensor = kc.rgb_to_lab(p_f.unsqueeze(0))
+        s_lab: torch.Tensor = kc.rgb_to_lab(s_f.unsqueeze(0))
+
+        L_p: torch.Tensor = p_lab[:, 0:1, :, :]
+        L_s: torch.Tensor = s_lab[:, 0:1, :, :]
+        AB_p: torch.Tensor = p_lab[:, 1:3, :, :]
+
+        # 2. Low-frequency Gaussian decomposition on Luminance
+        r: int = max(1, int(radius))
+        k_size: int = int(r * 2 + 1)
+        sigma_val: float = float(max(r * 0.5, 0.1))
+
+        L_p_low: torch.Tensor = v2.functional.gaussian_blur(
+            L_p, kernel_size=[k_size, k_size], sigma=[sigma_val, sigma_val]
+        )
+        L_s_low: torch.Tensor = v2.functional.gaussian_blur(
+            L_s, kernel_size=[k_size, k_size], sigma=[sigma_val, sigma_val]
+        )
+
+        # 3. High-frequency extraction on Luminance
+        L_p_high: torch.Tensor = L_p - L_p_low
+        L_s_high: torch.Tensor = L_s - L_s_low
+
+        # 4. Soft-Knee Amplitude Coring in LAB L-space (scaled from 8-bit scale to [0..100])
+        coring_scaled: float = float(coring_limit) * (100.0 / 255.0)
+        L_s_high_cored: torch.Tensor = coring_scaled * torch.tanh(
+            L_s_high / max(coring_scaled, 1e-4)
+        )
+
+        # 5. Spatial Gating (Discrepancy + Sobel Edge Attenuation)
+        low_diff: torch.Tensor = torch.abs(L_p_low - L_s_low)
+        diff_min: float = 10.0 * (100.0 / 255.0)
+        diff_span: float = 20.0 * (100.0 / 255.0)
+        disc_gate: torch.Tensor = torch.clamp(
+            1.0 - (low_diff - diff_min) / diff_span, 0.0, 1.0
+        )
+
+        sobel_x: torch.Tensor = self.kernel_sobel_x.to(device)
+        sobel_y: torch.Tensor = self.kernel_sobel_y.to(device)
+
+        gx_p: torch.Tensor = F.conv2d(L_p_low / 100.0, sobel_x, padding=1)
+        gy_p: torch.Tensor = F.conv2d(L_p_low / 100.0, sobel_y, padding=1)
+        grad_p: torch.Tensor = torch.sqrt(gx_p * gx_p + gy_p * gy_p + 1e-6)
+
+        gx_s: torch.Tensor = F.conv2d(L_s_low / 100.0, sobel_x, padding=1)
+        gy_s: torch.Tensor = F.conv2d(L_s_low / 100.0, sobel_y, padding=1)
+        grad_s: torch.Tensor = torch.sqrt(gx_s * gx_s + gy_s * gy_s + 1e-6)
+
+        macro_edges: torch.Tensor = torch.maximum(grad_p, grad_s)
+        edge_gate: torch.Tensor = torch.clamp(
+            1.0 - (macro_edges - 0.10) / 0.20, 0.0, 1.0
+        )
+
+        transfer_mask: torch.Tensor = disc_gate * edge_gate
+        transfer_mask = v2.functional.gaussian_blur(
+            transfer_mask, kernel_size=[5, 5], sigma=[1.5, 1.5]
+        )
+
+        # 6. High-Frequency Micro-Texture Injection onto Locked Primary Base
+        effective_alpha: torch.Tensor = float(alpha) * transfer_mask
+        L_high_blended: torch.Tensor = torch.lerp(
+            L_p_high, L_s_high_cored, effective_alpha
+        )
+        L_final: torch.Tensor = torch.clamp(L_p_low + L_high_blended, 0.0, 100.0)
+
+        # 7. Reconstruction to sRGB using locked primary chrominance (AB_p)
+        lab_final: torch.Tensor = torch.cat([L_final, AB_p], dim=1)
+        rgb_final: torch.Tensor = kc.lab_to_rgb(lab_final).squeeze(0)
+
+        return (
+            torch.clamp(rgb_final * 255.0, 0.0, 255.0)
+            .to(primary_face.dtype)
+            .contiguous()
+        )
+
+    @torch.no_grad()
     def swap_core(
         self,
         img: torch.Tensor,
@@ -1846,11 +1966,48 @@ class PipelineProcessor:
 
         # OPTIMIZATION: Transform full-frame smoothed keypoints to the 512x512 crop space
         kps_all_crop = None
-        if (
-            kps_203 is not None and len(kps_203) == 203
-        ):  # Use the dedicated 203 variable
+        if kps_203 is not None and len(kps_203) == 203 and not np.all(kps_203 == 0):
             raw_kps_crop = tform(kps_203)
             kps_all_crop = np.array(raw_kps_crop, dtype=np.float32)
+        elif kps is not None and len(kps) > 0 and not np.all(kps == 0):
+            # Fallback: Project active primary landmarks (HRFFA 68, TUFA 314, WFLW 98)
+            raw_kps_crop = tform(kps)
+            kps_all_crop = np.array(raw_kps_crop, dtype=np.float32)
+
+        # Compute canonical 512px landmark references for shaping and restorers
+        M_ref = cast(np.ndarray, tform.params)[0:2]
+        ones_column_ref = np.ones((kps_5.shape[0], 1), dtype=np.float32)
+        kps_ref = np.hstack([kps_5, ones_column_ref]) @ M_ref.T
+
+        # --- PRE-SWAP FACE SHAPING (Target Proportion Preparation) ---
+        apply_pre_swap_shaping = (
+            parameters.get("FaceShapingEnableToggle", False)
+            and parameters.get("FaceShapingPreSwapToggle", False)
+            and self.worker.local_control_state_from_feeder.get("edit_enabled", True)
+        )
+        if apply_pre_swap_shaping:
+            original_face_512 = self.worker.function_worker.apply_face_shaping_gpu(
+                original_face_512, kps_ref, parameters
+            )
+
+            # Invalidate precomputed 203 landmarks so LivePortrait/Recast re-detects
+            # on the deformed contour rather than using desynchronized coordinates
+            kps_all_crop = None
+
+            # Re-derive sub-resolution crops so models consuming 128/256/384 receive the shaped canvas
+            original_face_256 = _resize_func(
+                original_face_512, (256, 256), is_mask=False
+            )
+            if _only_256:
+                original_face_384 = original_face_512
+                original_face_128 = original_face_256
+            else:
+                original_face_384 = _resize_func(
+                    original_face_512, (384, 384), is_mask=False
+                )
+                original_face_128 = _resize_func(
+                    original_face_512, (128, 128), is_mask=False
+                )
 
         original_faces = (
             original_face_512,
@@ -2068,18 +2225,36 @@ class PipelineProcessor:
                                 is_mask=False,
                             )
 
-                        # 5. Blend tensors (Lerp)
+                        # 5. Blend tensors (Linear Lerp or Frequency Separation)
                         blend_alpha = (
                             float(
                                 parameters.get("SecondarySwapperBlendAmountSlider", 50)
                             )
                             / 100.0
                         )
-                        swap = (
-                            torch.lerp(swap.float(), sec_swap.float(), blend_alpha)
-                            .to(swap.dtype)
-                            .contiguous()
-                        )
+
+                        if parameters.get("SecondaryTextureOnlyEnableToggle", False):
+                            tex_radius = int(
+                                parameters.get("SecondaryTextureRadiusSlider", 4)
+                            )
+                            tex_coring = float(
+                                parameters.get(
+                                    "SecondaryTextureCoringDecimalSlider", 16.0
+                                )
+                            )
+                            swap = self._blend_frequency_separation(
+                                primary_face=swap,
+                                secondary_face=sec_swap,
+                                alpha=blend_alpha,
+                                radius=tex_radius,
+                                coring_limit=tex_coring,
+                            )
+                        else:
+                            swap = (
+                                torch.lerp(swap.float(), sec_swap.float(), blend_alpha)
+                                .to(swap.dtype)
+                                .contiguous()
+                            )
                         del sec_swap
                 elif sec_enabled:
                     if debug:
@@ -2208,6 +2383,7 @@ class PipelineProcessor:
         # --- Face Shaping (Beginning) ---
         if (
             parameters.get("FaceShapingEnableToggle", False)
+            and not parameters.get("FaceShapingPreSwapToggle", False)
             and self.worker.local_control_state_from_feeder.get("edit_enabled", True)
             and parameters.get("FaceEditorBeforeTypeSelection", "Beginning")
             == "Beginning"
@@ -2660,6 +2836,7 @@ class PipelineProcessor:
         # --- Face Shaping (After First Restorer) ---
         if (
             parameters.get("FaceShapingEnableToggle", False)
+            and not parameters.get("FaceShapingPreSwapToggle", False)
             and self.worker.local_control_state_from_feeder.get("edit_enabled", True)
             and parameters.get("FaceEditorBeforeTypeSelection", "Beginning")
             == "After First Restorer"
@@ -2765,6 +2942,7 @@ class PipelineProcessor:
         # --- Face Shaping (After Second Restorer) ---
         if (
             parameters.get("FaceShapingEnableToggle", False)
+            and not parameters.get("FaceShapingPreSwapToggle", False)
             and self.worker.local_control_state_from_feeder.get("edit_enabled", True)
             and parameters.get("FaceEditorBeforeTypeSelection", "Beginning")
             == "After Second Restorer"
@@ -3137,6 +3315,7 @@ class PipelineProcessor:
         # --- Face Shaping (After Texture Transfer) ---
         if (
             parameters.get("FaceShapingEnableToggle", False)
+            and not parameters.get("FaceShapingPreSwapToggle", False)
             and self.worker.local_control_state_from_feeder.get("edit_enabled", True)
             and parameters.get("FaceEditorBeforeTypeSelection", "Beginning")
             == "After Texture Transfer"

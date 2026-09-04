@@ -1017,11 +1017,14 @@ class FrameEdits:
             if driving_kps is not None and not np.all(driving_kps == 0):
                 driving_lmk_crop = driving_kps
             else:
+                active_landmark_mode = str(
+                    control.get("LandmarkDetectModelSelection", "203")
+                )
                 _, driving_lmk_crop, _ = self.function_worker.run_detect_landmark(
                     driving,
                     bbox=np.array([0, 0, d_w, d_h], dtype=np.float32),
                     det_kpss=[],
-                    detect_mode="203",
+                    detect_mode=active_landmark_mode,
                     score=0.5,
                     from_points=False,
                     use_mean_eyes=use_mean_eyes,
@@ -1052,11 +1055,14 @@ class FrameEdits:
             # --- TARGET FACE (identity / pose to preserve) ---
             target = target.clamp(0, 255).type(torch.uint8)
             t_h, t_w = int(target.shape[-2]), int(target.shape[-1])
+            active_landmark_mode = str(
+                control.get("LandmarkDetectModelSelection", "203")
+            )
             _, source_lmk, _ = self.function_worker.run_detect_landmark(
                 target,
                 bbox=np.array([0, 0, t_w, t_h], dtype=np.float32),
                 det_kpss=None,
-                detect_mode="203",
+                detect_mode=active_landmark_mode,
                 score=0.5,
                 from_points=False,
                 use_mean_eyes=use_mean_eyes,
@@ -1531,13 +1537,16 @@ class FrameEdits:
         Uses F.grid_sample to warp the tensor based on morphological coordinate offsets.
         Runs entirely on the GPU to prevent host-to-device bottlenecks.
 
+        Handles both torch.uint8 (pre-swap original canvas) and torch.float32 (post-swap)
+        safely on CUDA devices.
+
         Args:
             img: 512x512 aligned swap tensor [C, H, W]
             kps: 5-point landmarks in the 512x512 space
             parameters: Dictionary containing the slider values
 
         Returns:
-            torch.Tensor: Warped face tensor.
+            torch.Tensor: Warped face tensor preserving the original input dtype.
         """
         if not parameters.get("FaceShapingEnableToggle", False):
             return img
@@ -1707,15 +1716,22 @@ class FrameEdits:
         # Combine into expected [1, H, W, 2] shape
         grid = torch.stack((grid_x_norm, grid_y_norm), dim=-1).unsqueeze(0)
 
-        # 6. Apply Warp natively on GPU (Reflection padding mirrors cv2.BORDER_REFLECT_101)
+        # 6. Apply Warp natively on GPU with strict dtype protection
         import torch.nn.functional as F
 
+        orig_dtype = img.dtype
+        is_byte = orig_dtype == torch.uint8
+        work_img = img.float() if is_byte else img
+
         img_warped = F.grid_sample(
-            img.unsqueeze(0),
+            work_img.unsqueeze(0),
             grid,
             mode="bilinear",
             padding_mode="reflection",
             align_corners=True,
         ).squeeze(0)
+
+        if is_byte:
+            img_warped = img_warped.clamp(0.0, 255.0).round().to(torch.uint8)
 
         return img_warped
