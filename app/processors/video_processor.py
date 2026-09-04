@@ -761,6 +761,22 @@ class VideoProcessor(QObject):
                     "[INFO] Sync: EOF reached with loop enabled. Snapping to frame 0 for playback."
                 )
 
+        # Native audio seeking can land at a preceding indexed/keyframe point,
+        # whereas OpenCV returns the requested frame.  In the optional accurate
+        # sync mode, use that keyframe as the shared preview origin.  Recording
+        # deliberately retains exact requested-frame semantics.
+        self.media_pipeline.live_sound_seek_time = None
+        if (
+            self.main_window.liveSoundButton.isChecked()
+            and self.main_window.control.get("AccurateAudioVideoSyncToggle", False)
+            and not self.recording
+        ):
+            actual_start_frame, self.media_pipeline.live_sound_seek_time = (
+                self.media_pipeline.resolve_live_preview_start(
+                    actual_start_frame, src_fps
+                )
+            )
+
         print(f"[INFO] Sync: Seeking directly to source-frame {actual_start_frame}...")
 
         # 7b/7c. Read the first frame (OpenCV path or FFmpeg FPS-cap path).
