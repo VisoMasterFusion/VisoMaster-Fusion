@@ -1511,12 +1511,21 @@ def keypoints_adjustments(
     return kps_5_adj
 
 
-# Cache for static target grids to prevent massive VRAM reallocation per frame
-_static_grid_cache: Dict[
-    Tuple[int, int, torch.device], Tuple[torch.Tensor, torch.Tensor, torch.Tensor]
-] = {}
+# Bounded LRU cache for static target grids to prevent unbounded VRAM growth over long sessions.
+_STATIC_GRID_CACHE_MAX = 16
+_static_grid_cache: OrderedDict[
+    Tuple[int, int, str], Tuple[torch.Tensor, torch.Tensor, torch.Tensor]
+] = OrderedDict()
+_static_grid_cache_lock = threading.Lock()
 
 
+def clear_static_grid_cache() -> None:
+    """Explicitly releases all cached sampling grid tensors from GPU VRAM."""
+    with _static_grid_cache_lock:
+        _static_grid_cache.clear()
+
+
+@torch.no_grad()
 def get_grid_for_pasting(
     tform_target_to_source: trans.SimilarityTransform,
     target_h: int,
@@ -1524,26 +1533,30 @@ def get_grid_for_pasting(
     source_h: int,
     source_w: int,
     device: torch.device,
-):
+) -> Tuple[torch.Tensor, torch.Tensor]:
     """
     ULTRA-OPTIMIZED: Generates a sampling grid for grid_sample.
-    Uses 1D tensor broadcasting and caches the static target grids to save
-    massive amounts of VRAM allocation/deallocation overhead per face/frame.
+    Uses 1D tensor broadcasting and caches the static target grids in a bounded
+    LRU cache to eliminate VRAM memory leaks and allocation overhead per face/frame.
     """
-    grid_key = (target_h, target_w, device)
+    grid_key = (target_h, target_w, str(device))
 
-    # Fetch from cache or create 1D coordinate tensors and target grid once
-    if grid_key not in _static_grid_cache:
-        y = torch.arange(target_h, device=device, dtype=torch.float32).view(-1, 1)
-        x = torch.arange(target_w, device=device, dtype=torch.float32).view(1, -1)
+    with _static_grid_cache_lock:
+        if grid_key in _static_grid_cache:
+            _static_grid_cache.move_to_end(grid_key)
+            x, y, target_grid_yx_pixels = _static_grid_cache[grid_key]
+        else:
+            y = torch.arange(target_h, device=device, dtype=torch.float32).view(-1, 1)
+            x = torch.arange(target_w, device=device, dtype=torch.float32).view(1, -1)
 
-        grid_y = y.expand(target_h, target_w)
-        grid_x = x.expand(target_h, target_w)
-        target_grid_yx_pixels = torch.stack((grid_y, grid_x), dim=-1).unsqueeze(0)
+            grid_y = y.expand(target_h, target_w)
+            grid_x = x.expand(target_h, target_w)
+            target_grid_yx_pixels = torch.stack((grid_y, grid_x), dim=-1).unsqueeze(0)
 
-        _static_grid_cache[grid_key] = (x, y, target_grid_yx_pixels)
+            if len(_static_grid_cache) >= _STATIC_GRID_CACHE_MAX:
+                _static_grid_cache.popitem(last=False)
 
-    x, y, target_grid_yx_pixels = _static_grid_cache[grid_key]
+            _static_grid_cache[grid_key] = (x, y, target_grid_yx_pixels)
 
     # Transformation matrix from tform_target_to_source (2x3)
     M = torch.tensor(

@@ -1410,13 +1410,15 @@ class KVExtractor:
     @torch.no_grad()
     def extract_kv(
         self,
-        image: Union["Image.Image", torch.Tensor],
+        image: Union[Image.Image, torch.Tensor],
         scale_factor: float = 1.0,
         color_match_image: Optional[torch.Tensor] = None,
     ) -> Dict[str, Dict[str, torch.Tensor]]:
         """
         Extracts the K/V embedding from a single 512x512 reference image,
         which can be a PIL Image or a PyTorch Tensor.
+
+        Ensures exception-safe cleanup of cached K/V tensors on GPU.
         """
         print("[INFO] Extracting K/V from reference image...")
 
@@ -1445,54 +1447,77 @@ class KVExtractor:
             # Match color of 'image' to 'color_match_image'
             image = faceutil.histogram_matching(color_match_image, image_tensor, 100)
 
-        ref_tensor = self._normalize_image(image).to(self.device)
+        ref_tensor: torch.Tensor = self._normalize_image(image).to(self.device)
+        extracted_kv_map: Dict[str, Dict[str, torch.Tensor]] = {}
 
         cache_kv_module.mode = "save"
         cache_kv_module.clear_cache()
-        dummy_timesteps = torch.zeros(1, device=self.device).long()
 
-        if self.unet_model.in_channels is None:
-            raise ValueError("UNetModel.in_channels is None.")
-
-        latent_unscaled = self.model.encode_first_stage(ref_tensor)
-        latent_for_unet = latent_unscaled
-
-        pad_channels = self.unet_model.in_channels - latent_for_unet.shape[1]
-        if pad_channels < 0:
-            raise ValueError("Ref latent channels > UNet input channels")
-        elif pad_channels > 0:
-            latent_for_unet = torch.nn.functional.pad(
-                latent_for_unet, (0, 0, 0, 0, 0, pad_channels)
+        try:
+            dummy_timesteps: torch.Tensor = torch.zeros(
+                1, device=self.device, dtype=torch.long
             )
 
-        is_ref_tensor = torch.tensor(True, device=self.device, dtype=torch.bool)
-        _ = self.unet_model(
-            latent_for_unet, dummy_timesteps, context=None, is_ref=is_ref_tensor
-        )
+            if self.unet_model.in_channels is None:
+                raise ValueError("UNetModel.in_channels is None.")
 
-        extracted_kv_map = {}
-        for name, module in self.unet_model.named_modules():
-            if isinstance(module, QKVAttentionLegacy):
-                k_list = cache_kv_module.k.get(id(module), [])
-                v_list = cache_kv_module.v.get(id(module), [])
+            latent_unscaled: torch.Tensor = self.model.encode_first_stage(ref_tensor)
+            latent_for_unet: torch.Tensor = latent_unscaled
 
-                if k_list and v_list:
-                    # KEEP K/V ON GPU. The earlier R-05 "save VRAM by storing on CPU"
-                    # variant forced apply_denoiser_unet to re-upload all 32 K/V
-                    # tensors host→device on EVERY UNet call. With DDIM (~20-50
-                    # steps) × per-frame inference × 8 worker threads, that became
-                    # thousands of cudaMemcpyHostToDevice calls per second; each
-                    # one synchronizes the calling thread, and on CUDA 13/Windows
-                    # the sync spin-waits, pegging every CPU core at 100%.
-                    # Total cost of keeping the cache on GPU is ~30-150MB —
-                    # negligible against a modern GPU's VRAM.
-                    final_k = (k_list[0].clone().detach() * scale_factor).contiguous()
-                    final_v = (v_list[0].clone().detach() * scale_factor).contiguous()
+            pad_channels: int = int(
+                self.unet_model.in_channels - latent_for_unet.shape[1]
+            )
+            if pad_channels < 0:
+                raise ValueError("Ref latent channels > UNet input channels")
+            elif pad_channels > 0:
+                latent_for_unet = torch.nn.functional.pad(
+                    latent_for_unet, (0, 0, 0, 0, 0, pad_channels)
+                )
 
-                    extracted_kv_map[name] = {"k": final_k, "v": final_v}
+            is_ref_tensor: torch.Tensor = torch.tensor(
+                True, device=self.device, dtype=torch.bool
+            )
+            _ = self.unet_model(
+                latent_for_unet, dummy_timesteps, context=None, is_ref=is_ref_tensor
+            )
 
-        cache_kv_module.clear_cache()  # release any remaining GPU caches
-        cache_kv_module.mode = None
+            for name, module in self.unet_model.named_modules():
+                if isinstance(module, QKVAttentionLegacy):
+                    k_list: list[torch.Tensor] = cache_kv_module.k.get(id(module), [])
+                    v_list: list[torch.Tensor] = cache_kv_module.v.get(id(module), [])
+
+                    if k_list and v_list:
+                        # KEEP K/V ON GPU. The earlier R-05 "save VRAM by storing on CPU"
+                        # variant forced apply_denoiser_unet to re-upload all 32 K/V
+                        # tensors host→device on EVERY UNet call. With DDIM (~20-50
+                        # steps) × per-frame inference × 8 worker threads, that became
+                        # thousands of cudaMemcpyHostToDevice calls per second; each
+                        # one synchronizes the calling thread, and on CUDA 13/Windows
+                        # the sync spin-waits, pegging every CPU core at 100%.
+                        # Total cost of keeping the cache on GPU is ~30-150MB —
+                        # negligible against a modern GPU's VRAM.
+                        final_k: torch.Tensor = (
+                            k_list[0].clone().detach() * scale_factor
+                        ).contiguous()
+                        final_v: torch.Tensor = (
+                            v_list[0].clone().detach() * scale_factor
+                        ).contiguous()
+
+                        extracted_kv_map[name] = {"k": final_k, "v": final_v}
+
+            # Explicitly deallocate intermediate tensor activations
+            del (
+                latent_unscaled,
+                latent_for_unet,
+                dummy_timesteps,
+                is_ref_tensor,
+                ref_tensor,
+            )
+
+        finally:
+            # Guarantees GPU cache release even if inference or tensor cloning throws an exception
+            cache_kv_module.clear_cache()
+            cache_kv_module.mode = None
 
         print(
             f"[INFO] Successfully extracted K/V for {len(extracted_kv_map)} attention layers."

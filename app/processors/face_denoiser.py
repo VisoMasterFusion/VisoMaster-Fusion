@@ -371,7 +371,7 @@ class FaceDenoiser:
         """
         Runs the Diffusion-based Denoiser/Restorer (ReF-LDM).
         Supports 'Single Step' (Fast) and 'Full Restore' (DDIM) modes.
-        Includes controllable coarse grain suppression and sub-pixel micro-grain synthesis.
+        Features NaN-safe DDIM scheduling and post-VAE hot-pixel blowout neutralization.
         """
         import math
 
@@ -453,15 +453,16 @@ class FaceDenoiser:
         h_proc: int = image_to_process_cxhxw_uint8.shape[1]
         w_proc: int = image_to_process_cxhxw_uint8.shape[2]
 
-        # Fused in-place math and non-blocking transfer
-        image_srgb_float_minus1_1_batched: torch.Tensor = (
+        # Normalized input tensor in [-1.0, 1.0]
+        input_srgb_float_minus1_1: torch.Tensor = (
             image_to_process_cxhxw_uint8.to(
                 dtype=torch.float32, copy=True, non_blocking=True
             )
             .mul_(1.0 / 127.5)
             .sub_(1.0)
-            .unsqueeze(0)
-            .contiguous()
+        )
+        image_srgb_float_minus1_1_batched: torch.Tensor = (
+            input_srgb_float_minus1_1.unsqueeze(0).contiguous()
         )
 
         latent_h: int = h_proc // 8
@@ -552,8 +553,12 @@ class FaceDenoiser:
                 output_unet_tensor=predicted_noise_from_unet,
             )
 
+            predicted_noise_sanitized: torch.Tensor = torch.nan_to_num(
+                predicted_noise_from_unet, nan=0.0, posinf=4.0, neginf=-4.0
+            )
+
             raw_estimated_x0: torch.Tensor = (
-                xt_noisy_scaled_8_channel - sqrt_one_minus_a * predicted_noise_from_unet
+                xt_noisy_scaled_8_channel - sqrt_one_minus_a * predicted_noise_sanitized
             ) / max(sqrt_a, 1e-6)
 
             if COARSE_GRAIN_LAMBDA > 0.0:
@@ -673,6 +678,9 @@ class FaceDenoiser:
             # The condition (LQ image) remains static. Write it to channels 8-15 once.
             ddim_unet_input_16_channel[:, 8:16] = lq_latent_x0_scaled_for_unet
 
+            # Biological latent dynamic envelope for VQGAN (codebook upper bound is ~2.8)
+            LATENT_DYNAMIC_BOUND: float = 2.8
+
             for i, step_ddpm_idx in enumerate(time_range_ddpm_indices):
                 index_for_schedules: int = total_steps - 1 - i
                 ts_unet.fill_(step_ddpm_idx)
@@ -704,14 +712,18 @@ class FaceDenoiser:
                         kv_tensor_map=None,
                         output_unet_tensor=e_t_uncond,
                     )
-                    # In-place CFG math to save memory overhead
-                    e_t = (
-                        e_t_cond.sub_(e_t_uncond)
-                        .mul_(denoiser_cfg_scale)
-                        .add_(e_t_uncond)
+
+                    # Sanitized CFG delta calculation to prevent contrast runaway
+                    cond_clean = torch.nan_to_num(
+                        e_t_cond, nan=0.0, posinf=3.5, neginf=-3.5
                     )
+                    uncond_clean = torch.nan_to_num(
+                        e_t_uncond, nan=0.0, posinf=3.5, neginf=-3.5
+                    )
+                    cfg_diff = torch.clamp(cond_clean - uncond_clean, -2.5, 2.5)
+                    e_t = uncond_clean + cfg_diff * denoiser_cfg_scale
                 else:
-                    e_t = e_t_cond
+                    e_t = torch.nan_to_num(e_t_cond, nan=0.0, posinf=3.5, neginf=-3.5)
 
                 # --- OPTIMIZATION: Direct indexing replaces extract_into_tensor_torch ---
                 a_t = ddim_alphas_view[index_for_schedules]
@@ -721,13 +733,26 @@ class FaceDenoiser:
                     index_for_schedules
                 ]
 
-                pred_x0_scaled_current_step = (
+                sqrt_a_t: torch.Tensor = torch.sqrt(a_t).clamp(min=1e-8)
+                pred_x0_raw: torch.Tensor = (
                     current_latent_xt_scaled - sqrt_one_minus_a_t * e_t
-                ) / torch.sqrt(a_t).clamp(min=1e-8)
+                ) / sqrt_a_t
 
-                dir_xt = (
-                    torch.sqrt(torch.clamp(1.0 - a_prev - sigma_t**2, min=1e-8)) * e_t
-                )
+                # Arrest early-step division explosion and sanitize NaNs
+                pred_x0_scaled_current_step = torch.nan_to_num(
+                    pred_x0_raw,
+                    nan=0.0,
+                    posinf=LATENT_DYNAMIC_BOUND,
+                    neginf=-LATENT_DYNAMIC_BOUND,
+                ).clamp_(-LATENT_DYNAMIC_BOUND, LATENT_DYNAMIC_BOUND)
+
+                e_t_consistent: torch.Tensor = (
+                    current_latent_xt_scaled - sqrt_a_t * pred_x0_scaled_current_step
+                ) / sqrt_one_minus_a_t.clamp(min=1e-8)
+
+                dir_xt = torch.sqrt(
+                    torch.clamp(1.0 - a_prev - sigma_t**2, min=1e-8)
+                ) * torch.nan_to_num(e_t_consistent, nan=0.0, posinf=3.5, neginf=-3.5)
 
                 if denoiser_ddim_eta > 0.0:
                     noise_ddim_buffer.normal_(generator=rng)
@@ -735,13 +760,30 @@ class FaceDenoiser:
                 else:
                     noise_ddim = 0.0
 
-                current_latent_xt_scaled = (
+                current_latent_xt_scaled = torch.nan_to_num(
                     torch.sqrt(a_prev) * pred_x0_scaled_current_step
                     + dir_xt
-                    + noise_ddim
+                    + noise_ddim,
+                    nan=0.0,
+                    posinf=LATENT_DYNAMIC_BOUND,
+                    neginf=-LATENT_DYNAMIC_BOUND,
                 )
 
-            final_denoised_latent_x0_scaled = pred_x0_scaled_current_step
+            if COARSE_GRAIN_LAMBDA > 0.0:
+                latent_delta_ddim: torch.Tensor = (
+                    pred_x0_scaled_current_step - lq_latent_x0_scaled_for_unet
+                )
+                clamped_delta_ddim: torch.Tensor = torch.clamp(
+                    latent_delta_ddim, -2.2, 2.2
+                )
+                effective_delta_ddim: torch.Tensor = torch.lerp(
+                    latent_delta_ddim, clamped_delta_ddim, COARSE_GRAIN_LAMBDA
+                )
+                final_denoised_latent_x0_scaled = (
+                    lq_latent_x0_scaled_for_unet + effective_delta_ddim
+                )
+            else:
+                final_denoised_latent_x0_scaled = pred_x0_scaled_current_step
         else:
             print(
                 f"[ERROR] Denoiser: Unknown mode '{denoiser_mode}'. Skipping denoiser pass."
@@ -751,10 +793,16 @@ class FaceDenoiser:
         if final_denoised_latent_x0_scaled is None:
             return image_cxhxw_uint8
 
-        latent_for_vae_decoder: torch.Tensor = (
-            final_denoised_latent_x0_scaled / self.vae_scale_factor
-        )
+        # Hard safety clamp on final latent prior to VAE decode
+        final_latent_sanitized: torch.Tensor = torch.nan_to_num(
+            final_denoised_latent_x0_scaled / self.vae_scale_factor,
+            nan=0.0,
+            posinf=2.8,
+            neginf=-2.8,
+        ).clamp_(-2.8, 2.8)
+
         del final_denoised_latent_x0_scaled
+
         decoded_image_normalized_bchw: torch.Tensor = torch.empty(
             (1, 3, h_proc, w_proc),
             dtype=torch.float32,
@@ -762,12 +810,16 @@ class FaceDenoiser:
         ).contiguous()
 
         self.function_worker.run_vae_decoder(
-            latent_for_vae_decoder, decoded_image_normalized_bchw
+            final_latent_sanitized, decoded_image_normalized_bchw
         )
-        del latent_for_vae_decoder
+        del final_latent_sanitized
 
-        # Use in-place tanh_() on the pre-allocated output buffer,
-        # then chain in-place math to reach [0, 1] without creating temp tensors.
+        # --- POST-DECODER HOT-PIXEL & NAN NEUTRALIZATION ---
+        # Eliminate any raw NaN or Inf created by VAE FP16 attention/GroupNorm overflow
+        decoded_image_normalized_bchw = torch.nan_to_num(
+            decoded_image_normalized_bchw, nan=0.0, posinf=1.0, neginf=-1.0
+        )
+
         decoded_image_normalized_bchw.tanh_()
         image_after_postproc_float_0_1: torch.Tensor = (
             decoded_image_normalized_bchw.squeeze(0)
@@ -775,6 +827,29 @@ class FaceDenoiser:
             .mul_(0.5)
             .clamp_(0.0, 1.0)
         )
+
+        # Cavity Hot-Spot Neutralization:
+        # Replaces any runaway pixel blowout where output is bright (>0.75) but original input
+        # is deep cavity shadow (<0.20), such as nostril interiors or dark tear ducts.
+        input_ref_float_0_1: torch.Tensor = image_to_process_cxhxw_uint8.float() / 255.0
+        input_luma: torch.Tensor = (
+            0.299 * input_ref_float_0_1[0:1]
+            + 0.587 * input_ref_float_0_1[1:2]
+            + 0.114 * input_ref_float_0_1[2:3]
+        )
+        output_luma: torch.Tensor = (
+            0.299 * image_after_postproc_float_0_1[0:1]
+            + 0.587 * image_after_postproc_float_0_1[1:2]
+            + 0.114 * image_after_postproc_float_0_1[2:3]
+        )
+
+        hot_spot_mask: torch.Tensor = (input_luma < 0.20) & (output_luma > 0.75)
+        if hot_spot_mask.any():
+            image_after_postproc_float_0_1 = torch.where(
+                hot_spot_mask.expand_as(image_after_postproc_float_0_1),
+                input_ref_float_0_1,
+                image_after_postproc_float_0_1,
+            )
 
         # --- COLOR MATCHING BLOCK ---
         if ENABLE_COLOR_MATCH:

@@ -111,16 +111,22 @@ class DFMModel:
     def binding_device_id(self) -> int:
         return self.gpu_id if self.device_type != "cpu" else 0
 
-    def get_model_path(self):
+    def get_model_path(self) -> str:
         return self._model_path
 
-    def get_input_res(self):
+    def get_input_res(self) -> tuple[int, int]:
         return self._input_width, self._input_height
 
     def has_morph_value(self) -> bool:
         return self._model_type == 2
 
-    def convert(self, img, morph_factor=0.75, rct=False):
+    @torch.no_grad()
+    def convert(
+        self,
+        img: torch.Tensor,
+        morph_factor: float = 0.75,
+        rct: bool = False,
+    ) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
         """
         img    torch.Tensor  CHW uint8,float32
         morph_factor   float   used if model supports it
@@ -179,7 +185,7 @@ class DFMModel:
 
         # Prepare output tensors and bind them
         outputs = self._sess.get_outputs()
-        binding_outputs = []
+        binding_outputs: list[torch.Tensor] = []
 
         for idx, output in enumerate(outputs):
             # Convert shape to a valid tuple of integers
@@ -235,6 +241,10 @@ class DFMModel:
             self.ch(self.resize(binding_outputs[2], (W, H)), 1), dtype
         )
 
+        # Clean up bound output containers immediately to release underlying VRAM buffers
+        del binding_outputs
+        del io_binding
+
         # If rct is enabled, further processing is needed
         if rct:
             # convert img back to original dtype
@@ -260,14 +270,15 @@ class DFMModel:
 
         return out_celeb, out_celeb_mask, out_face_mask
 
+    @torch.no_grad()
     def rct(
         self,
         img: torch.Tensor,
         like: torch.Tensor,
-        mask: torch.Tensor = None,
-        like_mask: torch.Tensor = None,
-        mask_cutoff=0.5,
-    ):
+        mask: torch.Tensor | None = None,
+        like_mask: torch.Tensor | None = None,
+        mask_cutoff: float = 0.5,
+    ) -> torch.Tensor:
         """
         Transfer color using the RCT method.
 
@@ -368,6 +379,9 @@ class DFMModel:
             # Stack channels back together in (3, H, W)
             img_out[i] = torch.stack([source_l, source_a, source_b], dim=0)
 
+        # Clean up intermediate tensors to free VRAM before final conversion
+        del img_lab, like_lab, img_for_stat
+
         # Convert back to RGB for each image in the batch
         img_out = torch.stack(
             [faceutil.lab_to_rgb(img_out[i], False) for i in range(N)]
@@ -379,7 +393,7 @@ class DFMModel:
         )  # Convert back to (N, H, W, 3)
         return img_out
 
-    def convert_shape(self, shape):
+    def convert_shape(self, shape: tuple | list) -> tuple[int, ...]:
         # Iterate over each dimension in the shape
         return tuple(
             int(dim)

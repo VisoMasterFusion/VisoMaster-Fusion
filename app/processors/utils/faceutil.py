@@ -2,6 +2,7 @@ import math
 from math import sin, cos, acos, degrees
 from typing import Any
 import threading
+from collections import OrderedDict
 
 import numpy as np
 import cv2
@@ -165,8 +166,16 @@ _XYZ_TO_RGB = torch.tensor(
 )
 
 # --- Thread-safe caches for deterministic geometric masks & kernels ---
-_faded_mask_cache: dict[tuple, torch.Tensor] = {}
+_FADED_MASK_CACHE_MAX = 32
+_faded_mask_cache: OrderedDict[tuple, torch.Tensor] = OrderedDict()
 _faded_mask_lock = threading.Lock()
+
+
+def clear_faded_mask_cache() -> None:
+    """Explicitly releases all cached faded inner mask tensors from GPU VRAM."""
+    with _faded_mask_lock:
+        _faded_mask_cache.clear()
+
 
 _gaussian_kernel_cache: dict[tuple, torch.Tensor] = {}
 _gaussian_kernel_lock = threading.Lock()
@@ -1819,6 +1828,7 @@ def _estimate_similar_transform_from_pts(
     return M_INV, M[:2, ...]
 
 
+@torch.no_grad()
 def warp_face_by_face_landmark_x(
     img: torch.Tensor,
     pts: np.ndarray,
@@ -1878,6 +1888,7 @@ def warp_face_by_face_landmark_x(
     return warped_img.to(img.dtype), M_o2c, M_c2o
 
 
+@torch.no_grad()
 def create_faded_inner_mask(
     size: tuple[int, int],
     border_thickness: int,
@@ -1889,9 +1900,7 @@ def create_faded_inner_mask(
     Create a mask with a thick black border and a faded white center towards the border.
     The white edges are smoothed using Gaussian blur.
 
-    OPTIMIZED: Added thread-safe caching. Generating 512x512 meshgrids and running
-    Gaussian blurs dynamically 60 times a second severely fragments VRAM.
-    This caches the final tensor based on its deterministic parameters.
+    OPTIMIZED: Thread-safe bounded LRU caching prevents unbounded VRAM retention.
     Parameters:
     - size: Tuple (height, width) for the mask size.
     - border_thickness: The thickness of the outer black border.
@@ -1903,16 +1912,17 @@ def create_faded_inner_mask(
     - mask: A PyTorch tensor containing the mask.
     """
     cache_key = (
-        size[0],
-        size[1],
-        border_thickness,
-        fade_thickness,
-        blur_radius,
+        int(size[0]),
+        int(size[1]),
+        int(border_thickness),
+        int(fade_thickness),
+        int(blur_radius),
         str(device),
     )
 
     with _faded_mask_lock:
         if cache_key in _faded_mask_cache:
+            _faded_mask_cache.move_to_end(cache_key)
             return _faded_mask_cache[cache_key]
 
     height, width = size
@@ -1957,15 +1967,21 @@ def create_faded_inner_mask(
     mask = torchvision.transforms.functional.gaussian_blur(
         mask, kernel_size=(blur_radius, blur_radius), sigma=(blur_radius / 2)
     )
-    mask = mask[0, 0, :, :]  # Rimuovi batch e channel
+    mask = mask[0, 0, :, :].contiguous()
 
     with _faded_mask_lock:
-        _faded_mask_cache[cache_key] = mask
+        if cache_key not in _faded_mask_cache:
+            if len(_faded_mask_cache) >= _FADED_MASK_CACHE_MAX:
+                _faded_mask_cache.popitem(last=False)
+            _faded_mask_cache[cache_key] = mask
+        else:
+            _faded_mask_cache.move_to_end(cache_key)
 
     return mask
 
 
 # imported from https://github.com/KwaiVGI/LivePortrait/blob/main/src/utils/crop.py
+@torch.no_grad()
 def prepare_paste_back(
     mask_crop, crop_M_c2o, dsize, interpolation=v2.InterpolationMode.BILINEAR
 ):
@@ -1982,6 +1998,7 @@ def prepare_paste_back(
 
 
 # imported from https://github.com/KwaiVGI/LivePortrait/blob/main/src/utils/crop.py
+@torch.no_grad()
 def paste_back(
     img_crop, M_c2o, img_ori, mask_ori, interpolation=v2.InterpolationMode.BILINEAR
 ):
@@ -2105,6 +2122,7 @@ def paste_back_adv(
     return img
 
 
+@torch.no_grad()
 def paste_back_kgm(img_crop, M_c2o, img_ori, mask_ori):
     """paste back the image"""
     dsize = (img_ori.shape[1], img_ori.shape[2])
@@ -2119,6 +2137,7 @@ def paste_back_kgm(img_crop, M_c2o, img_ori, mask_ori):
     return img_back.to(torch.uint8)
 
 
+@torch.no_grad()
 def transform_img_kgm(
     img,
     M,
@@ -2737,6 +2756,7 @@ def _map_jpeg_quality(
     return q_eff
 
 
+@torch.no_grad()
 def jpegBlur(img: torch.Tensor, q: int) -> torch.Tensor:
     """
     img: [3,H,W], float32 (0..255) ODER (0..1) ODER uint8 (0..255)
@@ -2768,6 +2788,7 @@ def jpegBlur(img: torch.Tensor, q: int) -> torch.Tensor:
     return out_chw.to(device=device, dtype=torch.float32)
 
 
+@torch.no_grad()
 def histogram_matching(
     source_image: torch.Tensor, target_image: torch.Tensor, diffslider: float
 ) -> torch.Tensor:
@@ -2855,6 +2876,7 @@ def histogram_matching(
     return final_image_out.to(dtype=dtype)
 
 
+@torch.no_grad()
 def histogram_matching_withmask(
     source_image: torch.Tensor,
     target_image: torch.Tensor,
@@ -2950,6 +2972,7 @@ def histogram_matching_withmask(
     return final_image_out.to(dtype=dtype)
 
 
+@torch.no_grad()
 def apply_reinhard_color_transfer(
     source_image: torch.Tensor,
     target_image: torch.Tensor,
