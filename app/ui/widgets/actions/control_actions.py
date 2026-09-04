@@ -46,6 +46,14 @@ def clear_gpu_memory(main_window: "MainWindow"):
     main_window.swapfacesButton.setChecked(False)
     main_window.editFacesButton.setChecked(False)
 
+    # The mouth action detector is a standalone singleton (not tracked in
+    # models_processor.models), so a full VRAM clear must release it explicitly.
+    # If AutoMouthExpressionEnableToggle is still on, it lazy-reloads on the
+    # next processed frame, same as the other lazy-loaded models above.
+    from app.processors.mouth_action_detector import MouthActionDetector
+
+    MouthActionDetector.unload()
+
     # --- FW-VRAM-RECOVERY: Automatically restore KV maps safely ---
     # Centralized recovery: restores KV maps if Denoiser is active so the
     # next frame swap doesn't fail due to missing PyTorch tensor references.
@@ -677,6 +685,18 @@ def handle_face_editor_button_click(main_window: "MainWindow"):
     _check_and_manage_face_editor_models(main_window)
 
 
+def handle_face_editor_enable_toggle_change(
+    main_window: "MainWindow", new_value: bool, control_name: str
+):
+    """Called when the 'FaceEditorEnableToggle' parameter changes.
+
+    Turning this off (independent of the editFacesButton click) can drop
+    LivePortrait to fully inactive; re-run the shared check so the models
+    get unloaded in that case instead of only on the button click.
+    """
+    _check_and_manage_face_editor_models(main_window)
+
+
 def handle_face_expression_toggle_change(
     main_window: "MainWindow", new_value: bool, control_name: str
 ):
@@ -913,12 +933,16 @@ def handle_auto_mouth_toggle(main_window: "MainWindow", new_value: bool) -> None
     """Called when AutoMouthExpressionEnableToggle changes.
 
     When enabled, prints a one-time status message.  The actual detection model
-    is loaded lazily on the first processed frame.
+    is loaded lazily on the first processed frame.  When disabled, the detector
+    (and its VRAM/RAM footprint) is released immediately rather than waiting for
+    a full VRAM clear.
     """
-    if not new_value:
-        return
-
     from app.processors.mouth_action_detector import MouthActionDetector
+
+    if not new_value:
+        MouthActionDetector.unload()
+        print("[INFO] Auto Mouth Expression disabled. Mouth action detector unloaded.")
+        return
 
     detector = MouthActionDetector.get()
     if not detector.available:
@@ -1036,3 +1060,68 @@ def handle_seek_bar_thumbnails_toggle(main_window: "MainWindow", enabled: bool):
             scroll_area.adjustSize()
             scroll_area.updateGeometry()
         thumb.update()
+
+def reset_face_editor_expression_params(main_window: "MainWindow"):
+    from app.ui.widgets.actions import common_actions as common_widget_actions
+
+    defaults = {
+        "EyesOpenRatioDecimalSlider": 0.00,
+        "LipsOpenRatioDecimalSlider": 0.00,
+        "HeadPitchSlider": 0,
+        "HeadYawSlider": 0,
+        "HeadRollSlider": 0,
+        "XAxisMovementDecimalSlider": 0.00,
+        "YAxisMovementDecimalSlider": 0.00,
+        "ZAxisMovementDecimalSlider": 1.00,
+        "MouthPoutingDecimalSlider": 0.00,
+        "MouthPursingDecimalSlider": 0.00,
+        "MouthGrinDecimalSlider": 0.00,
+        "LipsCloseOpenSlider": 0,
+        "MouthSmileDecimalSlider": 0.00,
+        "EyeWinkDecimalSlider": 0.00,
+        "EyeBrowsDirectionDecimalSlider": 0.00,
+        "EyeGazeHorizontalDecimalSlider": 0.00,
+        "EyeGazeVerticalDecimalSlider": 0.00,
+    }
+
+    previous_batch = getattr(main_window, "_batch_update_in_progress", False)
+    main_window._batch_update_in_progress = True
+    try:
+        for name, value in defaults.items():
+            common_widget_actions.update_parameter(
+                main_window, name, value, enable_refresh_frame=False
+            )
+            widget = main_window.parameter_widgets.get(name)
+            if widget:
+                widget.enable_refresh_frame = False
+                common_widget_actions._set_single_widget_value(widget, value)
+                widget.enable_refresh_frame = True
+    finally:
+        main_window._batch_update_in_progress = previous_batch
+        if not previous_batch:
+            common_widget_actions.refresh_frame(main_window)
+            
+def handle_auto_load_target_folder_toggle(main_window: "MainWindow", enabled: bool):
+    from app.ui.widgets.actions import list_view_actions
+
+    enabled = bool(enabled)
+
+    # Restore path into the line edit if only last_target_media_folder_path is set
+    if enabled:
+        line = getattr(main_window, "targetVideosPathLineEdit", None)
+        current = (line.text() or "").strip() if line is not None else ""
+        last = (getattr(main_window, "last_target_media_folder_path", "") or "").strip()
+        if not current and last and os.path.isdir(last):
+            if line is not None:
+                line.setText(last)
+                line.setToolTip(last)
+
+    list_view_actions.set_target_folder_auto_watch(main_window, enabled)
+
+
+def on_target_folder_path_changed(main_window: "MainWindow"):
+    """Re-bind watcher when the target folder path changes."""
+    from app.ui.widgets.actions import list_view_actions
+
+    enabled = bool(main_window.control.get("AutoLoadTargetFolderToggle", False))
+    list_view_actions.set_target_folder_auto_watch(main_window, enabled)

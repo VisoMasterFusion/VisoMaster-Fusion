@@ -135,6 +135,44 @@ class MouthActionDetector:
             logger.warning(self._load_error)
 
     # ------------------------------------------------------------------
+    @classmethod
+    def unload(cls) -> None:
+        """Release the loaded model, freeing its GPU/CPU memory.
+
+        Closes the TF session, drops the graph and tensor references, and
+        clears the singleton so a later call to ``get()`` performs a fresh
+        ``_lazy_load()``. Safe to call even if nothing was ever loaded
+        (e.g. the feature was toggled off before first use, or the model
+        failed to load).
+        """
+        with cls._class_lock:
+            inst = cls._instance
+            cls._instance = None
+
+        if inst is None:
+            return
+
+        with inst._infer_lock:
+            if inst._session is not None:
+                try:
+                    inst._session.close()
+                except Exception as exc:  # noqa: BLE001
+                    logger.debug(
+                        "Error closing mouth action detector session: %s", exc
+                    )
+            inst._session = None
+            inst._graph = None
+            inst._inp_tensor = None
+            inst._boxes_tensor = None
+            inst._scores_tensor = None
+            inst._classes_tensor = None
+
+        import gc
+
+        gc.collect()
+        logger.info("Mouth action detector unloaded.")
+
+    # ------------------------------------------------------------------
     @property
     def available(self) -> bool:
         """True when the model loaded and the session is ready."""

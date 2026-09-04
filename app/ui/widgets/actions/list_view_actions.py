@@ -5,6 +5,7 @@ from pathlib import Path
 import sys
 import os
 import subprocess
+import time
 
 from PySide6 import QtWidgets, QtGui, QtCore
 
@@ -509,6 +510,35 @@ def initialize_embeddings_list_widget(main_window: "MainWindow"):
     inputEmbeddingsList.setVerticalScrollMode(
         QtWidgets.QAbstractItemView.ScrollPerPixel
     )
+    
+    # Smooth / slower wheel scrolling so embedding cards are easier to hit
+    class _SmoothWheelFilter(QtCore.QObject):
+        def __init__(self, list_widget: QtWidgets.QListWidget):
+            super().__init__(list_widget)
+            self._list = list_widget
+            self._step_px = 24  # pixels per wheel notch (lower = slower)
+
+        def eventFilter(self, obj, event):
+            if event.type() == QtCore.QEvent.Type.Wheel:
+                delta = event.angleDelta().y()
+                if delta == 0:
+                    delta = event.angleDelta().x()
+                # Prefer horizontal bar when content is laid out left-to-right
+                hbar = self._list.horizontalScrollBar()
+                vbar = self._list.verticalScrollBar()
+                steps = -1 if delta > 0 else 1
+                if hbar.maximum() > 0:
+                    hbar.setValue(hbar.value() + steps * self._step_px)
+                elif vbar.maximum() > 0:
+                    vbar.setValue(vbar.value() + steps * self._step_px)
+                return True
+            return super().eventFilter(obj, event)
+
+    if not getattr(inputEmbeddingsList, "_smooth_wheel_filter", None):
+        filt = _SmoothWheelFilter(inputEmbeddingsList)
+        inputEmbeddingsList.viewport().installEventFilter(filt)
+        inputEmbeddingsList._smooth_wheel_filter = filt
+    
     inputEmbeddingsList.setHorizontalScrollMode(
         QtWidgets.QAbstractItemView.ScrollPerPixel
     )
@@ -624,7 +654,7 @@ def select_target_medias(
         main_window.targetVideosPathLineEdit.setText(file_dir)
         main_window.targetVideosPathLineEdit.setToolTip(file_dir)
         main_window.last_target_media_folder_path = file_dir
-
+    main_window._target_folder_ignored_paths = set()
     clear_stop_loading_target_media(main_window)
     card_actions.clear_target_faces(main_window)
 
@@ -641,6 +671,12 @@ def select_target_medias(
         partial(filter_target_videos, main_window)
     )
     main_window.video_loader_worker.start()
+
+    # Re-bind auto-watch to the newly selected folder
+    set_target_folder_auto_watch(
+        main_window,
+        bool(main_window.control.get("AutoLoadTargetFolderToggle", False)),
+    )
 
 
 @QtCore.Slot()
@@ -723,6 +759,8 @@ def _confirm_panel_clear(main_window: "MainWindow", title: str, message: str) ->
 
 def clear_all_target_media(main_window: "MainWindow") -> bool:
     from app.ui.widgets.actions import video_control_actions
+    import gc
+    import torch
 
     if video_control_actions.block_if_issue_scan_active(main_window, "clear all media"):
         return False
@@ -742,6 +780,27 @@ def clear_all_target_media(main_window: "MainWindow") -> bool:
 
     clear_stop_loading_target_media(main_window, clear_list=False)
 
+    # Stop processor first so nothing tries to read a cleared path
+    vp = main_window.video_processor
+    vp.stop_processing()
+    vp.media_path = None
+    vp.file_type = None
+    vp.current_frame = None
+    if vp.media_capture:
+        try:
+            vp.media_capture.release()
+        except Exception:
+            pass
+        vp.media_capture = None
+    vp._clear_single_frame_preview_caches()
+
+    # Don't auto-readd these while they still exist on disk
+    main_window._target_folder_ignored_paths = _existing_target_media_paths(
+        main_window
+    )
+
+    # Remove items WHILE selected_video_button is still set so deselect
+    # clears the preview for the active item
     for target_media_button in list(main_window.target_videos.values()):
         target_media_button.remove_target_media_from_list()
 
@@ -750,11 +809,31 @@ def clear_all_target_media(main_window: "MainWindow") -> bool:
 
     main_window.target_videos.clear()
     main_window.selected_video_button = None
-    _set_path_line_edit_value(main_window.targetVideosPathLineEdit, "")
-    main_window.last_target_media_folder_path = ""
-    main_window.placeholder_update_signal.emit(main_window.targetVideosList, False)
-    return True
 
+    # Ensure preview is cleared even if nothing was selected
+    main_window.scene.clear()
+    main_window.graphicsViewFrame.update()
+    if hasattr(main_window, "timelineContainer"):
+        main_window.timelineContainer.thumbnail_track.request_thumbnails()
+    main_window.videoSeekSlider.blockSignals(True)
+    main_window.videoSeekSlider.setMaximum(1)
+    main_window.videoSeekSlider.setValue(0)
+    main_window.videoSeekSlider.blockSignals(False)
+
+    main_window.placeholder_update_signal.emit(main_window.targetVideosList, False)
+
+    set_target_folder_auto_watch(
+        main_window,
+        bool(main_window.control.get("AutoLoadTargetFolderToggle", False)),
+    )
+
+    # Free media-related GPU memory only (keep models loaded)
+    if not getattr(main_window, "is_batch_processing", False):
+        gc.collect()
+        if torch.cuda.is_available():
+            torch.cuda.empty_cache()
+
+    return True
 
 def clear_all_input_faces(main_window: "MainWindow") -> bool:
     from app.ui.widgets.actions import video_control_actions
@@ -813,6 +892,83 @@ def clear_all_embeddings(main_window: "MainWindow") -> bool:
     card_actions.clear_merged_embeddings(main_window)
     return True
 
+def delete_all_target_media_to_trash(main_window: "MainWindow") -> bool:
+    from app.ui.widgets.actions import video_control_actions
+    from send2trash import send2trash
+    import gc
+    import torch
+
+    if video_control_actions.block_if_issue_scan_active(
+        main_window, "delete all target media"
+    ):
+        return False
+
+    # Only real files currently in the target pane (skip webcams / missing paths)
+    buttons = [
+        b
+        for b in (main_window.target_videos or {}).values()
+        if not getattr(b, "is_webcam", False)
+        and getattr(b, "media_path", None)
+        and os.path.exists(b.media_path)
+    ]
+    if not buttons:
+        return False
+
+    if not main_window.control.get("SkipClearConfirmationToggle", False):
+        confirmed = _confirm_panel_clear(
+            main_window,
+            "Delete All Target Files",
+            f"Send {len(buttons)} file(s) from the Target Media pane to the recycle bin?\n\n"
+            "This cannot be undone from the app (files go to the system trash).",
+        )
+        if not confirmed:
+            return False
+
+    clear_stop_loading_target_media(main_window, clear_list=False)
+
+    vp = main_window.video_processor
+    vp.stop_processing()
+    vp.media_path = None
+    vp.file_type = None
+    vp.current_frame = None
+    if vp.media_capture:
+        try:
+            vp.media_capture.release()
+        except Exception:
+            pass
+        vp.media_capture = None
+    vp._clear_single_frame_preview_caches()
+
+    for button in list(main_window.target_videos.values()):
+        path = getattr(button, "media_path", None)
+        is_webcam = getattr(button, "is_webcam", False)
+        if path and not is_webcam and os.path.exists(path):
+            try:
+                send2trash(path)
+                print(f"[INFO] {path} has been sent to the trash.")
+            except Exception as e:
+                print(f"[ERROR] Failed to trash {path}: {e}")
+        button.remove_target_media_from_list()
+
+    if main_window.target_faces:
+        card_actions.clear_target_faces(main_window, refresh_frame=False)
+
+    main_window.target_videos.clear()
+    main_window.selected_video_button = None
+    main_window.scene.clear()
+    main_window.graphicsViewFrame.update()
+    main_window.placeholder_update_signal.emit(main_window.targetVideosList, False)
+
+    if not getattr(main_window, "is_batch_processing", False):
+        gc.collect()
+        if torch.cuda.is_available():
+            torch.cuda.empty_cache()
+        set_target_folder_auto_watch(
+        main_window,
+        bool(main_window.control.get("AutoLoadTargetFolderToggle", False)),
+    )
+
+    return True
 
 def _build_panel_context_menu(
     main_window: "MainWindow",
@@ -828,16 +984,31 @@ def _build_panel_context_menu(
         clear_action = QtGui.QAction("Clear All Media", menu)
         clear_action.setEnabled(bool(main_window.target_videos) and not scan_active)
         clear_action.triggered.connect(partial(clear_all_target_media, main_window))
+        menu.addAction(clear_action)
+
+        delete_action = QtGui.QAction("⚠ Delete all files to recycle bin", menu)
+        has_files = any(
+            not getattr(b, "is_webcam", False)
+            and getattr(b, "media_path", None)
+            and os.path.exists(b.media_path)
+            for b in (main_window.target_videos or {}).values()
+        )
+        delete_action.setEnabled(has_files and not scan_active)
+        delete_action.triggered.connect(
+            partial(delete_all_target_media_to_trash, main_window)
+        )
+        menu.addAction(delete_action)
     elif panel_type == "input_faces":
         clear_action = QtGui.QAction("Clear All Faces", menu)
         clear_action.setEnabled(bool(main_window.input_faces) and not scan_active)
         clear_action.triggered.connect(partial(clear_all_input_faces, main_window))
+        menu.addAction(clear_action)
     else:
         clear_action = QtGui.QAction("Clear All Embeddings", menu)
         clear_action.setEnabled(bool(main_window.merged_embeddings) and not scan_active)
         clear_action.triggered.connect(partial(clear_all_embeddings, main_window))
+        menu.addAction(clear_action)
 
-    menu.addAction(clear_action)
     return menu
 
 
@@ -1193,3 +1364,215 @@ def show_about(main_window: "MainWindow"):
     layout.addWidget(close_button, alignment=QtCore.Qt.AlignmentFlag.AlignRight)
 
     dialog.exec()
+
+def _get_target_folder_path(main_window: "MainWindow") -> str:
+    path = ""
+    line = getattr(main_window, "targetVideosPathLineEdit", None)
+    if line is not None:
+        path = (line.text() or "").strip()
+    if not path:
+        path = (getattr(main_window, "last_target_media_folder_path", "") or "").strip()
+    return path if path and os.path.isdir(path) else ""
+
+
+def _existing_target_media_paths(main_window: "MainWindow") -> set[str]:
+    paths = set()
+    for button in (main_window.target_videos or {}).values():
+        media_path = getattr(button, "media_path", None)
+        if media_path:
+            paths.add(os.path.abspath(media_path))
+    return paths
+
+
+def _collect_watch_dirs(folder: str, recursive: bool) -> list[str]:
+    dirs = [folder]
+    if recursive:
+        for dirpath, dirnames, _ in os.walk(folder):
+            for d in dirnames:
+                dirs.append(os.path.join(dirpath, d))
+    return dirs
+
+
+def _is_target_media_file_stable(
+    main_window: "MainWindow", path: str
+) -> bool:
+    """True once ``path`` has been observed at the same non-zero size across
+    two consecutive scans.
+
+    Files inside a watched folder (e.g. the destination of an in-progress
+    browser download) can appear in a ``directoryChanged`` event before all
+    their bytes are written to disk. Reading such a file yields a
+    truncated/empty buffer, which surfaces downstream as
+    ``cv2.imdecode`` raising "(-215:Assertion failed) !buf.empty()".
+    Requiring the size to be stable across two scan passes (roughly one
+    debounce interval apart) avoids handing a still-writing file to the
+    loader.
+    """
+    size_cache = getattr(main_window, "_target_folder_pending_sizes", None)
+    if size_cache is None:
+        size_cache = {}
+        main_window._target_folder_pending_sizes = size_cache
+
+    try:
+        size = os.path.getsize(path)
+    except OSError:
+        # File briefly inaccessible (still being created/locked) — not stable yet.
+        return False
+
+    if size == 0:
+        size_cache[path] = (size, size_cache.get(path, (0, time.monotonic()))[1])
+        return False
+
+    prev = size_cache.get(path)
+    if prev is not None and prev[0] == size:
+        size_cache.pop(path, None)
+        return True
+
+    # First time seeing this file, or its size changed since last scan —
+    # remember the size (and first-seen time) and check again next cycle.
+    first_seen = prev[1] if prev is not None else time.monotonic()
+    size_cache[path] = (size, first_seen)
+    return False
+
+
+# Files pending longer than this are loaded anyway on the next scan rather
+# than polled forever (e.g. a stalled/failed download that will never
+# finish) — the existing read_image_file error handling covers a genuine
+# failure at that point, same as before this stability check existed.
+_TARGET_MEDIA_STABILITY_TIMEOUT_SECONDS = 30.0
+
+
+def scan_and_append_new_target_media(main_window: "MainWindow"):
+    """Append only new media files from the configured target folder."""
+    from app.ui.widgets.actions import video_control_actions
+    import app.helpers.miscellaneous as misc_helpers
+    from app.ui.widgets import ui_workers
+
+    if video_control_actions.block_if_issue_scan_active(
+        main_window, "auto-load target media"
+    ):
+        return
+
+    folder = _get_target_folder_path(main_window)
+    if not folder:
+        return
+
+    recursive = bool(
+        main_window.control.get("AutoLoadTargetFolderRecursiveToggle", False)
+    )
+    if recursive:
+        media_files = []
+        for dirpath, _, filenames in os.walk(folder):
+            for filename in filenames:
+                full = os.path.abspath(os.path.join(dirpath, filename))
+                if misc_helpers.get_file_type(full):
+                    media_files.append(full)
+    else:
+        media_files = [
+            os.path.abspath(p)
+            for p in (
+                misc_helpers.get_video_files(folder, False)
+                + misc_helpers.get_image_files(folder, False)
+            )
+        ]
+
+    ignored = getattr(main_window, "_target_folder_ignored_paths", None)
+    if ignored is None:
+        ignored = set()
+        main_window._target_folder_ignored_paths = ignored
+    else:
+        # Drop ignores for files no longer on disk so a re-added file can load
+        ignored.intersection_update(p for p in list(ignored) if os.path.exists(p))
+
+    existing = _existing_target_media_paths(main_window)
+    new_files = [p for p in media_files if p not in existing and p not in ignored]
+    if not new_files:
+        return
+
+    ready_files = []
+    pending = False
+    for p in new_files:
+        if _is_target_media_file_stable(main_window, p):
+            ready_files.append(p)
+            continue
+
+        size_cache = getattr(main_window, "_target_folder_pending_sizes", {})
+        first_seen = size_cache.get(p, (None, time.monotonic()))[1]
+        if time.monotonic() - first_seen >= _TARGET_MEDIA_STABILITY_TIMEOUT_SECONDS:
+            print(
+                f"[WARN] '{p}' has not finished writing after "
+                f"{_TARGET_MEDIA_STABILITY_TIMEOUT_SECONDS:.0f}s — loading it anyway."
+            )
+            ready_files.append(p)
+            size_cache.pop(p, None)
+        else:
+            pending = True
+
+    if pending:
+        timer = getattr(main_window, "_target_folder_watch_timer", None)
+        if timer is not None:
+            timer.start()
+
+    if not ready_files:
+        return
+
+    if (
+        main_window.video_loader_worker is not None
+        and main_window.video_loader_worker.isRunning()
+    ):
+        return
+
+    main_window.video_loader_worker = ui_workers.TargetMediaLoaderWorker(
+        main_window=main_window,
+        files_list=ready_files,
+        sort_files_list_by_name=True,
+    )
+    main_window.video_loader_worker.thumbnail_ready.connect(
+        partial(add_media_thumbnail_to_target_videos_list, main_window)
+    )
+    main_window.video_loader_worker.finished.connect(
+        partial(filter_target_videos, main_window)
+    )
+    main_window.video_loader_worker.start()
+
+
+def set_target_folder_auto_watch(main_window: "MainWindow", enabled: bool):
+    watcher = getattr(main_window, "_target_folder_watcher", None)
+    timer = getattr(main_window, "_target_folder_watch_timer", None)
+
+    if watcher is None:
+        watcher = QtCore.QFileSystemWatcher(main_window)
+        main_window._target_folder_watcher = watcher
+
+        def _on_dir_changed(path: str):
+            t = getattr(main_window, "_target_folder_watch_timer", None)
+            if t is not None:
+                t.start()
+
+        watcher.directoryChanged.connect(_on_dir_changed)
+
+    if timer is None:
+        timer = QtCore.QTimer(main_window)
+        timer.setSingleShot(True)
+        timer.setInterval(800)
+        timer.timeout.connect(partial(scan_and_append_new_target_media, main_window))
+        main_window._target_folder_watch_timer = timer
+
+    for d in list(watcher.directories()):
+        watcher.removePath(d)
+
+    if not enabled:
+        timer.stop()
+        return
+
+    folder = _get_target_folder_path(main_window)
+    if not folder:
+        return
+
+    recursive = bool(
+        main_window.control.get("AutoLoadTargetFolderRecursiveToggle", False)
+    )
+    for d in _collect_watch_dirs(folder, recursive):
+        watcher.addPath(d)
+
+    scan_and_append_new_target_media(main_window)

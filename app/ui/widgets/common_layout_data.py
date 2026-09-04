@@ -40,8 +40,6 @@ COMMON_LAYOUT_DATA: Any = {
             "parentToggle": "FaceRestorerEnableToggle",
             "requiredToggleValue": True,
             "help": "Select the alignment method for restoring the face to its original or blended position.",
-            "exec_function": control_actions.handle_restorer_state_change,
-            "exec_function_args": ["FaceRestorerEnable2Toggle"],
         },
         "FaceFidelityWeightDecimalSlider": {
             "level": 2,
