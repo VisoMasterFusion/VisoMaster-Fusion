@@ -835,6 +835,8 @@ class FunctionWorker:
         detect_score: float,
         target_kps: np.ndarray,
         slot_id: int = 1,
+        osdface_timestep: int = 399,
+        osdface_latent_strength: float = 1.0,
     ) -> np.ndarray:
         return self.face_restorers.apply_facerestorer(
             swapped_face_upscaled,
@@ -845,6 +847,8 @@ class FunctionWorker:
             detect_score,
             target_kps,
             slot_id=slot_id,
+            osdface_timestep=osdface_timestep,
+            osdface_latent_strength=osdface_latent_strength,
         )
 
     def apply_reaging(

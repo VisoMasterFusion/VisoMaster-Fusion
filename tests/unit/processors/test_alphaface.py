@@ -44,7 +44,7 @@ def test_alphaface_is_shape_inferred_before_the_tensorrt_build() -> None:
 def test_alphaface_projection_is_matrix_multiply_then_l2_normalize() -> None:
     swapper = FaceSwappers.__new__(FaceSwappers)
     swapper._alphaface_emap = np.eye(512, dtype=np.float32) * 2.0
-    embedding = np.arange(1, 513, dtype=np.float32)
+    embedding: np.ndarray = np.arange(1, 513, dtype=np.float32)
 
     latent = swapper.calc_swapper_latent_alphaface(embedding)
 
@@ -118,8 +118,8 @@ def test_alphaface_instance_norm_matches_the_official_manual_expansion() -> None
 
 
 def test_alphaface_selects_256px_face_and_projected_latent() -> None:
-    source = np.ones(512, dtype=np.float32)
-    target = np.full(512, 2.0, dtype=np.float32)
+    source: np.ndarray = np.ones(512, dtype=np.float32)
+    target: np.ndarray = np.full(512, 2.0, dtype=np.float32)
 
     class Functions:
         @staticmethod
@@ -146,8 +146,8 @@ def test_alphaface_selects_256px_face_and_projected_latent() -> None:
 
 
 def test_alphaface_skips_the_target_projection_when_likeness_is_off() -> None:
-    source = np.ones(512, dtype=np.float32)
-    target = np.full(512, 2.0, dtype=np.float32)
+    source: np.ndarray = np.ones(512, dtype=np.float32)
+    target: np.ndarray = np.full(512, 2.0, dtype=np.float32)
 
     class Functions:
         @staticmethod
