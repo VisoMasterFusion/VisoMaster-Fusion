@@ -109,6 +109,23 @@ def add_widgets_to_tab_layout(
                 row_widget, horizontal_layout = add_horizontal_layout_to_category(
                     category_layout, widget, label, widget.reset_default_button
                 )
+                
+                if "below_row_button" in widget_data:
+                    _below_ab_data: dict = cast(dict, widget_data["below_row_button"])
+                    _below_action_btn = create_layout_action_button(_below_ab_data)
+                    _below_spacer = QtWidgets.QWidget()
+                    _below_spacer.setSizePolicy(
+                        QtWidgets.QSizePolicy.Policy.Expanding,
+                        QtWidgets.QSizePolicy.Policy.Maximum,
+                    )
+                    _below_row_widget, _below_horizontal_layout = (
+                        add_horizontal_layout_to_category(
+                            category_layout,
+                            _below_action_btn,
+                            _below_spacer,
+                        )
+                    )
+                    widget.below_row_widget = _below_row_widget
 
                 if data_type == "parameter":
                     common_widget_actions.create_default_parameter(
