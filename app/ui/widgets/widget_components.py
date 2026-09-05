@@ -655,9 +655,13 @@ class TargetMediaCardButton(CardButton):
         )
         self.popMenu.addAction(self.clear_all_media_action)
 
-        self.delete_all_files_action = QtGui.QAction("⚠ Delete all files to recycle bin", self)
+        self.delete_all_files_action = QtGui.QAction(
+            "⚠ Delete all files to recycle bin", self
+        )
         self.delete_all_files_action.triggered.connect(
-            partial(list_view_actions.delete_all_target_media_to_trash, self.main_window)
+            partial(
+                list_view_actions.delete_all_target_media_to_trash, self.main_window
+            )
         )
         self.popMenu.addAction(self.delete_all_files_action)
 
