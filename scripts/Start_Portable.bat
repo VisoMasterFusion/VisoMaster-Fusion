@@ -1,5 +1,6 @@
 @echo off
 setlocal EnableDelayedExpansion
+set PYTHONUTF8=1
 
 :: ===================================================================
 ::  VisoMaster Fusion Portable Launcher
@@ -28,7 +29,7 @@ if "%LAUNCHER_ENABLED%"=="1" (
       pushd "%BASE_DIR%VisoMaster-Fusion"
       ::set "PYTHONPATH=%BASE_DIR%VisoMaster-Fusion"
       set "PATH=%FFMPEG_BIN_PATH%;%PATH%"
-      "%APP_PYTHON%" -m app.ui.launcher
+      "%APP_PYTHON%" -X utf8 -m app.ui.launcher
       popd
       exit /b !ERRORLEVEL!
     )
@@ -234,7 +235,7 @@ if /I "!FOUND_KEY!"=="false" (
 :: --- Step 9: Run main application ---
 if "%LAUNCHER_ENABLED%"=="1" (
     set "PATH=%FFMPEG_BIN_PATH%;%PATH%"
-    "%APP_PYTHON%" -m app.ui.launcher
+    "%APP_PYTHON%" -X utf8 -m app.ui.launcher
     exit /b !ERRORLEVEL!
 ) else (
     echo.

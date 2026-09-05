@@ -2441,6 +2441,10 @@ class PipelineProcessor:
                 control["DetectorScoreSlider"],
                 kps_ref,
                 slot_id=1,
+                osdface_timestep=parameters.get("OSDFaceTimestepSlider", 399),
+                osdface_latent_strength=parameters.get(
+                    "OSDFaceLatentStrengthDecimalSlider", 1.0
+                ),
             )
         else:
             swap_restorecalc = swap.clone()
@@ -2872,6 +2876,10 @@ class PipelineProcessor:
                 control["DetectorScoreSlider"],
                 kps_ref,
                 slot_id=2,
+                osdface_timestep=parameters.get("OSDFaceTimestep2Slider", 399),
+                osdface_latent_strength=parameters.get(
+                    "OSDFaceLatentStrength2DecimalSlider", 1.0
+                ),
             )
             swap = self._apply_restorer_with_auto(
                 swap,
@@ -3396,6 +3404,10 @@ class PipelineProcessor:
                 control["DetectorScoreSlider"],
                 kps_ref,
                 slot_id=2,
+                osdface_timestep=parameters.get("OSDFaceTimestep2Slider", 399),
+                osdface_latent_strength=parameters.get(
+                    "OSDFaceLatentStrength2DecimalSlider", 1.0
+                ),
             )
             swap = self._apply_restorer_with_auto(
                 swap,

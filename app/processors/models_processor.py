@@ -294,7 +294,8 @@ class ModelsProcessor(QtCore.QObject):
         self.LandmarksSubsetIdxs: list[int] = LANDMARKS_SUBSET_IDXS
         self.mean_lmk: list = []
         self.anchors: list = []
-        self.emap: list = []
+        self.emap: list[Any] | np.ndarray = []
+        self.face_denoiser: Any = None
 
         self.normalize = v2.Normalize(
             mean=[0.0, 0.0, 0.0], std=[1 / 1.0, 1 / 1.0, 1 / 1.0]

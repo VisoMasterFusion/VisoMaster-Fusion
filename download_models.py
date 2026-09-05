@@ -1,5 +1,6 @@
 from pathlib import Path
 from app.helpers.downloader import download_file
+from app.helpers.multipart_zip_downloader import download_multipart_zip_model
 from app.processors.models_data import models_list
 
 # When USE_OPTIMIZED_MODELS=true is set in portable.cfg (written by the
@@ -14,6 +15,10 @@ if _cfg_path.is_file():
             break
 
 for model_data in models_list:
+    if model_data.get("multipart_zip"):
+        download_multipart_zip_model(model_data, skip_hash_check=_skip_hash)
+        continue
+
     download_file(
         model_data["model_name"],
         model_data["local_path"],

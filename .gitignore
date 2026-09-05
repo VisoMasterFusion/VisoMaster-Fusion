@@ -30,6 +30,8 @@ jobs/
 merged_embeddings*.txt
 model_assets/liveportrait_onnx/*.onnx
 model_assets/liveportrait_onnx/*.trt
+model_assets/osdface/*.data
+model_assets/osdface/*.zip*
 model_assets/reference_kv_data/
 model_assets/torch_compile_cache
 output/

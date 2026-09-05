@@ -126,6 +126,11 @@ uv pip install -r requirements_cu13.txt
 python download_models.py
 ```
 
+Large ONNX external-data files may be distributed as multipart ZIP archives on
+their release pages. `download_models.py` downloads each ZIP part, reconstructs a
+temporary ZIP with Python's standard-library `zipfile` module, extracts the
+model sidecar into `model_assets`, and verifies the final SHA256 hash.
+
 **5. Install FFmpeg**
 
 On Windows, either:
