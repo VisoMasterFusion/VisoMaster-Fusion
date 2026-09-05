@@ -241,9 +241,7 @@ def test_tufa314_five_point_slice_uses_the_shared_tufa_anchors():
 def test_convert_face_landmark_x_to_5_dispatches_314():
     pts = np.arange(314 * 2, dtype=np.float32).reshape(314, 2)
 
-    landmark_5, _score = faceutil.convert_face_landmark_x_to_5(
-        pts, pts_score=np.zeros(314)
-    )
+    landmark_5 = faceutil.convert_face_landmark_x_to_5(pts, pts_score=np.zeros(314))
 
     np.testing.assert_allclose(
         landmark_5, faceutil.convert_face_landmark_314_to_5(pts, np.zeros(314))[0]

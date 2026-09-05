@@ -1153,7 +1153,6 @@ class MainWindow(QtWidgets.QMainWindow, Ui_MainWindow):
                 line.setToolTip(path)
         list_view_actions.set_target_folder_auto_watch(self, enabled)
 
-
     def load_last_workspace(self) -> None:
         """
         Loads the last used workspace if available.

@@ -41,6 +41,7 @@ repos:
     -   id: check-case-conflict
     -   id: check-added-large-files
         args: ['--maxkb=4096']
+        exclude: ^model_assets/mouth_action_detector/model\.onnx$
 
 -   repo: https://github.com/astral-sh/ruff-pre-commit
     rev: 'v0.15.4'
