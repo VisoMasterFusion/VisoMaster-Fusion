@@ -99,6 +99,18 @@ MODELS_TOGGLE_MAP: Dict[str, List[ToggleDef]] = {
         ToggleDef("FaceRestorerEnableToggle", ToggleScope.PER_FACE),
         ToggleDef("FaceRestorerEnable2Toggle", ToggleScope.PER_FACE),
     ],
+    "OSDFaceVAEEncoder": [
+        ToggleDef("FaceRestorerEnableToggle", ToggleScope.PER_FACE),
+        ToggleDef("FaceRestorerEnable2Toggle", ToggleScope.PER_FACE),
+    ],
+    "OSDFaceUNet": [
+        ToggleDef("FaceRestorerEnableToggle", ToggleScope.PER_FACE),
+        ToggleDef("FaceRestorerEnable2Toggle", ToggleScope.PER_FACE),
+    ],
+    "OSDFaceVAEDecoder": [
+        ToggleDef("FaceRestorerEnableToggle", ToggleScope.PER_FACE),
+        ToggleDef("FaceRestorerEnable2Toggle", ToggleScope.PER_FACE),
+    ],
     # --- RE-AGING ---
     "FaceReaging": [ToggleDef("FaceReagingEnableToggle", ToggleScope.PER_FACE)],
     # --- FACE MASKS / OCCLUDERS / TEXTURES ---

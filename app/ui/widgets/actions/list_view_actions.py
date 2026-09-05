@@ -510,7 +510,7 @@ def initialize_embeddings_list_widget(main_window: "MainWindow"):
     inputEmbeddingsList.setVerticalScrollMode(
         QtWidgets.QAbstractItemView.ScrollPerPixel
     )
-    
+
     # Smooth / slower wheel scrolling so embedding cards are easier to hit
     class _SmoothWheelFilter(QtCore.QObject):
         def __init__(self, list_widget: QtWidgets.QListWidget):
@@ -538,7 +538,7 @@ def initialize_embeddings_list_widget(main_window: "MainWindow"):
         filt = _SmoothWheelFilter(inputEmbeddingsList)
         inputEmbeddingsList.viewport().installEventFilter(filt)
         inputEmbeddingsList._smooth_wheel_filter = filt
-    
+
     inputEmbeddingsList.setHorizontalScrollMode(
         QtWidgets.QAbstractItemView.ScrollPerPixel
     )
@@ -795,9 +795,7 @@ def clear_all_target_media(main_window: "MainWindow") -> bool:
     vp._clear_single_frame_preview_caches()
 
     # Don't auto-readd these while they still exist on disk
-    main_window._target_folder_ignored_paths = _existing_target_media_paths(
-        main_window
-    )
+    main_window._target_folder_ignored_paths = _existing_target_media_paths(main_window)
 
     # Remove items WHILE selected_video_button is still set so deselect
     # clears the preview for the active item
@@ -834,6 +832,7 @@ def clear_all_target_media(main_window: "MainWindow") -> bool:
             torch.cuda.empty_cache()
 
     return True
+
 
 def clear_all_input_faces(main_window: "MainWindow") -> bool:
     from app.ui.widgets.actions import video_control_actions
@@ -891,6 +890,7 @@ def clear_all_embeddings(main_window: "MainWindow") -> bool:
 
     card_actions.clear_merged_embeddings(main_window)
     return True
+
 
 def delete_all_target_media_to_trash(main_window: "MainWindow") -> bool:
     from app.ui.widgets.actions import video_control_actions
@@ -964,11 +964,12 @@ def delete_all_target_media_to_trash(main_window: "MainWindow") -> bool:
         if torch.cuda.is_available():
             torch.cuda.empty_cache()
         set_target_folder_auto_watch(
-        main_window,
-        bool(main_window.control.get("AutoLoadTargetFolderToggle", False)),
-    )
+            main_window,
+            bool(main_window.control.get("AutoLoadTargetFolderToggle", False)),
+        )
 
     return True
+
 
 def _build_panel_context_menu(
     main_window: "MainWindow",
@@ -1365,6 +1366,7 @@ def show_about(main_window: "MainWindow"):
 
     dialog.exec()
 
+
 def _get_target_folder_path(main_window: "MainWindow") -> str:
     path = ""
     line = getattr(main_window, "targetVideosPathLineEdit", None)
@@ -1393,9 +1395,7 @@ def _collect_watch_dirs(folder: str, recursive: bool) -> list[str]:
     return dirs
 
 
-def _is_target_media_file_stable(
-    main_window: "MainWindow", path: str
-) -> bool:
+def _is_target_media_file_stable(main_window: "MainWindow", path: str) -> bool:
     """True once ``path`` has been observed at the same non-zero size across
     two consecutive scans.
 

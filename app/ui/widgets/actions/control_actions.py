@@ -1062,6 +1062,7 @@ def handle_seek_bar_thumbnails_toggle(main_window: "MainWindow", enabled: bool):
             scroll_area.updateGeometry()
         thumb.update()
 
+
 def reset_face_editor_expression_params(main_window: "MainWindow"):
     from app.ui.widgets.actions import common_actions as common_widget_actions
 
@@ -1101,7 +1102,8 @@ def reset_face_editor_expression_params(main_window: "MainWindow"):
         main_window._batch_update_in_progress = previous_batch
         if not previous_batch:
             common_widget_actions.refresh_frame(main_window)
-            
+
+
 def handle_auto_load_target_folder_toggle(main_window: "MainWindow", enabled: bool):
     from app.ui.widgets.actions import list_view_actions
 

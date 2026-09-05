@@ -4,6 +4,7 @@ import queue
 import copy
 import contextlib
 import time
+import gc
 from collections import OrderedDict
 from typing import TYPE_CHECKING, Any, cast
 
@@ -317,24 +318,51 @@ class FrameWorker(threading.Thread):
                         ) - torch.cuda.memory_allocated(device_id)
                         actual_free_vram = free_vram_os + pytorch_cached_free
 
-                        # Reserve 5% of total VRAM or at least 1.2 GB to prevent driver crashes
-                        min_required_vram = max(total_vram * 0.05, 1288490188)
+                        # Dynamic operational headroom: 3% of total VRAM or at least 384 MB
+                        min_required_vram: int = max(int(total_vram * 0.03), 402653184)
 
                         if actual_free_vram < min_required_vram:
                             was_vram_throttled = True
-                            backoff_delay: float = 0.05
-                            while actual_free_vram < min_required_vram:
+
+                            # Active reclamation: force GC sweep and return PyTorch cache blocks to driver
+                            gc.collect()
+                            torch.cuda.empty_cache()
+
+                            # Re-sample actual free VRAM post-purge
+                            free_vram_os, _ = torch.cuda.mem_get_info(device_id)
+                            pytorch_cached_free = torch.cuda.memory_reserved(
+                                device_id
+                            ) - torch.cuda.memory_allocated(device_id)
+                            actual_free_vram = free_vram_os + pytorch_cached_free
+
+                            # Bounded retry backoff (maximum 5 attempts, ~250ms total ceiling)
+                            max_retries: int = 5
+                            retry_count: int = 0
+                            backoff_delay: float = 0.02
+
+                            while (
+                                actual_free_vram < min_required_vram
+                                and retry_count < max_retries
+                            ):
                                 if self.stop_event.is_set():
                                     break
                                 time.sleep(backoff_delay)
-                                # Progressive backoff up to 200ms to reduce polling pressure
-                                backoff_delay = min(0.2, backoff_delay * 1.5)
+                                retry_count += 1
+                                backoff_delay = min(0.08, backoff_delay * 1.5)
 
                                 free_vram_os, _ = torch.cuda.mem_get_info(device_id)
                                 pytorch_cached_free = torch.cuda.memory_reserved(
                                     device_id
                                 ) - torch.cuda.memory_allocated(device_id)
                                 actual_free_vram = free_vram_os + pytorch_cached_free
+
+                            if actual_free_vram < min_required_vram:
+                                print(
+                                    f"[WARN] {self.name}: Free VRAM low after active purge "
+                                    f"({actual_free_vram / (1024**2):.1f} MB free, "
+                                    f"threshold: {min_required_vram / (1024**2):.1f} MB). "
+                                    f"Proceeding without blocking pipeline."
+                                )
                         else:
                             was_vram_throttled = False
 

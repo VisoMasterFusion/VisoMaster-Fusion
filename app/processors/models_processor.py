@@ -6,7 +6,7 @@ import traceback
 import multiprocessing
 import re
 import time
-from typing import Dict, TYPE_CHECKING, Any
+from typing import Dict, TYPE_CHECKING, Any, Optional
 from packaging import version
 import numpy as np
 
@@ -51,6 +51,8 @@ except ModuleNotFoundError:
 from app.processors.utils.dfm_model import DFMModel
 from app.processors.models_data import (
     models_list,
+    compound_models_mapping,
+    restorer_model_mapping,
     fp16_safe_models_list,
     tensorrt_shape_infer_models,
     ARCFACE_DST,
@@ -546,27 +548,66 @@ class ModelsProcessor(QtCore.QObject):
             except Exception as e:
                 print(f"[WARN] Failed to clean auxiliary files in {cache_dir}: {e}")
 
-    def load_model(self, model_name: str, session_options: Any = None) -> Any | None:
+    def load_model(
+        self,
+        model_name: str | tuple[str, ...] | list[str],
+        session_options: Any = None,
+    ) -> Any | None:
         """
         Loads an AI model (ONNX) with thread safety.
         Handles checking for existing TensorRT caches and launching the build probe if needed.
+        Recursively delegates compound pipelines (e.g. OSDFace) or sequences to their constituent sub-models.
         """
+        # Defensive recursion: unpack sequence collections
+        if isinstance(model_name, (tuple, list, set, frozenset)):
+            compound_sessions: Dict[str, Any] = {}
+            all_successful: bool = True
+            for sub_name in model_name:
+                sub_session = self.load_model(sub_name, session_options=session_options)
+                if sub_session is None:
+                    all_successful = False
+                compound_sessions[sub_name] = sub_session
+            return compound_sessions if all_successful else None
+
+        canonical_name: str = restorer_model_mapping.get(model_name, model_name)
+
+        # Decompose compound pipelines into atomic ONNX sessions
+        if canonical_name in compound_models_mapping:
+            compound_sessions = {}
+            all_successful = True
+            for sub_model_name in compound_models_mapping[canonical_name]:
+                sub_session = self.load_model(
+                    sub_model_name, session_options=session_options
+                )
+                if sub_session is None:
+                    all_successful = False
+                    print(
+                        f"[WARN] Sub-model '{sub_model_name}' of compound '{canonical_name}' failed to load."
+                    )
+                compound_sessions[sub_model_name] = sub_session
+
+            # Purge non-active restorers once the entire compound pipeline is safely resident
+            if all_successful:
+                self.purge_unused_restorers()
+
+            return compound_sessions if all_successful else None
+
         with self.model_lock:
-            if self.models.get(model_name):
-                return self.models[model_name]
+            if self.models.get(canonical_name):
+                return self.models[canonical_name]
 
             model_instance = None
-            onnx_path = self.models_path.get(model_name)
+            onnx_path = self.models_path.get(canonical_name)
             if not onnx_path:
                 print(
-                    f"[ERROR] Model path for '{model_name}' not found in models_data."
+                    f"[ERROR] Model path for '{canonical_name}' not found in models_data."
                 )
                 return None
 
             # Some models need a shape-inferred graph before the TensorRT EP can
             # build an engine. This transparently swaps in a cached sidecar; the
             # original path stays untouched for download/integrity checks.
-            onnx_path = self._ensure_trt_ready_onnx(model_name, onnx_path)
+            onnx_path = self._ensure_trt_ready_onnx(canonical_name, onnx_path)
 
             build_was_triggered = (
                 False  # MP-05: flag to track if build dialog was shown
@@ -576,22 +617,22 @@ class ModelsProcessor(QtCore.QObject):
             model_trt_options = dict(self.trt_ep_options)
 
             # --- DETECT TRT CACHE STATE ---
-            cache_state = self._check_tensorrt_cache_state(model_name, onnx_path)
+            cache_state = self._check_tensorrt_cache_state(canonical_name, onnx_path)
 
             if cache_state == "LEGACY":
                 print(
-                    f"[INFO] Legacy TRT cache detected for {model_name}. Bypassing explicit prefix."
+                    f"[INFO] Legacy TRT cache detected for {canonical_name}. Bypassing explicit prefix."
                 )
                 # Remove prefix so ONNX Runtime loads generic TensorrtExecutionProvider_ files
                 model_trt_options.pop("trt_engine_cache_prefix", None)
             else:
                 # For EXPLICIT caches or brand new builds (None), strictly set custom prefix
-                model_trt_options["trt_engine_cache_prefix"] = model_name
+                model_trt_options["trt_engine_cache_prefix"] = canonical_name
 
             # Check if the model is explicitly marked as safe for FP16 in models_data.py
-            if model_name in fp16_safe_models_list:
+            if canonical_name in fp16_safe_models_list:
                 model_trt_options["trt_fp16_enable"] = True
-                print(f"[INFO] FP16 Acceleration ENABLED for {model_name}")
+                print(f"[INFO] FP16 Acceleration ENABLED for {canonical_name}")
             else:
                 model_trt_options["trt_fp16_enable"] = False
 
@@ -622,7 +663,7 @@ class ModelsProcessor(QtCore.QObject):
                     # If no engine config file or cache file exists run the probe
                     if not cache_is_valid:
                         print(
-                            f"[INFO] TensorRT load detected for {model_name}. Running isolated probe..."
+                            f"[INFO] TensorRT load detected for {canonical_name}. Running isolated probe..."
                         )
 
                         try:
@@ -648,7 +689,7 @@ class ModelsProcessor(QtCore.QObject):
 
                             for attempt in range(max_retries):
                                 print(
-                                    f"[INFO] Probe attempt {attempt + 1} of {max_retries} for {model_name}..."
+                                    f"[INFO] Probe attempt {attempt + 1} of {max_retries} for {canonical_name}..."
                                 )
 
                                 # Use 'spawn' context for CUDA/TRT safety
@@ -675,14 +716,14 @@ class ModelsProcessor(QtCore.QObject):
 
                                     if probe_process.is_alive():
                                         print(
-                                            f"[ERROR] Probe process for {model_name} timed out! Terminating."
+                                            f"[ERROR] Probe process for {canonical_name} timed out! Terminating."
                                         )
                                         probe_process.terminate()
                                         probe_process.join()
 
                                         # Clean up corrupted caches caused by the timeout before raising
                                         print(
-                                            f"[INFO] Cleaning up corrupted TensorRT cache for {model_name} due to timeout..."
+                                            f"[INFO] Cleaning up corrupted TensorRT cache for {canonical_name} due to timeout..."
                                         )
                                         self._clean_tensorrt_cache(
                                             onnx_path, model_trt_options
@@ -700,7 +741,7 @@ class ModelsProcessor(QtCore.QObject):
 
                                 if exitcode == 0:
                                     print(
-                                        f"[INFO] Probe successful for {model_name}. Cache should be built."
+                                        f"[INFO] Probe successful for {canonical_name}. Cache should be built."
                                     )
                                     probe_successful = True
                                     break  # Exit the retry loop on success
@@ -711,7 +752,7 @@ class ModelsProcessor(QtCore.QObject):
 
                                     # Wipe corrupted artifacts before attempting the next retry
                                     print(
-                                        f"[INFO] Cleaning up potentially corrupted TensorRT cache for {model_name}..."
+                                        f"[INFO] Cleaning up potentially corrupted TensorRT cache for {canonical_name}..."
                                     )
                                     self._clean_tensorrt_cache(
                                         onnx_path, model_trt_options
@@ -731,12 +772,14 @@ class ModelsProcessor(QtCore.QObject):
                             if build_was_triggered:
                                 self.hide_build_dialog.emit()
 
-                            print(f"[ERROR] Isolated probe failed for {model_name}.")
+                            print(
+                                f"[ERROR] Isolated probe failed for {canonical_name}."
+                            )
                             print(
                                 "[ERROR] The model will not be loaded. This is likely a fatal TensorRT/CUDA error."
                             )
                             traceback.print_exc()
-                            self.models[model_name] = (
+                            self.models[canonical_name] = (
                                 None  # Ensure it's marked as not loaded
                             )
                             return None  # Abort the load
@@ -745,11 +788,11 @@ class ModelsProcessor(QtCore.QObject):
             try:
                 # MP-01: Double-checked load after re-acquiring the lock.
                 # Another thread may have loaded this model while we were in the probe.
-                if self.models.get(model_name):
+                if self.models.get(canonical_name):
                     print(
-                        f"[INFO] Skipped loading: {model_name} is already loaded in memory (post-probe check)."
+                        f"[INFO] Skipped loading: {canonical_name} is already loaded in memory (post-probe check)."
                     )
-                    return self.models.get(model_name)
+                    return self.models.get(canonical_name)
 
                 if session_options is None:
                     session_options = onnxruntime.SessionOptions()
@@ -773,18 +816,21 @@ class ModelsProcessor(QtCore.QObject):
                     # Check cache AGAIN.
                     # If the probe succeeded BUT the cache STILL doesn't exist,
                     # it's a "Lazy Build" model.
-                    if self._check_tensorrt_cache_state(model_name, onnx_path) is None:
+                    if (
+                        self._check_tensorrt_cache_state(canonical_name, onnx_path)
+                        is None
+                    ):
                         print(
-                            f"[INFO] Model {model_name} requires a lazy build (engine not found after probe)."
+                            f"[INFO] Model {canonical_name} requires a lazy build (engine not found after probe)."
                         )
-                        self.models_pending_build.add(model_name)
+                        self.models_pending_build.add(canonical_name)
 
-                self.models[model_name] = model_instance
+                self.models[canonical_name] = model_instance
                 print(
-                    f"[INFO] Loading model: {model_name} with provider: {self.provider_name}"
+                    f"[INFO] Loading model: {canonical_name} with provider: {self.provider_name}"
                 )
-                if model_name == "Inswapper128":
-                    graph = onnx.load(self.models_path[model_name]).graph
+                if canonical_name == "Inswapper128":
+                    graph = onnx.load(self.models_path[canonical_name]).graph
                     emap_initializer = None
                     for initializer in graph.initializer:
                         if initializer.name == "emap":
@@ -798,16 +844,22 @@ class ModelsProcessor(QtCore.QObject):
                     # MP-17: release large ONNX graph object after emap extraction
                     del graph
                     gc.collect()
+
+                # If an atomic restorer was loaded, purge any previously loaded restorers that are no longer active
+                if canonical_name in restorer_model_mapping.values():
+                    self.purge_unused_restorers()
+
                 return model_instance
 
             except Exception:
-                # This catch is still valuable for non-fatal errors
-                print(f"[ERROR] Failed to load model {model_name} (even after probe).")
+                print(
+                    f"[ERROR] Failed to load model {canonical_name} (even after probe)."
+                )
                 traceback.print_exc()
                 if model_instance is not None:
                     del model_instance
                     gc.collect()
-                self.models[model_name] = None
+                self.models[canonical_name] = None
                 return None
 
             finally:
@@ -962,65 +1014,131 @@ class ModelsProcessor(QtCore.QObject):
                 if torch.cuda.is_available():
                     torch.cuda.empty_cache()
 
-    def unload_model(self, model_name_to_unload, force_immediate=False):
+    def unload_model(
+        self,
+        model_name_to_unload: str | tuple[str, ...] | list[str],
+        force_immediate: bool = False,
+    ) -> None:
         """
-        Unloads a single ONNX model from memory.
+        Unloads a single ONNX model, collection of models, or compound pipeline from memory.
+        Canonicalizes UI display names and decomposes compound multi-model architectures.
+        """
+        # Defensive recursion: unpack sequence collections
+        if isinstance(model_name_to_unload, (tuple, list, set, frozenset)):
+            for sub_name in model_name_to_unload:
+                self.unload_model(sub_name, force_immediate=force_immediate)
+            return
 
-        Handles the ``self.models`` (ONNX) dictionary. Respects the KeepModelsAliveToggle
-        control unless a force-unload is in progress. Frees the Python object, runs
-        gc.collect(), and clears the CUDA cache when something was actually unloaded.
-        """
-        # Check if unloading should be skipped
         if not self.force_unload_in_progress:
             if self.main_window.control.get("KeepModelsAliveToggle", False):
                 return  # Skip unloading
 
-        # --- SMART UNLOAD: Intercept if video is playing ---
+        canonical_name: str = restorer_model_mapping.get(
+            model_name_to_unload, model_name_to_unload
+        )
+
+        # Decompose compound pipelines into atomic sub-models
+        if canonical_name in compound_models_mapping:
+            if not force_immediate and not self.force_unload_in_progress:
+                vp = getattr(self.main_window, "video_processor", None)
+                if vp and getattr(vp, "processing", False):
+                    target_frame = getattr(vp, "current_frame_number", 0) + 1
+                    with self.model_lock:
+                        self.deferred_unloads[canonical_name] = {
+                            "type": "onnx",
+                            "target_frame": target_frame,
+                        }
+                    print(
+                        f"[INFO] Smart Unload: Deferring compound '{canonical_name}' unload after frame {target_frame}"
+                    )
+                    return
+
+            for sub_name in compound_models_mapping[canonical_name]:
+                self.unload_model(sub_name, force_immediate=force_immediate)
+            return
+
+        # Smart Unload: Intercept if video is playing
         if not force_immediate and not self.force_unload_in_progress:
             vp = getattr(self.main_window, "video_processor", None)
             if vp and getattr(vp, "processing", False):
-                # Video is playing, get the feeder's current frame and defer
                 target_frame = getattr(vp, "current_frame_number", 0) + 1
                 with self.model_lock:
-                    self.deferred_unloads[model_name_to_unload] = {
+                    self.deferred_unloads[canonical_name] = {
                         "type": "onnx",
                         "target_frame": target_frame,
                     }
                 print(
-                    f"[INFO] Smart Unload: Deferring ONNX '{model_name_to_unload}' unload after frame {target_frame}"
+                    f"[INFO] Smart Unload: Deferring ONNX '{canonical_name}' unload after frame {target_frame}"
                 )
                 return
 
         with self.model_lock:
-            unloaded = False
+            unloaded: bool = False
 
-            # Handle ONNX models (for CUDA, CPU, and TensorRT providers)
-            if model_name_to_unload and model_name_to_unload in self.models:
-                model_instance = self.models[model_name_to_unload]
+            if canonical_name and canonical_name in self.models:
+                model_instance = self.models[canonical_name]
 
                 if model_instance is not None:
-                    print(f"[INFO] Unloading ONNX model: {model_name_to_unload}")
+                    print(f"[INFO] Unloading ONNX model: {canonical_name}")
                     # MP-06: set dict entry to None first, then del the instance
-                    self.models[model_name_to_unload] = None
+                    self.models[canonical_name] = None
                     # Explicitly delete the object to trigger its __del__ method
                     del model_instance
                     unloaded = True
                 else:
-                    self.models[model_name_to_unload] = None
+                    self.models[canonical_name] = None
 
             if unloaded:
                 gc.collect()
                 if torch.cuda.is_available():
                     torch.cuda.empty_cache()
 
-    def is_model_active_in_ui(self, model_name: str) -> bool:
+    def purge_unused_restorers(self) -> None:
         """
-        Live Verification JIT: Checks the UI state dynamically to see if a model is still needed.
-        Used exclusively before a deferred unload to prevent accidental purging.
+        Scans all loaded face restorer models against current UI state and unloads any that
+        are not actively selected in Slot 1 or Slot 2 across any face or global configuration.
+        """
+        all_restorers = set(restorer_model_mapping.values())
+        with self.model_lock:
+            for canonical_name in all_restorers:
+                if not isinstance(canonical_name, str):
+                    continue
+
+                if canonical_name in compound_models_mapping:
+                    is_loaded = any(
+                        self.models.get(sub) is not None
+                        for sub in compound_models_mapping[canonical_name]
+                    )
+                else:
+                    is_loaded = self.models.get(canonical_name) is not None
+
+                if is_loaded and not self.is_model_active_in_ui(canonical_name):
+                    print(
+                        f"[INFO] Restorer '{canonical_name}' is no longer active in UI. Purging from VRAM."
+                    )
+                    self.unload_model(canonical_name, force_immediate=True)
+
+    def is_model_active_in_ui(
+        self, model_name: str | tuple[str, ...] | list[str]
+    ) -> bool:
+        """
+        Live Verification JIT: Checks UI state dynamically before a deferred unload or purge.
+        Accurately inspects default_parameters, per-face parameters, and control dicts.
         """
         from app.ui.widgets.models_toggle_data import MODELS_TOGGLE_MAP
 
-        # Thread Safety: Use dict() to safely create shallow copies and avoid 'dictionary changed size' errors
+        # Defensive recursion: if a collection of model names is passed, check if any is active
+        if isinstance(model_name, (tuple, list, set, frozenset)):
+            return any(self.is_model_active_in_ui(m) for m in model_name)
+
+        default_params: Dict[str, Any] = {}
+        if hasattr(self.main_window, "default_parameters"):
+            dp = getattr(self.main_window, "default_parameters")
+            if hasattr(dp, "data") and isinstance(dp.data, dict):
+                default_params = dict(dp.data)
+            elif isinstance(dp, dict):
+                default_params = dict(dp)
+
         try:
             params = dict(getattr(self.main_window, "parameters", {}))
             ctrl = dict(getattr(self.main_window, "control", {}))
@@ -1028,60 +1146,76 @@ class ModelsProcessor(QtCore.QObject):
             params = getattr(self.main_window, "parameters", {})
             ctrl = getattr(self.main_window, "control", {})
 
-        # Create a unified flat dictionary for global lookups
-        live_global = (
-            {**params, **ctrl}
-            if isinstance(params, dict) and isinstance(ctrl, dict)
-            else params
-        )
+        live_global: Dict[str, Any] = {
+            **default_params,
+            **(ctrl if isinstance(ctrl, dict) else {}),
+            **(params if isinstance(params, dict) else {}),
+        }
 
-        # 1. SPECIAL CASE: FACE RESTORERS
-        if hasattr(self.main_window.function_worker, "face_restorers") and hasattr(
-            self.main_window.function_worker.face_restorers, "model_map"
-        ):
-            expected_combo = None
-            for (
-                combo_str,
-                ort_name,
-            ) in self.main_window.function_worker.face_restorers.model_map.items():
-                if ort_name == model_name:
-                    expected_combo = combo_str
+        def _is_truthy(val: Any) -> bool:
+            if isinstance(val, str):
+                return val.lower() in ("true", "1", "yes", "on")
+            return bool(val)
+
+        # 1. SPECIAL CASE: FACE RESTORERS (Canonical & Compound Resolution)
+        expected_combo: Optional[str] = None
+
+        if model_name in compound_models_mapping:
+            expected_combo = model_name
+        else:
+            for compound_parent, sub_models in compound_models_mapping.items():
+                if model_name in sub_models:
+                    expected_combo = compound_parent
                     break
 
-            if expected_combo is not None:
+        if expected_combo is None:
+            for ui_combo, canonical in restorer_model_mapping.items():
+                if canonical == model_name or ui_combo == model_name:
+                    expected_combo = ui_combo
+                    break
 
-                def is_restorer_requested(p) -> bool:
-                    if not hasattr(p, "get"):
-                        return False
+        if expected_combo is not None:
 
-                    if (
-                        p.get("FaceRestorerEnableToggle", False)
-                        and p.get("FaceRestorerTypeSelection") == expected_combo
-                    ):
-                        return True
-                    if p.get("FaceRestorerEnable2Toggle", False) and not p.get(
-                        "FaceRestorerEnable2EndToggle", False
-                    ):
-                        if p.get("FaceRestorerType2Selection") == expected_combo:
-                            return True
-                    if (
-                        p.get("FaceRestorerEnable2EndToggle", False)
-                        and p.get("FaceRestorerType2Selection") == expected_combo
-                    ):
-                        return True
+            def is_restorer_requested(p: Any) -> bool:
+                if not hasattr(p, "get"):
                     return False
 
-                # 1. Global check
-                if is_restorer_requested(live_global):
+                # Slot 1 Verification: Toggle enabled AND combo selection matches
+                if (
+                    _is_truthy(p.get("FaceRestorerEnableToggle", False))
+                    and p.get("FaceRestorerTypeSelection") == expected_combo
+                ):
                     return True
 
-                # 2. Exhaustive verification for each active face in memory
-                if hasattr(params, "items"):
-                    for face_id, face_params in params.items():
+                # Slot 2 Verification: Toggle enabled AND combo selection matches
+                if (
+                    _is_truthy(p.get("FaceRestorerEnable2Toggle", False))
+                    and p.get("FaceRestorerType2Selection") == expected_combo
+                ):
+                    return True
+
+                return False
+
+            if is_restorer_requested(live_global):
+                return True
+            if is_restorer_requested(default_params):
+                return True
+            if is_restorer_requested(ctrl):
+                return True
+
+            # Exhaustive verification for each active face in memory
+            if hasattr(params, "values"):
+                for face_params in params.values():
+                    if isinstance(face_params, dict):
                         if is_restorer_requested(face_params):
                             return True
+                    elif hasattr(face_params, "data") and isinstance(
+                        face_params.data, dict
+                    ):
+                        if is_restorer_requested(face_params.data):
+                            return True
 
-                return False  # No face requested this restorer, we can safely unload it
+            return False  # No face requested this restorer, we can safely unload it
 
         # 2. GENERAL CASE: MODELS TOGGLE MAP
         toggles = MODELS_TOGGLE_MAP.get(model_name)
@@ -1091,16 +1225,19 @@ class ModelsProcessor(QtCore.QObject):
         for toggle in toggles:
             target_key = toggle.key
 
-            if hasattr(ctrl, "get") and ctrl.get(target_key, False):
+            if hasattr(ctrl, "get") and _is_truthy(ctrl.get(target_key, False)):
+                return True
+            if hasattr(params, "get") and _is_truthy(params.get(target_key, False)):
+                return True
+            if hasattr(default_params, "get") and _is_truthy(
+                default_params.get(target_key, False)
+            ):
                 return True
 
-            if hasattr(params, "get") and params.get(target_key, False):
-                return True
-
-            if hasattr(params, "items"):
-                for face_id, face_params in params.items():
-                    if hasattr(face_params, "get") and face_params.get(
-                        target_key, False
+            if hasattr(params, "values"):
+                for face_params in params.values():
+                    if hasattr(face_params, "get") and _is_truthy(
+                        face_params.get(target_key, False)
                     ):
                         return True
 

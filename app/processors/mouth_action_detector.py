@@ -157,9 +157,7 @@ class MouthActionDetector:
                 try:
                     inst._session.close()
                 except Exception as exc:  # noqa: BLE001
-                    logger.debug(
-                        "Error closing mouth action detector session: %s", exc
-                    )
+                    logger.debug("Error closing mouth action detector session: %s", exc)
             inst._session = None
             inst._graph = None
             inst._inp_tensor = None
