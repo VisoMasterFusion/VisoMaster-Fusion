@@ -780,19 +780,22 @@ def clear_all_target_media(main_window: "MainWindow") -> bool:
 
     clear_stop_loading_target_media(main_window, clear_list=False)
 
-    # Stop processor first so nothing tries to read a cleared path
-    vp = main_window.video_processor
-    vp.stop_processing()
-    vp.media_path = None
-    vp.file_type = None
-    vp.current_frame = None
-    if vp.media_capture:
-        try:
-            vp.media_capture.release()
-        except Exception:
-            pass
-        vp.media_capture = None
-    vp._clear_single_frame_preview_caches()
+    # Stop processor first so nothing tries to read a cleared path. Some
+    # lightweight callers only provide the target-media panel, so keep the
+    # processor cleanup optional.
+    vp = getattr(main_window, "video_processor", None)
+    if vp is not None:
+        vp.stop_processing()
+        vp.media_path = None
+        vp.file_type = None
+        vp.current_frame = None
+        if vp.media_capture:
+            try:
+                vp.media_capture.release()
+            except Exception:
+                pass
+            vp.media_capture = None
+        vp._clear_single_frame_preview_caches()
 
     # Don't auto-readd these while they still exist on disk
     main_window._target_folder_ignored_paths = _existing_target_media_paths(main_window)
@@ -809,14 +812,23 @@ def clear_all_target_media(main_window: "MainWindow") -> bool:
     main_window.selected_video_button = None
 
     # Ensure preview is cleared even if nothing was selected
-    main_window.scene.clear()
-    main_window.graphicsViewFrame.update()
+    scene = getattr(main_window, "scene", None)
+    if scene is not None:
+        scene.clear()
+    graphics_view = getattr(main_window, "graphicsViewFrame", None)
+    if graphics_view is not None:
+        graphics_view.update()
     if hasattr(main_window, "timelineContainer"):
         main_window.timelineContainer.thumbnail_track.request_thumbnails()
-    main_window.videoSeekSlider.blockSignals(True)
-    main_window.videoSeekSlider.setMaximum(1)
-    main_window.videoSeekSlider.setValue(0)
-    main_window.videoSeekSlider.blockSignals(False)
+    video_seek_slider = getattr(main_window, "videoSeekSlider", None)
+    if video_seek_slider is not None:
+        video_seek_slider.blockSignals(True)
+        video_seek_slider.setMaximum(1)
+        video_seek_slider.setValue(0)
+        video_seek_slider.blockSignals(False)
+
+    _set_path_line_edit_value(main_window.targetVideosPathLineEdit, "")
+    main_window.last_target_media_folder_path = ""
 
     main_window.placeholder_update_signal.emit(main_window.targetVideosList, False)
 
@@ -1541,7 +1553,11 @@ def set_target_folder_auto_watch(main_window: "MainWindow", enabled: bool):
     timer = getattr(main_window, "_target_folder_watch_timer", None)
 
     if watcher is None:
-        watcher = QtCore.QFileSystemWatcher(main_window)
+        try:
+            watcher = QtCore.QFileSystemWatcher(main_window)
+        except TypeError:
+            # Test doubles and non-Qt callers cannot be used as QObject parents.
+            watcher = QtCore.QFileSystemWatcher()
         main_window._target_folder_watcher = watcher
 
         def _on_dir_changed(path: str):
@@ -1552,7 +1568,10 @@ def set_target_folder_auto_watch(main_window: "MainWindow", enabled: bool):
         watcher.directoryChanged.connect(_on_dir_changed)
 
     if timer is None:
-        timer = QtCore.QTimer(main_window)
+        try:
+            timer = QtCore.QTimer(main_window)
+        except TypeError:
+            timer = QtCore.QTimer()
         timer.setSingleShot(True)
         timer.setInterval(800)
         timer.timeout.connect(partial(scan_and_append_new_target_media, main_window))

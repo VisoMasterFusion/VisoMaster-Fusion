@@ -1,17 +1,18 @@
-"""Mouth action detector: TensorFlow-based scene-level detector.
+"""Mouth action detector: ONNX Runtime-based scene-level detector.
 
-Uses a frozen-graph object detection model to score frames for mouth
-action activity.  The model returns confidence scores per detected class;
-this module surfaces the highest confidence for the action label of
-interest (label index 1 in the bundled labels file).
+Uses a small object detection model to score frames for mouth action activity.
+The model returns confidence scores per detected class; this module surfaces
+the highest confidence for the action label of interest (label index 1 in the
+bundled labels file).
 
-Designed for real-time use: a single shared graph + persistent session are
-reused across frames; a threading.Lock serialises inference so the object
-is safe to call from multiple FrameWorker threads.
+Designed for real-time use: a single shared ONNX Runtime session is reused
+across frames; a threading.Lock serialises inference so the object is safe to
+call from multiple FrameWorker threads.
 """
 
 from __future__ import annotations
 
+import gc
 import logging
 import os
 import threading
@@ -26,7 +27,7 @@ logger = logging.getLogger(__name__)
 # ---------------------------------------------------------------------------
 _PROJECT_ROOT = os.path.normpath(os.path.join(os.path.dirname(__file__), "..", ".."))
 _MODEL_DIR = os.path.join(_PROJECT_ROOT, "model_assets", "mouth_action_detector")
-_MODEL_PATH = os.path.join(_MODEL_DIR, "model.pb")
+_MODEL_PATH = os.path.join(_MODEL_DIR, "model.onnx")
 
 # Label index for the mouth action class of interest ("oral" in the source labels)
 _TRIGGER_LABEL_INDEX: int = 1
@@ -36,7 +37,7 @@ _DETECTION_INPUT_SIZE: tuple[int, int] = (320, 320)
 
 
 class MouthActionDetector:
-    """Singleton wrapper around the TF frozen-graph detection model.
+    """Singleton wrapper around the ONNX mouth-action detection model.
 
     Usage::
 
@@ -54,13 +55,12 @@ class MouthActionDetector:
 
     # ------------------------------------------------------------------
     def __init__(self) -> None:
-        self._graph: Optional[Any] = None  # tf.Graph once loaded
-        self._session: Optional[Any] = None  # tf.compat.v1.Session once loaded
-        self._inp_tensor: Optional[Any] = None
-        self._boxes_tensor: Optional[Any] = None
-        self._scores_tensor: Optional[Any] = None
-        self._classes_tensor: Optional[Any] = None
-        self._infer_lock = threading.Lock()  # serialise concurrent inference calls
+        self._session: Optional[Any] = None
+        self._input_name: Optional[str] = None
+        self._boxes_name: Optional[str] = None
+        self._scores_name: Optional[str] = None
+        self._classes_name: Optional[str] = None
+        self._infer_lock = threading.Lock()
         self._load_error: Optional[str] = None
 
     # ------------------------------------------------------------------
@@ -76,31 +76,63 @@ class MouthActionDetector:
         return cls._instance
 
     # ------------------------------------------------------------------
-    def _lazy_load(self) -> None:
-        """Load the frozen graph and open a persistent inference session."""
-        # Suppress TF C++ and Python verbosity.  These env-vars must be set
-        # before the tensorflow module is imported (they control the C library).
-        os.environ.setdefault("TF_CPP_MIN_LOG_LEVEL", "3")
-        os.environ.setdefault("TF_ENABLE_ONEDNN_OPTS", "0")
+    @staticmethod
+    def _providers() -> list[Any]:
+        """Return the best available ONNX Runtime provider list."""
+        try:
+            import onnxruntime as ort
+        except ImportError:
+            return []
+
+        available = set(ort.get_available_providers())
+        requested = os.environ.get("VISOMASTER_MOUTH_ACTION_PROVIDER", "").strip()
+
+        def _fallbacks() -> list[Any]:
+            providers: list[Any] = []
+            if "CUDAExecutionProvider" in available:
+                providers.append("CUDAExecutionProvider")
+            providers.append("CPUExecutionProvider")
+            return providers
+
+        if requested:
+            normalized = requested.lower()
+            if (
+                normalized in {"tensorrt", "trt"}
+                and "TensorrtExecutionProvider" in available
+            ):
+                return ["TensorrtExecutionProvider", *_fallbacks()]
+            if normalized == "cuda" and "CUDAExecutionProvider" in available:
+                return ["CUDAExecutionProvider", "CPUExecutionProvider"]
+            if normalized == "cpu":
+                return ["CPUExecutionProvider"]
 
         try:
-            import tensorflow as tf
+            from app.processors.utils import platform_support
+
+            default_provider = platform_support.default_execution_provider()
+        except Exception:  # noqa: BLE001
+            default_provider = "CPU"
+
+        if (
+            default_provider in {"TensorRT", "TensorRT-Engine"}
+            and "TensorrtExecutionProvider" in available
+        ):
+            return ["TensorrtExecutionProvider", *_fallbacks()]
+        if default_provider == "CUDA" and "CUDAExecutionProvider" in available:
+            return ["CUDAExecutionProvider", "CPUExecutionProvider"]
+        return ["CPUExecutionProvider"]
+
+    # ------------------------------------------------------------------
+    def _lazy_load(self) -> None:
+        """Load the ONNX model and open a persistent inference session."""
+        try:
+            import onnxruntime as ort
         except ImportError:
             self._load_error = (
-                "tensorflow is not installed — mouth action detection disabled. "
-                "Run: pip install tensorflow"
+                "onnxruntime is not installed; mouth action detection disabled."
             )
             logger.warning(self._load_error)
             return
-
-        # Silence Python-level TF and absl loggers
-        tf.get_logger().setLevel("ERROR")
-        try:
-            import absl.logging as _absl_log
-
-            _absl_log.set_verbosity(_absl_log.ERROR)
-        except Exception:  # noqa: BLE001
-            pass
 
         if not os.path.isfile(_MODEL_PATH):
             self._load_error = (
@@ -110,25 +142,39 @@ class MouthActionDetector:
             return
 
         try:
-            with tf.io.gfile.GFile(_MODEL_PATH, "rb") as f:
-                graph_def = tf.compat.v1.GraphDef()
-                graph_def.ParseFromString(f.read())
+            session_options = ort.SessionOptions()
+            session_options.log_severity_level = 4
+            providers = self._providers()
+            if not providers:
+                raise RuntimeError("no ONNX Runtime execution providers available")
 
-            graph = tf.Graph()
-            with graph.as_default():
-                tf.compat.v1.import_graph_def(graph_def, name="")
+            session = ort.InferenceSession(
+                _MODEL_PATH,
+                sess_options=session_options,
+                providers=providers,
+            )
+            output_names = {output.name for output in session.get_outputs()}
+            required_outputs = {
+                "detected_boxes:0",
+                "detected_scores:0",
+                "detected_classes:0",
+            }
+            missing_outputs = sorted(required_outputs - output_names)
+            if missing_outputs:
+                raise RuntimeError(
+                    f"mouth action ONNX model missing outputs: {missing_outputs}"
+                )
 
-            cfg = tf.compat.v1.ConfigProto()
-            cfg.gpu_options.allow_growth = True
-            session = tf.compat.v1.Session(graph=graph, config=cfg)
-
-            self._graph = graph
             self._session = session
-            self._inp_tensor = graph.get_tensor_by_name("image_tensor:0")
-            self._boxes_tensor = graph.get_tensor_by_name("detected_boxes:0")
-            self._scores_tensor = graph.get_tensor_by_name("detected_scores:0")
-            self._classes_tensor = graph.get_tensor_by_name("detected_classes:0")
-            logger.info("Mouth action detector loaded from %s", _MODEL_PATH)
+            self._input_name = session.get_inputs()[0].name
+            self._boxes_name = "detected_boxes:0"
+            self._scores_name = "detected_scores:0"
+            self._classes_name = "detected_classes:0"
+            logger.info(
+                "Mouth action detector loaded from %s with providers %s",
+                _MODEL_PATH,
+                session.get_providers(),
+            )
 
         except Exception as exc:  # noqa: BLE001
             self._load_error = f"Failed to load mouth action model: {exc}"
@@ -137,14 +183,7 @@ class MouthActionDetector:
     # ------------------------------------------------------------------
     @classmethod
     def unload(cls) -> None:
-        """Release the loaded model, freeing its GPU/CPU memory.
-
-        Closes the TF session, drops the graph and tensor references, and
-        clears the singleton so a later call to ``get()`` performs a fresh
-        ``_lazy_load()``. Safe to call even if nothing was ever loaded
-        (e.g. the feature was toggled off before first use, or the model
-        failed to load).
-        """
+        """Release the loaded model and clear the singleton."""
         with cls._class_lock:
             inst = cls._instance
             cls._instance = None
@@ -159,13 +198,10 @@ class MouthActionDetector:
                 except Exception as exc:  # noqa: BLE001
                     logger.debug("Error closing mouth action detector session: %s", exc)
             inst._session = None
-            inst._graph = None
-            inst._inp_tensor = None
-            inst._boxes_tensor = None
-            inst._scores_tensor = None
-            inst._classes_tensor = None
-
-        import gc
+            inst._input_name = None
+            inst._boxes_name = None
+            inst._scores_name = None
+            inst._classes_name = None
 
         gc.collect()
         logger.info("Mouth action detector unloaded.")
@@ -189,7 +225,7 @@ class MouthActionDetector:
             frame_chw_uint8: Frame as a ``(C, H, W)`` uint8 NumPy array (RGB).
 
         Returns:
-            Float in ``[0.0, 1.0]``.  Returns ``0.0`` when the model is
+            Float in ``[0.0, 1.0]``. Returns ``0.0`` when the model is
             unavailable, inference fails, or no trigger detections are found.
         """
         if not self.available:
@@ -198,26 +234,29 @@ class MouthActionDetector:
         try:
             import cv2
 
-            # CHW RGB → HWC BGR → resize to model input size
+            # CHW RGB -> HWC BGR -> resize to model input size
             hwc_rgb = np.transpose(frame_chw_uint8, (1, 2, 0))
             hwc_bgr = hwc_rgb[..., ::-1]
             resized = cv2.resize(hwc_bgr, _DETECTION_INPUT_SIZE).astype(np.float32)
             batch = resized[np.newaxis, ...]  # (1, H, W, 3)
 
-            assert self._session is not None  # guarded by self.available check above
+            assert self._session is not None
+            assert self._input_name is not None
+            assert self._boxes_name is not None
+            assert self._scores_name is not None
+            assert self._classes_name is not None
             with self._infer_lock:
                 _, scores, classes = self._session.run(
-                    [self._boxes_tensor, self._scores_tensor, self._classes_tensor],
-                    feed_dict={self._inp_tensor: batch},
+                    [self._boxes_name, self._scores_name, self._classes_name],
+                    {self._input_name: batch},
                 )
 
         except Exception as exc:  # noqa: BLE001
             logger.debug("Mouth action inference error: %s", exc)
             return 0.0
 
-        # Find the highest confidence detection for the trigger label
         best: float = 0.0
-        for s, c in zip(scores, classes):
+        for s, c in zip(np.ravel(scores), np.ravel(classes)):
             if int(c) == _TRIGGER_LABEL_INDEX:
                 best = max(best, float(s))
         return best

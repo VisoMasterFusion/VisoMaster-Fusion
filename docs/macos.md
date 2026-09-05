@@ -38,8 +38,8 @@ platforms:
 The app already treats TensorRT as optional (`[WARN] No TensorRT Found`), so its
 absence is not fatal.
 
-`tensorflow`, `keras`, and `lightning` appear in `requirements_cu13.txt` but are
-never imported by `app/`, so they are omitted here.
+`lightning` appears in `requirements_cu13.txt` but is not used by the macOS
+runtime path, so it is omitted here.
 
 ## Execution providers
 
