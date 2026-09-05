@@ -1,6 +1,7 @@
 import json
+import math
 from pathlib import Path
-from typing import TYPE_CHECKING, Dict, Optional
+from typing import TYPE_CHECKING, Any, Dict, List, Optional, Tuple
 
 import torch
 import numpy as np
@@ -30,8 +31,8 @@ class FaceRestorers:
         self.function_worker = function_worker
         self.active_model_slot1: Optional[str] = None
         self.active_model_slot2: Optional[str] = None
-        self._warned_models: set[str] = set()  # To track warnings
-        self.model_map = {
+        self._warned_models: set[str] = set()
+        self.model_map: Dict[str, str] = {
             "GFPGAN-v1.4": "GFPGANv1.4",
             "GFPGAN-1024": "GFPGAN1024",
             "CodeFormer": "CodeFormer",
@@ -41,30 +42,34 @@ class FaceRestorers:
             "GPEN-2048": "GPENBFR2048",
             "RestoreFormer++": "RestoreFormerPlusPlus",
             "VQFR-v2": "VQFRv2",
-            "OSDFace": "OSDFacePromptEncoder",
+            "OSDFace": "OSDFace",
         }
+        self._osdface_alphas_cumprod: Optional[list[float]] = None
         self._osdface_timestep: Optional[int] = None
         self._osdface_alpha: Optional[float] = None
 
-    def unload_models(self):
-        """Unloads the restorer models held in both slots and resets state."""
-        if self.active_model_slot1:
-            self.models_processor.unload_model(self.active_model_slot1)
-            self.active_model_slot1 = None
-        if self.active_model_slot2:
-            self.models_processor.unload_model(self.active_model_slot2)
-            self.active_model_slot2 = None
-        for model_name in self.osdface_model_names:
-            self.models_processor.unload_model(model_name)
+    def unload_models(self) -> None:
+        """Unloads all restorer models from memory and resets cached schedule state."""
+        for restorer_name in set(self.model_map.values()):
+            if restorer_name == "OSDFace":
+                for sub_name in self.osdface_model_names:
+                    self.models_processor.unload_model(sub_name)
+            else:
+                self.models_processor.unload_model(restorer_name)
 
-    def _get_model_session(self, model_name: str):
+        self.active_model_slot1 = None
+        self.active_model_slot2 = None
+        self._osdface_timestep = None
+        self._osdface_alpha = None
+        self._osdface_alphas_cumprod = None
+
+    def _get_model_session(self, model_name: str) -> Optional[Any]:
         """
         Gets the model session by calling the centralized, provider-aware loader
         in ModelsProcessor. This ensures correct logging, caching, and provider handling.
         """
         # All complex logic is now delegated to the main loader.
         ort_session = self.models_processor.load_model(model_name)
-
         if not ort_session:
             if model_name not in self._warned_models:
                 print(
@@ -75,8 +80,8 @@ class FaceRestorers:
         return ort_session
 
     def _run_model_with_lazy_build_check(
-        self, model_name: str, ort_session, io_binding
-    ):
+        self, model_name: str, ort_session: Any, io_binding: Any
+    ) -> None:
         """
         Runs the ONNX session with IOBinding, handling TensorRT lazy build dialogs.
         This centralizes the try/finally logic for showing/hiding the build progress dialog
@@ -87,7 +92,9 @@ class FaceRestorers:
             ort_session: The ONNX Runtime session instance.
             io_binding: The pre-configured IOBinding object.
         """
-        is_lazy_build = self.models_processor.check_and_clear_pending_build(model_name)
+        is_lazy_build: bool = self.models_processor.check_and_clear_pending_build(
+            model_name
+        )
         if is_lazy_build:
             self.models_processor.show_build_dialog.emit(
                 "Finalizing TensorRT Build",
@@ -99,6 +106,60 @@ class FaceRestorers:
         finally:
             if is_lazy_build:
                 self.models_processor.hide_build_dialog.emit()
+
+    def _ensure_osdface_scheduler_loaded(self) -> Optional[List[float]]:
+        """Loads and caches the static alphas_cumprod schedule to prevent disk I/O during playback."""
+        if self._osdface_alphas_cumprod is not None:
+            return self._osdface_alphas_cumprod
+
+        scheduler_path = self.models_processor.models_path.get("OSDFaceScheduler")
+        if not scheduler_path:
+            if "OSDFaceScheduler" not in self._warned_models:
+                print("[WARN] OSDFace scheduler metadata path is not registered.")
+                self._warned_models.add("OSDFaceScheduler")
+            return None
+
+        sched_file = Path(scheduler_path)
+        if not sched_file.is_file():
+            if "OSDFaceScheduler" not in self._warned_models:
+                print(
+                    f"[WARN] OSDFace scheduler metadata file not found at: {scheduler_path}"
+                )
+                self._warned_models.add("OSDFaceScheduler")
+            return None
+
+        try:
+            scheduler_data = json.loads(sched_file.read_text(encoding="utf-8"))
+            alphas_cumprod = scheduler_data.get("alphas_cumprod")
+            if not isinstance(alphas_cumprod, list) or len(alphas_cumprod) == 0:
+                print(
+                    "[WARN] OSDFace scheduler metadata contains an invalid 'alphas_cumprod' schedule."
+                )
+                return None
+            self._osdface_alphas_cumprod = [float(a) for a in alphas_cumprod]
+            return self._osdface_alphas_cumprod
+        except Exception as exc:
+            print(f"[WARN] Failed to read OSDFace scheduler metadata: {exc}")
+            return None
+
+    def _get_osdface_alpha(self, timestep_value: int) -> Optional[Tuple[int, float]]:
+        """Returns the bounded timestep index and precomputed alpha from memory."""
+        if (
+            self._osdface_timestep is not None
+            and self._osdface_alpha is not None
+            and self._osdface_timestep == timestep_value
+        ):
+            return self._osdface_timestep, self._osdface_alpha
+
+        alphas_cumprod = self._ensure_osdface_scheduler_loaded()
+        if alphas_cumprod is None:
+            return None
+
+        timestep: int = max(0, min(int(timestep_value), len(alphas_cumprod) - 1))
+        alpha: float = alphas_cumprod[timestep]
+        self._osdface_timestep = timestep
+        self._osdface_alpha = alpha
+        return timestep, alpha
 
     @torch.no_grad()
     def apply_facerestorer(
@@ -117,6 +178,29 @@ class FaceRestorers:
         model_name_to_load = self.model_map.get(restorer_type)
         if not model_name_to_load:
             return swapped_face_upscaled
+
+        # --- Strict VRAM Lifecycle Management Across Slots ---
+        current_active = (
+            self.active_model_slot1 if slot_id == 1 else self.active_model_slot2
+        )
+        other_active = (
+            self.active_model_slot2 if slot_id == 1 else self.active_model_slot1
+        )
+
+        if current_active is not None and current_active != restorer_type:
+            if current_active != other_active:
+                if current_active == "OSDFace":
+                    for m_name in self.osdface_model_names:
+                        self.models_processor.unload_model(m_name)
+                else:
+                    prev_model = self.model_map.get(current_active)
+                    if prev_model and prev_model != "OSDFace":
+                        self.models_processor.unload_model(prev_model)
+
+        if slot_id == 1:
+            self.active_model_slot1 = restorer_type
+        else:
+            self.active_model_slot2 = restorer_type
 
         # If using a separate detection mode
         if restorer_det_type in ["Blend", "Reference"]:
@@ -207,16 +291,27 @@ class FaceRestorers:
                 antialias=False,
             )
             temp.clamp_(0.0, 1.0)
+        elif restorer_type == "OSDFace" and (temp.shape[-2], temp.shape[-1]) != (
+            512,
+            512,
+        ):
+            # OSDFace UNet strictly requires 64x64 latent -> 512x512 spatial input
+            temp = v2.functional.resize(
+                temp,
+                [512, 512],
+                interpolation=v2.InterpolationMode.BILINEAR,
+                antialias=False,
+            )
+            temp.clamp_(0.0, 1.0)
 
-        # Now safe to use inplace normalization since scaling math is clean
+        # In-place normalization [-1, 1]
         temp = v2.functional.normalize(
             temp, (0.5, 0.5, 0.5), (0.5, 0.5, 0.5), inplace=True
         )
-
         temp = torch.unsqueeze(temp, 0).contiguous()
 
         # Bindings
-        outpred = None
+        outpred: Optional[torch.Tensor] = None
 
         if restorer_type == "GFPGAN-v1.4":
             outpred = torch.empty(
@@ -296,18 +391,20 @@ class FaceRestorers:
                 dtype=torch.float32,
                 device=self.models_processor.device,
             ).contiguous()
-            self.run_OSDFace(
+            success: bool = self.run_OSDFace(
                 temp,
                 outpred,
                 timestep_value=osdface_timestep,
                 latent_strength=osdface_latent_strength,
             )
+            if not success:
+                # Immediate non-corrupting fallback if inference fails
+                return swapped_face_upscaled
 
         if outpred is None:
             return swapped_face_upscaled
 
-        # OPTIMIZED: Fused in-place math operations to save VRAM allocations.
-        # Math: ((x clamped [-1, 1]) + 1.0) * 127.5 is equivalent to /2 * 255.
+        # Fused in-place math: ((x clamped [-1, 1]) + 1.0) * 127.5 -> [0.0, 255.0]
         outpred = outpred.squeeze(0).clamp_(-1.0, 1.0).add_(1.0).mul_(127.5)
 
         # High-Fidelity Downscaling
@@ -328,8 +425,12 @@ class FaceRestorers:
                 .to(device=outpred.device, dtype=torch.float32, non_blocking=True)
                 .unsqueeze(0)
             )
+            # Correct 4D tensor unsqueeze for Kornia grid sample
             out_b = outpred.unsqueeze(0) if outpred.dim() == 3 else outpred
-            dsize = (swapped_face_upscaled.shape[1], swapped_face_upscaled.shape[2])
+            dsize: Tuple[int, int] = (
+                swapped_face_upscaled.shape[1],
+                swapped_face_upscaled.shape[2],
+            )
 
             outpred = kgm.warp_affine(
                 out_b,
@@ -340,9 +441,186 @@ class FaceRestorers:
                 align_corners=True,
             ).squeeze(0)
 
-        # Python's GC clears local variables instantaneously on return.
-        # Removing the explicit try/except `del` block saves CPU branching overhead.
+        elif restorer_type == "OSDFace" and (outpred.shape[-2], outpred.shape[-1]) != (
+            swapped_face_upscaled.shape[-2],
+            swapped_face_upscaled.shape[-1],
+        ):
+            # Scale back to original frame crop bounds if not using affine warping
+            outpred = v2.functional.resize(
+                outpred,
+                [swapped_face_upscaled.shape[-2], swapped_face_upscaled.shape[-1]],
+                interpolation=v2.InterpolationMode.BILINEAR,
+                antialias=True,
+            )
+
         return outpred
+
+    @torch.no_grad()
+    def run_OSDFace(
+        self,
+        image: torch.Tensor,
+        output: torch.Tensor,
+        timestep_value: int = 399,
+        latent_strength: float = 1.0,
+    ) -> bool:
+        """
+        Executes the One-Step Diffusion Face restoration pipeline.
+        Returns True if inference succeeded, or False on missing models / invalid metadata.
+        """
+        scheduler_state = self._get_osdface_alpha(int(timestep_value))
+        if scheduler_state is None:
+            return False
+        timestep_idx, alpha_value = scheduler_state
+        latent_strength_clamped: float = max(0.0, min(float(latent_strength), 1.0))
+
+        bind_device = self.models_processor.device
+        bind_device_type = self.models_processor.device_type
+        bind_device_id = self.models_processor.binding_device_id
+
+        # 1. Prompt Encoder (Maps image [-1, 1] to [0, 1])
+        prompt_input = image.mul(0.5).add(0.5).clamp_(0.0, 1.0).contiguous()
+        prompt_embeds = torch.empty(
+            (1, 77, 1024), dtype=torch.float32, device=bind_device
+        ).contiguous()
+
+        prompt_session = self._get_model_session("OSDFacePromptEncoder")
+        if prompt_session is None:
+            return False
+        io_binding_prompt = prompt_session.io_binding()
+        io_binding_prompt.bind_input(
+            name="lq_0_1",
+            device_type=bind_device_type,
+            device_id=bind_device_id,
+            element_type=np.float32,
+            shape=tuple(prompt_input.shape),
+            buffer_ptr=prompt_input.data_ptr(),
+        )
+        io_binding_prompt.bind_output(
+            name="prompt_embeds",
+            device_type=bind_device_type,
+            device_id=bind_device_id,
+            element_type=np.float32,
+            shape=tuple(prompt_embeds.shape),
+            buffer_ptr=prompt_embeds.data_ptr(),
+        )
+        self._run_model_with_lazy_build_check(
+            "OSDFacePromptEncoder", prompt_session, io_binding_prompt
+        )
+
+        # 2. VAE Encoder (Maps image [-1, 1] to latent space)
+        latent = torch.empty(
+            (1, 4, 64, 64), dtype=torch.float32, device=bind_device
+        ).contiguous()
+        vae_encoder_session = self._get_model_session("OSDFaceVAEEncoder")
+        if vae_encoder_session is None:
+            return False
+        io_binding_enc = vae_encoder_session.io_binding()
+        io_binding_enc.bind_input(
+            name="lq_neg1_1",
+            device_type=bind_device_type,
+            device_id=bind_device_id,
+            element_type=np.float32,
+            shape=tuple(image.shape),
+            buffer_ptr=image.data_ptr(),
+        )
+        io_binding_enc.bind_output(
+            name="latent",
+            device_type=bind_device_type,
+            device_id=bind_device_id,
+            element_type=np.float32,
+            shape=tuple(latent.shape),
+            buffer_ptr=latent.data_ptr(),
+        )
+        self._run_model_with_lazy_build_check(
+            "OSDFaceVAEEncoder", vae_encoder_session, io_binding_enc
+        )
+
+        # 3. UNet (Predicts epsilon noise conditioned on prompt and timestep)
+        noise_pred = torch.empty_like(latent).contiguous()
+        timestep_tensor = torch.tensor(
+            [timestep_idx], dtype=torch.int64, device=bind_device
+        ).contiguous()
+        unet_session = self._get_model_session("OSDFaceUNet")
+        if unet_session is None:
+            return False
+        io_binding_unet = unet_session.io_binding()
+        io_binding_unet.bind_input(
+            name="latent",
+            device_type=bind_device_type,
+            device_id=bind_device_id,
+            element_type=np.float32,
+            shape=tuple(latent.shape),
+            buffer_ptr=latent.data_ptr(),
+        )
+        io_binding_unet.bind_input(
+            name="timestep",
+            device_type=bind_device_type,
+            device_id=bind_device_id,
+            element_type=np.int64,
+            shape=tuple(timestep_tensor.shape),
+            buffer_ptr=timestep_tensor.data_ptr(),
+        )
+        io_binding_unet.bind_input(
+            name="prompt_embeds",
+            device_type=bind_device_type,
+            device_id=bind_device_id,
+            element_type=np.float32,
+            shape=tuple(prompt_embeds.shape),
+            buffer_ptr=prompt_embeds.data_ptr(),
+        )
+        io_binding_unet.bind_output(
+            name="noise_pred",
+            device_type=bind_device_type,
+            device_id=bind_device_id,
+            element_type=np.float32,
+            shape=tuple(noise_pred.shape),
+            buffer_ptr=noise_pred.data_ptr(),
+        )
+        self._run_model_with_lazy_build_check(
+            "OSDFaceUNet", unet_session, io_binding_unet
+        )
+
+        # 4. Fused Tweedie Reconstruction: x0 = (latent - sqrt(1 - alpha) * noise_pred) / sqrt(alpha)
+        sqrt_beta: float = math.sqrt(max(0.0, 1.0 - alpha_value))
+        sqrt_alpha: float = math.sqrt(max(1e-8, alpha_value))
+        x0_latent = torch.add(latent, noise_pred, alpha=-sqrt_beta).div_(sqrt_alpha)
+
+        if latent_strength_clamped < 1.0:
+            x0_latent = torch.lerp(
+                latent, x0_latent, latent_strength_clamped
+            ).contiguous()
+
+        # 5. VAE Decoder (Decodes x0_latent back to image [0, 1])
+        decoded = torch.empty(
+            (1, 3, 512, 512), dtype=torch.float32, device=bind_device
+        ).contiguous()
+        vae_decoder_session = self._get_model_session("OSDFaceVAEDecoder")
+        if vae_decoder_session is None:
+            return False
+        io_binding_dec = vae_decoder_session.io_binding()
+        io_binding_dec.bind_input(
+            name="x0_latent",
+            device_type=bind_device_type,
+            device_id=bind_device_id,
+            element_type=np.float32,
+            shape=tuple(x0_latent.shape),
+            buffer_ptr=x0_latent.data_ptr(),
+        )
+        io_binding_dec.bind_output(
+            name="image_0_1",
+            device_type=bind_device_type,
+            device_id=bind_device_id,
+            element_type=np.float32,
+            shape=tuple(decoded.shape),
+            buffer_ptr=decoded.data_ptr(),
+        )
+        self._run_model_with_lazy_build_check(
+            "OSDFaceVAEDecoder", vae_decoder_session, io_binding_dec
+        )
+
+        # 6. In-place conversion from [0, 1] into [-1, 1] directly on pre-allocated output buffer
+        output.copy_(decoded).mul_(2.0).sub_(1.0)
+        return True
 
     @torch.no_grad()
     def run_vae_encoder(
@@ -361,7 +639,7 @@ class FaceRestorers:
             self.function_worker.ensure_denoiser_models_loaded()
             ort_session = self.models_processor.models.get(model_name)
         if ort_session is None:
-            error_msg = f"[ERROR] VAE Encoder model '{model_name}' not loaded when run_vae_encoder was called. This model should be loaded by ModelsProcessor.face_denoiser.ensure_denoiser_models_loaded()."
+            error_msg = f"[ERROR] VAE Encoder model '{model_name}' not loaded when run_vae_encoder was called."
             print(error_msg)
             raise RuntimeError(error_msg)
 
@@ -414,7 +692,7 @@ class FaceRestorers:
             self.function_worker.ensure_denoiser_models_loaded()
             ort_session = self.models_processor.models.get(model_name)
         if ort_session is None:
-            error_msg = f"[ERROR] VAE Decoder model '{model_name}' not loaded when run_vae_decoder was called. This model should be loaded by ModelsProcessor.face_denoiser.ensure_denoiser_models_loaded()."
+            error_msg = f"[ERROR] VAE Decoder model '{model_name}' not loaded when run_vae_decoder was called."
             print(error_msg)
             raise RuntimeError(error_msg)
 
@@ -460,22 +738,17 @@ class FaceRestorers:
         kv_tensor_map: Optional[Dict[str, Dict[str, torch.Tensor]]],
         output_unet_tensor: torch.Tensor,
     ) -> None:
-        """
-        Runs the UNet denoiser model with external K/V inputs.
-        """
+        """Runs the UNet denoiser model with external K/V inputs."""
         model_name = self.models_processor.main_window.fixed_unet_model_name
         ort_session = self.models_processor.models.get(model_name)
 
         if not ort_session:
-            # Enhanced error reporting
-            error_messages = [
-                f"[ERROR] UNet model '{model_name}' not loaded when run_ref_ldm_unet was called.",
-            ]
-            print("\n".join(error_messages))
+            print(
+                f"[ERROR] UNet model '{model_name}' not loaded when run_ref_ldm_unet was called."
+            )
             return
 
         onnx_output_name = "unet_output"
-
         io_binding = ort_session.io_binding()
         bind_device_type = self.models_processor.device_type
         bind_device = self.models_processor.device
@@ -516,7 +789,7 @@ class FaceRestorers:
         )
 
         onnx_model_inputs = ort_session.get_inputs()
-        onnx_kv_input_names_to_shape: Dict[str, tuple] = {
+        onnx_kv_input_names_to_shape: Dict[str, Tuple[int, ...]] = {
             inp.name: tuple(
                 dim if isinstance(dim, int) and dim > 0 else 1 for dim in inp.shape
             )
@@ -555,13 +828,12 @@ class FaceRestorers:
                     )
 
         # IMPORTANT: Keep references to temporary zero tensors to prevent GC
-        keep_alive_tensors: list = []
+        keep_alive_tensors: List[torch.Tensor] = []
         # FS-MEM-01: also keep actual KV tensors alive to prevent premature GC
         keep_alive_tensors.extend(actual_kv_tensors_for_binding.values())
 
         for onnx_kv_name, expected_shape in onnx_kv_input_names_to_shape.items():
             tensor_to_bind = actual_kv_tensors_for_binding.get(onnx_kv_name)
-
             if tensor_to_bind is None:
                 # Create a zero tensor for missing K/V inputs (e.g., unconditional pass)
                 tensor_to_bind = torch.zeros(
@@ -592,176 +864,8 @@ class FaceRestorers:
         # Run the model with lazy build handling
         self._run_model_with_lazy_build_check(model_name, ort_session, io_binding)
 
-    def _get_osdface_alpha(self, timestep_value: int) -> tuple[int, float] | None:
-        if self._osdface_timestep is not None and self._osdface_alpha is not None:
-            if self._osdface_timestep == timestep_value:
-                return self._osdface_timestep, self._osdface_alpha
-
-        scheduler_path = self.models_processor.models_path.get("OSDFaceScheduler")
-        if not scheduler_path:
-            print("[WARN] OSDFace scheduler metadata is not registered.")
-            return None
-
-        try:
-            scheduler = json.loads(Path(scheduler_path).read_text(encoding="utf-8"))
-            alphas_cumprod = scheduler["alphas_cumprod"]
-            timestep = max(0, min(int(timestep_value), len(alphas_cumprod) - 1))
-            alpha = float(alphas_cumprod[timestep])
-        except Exception as exc:
-            print(f"[WARN] Failed to read OSDFace scheduler metadata: {exc}")
-            return None
-
-        self._osdface_timestep = timestep
-        self._osdface_alpha = alpha
-        return timestep, alpha
-
-    def run_OSDFace(self, image, output, timestep_value=399, latent_strength=1.0):
-        scheduler_state = self._get_osdface_alpha(int(timestep_value))
-        if scheduler_state is None:
-            return
-        timestep_value, alpha_value = scheduler_state
-        latent_strength = max(0.0, min(float(latent_strength), 1.0))
-
-        bind_device = self.models_processor.device
-        bind_device_type = self.models_processor.device_type
-        bind_device_id = self.models_processor.binding_device_id
-
-        prompt_input = image.mul(0.5).add(0.5).contiguous()
-        prompt_embeds = torch.empty(
-            (1, 77, 1024), dtype=torch.float32, device=bind_device
-        ).contiguous()
-
-        prompt_session = self._get_model_session("OSDFacePromptEncoder")
-        if prompt_session is None:
-            return
-        io_binding = prompt_session.io_binding()
-        io_binding.bind_input(
-            name="lq_0_1",
-            device_type=bind_device_type,
-            device_id=bind_device_id,
-            element_type=np.float32,
-            shape=tuple(prompt_input.shape),
-            buffer_ptr=prompt_input.data_ptr(),
-        )
-        io_binding.bind_output(
-            name="prompt_embeds",
-            device_type=bind_device_type,
-            device_id=bind_device_id,
-            element_type=np.float32,
-            shape=tuple(prompt_embeds.shape),
-            buffer_ptr=prompt_embeds.data_ptr(),
-        )
-        self._run_model_with_lazy_build_check(
-            "OSDFacePromptEncoder", prompt_session, io_binding
-        )
-
-        latent = torch.empty(
-            (1, 4, 64, 64), dtype=torch.float32, device=bind_device
-        ).contiguous()
-        vae_encoder_session = self._get_model_session("OSDFaceVAEEncoder")
-        if vae_encoder_session is None:
-            return
-        io_binding = vae_encoder_session.io_binding()
-        io_binding.bind_input(
-            name="lq_neg1_1",
-            device_type=bind_device_type,
-            device_id=bind_device_id,
-            element_type=np.float32,
-            shape=tuple(image.shape),
-            buffer_ptr=image.data_ptr(),
-        )
-        io_binding.bind_output(
-            name="latent",
-            device_type=bind_device_type,
-            device_id=bind_device_id,
-            element_type=np.float32,
-            shape=tuple(latent.shape),
-            buffer_ptr=latent.data_ptr(),
-        )
-        self._run_model_with_lazy_build_check(
-            "OSDFaceVAEEncoder", vae_encoder_session, io_binding
-        )
-
-        noise_pred = torch.empty_like(latent).contiguous()
-        timestep = torch.tensor(
-            [timestep_value], dtype=torch.int64, device=bind_device
-        ).contiguous()
-        unet_session = self._get_model_session("OSDFaceUNet")
-        if unet_session is None:
-            return
-        io_binding = unet_session.io_binding()
-        io_binding.bind_input(
-            name="latent",
-            device_type=bind_device_type,
-            device_id=bind_device_id,
-            element_type=np.float32,
-            shape=tuple(latent.shape),
-            buffer_ptr=latent.data_ptr(),
-        )
-        io_binding.bind_input(
-            name="timestep",
-            device_type=bind_device_type,
-            device_id=bind_device_id,
-            element_type=np.int64,
-            shape=tuple(timestep.shape),
-            buffer_ptr=timestep.data_ptr(),
-        )
-        io_binding.bind_input(
-            name="prompt_embeds",
-            device_type=bind_device_type,
-            device_id=bind_device_id,
-            element_type=np.float32,
-            shape=tuple(prompt_embeds.shape),
-            buffer_ptr=prompt_embeds.data_ptr(),
-        )
-        io_binding.bind_output(
-            name="noise_pred",
-            device_type=bind_device_type,
-            device_id=bind_device_id,
-            element_type=np.float32,
-            shape=tuple(noise_pred.shape),
-            buffer_ptr=noise_pred.data_ptr(),
-        )
-        self._run_model_with_lazy_build_check("OSDFaceUNet", unet_session, io_binding)
-
-        alpha = torch.tensor(alpha_value, dtype=torch.float32, device=bind_device)
-        beta = torch.tensor(1.0 - alpha_value, dtype=torch.float32, device=bind_device)
-        x0_latent = ((latent - beta.sqrt() * noise_pred) / alpha.sqrt()).contiguous()
-        if latent_strength < 1.0:
-            x0_latent = torch.lerp(latent, x0_latent, latent_strength).contiguous()
-        decoded = torch.empty(
-            (1, 3, 512, 512), dtype=torch.float32, device=bind_device
-        ).contiguous()
-
-        vae_decoder_session = self._get_model_session("OSDFaceVAEDecoder")
-        if vae_decoder_session is None:
-            return
-        io_binding = vae_decoder_session.io_binding()
-        io_binding.bind_input(
-            name="x0_latent",
-            device_type=bind_device_type,
-            device_id=bind_device_id,
-            element_type=np.float32,
-            shape=tuple(x0_latent.shape),
-            buffer_ptr=x0_latent.data_ptr(),
-        )
-        io_binding.bind_output(
-            name="image_0_1",
-            device_type=bind_device_type,
-            device_id=bind_device_id,
-            element_type=np.float32,
-            shape=tuple(decoded.shape),
-            buffer_ptr=decoded.data_ptr(),
-        )
-        self._run_model_with_lazy_build_check(
-            "OSDFaceVAEDecoder", vae_decoder_session, io_binding
-        )
-
-        output.copy_(decoded.mul(2.0).sub(1.0))
-
-    def run_GFPGAN(self, image, output):
+    def run_GFPGAN(self, image: torch.Tensor, output: torch.Tensor) -> None:
         model_name = "GFPGANv1.4"
-
         ort_session = self._get_model_session(model_name)
         if not ort_session:
             return  # Silently skip if model failed to load
@@ -783,16 +887,14 @@ class FaceRestorers:
             shape=(1, 3, 512, 512),
             buffer_ptr=output.data_ptr(),
         )
-
         # Run the model with lazy build handling
         self._run_model_with_lazy_build_check(model_name, ort_session, io_binding)
 
-    def run_GFPGAN1024(self, image, output):
+    def run_GFPGAN1024(self, image: torch.Tensor, output: torch.Tensor) -> None:
         model_name = "GFPGAN1024"
-
         ort_session = self._get_model_session(model_name)
         if not ort_session:
-            return  # Silently skip
+            return  # Silently skip if model failed to load
 
         io_binding = ort_session.io_binding()
         io_binding.bind_input(
@@ -811,16 +913,14 @@ class FaceRestorers:
             shape=(1, 3, 1024, 1024),
             buffer_ptr=output.data_ptr(),
         )
-
         # Run the model with lazy build handling
         self._run_model_with_lazy_build_check(model_name, ort_session, io_binding)
 
-    def run_GPEN_256(self, image, output):
+    def run_GPEN_256(self, image: torch.Tensor, output: torch.Tensor) -> None:
         model_name = "GPENBFR256"
-
         ort_session = self._get_model_session(model_name)
         if not ort_session:
-            return  # Silently skip
+            return  # Silently skip if model failed to load
 
         io_binding = ort_session.io_binding()
         io_binding.bind_input(
@@ -839,16 +939,14 @@ class FaceRestorers:
             shape=(1, 3, 256, 256),
             buffer_ptr=output.data_ptr(),
         )
-
         # Run the model with lazy build handling
         self._run_model_with_lazy_build_check(model_name, ort_session, io_binding)
 
-    def run_GPEN_512(self, image, output):
+    def run_GPEN_512(self, image: torch.Tensor, output: torch.Tensor) -> None:
         model_name = "GPENBFR512"
-
         ort_session = self._get_model_session(model_name)
         if not ort_session:
-            return  # Silently skip
+            return  # Silently skip if model failed to load
 
         io_binding = ort_session.io_binding()
         io_binding.bind_input(
@@ -867,16 +965,14 @@ class FaceRestorers:
             shape=(1, 3, 512, 512),
             buffer_ptr=output.data_ptr(),
         )
-
         # Run the model with lazy build handling
         self._run_model_with_lazy_build_check(model_name, ort_session, io_binding)
 
-    def run_GPEN_1024(self, image, output):
+    def run_GPEN_1024(self, image: torch.Tensor, output: torch.Tensor) -> None:
         model_name = "GPENBFR1024"
-
         ort_session = self._get_model_session(model_name)
         if not ort_session:
-            return  # Silently skip
+            return  # Silently skip if model failed to load
 
         io_binding = ort_session.io_binding()
         io_binding.bind_input(
@@ -895,16 +991,14 @@ class FaceRestorers:
             shape=(1, 3, 1024, 1024),
             buffer_ptr=output.data_ptr(),
         )
-
         # Run the model with lazy build handling
         self._run_model_with_lazy_build_check(model_name, ort_session, io_binding)
 
-    def run_GPEN_2048(self, image, output):
+    def run_GPEN_2048(self, image: torch.Tensor, output: torch.Tensor) -> None:
         model_name = "GPENBFR2048"
-
         ort_session = self._get_model_session(model_name)
         if not ort_session:
-            return  # Silently skip
+            return  # Silently skip if model failed to load
 
         io_binding = ort_session.io_binding()
         io_binding.bind_input(
@@ -923,15 +1017,19 @@ class FaceRestorers:
             shape=(1, 3, 2048, 2048),
             buffer_ptr=output.data_ptr(),
         )
-
         # Run the model with lazy build handling
         self._run_model_with_lazy_build_check(model_name, ort_session, io_binding)
 
-    def run_codeformer(self, image, output, fidelity_weight_value=0.9):
+    def run_codeformer(
+        self,
+        image: torch.Tensor,
+        output: torch.Tensor,
+        fidelity_weight_value: float = 0.9,
+    ) -> None:
         model_name = "CodeFormer"
         ort_session = self._get_model_session(model_name)
         if not ort_session:
-            return  # Silently skip
+            return  # Silently skip if model failed to load
 
         io_binding = ort_session.io_binding()
         io_binding.bind_input(
@@ -952,23 +1050,25 @@ class FaceRestorers:
             shape=(1, 3, 512, 512),
             buffer_ptr=output.data_ptr(),
         )
-
         # Run the model with lazy build handling
         self._run_model_with_lazy_build_check(model_name, ort_session, io_binding)
 
-    def run_VQFR_v2(self, image, output, fidelity_ratio_value):
+    def run_VQFR_v2(
+        self, image: torch.Tensor, output: torch.Tensor, fidelity_ratio_value: float
+    ) -> None:
         model_name = "VQFRv2"
         ort_session = self._get_model_session(model_name)
         if not ort_session:
-            return  # Silently skip
+            return  # Silently skip if model failed to load
 
-        # FR-ROBUST-05: replace assert with an explicit ValueError so it is never silenced by -O flag
         if not (0.0 <= fidelity_ratio_value <= 1.0):
             raise ValueError(
                 f"fidelity_ratio_value must be in [0,1], got {fidelity_ratio_value}"
             )
-        fidelity_ratio = torch.tensor(fidelity_ratio_value, dtype=torch.float32).to(
-            self.models_processor.device
+        fidelity_ratio = torch.tensor(
+            fidelity_ratio_value,
+            dtype=torch.float32,
+            device=self.models_processor.device,
         )
 
         io_binding = ort_session.io_binding()
@@ -977,7 +1077,7 @@ class FaceRestorers:
             device_type=self.models_processor.device_type,
             device_id=self.models_processor.binding_device_id,
             element_type=np.float32,
-            shape=image.size(),
+            shape=tuple(image.shape),
             buffer_ptr=image.data_ptr(),
         )
         io_binding.bind_input(
@@ -985,7 +1085,7 @@ class FaceRestorers:
             device_type=self.models_processor.device_type,
             device_id=self.models_processor.binding_device_id,
             element_type=np.float32,
-            shape=fidelity_ratio.size(),
+            shape=tuple(fidelity_ratio.shape),
             buffer_ptr=fidelity_ratio.data_ptr(),
         )
         io_binding.bind_output(
@@ -1011,15 +1111,16 @@ class FaceRestorers:
             shape=(1, 3, 512, 512),
             buffer_ptr=output.data_ptr(),
         )
-
         # Run the model with lazy build handling
         self._run_model_with_lazy_build_check(model_name, ort_session, io_binding)
 
-    def run_RestoreFormerPlusPlus(self, image, output):
+    def run_RestoreFormerPlusPlus(
+        self, image: torch.Tensor, output: torch.Tensor
+    ) -> None:
         model_name = "RestoreFormerPlusPlus"
         ort_session = self._get_model_session(model_name)
         if not ort_session:
-            return  # Silently skip
+            return  # Silently skip if model failed to load
 
         io_binding = ort_session.io_binding()
         io_binding.bind_input(
@@ -1027,7 +1128,7 @@ class FaceRestorers:
             device_type=self.models_processor.device_type,
             device_id=self.models_processor.binding_device_id,
             element_type=np.float32,
-            shape=image.size(),
+            shape=tuple(image.shape),
             buffer_ptr=image.data_ptr(),
         )
         io_binding.bind_output(
@@ -1035,7 +1136,7 @@ class FaceRestorers:
             device_type=self.models_processor.device_type,
             device_id=self.models_processor.binding_device_id,
             element_type=np.float32,
-            shape=output.size(),
+            shape=tuple(output.shape),
             buffer_ptr=output.data_ptr(),
         )
         io_binding.bind_output(
@@ -1108,6 +1209,5 @@ class FaceRestorers:
             self.models_processor.device_type,
             self.models_processor.binding_device_id,
         )
-
         # Run the model with lazy build handling
         self._run_model_with_lazy_build_check(model_name, ort_session, io_binding)

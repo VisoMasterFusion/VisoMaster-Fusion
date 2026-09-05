@@ -192,6 +192,11 @@ class MouthActionDetector:
             return
 
         with inst._infer_lock:
+            if inst._session is not None:
+                try:
+                    inst._session.close()
+                except Exception as exc:  # noqa: BLE001
+                    logger.debug("Error closing mouth action detector session: %s", exc)
             inst._session = None
             inst._input_name = None
             inst._boxes_name = None

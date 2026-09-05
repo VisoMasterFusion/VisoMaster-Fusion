@@ -109,9 +109,9 @@ def add_widgets_to_tab_layout(
                 row_widget, horizontal_layout = add_horizontal_layout_to_category(
                     category_layout, widget, label, widget.reset_default_button
                 )
-                
+
                 if "below_row_button" in widget_data:
-                    _below_ab_data: dict = cast(dict, widget_data["below_row_button"])
+                    _below_ab_data = cast(dict, widget_data["below_row_button"])
                     _below_action_btn = create_layout_action_button(_below_ab_data)
                     _below_spacer = QtWidgets.QWidget()
                     _below_spacer.setSizePolicy(
@@ -417,7 +417,7 @@ def add_widgets_to_tab_layout(
                     *_slider_row_widgets,
                 )
                 if "below_row_button" in widget_data:
-                    _below_ab_data: dict = cast(dict, widget_data["below_row_button"])
+                    _below_ab_data = cast(dict, widget_data["below_row_button"])
                     _below_action_btn = create_layout_action_button(_below_ab_data)
                     _below_spacer = QtWidgets.QWidget()
                     _below_spacer.setSizePolicy(

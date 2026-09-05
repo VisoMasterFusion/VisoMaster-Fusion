@@ -269,6 +269,31 @@ landmark_point_counts = {
     "hrffa": 68,
 }
 
+# Mapping of composite pipelines to their constituent ONNX session identifiers.
+# Enables ModelsProcessor to recursively unload multi-network pipelines cleanly.
+compound_models_mapping: dict[str, tuple[str, ...]] = {
+    "OSDFace": (
+        "OSDFacePromptEncoder",
+        "OSDFaceVAEEncoder",
+        "OSDFaceUNet",
+        "OSDFaceVAEDecoder",
+    ),
+}
+
+# Authoritative mapping between UI restorer selections and models_data identifiers.
+restorer_model_mapping: dict[str, str] = {
+    "GFPGAN-v1.4": "GFPGANv1.4",
+    "GFPGAN-1024": "GFPGAN1024",
+    "CodeFormer": "CodeFormer",
+    "GPEN-256": "GPENBFR256",
+    "GPEN-512": "GPENBFR512",
+    "GPEN-1024": "GPENBFR1024",
+    "GPEN-2048": "GPENBFR2048",
+    "RestoreFormer++": "RestoreFormerPlusPlus",
+    "VQFR-v2": "VQFRv2",
+    "OSDFace": "OSDFace",
+}
+
 # Models listed here get trt_fp16_enable=True on the TensorRT EP.
 #
 # DO NOT add FaceLandmarkTUFA98, FaceLandmarkTUFA314 or FaceLandmarkORFormer98. All
