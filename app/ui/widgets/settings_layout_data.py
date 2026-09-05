@@ -199,6 +199,12 @@ SETTINGS_LAYOUT_DATA: Any = {
             "decimals": 2,
             "help": "Set the playback audio of the audio, when Live Sound is enabled",
         },
+        "AccurateAudioVideoSyncToggle": {
+            "level": 1,
+            "label": "Accurate Audio-Video Sync",
+            "default": False,
+            "help": "Start live preview audio and video from the preceding video keyframe. This improves audio/video sync after seeking, but playback can begin before the requested frame. Recording always starts at the requested frame.",
+        },
     },
     "Video Recording Settings": {
         "ConfirmBeforeStoppingRecordingToggle": {

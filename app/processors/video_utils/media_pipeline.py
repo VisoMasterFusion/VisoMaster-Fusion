@@ -3,6 +3,7 @@ import copy
 import time
 import threading
 import queue
+import subprocess
 import cv2
 import psutil
 import numpy
@@ -88,6 +89,8 @@ class MediaPipeline(QObject):
         # --- Audio State (Native Qt) ---
         self.audio_output: Optional[QAudioOutput] = None
         self.media_player: Optional[QMediaPlayer] = None
+        # Set only when Accurate Audio-Video Sync is enabled for a preview.
+        self.live_sound_seek_time: Optional[float] = None
 
         # --- Timers (Consumer) ---
         self.preroll_timer = QTimer(self)
@@ -1220,6 +1223,10 @@ class MediaPipeline(QObject):
                         self.main_window.videoSeekSlider.blockSignals(False)
 
                         self.stop_live_sound()
+                        # The loop/segment wrap continues video at its exact
+                        # target frame, so it must not reuse the initial
+                        # keyframe origin selected for preview startup.
+                        self.live_sound_seek_time = None
                         if self.main_window.liveSoundButton.isChecked():
                             self.start_live_sound()
                     else:
@@ -1388,6 +1395,9 @@ class MediaPipeline(QObject):
                 self.main_window.videoSeekSlider.blockSignals(False)
 
                 self.stop_live_sound()
+                # The feeder continues from the exact segment boundary; do
+                # not reuse an earlier keyframe selected for initial playback.
+                self.live_sound_seek_time = None
                 if self.main_window.liveSoundButton.isChecked():
                     self.start_live_sound()
 
@@ -1395,6 +1405,71 @@ class MediaPipeline(QObject):
                 self.vp.next_frame_to_display += 1
 
     # --- AUDIO SYNCHRONIZATION ---
+    def resolve_live_preview_start(
+        self, requested_frame: int, source_fps: float
+    ) -> tuple[int, float]:
+        """Return the preceding video keyframe used as the preview origin."""
+        requested_frame = max(0, int(requested_frame))
+        if not self.vp.media_path or source_fps <= 0:
+            return requested_frame, requested_frame / max(source_fps, 1.0)
+
+        requested_time = requested_frame / float(source_fps)
+        args = [
+            "ffprobe",
+            "-v",
+            "error",
+            "-read_intervals",
+            f"{requested_time:.6f}%+0.25",
+            "-select_streams",
+            "v:0",
+            "-skip_frame",
+            "nokey",
+            "-show_entries",
+            "frame=best_effort_timestamp_time",
+            "-of",
+            "csv=p=0",
+            self.vp.media_path,
+        ]
+        try:
+            result = subprocess.run(
+                args,
+                capture_output=True,
+                text=True,
+                timeout=15,
+                check=False,
+            )
+            if result.returncode != 0:
+                raise RuntimeError(result.stderr.strip() or "ffprobe failed")
+
+            keyframe_times: list[float] = []
+            for line in result.stdout.splitlines():
+                try:
+                    timestamp = float(line.split(",", 1)[0].strip())
+                except ValueError:
+                    continue
+                if 0 <= timestamp <= requested_time + (1.0 / source_fps):
+                    keyframe_times.append(timestamp)
+            if not keyframe_times:
+                raise RuntimeError("no preceding video keyframe returned")
+
+            keyframe_time = max(keyframe_times)
+            keyframe_frame = min(
+                requested_frame,
+                max(0, int(round(keyframe_time * source_fps))),
+            )
+            print(
+                "[INFO] Live preview keyframe alignment: "
+                f"requested frame {requested_frame} ({requested_time:.3f}s) -> "
+                f"frame {keyframe_frame} ({keyframe_time:.3f}s)."
+            )
+            return keyframe_frame, keyframe_time
+        except Exception as e:
+            print(
+                "[WARN] Could not resolve a live-preview keyframe; "
+                f"using requested frame {requested_frame}: {e}"
+            )
+            return requested_frame, requested_time
+
     def start_live_sound(self) -> None:
         """Starts QMediaPlayer audio synced exactly to the current metronome frame."""
         if not self.vp.media_capture:
@@ -1405,8 +1480,12 @@ class MediaPipeline(QObject):
         if fps <= 0:
             fps = 30.0
 
-        # Calculate exact millisecond offset for Qt
-        seek_time_ms = int((self.vp.next_frame_to_display / fps) * 1000)
+        # Default mode keeps the requested-frame seek. Accurate-sync mode uses
+        # the keyframe timestamp resolved before the feeder starts.
+        seek_time = self.live_sound_seek_time
+        if seek_time is None:
+            seek_time = self.vp.next_frame_to_display / fps
+        seek_time_ms = int(seek_time * 1000)
 
         playback_rate = 1.0
         if (
