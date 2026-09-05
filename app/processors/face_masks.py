@@ -1,3 +1,4 @@
+import logging
 from typing import TYPE_CHECKING, Dict
 
 import torch
@@ -15,8 +16,37 @@ if TYPE_CHECKING:
     from app.processors.models_processor import ModelsProcessor
     from app.processors.workers.function_worker import FunctionWorker
 
+logger = logging.getLogger(__name__)
+
 _VGG_MEAN = torch.tensor([0.485, 0.456, 0.406]).view(3, 1, 1)
 _VGG_STD = torch.tensor([0.229, 0.224, 0.225]).view(3, 1, 1)
+
+# --- SEGMENTATION DEGRADATION GUARD ---
+# The Occluder and DFL XSeg models are trained on mostly-frontal faces and can
+# collapse on extreme profiles, labelling the whole crop as "occluded". That zeroes
+# swap_mask and the swap silently disappears for those frames.
+#
+# Both conditions must hold before we bypass a model, because a low face ratio on
+# its own is ambiguous: it is also exactly what a correct prediction looks like when
+# a hand or microphone really does cover most of the face. Only the combination of
+# "extreme head angle" AND "almost nothing left of the face" indicates model failure
+# rather than genuine heavy occlusion.
+#
+# yaw_deg is "degrees away from facing the camera" and may arrive on either of two
+# scales: the 5-landmark pseudo-degrees from faceutil.calc_face_yaw_pitch(), or YawNet's
+# true full-circle degrees folded by yaw_from_frontal(). One threshold serves both
+# because they share their anchors -- 0 is frontal and ~90 is full profile in each -- and
+# differ only in curvature between them. The codebase already treats >20 pseudo-degrees
+# as the onset of profile (ProfileAngleMaskThresholdSlider), so 40 is clearly not
+# frontal on either scale. YawNet additionally reports 90..180 for heads turned away,
+# which can only make the guard more willing to fire on a head that really is facing
+# away -- the case it exists for.
+#
+# NOT CALIBRATED against real footage: this is a plausible value, not a measured one.
+# Both this and YAWNET_MIN_KAPPA want tuning on real material before being trusted.
+_SEG_GUARD_MIN_ABS_YAW = 40.0
+# Fraction of the 256x256 crop a valid face prediction is expected to keep.
+_SEG_GUARD_MIN_FACE_RATIO = 0.30
 
 
 class FaceMasks:
@@ -647,6 +677,9 @@ class FaceMasks:
 
         if need_occluder:
             # apply_occlusion returns 1 for Face, 0 for Obstacle. We keep areas > 0.5.
+            # No yaw_deg here: this mask only gates inner-mouth restoration, not the
+            # blend mask, so a collapsed model cannot make the swap disappear. Omitting
+            # it leaves the profile bypass off and this path's behaviour unchanged.
             occ_mask = self.apply_occlusion(img_256, amount=1, parameters=parameters)
             combined_mask_256 = (occ_mask > 0.5).squeeze(0)
 
@@ -1121,11 +1154,92 @@ class FaceMasks:
 
     # --- Occluder & XSeg ---
 
+    @staticmethod
+    def _seg_guard_settings(parameters: dict | None) -> tuple[bool, float, float]:
+        """
+        Resolve the profile-safeguard settings from the UI, falling back to the module
+        defaults when a key is absent -- which is the normal case for workspaces saved
+        before these controls existed, and for internal callers that pass no parameters
+        at all. The fallbacks preserve the previous always-on behaviour.
+
+        Min Face Area is a UI percentage; it is returned as a 0..1 fraction to match
+        the mask mean it is compared against.
+        """
+        p = parameters or {}
+        enabled = bool(p.get("SegGuardEnableToggle", True))
+        min_yaw = float(p.get("SegGuardMinYawSlider", _SEG_GUARD_MIN_ABS_YAW))
+        min_ratio = (
+            float(
+                p.get(
+                    "SegGuardMinFaceRatioSlider",
+                    _SEG_GUARD_MIN_FACE_RATIO * 100.0,
+                )
+            )
+            / 100.0
+        )
+        return enabled, min_yaw, min_ratio
+
+    @staticmethod
+    def _seg_model_degraded(
+        face_mask: torch.Tensor,
+        yaw_deg: float | None,
+        model: str,
+        parameters: dict | None = None,
+    ) -> bool:
+        """
+        Decides whether a segmentation model has collapsed on an extreme head angle
+        and should be bypassed. See _SEG_GUARD_MIN_ABS_YAW for the rationale, and
+        _seg_guard_settings for the UI overrides.
+
+        face_mask must be binarized with 1 = face, so mean() is a true area fraction.
+        yaw_deg of None means the caller cannot supply a head angle; we then never
+        bypass, keeping the model's own output authoritative.
+
+        The cheap host-side tests are checked first on purpose: frontal faces (the
+        overwhelming majority of frames) never reach the .item() call and so never pay
+        for a device sync.
+        """
+        enabled, min_yaw, min_ratio = FaceMasks._seg_guard_settings(parameters)
+
+        # min_ratio of 0 can never be undercut by a mean, so treat it as off and skip
+        # the sync rather than reading the mask to compare against an impossible bar.
+        if not enabled or min_ratio <= 0.0:
+            return False
+
+        if yaw_deg is None or abs(yaw_deg) < min_yaw:
+            return False
+
+        face_ratio = face_mask.mean().item()
+        if face_ratio >= min_ratio:
+            return False
+
+        logger.debug(
+            "%s bypassed: face ratio %.3f < %.2f at yaw %.1f deg (min angle %.1f; "
+            "model likely collapsed on profile); applying swap unmasked for this frame.",
+            model,
+            face_ratio,
+            min_ratio,
+            yaw_deg,
+            min_yaw,
+        )
+        return True
+
     @torch.no_grad()
-    def apply_occlusion(self, img, amount, parameters=None, original_face_512=None):
+    def apply_occlusion(
+        self,
+        img,
+        amount,
+        parameters=None,
+        original_face_512=None,
+        yaw_deg: float | None = None,
+    ):
         """
         Runs the Occluder model to mask out obstacles (hands, microphones, etc.).
         Includes logic to protect the inner mouth (tongue/teeth) from being occluded.
+
+        If the model collapses on an extreme profile (see _seg_model_degraded) it is
+        bypassed and a full clear mask (1.0) is returned, so the swap is still applied
+        instead of silently vanishing. Pass yaw_deg to enable that guard.
         """
         img = torch.div(img, 255)
         img = torch.unsqueeze(img, 0).contiguous()
@@ -1139,8 +1253,12 @@ class FaceMasks:
 
         outpred = torch.squeeze(outpred)
         # Binarize: True(1) = Face, False(0) = Occlusion
-        outpred = outpred > 0
-        outpred = torch.unsqueeze(outpred, 0).type(torch.float32)
+        outpred_binary = (outpred > 0).type(torch.float32)
+
+        if self._seg_model_degraded(outpred_binary, yaw_deg, "Occluder", parameters):
+            return torch.ones_like(outpred_binary).unsqueeze(0)
+
+        outpred = torch.unsqueeze(outpred_binary, 0)
 
         # --- TONGUE PRIORITY LOGIC ---
         # Ensures that objects inside the mouth (tongue, smoke) are not masked out
@@ -1260,7 +1378,15 @@ class FaceMasks:
         mouth: torch.Tensor,
         parameters: dict,
         inner_mouth_mask: torch.Tensor | None = None,
+        yaw_deg: float | None = None,
     ) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor]:
+        """
+        Runs DFL XSeg and returns (mask, calc, calc_dilated, mask_noFP), all inverted
+        so 0 = Face and 1 = Background/Obstacle.
+
+        Pass yaw_deg to enable the profile-collapse bypass described on
+        _SEG_GUARD_MIN_ABS_YAW.
+        """
         import cv2
 
         # FM-07: use .get() for all parameter accesses to avoid KeyError
@@ -1281,7 +1407,26 @@ class FaceMasks:
 
         outpred = torch.clamp(outpred, min=0.0, max=1.0)
         outpred[outpred < 0.1] = 0
-        outpred_calc = outpred.clone()
+
+        # Bypass a collapsed XSeg on extreme profiles (see _seg_model_degraded). The raw
+        # output is a probability map, so it must be thresholded before measuring area --
+        # mean() over soft values is probability mass, not the fraction of face pixels.
+        # All four returns use the inverted convention (0 = Face), so an all-zero result
+        # makes every consumer's (1.0 - mask) a no-op and preserves the swap.
+        if self._seg_model_degraded(
+            (outpred > 0.5).type(torch.float32), yaw_deg, "DFL XSeg", parameters
+        ):
+            # Four independent tensors, not four references to one: callers apply
+            # in-place mask math (mul_) and aliasing here would corrupt the others.
+            bypass = [
+                torch.zeros(
+                    (1, 256, 256),
+                    dtype=torch.float32,
+                    device=self.models_processor.device,
+                )
+                for _ in range(4)
+            ]
+            return bypass[0], bypass[1], bypass[2], bypass[3]
 
         # Invert: Face becomes 0, Background/Obstacles become 1
         outpred = 1.0 - outpred
@@ -1638,8 +1783,11 @@ class FaceMasks:
         feather_radius=None,
         device=None,
     ):
+        rx = max(int(radius_x), 1)
+        ry = max(int(radius_y), 1)
         if feather_radius is None:
-            feather_radius = max(radius_x, radius_y) // 2
+            feather_radius = max(rx, ry) // 2
+        fr = max(int(feather_radius), 1)
 
         # FM-09: include device in the cache key and create tensors on the correct device
         _device = device if device is not None else self.models_processor.device
@@ -1658,11 +1806,9 @@ class FaceMasks:
                 self._meshgrid_cache[cache_key] = (y, x)
 
         normalized_distance = torch.sqrt(
-            ((x - center[0]) / radius_x) ** 2 + ((y - center[1]) / radius_y) ** 2
+            ((x - center[0]) / rx) ** 2 + ((y - center[1]) / ry) ** 2
         )
-        mask = torch.clamp(
-            (1 - normalized_distance) * (radius_x / feather_radius), 0, 1
-        )
+        mask = torch.clamp((1 - normalized_distance) * (rx / fr), 0, 1)
         return mask
 
     @torch.no_grad()

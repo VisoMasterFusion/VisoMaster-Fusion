@@ -1,3 +1,4 @@
+import math
 import os
 import shutil
 import cv2
@@ -1609,6 +1610,86 @@ def draw_bounding_boxes_on_detected_faces(
         img[:, y_max - thickness + 1 : y_max + 1, x_min : x_max + 1] = color_tensor_c11
         img[:, y_min : y_max + 1, x_min : x_min + thickness] = color_tensor_c11
         img[:, y_min : y_max + 1, x_max - thickness + 1 : x_max + 1] = color_tensor_c11
+
+    return img
+
+
+def draw_head_yaw_ring_on_faces(
+    img: torch.Tensor,
+    det_faces_data: list,
+    color_rgb: list | None = None,
+) -> torch.Tensor:
+    """
+    Draw a YawNet head-orientation ring per face, after the ring in the upstream demo.
+
+    img is (C, H, W) uint8 and is modified in place. Faces without a "yawnet_deg" key
+    are skipped, so this is safe to call when only some faces were measured.
+
+    The needle points the way the head faces, in the ring convention: 0 = toward the
+    camera (drawn DOWN, out of the screen toward the viewer), 90 = right, 180 = away
+    (up), 270 = left. In image axes (x right, y down) that is
+    dx = sin(theta), dy = cos(theta).
+    """
+    _color = color_rgb if color_rgb is not None else [0, 200, 255]
+    _, h, w = img.shape
+    max_dimension = max(h, w)
+
+    color_tensor = torch.tensor(_color, dtype=img.dtype, device=img.device).view(
+        -1, 1, 1
+    )
+
+    for fface in det_faces_data:
+        deg = fface.get("yawnet_deg")
+        if deg is None:
+            continue
+
+        bbox = fface.get("bbox")
+        if bbox is None:
+            continue
+        x_min, y_min, x_max, y_max = (float(v) for v in bbox[:4])
+
+        # Radius tracks the face so the ring stays legible at any resolution, with a
+        # floor for tiny faces and a cap so it never dominates the frame.
+        radius = int(
+            min(
+                max(0.22 * max(x_max - x_min, y_max - y_min), 12.0),
+                max_dimension * 0.08,
+            )
+        )
+        thickness = max(1, radius // 8)
+
+        # Anchored just above the face box, pulled inside the frame if it would clip.
+        cx = int(round((x_min + x_max) * 0.5))
+        cy = int(round(y_min - radius - thickness - 2))
+        cx = min(max(cx, radius + thickness), w - radius - thickness - 1)
+        cy = min(max(cy, radius + thickness), h - radius - thickness - 1)
+        if cx - radius - thickness < 0 or cy - radius - thickness < 0:
+            continue
+
+        lo_y, hi_y = cy - radius - thickness, cy + radius + thickness + 1
+        lo_x, hi_x = cx - radius - thickness, cx + radius + thickness + 1
+        if hi_y > h or hi_x > w:
+            continue
+
+        yy = torch.arange(lo_y, hi_y, device=img.device, dtype=torch.float32) - cy
+        xx = torch.arange(lo_x, hi_x, device=img.device, dtype=torch.float32) - cx
+        dist = torch.sqrt(yy.view(-1, 1) ** 2 + xx.view(1, -1) ** 2)
+
+        ring = (dist >= radius - thickness) & (dist <= radius + thickness)
+
+        # Needle: the set of points within `thickness` of the centre->direction segment.
+        theta = math.radians(float(deg))
+        dx, dy = math.sin(theta), math.cos(theta)
+        # Projection of each pixel onto the unit direction, clamped to the segment.
+        proj = (xx.view(1, -1) * dx + yy.view(-1, 1) * dy).clamp(0.0, float(radius))
+        perp = torch.sqrt(
+            (xx.view(1, -1) - proj * dx) ** 2 + (yy.view(-1, 1) - proj * dy) ** 2
+        )
+        needle = perp <= thickness
+
+        mask = (ring | needle).unsqueeze(0)
+        region = img[:, lo_y:hi_y, lo_x:hi_x]
+        img[:, lo_y:hi_y, lo_x:hi_x] = torch.where(mask, color_tensor, region)
 
     return img
 
