@@ -52,7 +52,10 @@ def test_yawnet_normalization_preserves_source_frame(dtype):
 
 @pytest.mark.parametrize("face_count", [0, 1, 2])
 @pytest.mark.parametrize("angle", [0, 90])
-def test_standard_frame_yaw_uses_working_coordinates(monkeypatch, face_count, angle):
+@pytest.mark.parametrize("landmarks_enabled", [True, False, None])
+def test_standard_frame_yaw_uses_working_coordinates(
+    monkeypatch, face_count, angle, landmarks_enabled
+):
     from collections import OrderedDict, defaultdict
     import threading
     from unittest.mock import MagicMock
@@ -81,7 +84,11 @@ def test_standard_frame_yaw_uses_working_coordinates(monkeypatch, face_count, an
         [[[130, 150], [190, 150], [160, 185], [140, 225], [180, 225]]] * face_count,
         dtype=np.float32,
     ).reshape(-1, 5, 2)
-    fw.run_detect.return_value = (boxes, points, None)
+    fw.run_detect.return_value = (
+        boxes,
+        points,
+        np.zeros((face_count, 68, 2), dtype=np.float32),
+    )
     fw.run_recognize_direct.return_value = (np.ones(512), None)
     heads = np.array([[80, 80, 240, 280, 0.9]], dtype=np.float32)
     fw.run_detect_head_bboxes.return_value = heads
@@ -112,7 +119,6 @@ def test_standard_frame_yaw_uses_working_coordinates(monkeypatch, face_count, an
     control = defaultdict(
         bool,
         {
-            "LandmarkDetectToggle": False,
             "ShowAllDetectedFacesBBoxToggle": True,
             "YawNetEnableToggle": True,
             "ShowYawNetRingToggle": True,
@@ -121,14 +127,17 @@ def test_standard_frame_yaw_uses_working_coordinates(monkeypatch, face_count, an
             "ManualRotationAngleSlider": angle,
         },
     )
+    if landmarks_enabled is not None:
+        control["LandmarkDetectToggle"] = landmarks_enabled
     frame = torch.zeros((3, 256, 384), dtype=torch.uint8)
     out = standard.StandardProcessor(worker).process_standard_frame(
         frame, control, threading.Event()
     )
     assert out.shape == frame.shape
-    assert fw.run_detect_head_bboxes.call_count == bool(face_count)
-    assert fw.estimate_head_yaw.call_count == face_count
-    assert len(overlays) == bool(face_count)
+    expected_faces = face_count if landmarks_enabled is not False else 0
+    assert fw.run_detect_head_bboxes.call_count == bool(expected_faces)
+    assert fw.estimate_head_yaw.call_count == expected_faces
+    assert len(overlays) == bool(expected_faces)
 
 
 # ---------------------------------------------------------------------------

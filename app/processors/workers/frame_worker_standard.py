@@ -420,7 +420,10 @@ class StandardProcessor:
         # (the same reasoning as the hrffa pass in STEP 3 above: heads belong to the
         # frame). Reuses the boxes from that pass when it already ran, so 'hrffa'
         # landmark mode pays nothing extra and other modes pay one inference per frame.
-        yawnet_enabled: bool = control.get("YawNetEnableToggle", False)
+        yawnet_enabled: bool = bool(
+            control.get("LandmarkDetectToggle", True)
+            and control.get("YawNetEnableToggle", False)
+        )
         yawnet_min_kappa: float = float(
             control.get("YawNetMinKappaDecimalSlider", 0.0) or 0.0
         )
@@ -898,7 +901,7 @@ class StandardProcessor:
 
         if (
             control.get("ShowYawNetRingToggle", False)
-            and control.get("YawNetEnableToggle", False)
+            and yawnet_enabled
             and det_faces_data_for_display
         ):
             processed_tensor_rgb_uint8 = draw_head_yaw_ring_on_faces(
