@@ -1017,14 +1017,11 @@ class FrameEdits:
             if driving_kps is not None and not np.all(driving_kps == 0):
                 driving_lmk_crop = driving_kps
             else:
-                active_landmark_mode = str(
-                    control.get("LandmarkDetectModelSelection", "203")
-                )
                 _, driving_lmk_crop, _ = self.function_worker.run_detect_landmark(
                     driving,
                     bbox=np.array([0, 0, d_w, d_h], dtype=np.float32),
                     det_kpss=[],
-                    detect_mode=active_landmark_mode,
+                    detect_mode="203",
                     score=0.5,
                     from_points=False,
                     use_mean_eyes=use_mean_eyes,
@@ -1055,14 +1052,11 @@ class FrameEdits:
             # --- TARGET FACE (identity / pose to preserve) ---
             target = target.clamp(0, 255).type(torch.uint8)
             t_h, t_w = int(target.shape[-2]), int(target.shape[-1])
-            active_landmark_mode = str(
-                control.get("LandmarkDetectModelSelection", "203")
-            )
             _, source_lmk, _ = self.function_worker.run_detect_landmark(
                 target,
                 bbox=np.array([0, 0, t_w, t_h], dtype=np.float32),
                 det_kpss=None,
-                detect_mode=active_landmark_mode,
+                detect_mode="203",
                 score=0.5,
                 from_points=False,
                 use_mean_eyes=use_mean_eyes,
