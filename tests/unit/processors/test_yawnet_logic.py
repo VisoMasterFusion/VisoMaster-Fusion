@@ -16,6 +16,121 @@ from app.processors.face_landmark_detectors import FaceLandmarkDetectors
 MODEL = "model_assets/yawnet_distill_128_unified_v6u_kappa_1x3x128x128.onnx"
 
 
+@pytest.mark.parametrize("dtype", [torch.uint8, torch.float32])
+def test_yawnet_normalization_preserves_source_frame(dtype):
+    from types import SimpleNamespace
+    from unittest.mock import MagicMock
+
+    mp = MagicMock()
+    mp.device = torch.device("cpu")
+    session = MagicMock()
+    session.get_inputs.return_value = [
+        SimpleNamespace(name="image", shape=[1, 3, 128, 128])
+    ]
+    mp.models = {"YawNet": session}
+    det = FaceLandmarkDetectors(mp, MagicMock())
+    frame = torch.full((3, 256, 256), 127, dtype=dtype)
+    original = frame.clone()
+    heads = np.array([[32, 32, 160, 160, 0.9]], dtype=np.float32)
+
+    def infer(name, feed, outputs):
+        crop = feed["image"]
+        assert crop.shape == (1, 3, 128, 128)
+        assert crop.dtype == torch.float32
+        assert crop.device == mp.device
+        assert crop.is_contiguous()
+        torch.testing.assert_close(crop, torch.full_like(crop, 127 / 127.5 - 1))
+        return [np.array([[0.0, 1.0]]), np.array([2.0])]
+
+    det._run_onnx_binding = infer
+    result = det.estimate_head_yaw_yawnet(
+        frame, np.array([60, 60, 120, 140], dtype=np.float32), head_bboxes=heads
+    )
+    assert result == pytest.approx((270.0, 2.0))
+    torch.testing.assert_close(frame, original)
+
+
+@pytest.mark.parametrize("face_count", [0, 1, 2])
+@pytest.mark.parametrize("angle", [0, 90])
+def test_standard_frame_yaw_uses_working_coordinates(monkeypatch, face_count, angle):
+    from collections import OrderedDict, defaultdict
+    import threading
+    from unittest.mock import MagicMock
+
+    from torchvision.transforms import v2
+    from app.processors.workers import frame_worker_standard as standard
+
+    worker = MagicMock()
+    worker.lock = threading.RLock()
+    worker.main_window.target_faces = {}
+    worker.main_window.swapfacesButton.isChecked.return_value = False
+    worker.main_window.editFacesButton.isChecked.return_value = False
+    worker.is_single_frame = True
+    worker.precomputed_bboxes = None
+    worker._resize_cache = OrderedDict()
+    worker._RESIZE_CACHE_MAX = 16
+    worker._MIN_FACE_PIXELS = 20
+    worker.interpolation_scaleback = v2.InterpolationMode.BILINEAR
+    worker.is_view_face_mask = worker.is_view_face_compare = False
+    worker._find_best_target_match.return_value = (None, {}, 0.0)
+    fw = worker.function_worker
+    boxes = np.array([[100, 120, 220, 260]] * face_count, dtype=np.float32).reshape(
+        -1, 4
+    )
+    points = np.array(
+        [[[130, 150], [190, 150], [160, 185], [140, 225], [180, 225]]] * face_count,
+        dtype=np.float32,
+    ).reshape(-1, 5, 2)
+    fw.run_detect.return_value = (boxes, points, None)
+    fw.run_recognize_direct.return_value = (np.ones(512), None)
+    heads = np.array([[80, 80, 240, 280, 0.9]], dtype=np.float32)
+    fw.run_detect_head_bboxes.return_value = heads
+    working_shape = (3, 768, 512) if angle else (3, 512, 768)
+
+    def estimate(img, bbox, head_bboxes, min_kappa):
+        assert tuple(img.shape) == working_shape
+        np.testing.assert_array_equal(bbox, [100, 120, 220, 260])
+        assert head_bboxes is heads
+        assert min_kappa == 1.5
+        return (90.0, 2.0)
+
+    fw.estimate_head_yaw.side_effect = estimate
+    overlays = []
+
+    def draw(img, faces, **kwargs):
+        assert tuple(img.shape) == (3, 256, 384)
+        for face in faces:
+            assert face["yawnet_deg"] == 90.0
+            assert not np.array_equal(face["bbox"], boxes[0])
+        overlays.append(faces)
+        return img
+
+    monkeypatch.setattr(
+        standard, "draw_bounding_boxes_on_detected_faces", lambda img, *a, **kw: img
+    )
+    monkeypatch.setattr(standard, "draw_head_yaw_ring_on_faces", draw)
+    control = defaultdict(
+        bool,
+        {
+            "LandmarkDetectToggle": False,
+            "ShowAllDetectedFacesBBoxToggle": True,
+            "YawNetEnableToggle": True,
+            "ShowYawNetRingToggle": True,
+            "YawNetMinKappaDecimalSlider": 1.5,
+            "ManualRotationEnableToggle": bool(angle),
+            "ManualRotationAngleSlider": angle,
+        },
+    )
+    frame = torch.zeros((3, 256, 384), dtype=torch.uint8)
+    out = standard.StandardProcessor(worker).process_standard_frame(
+        frame, control, threading.Event()
+    )
+    assert out.shape == frame.shape
+    assert fw.run_detect_head_bboxes.call_count == bool(face_count)
+    assert fw.estimate_head_yaw.call_count == face_count
+    assert len(overlays) == bool(face_count)
+
+
 # ---------------------------------------------------------------------------
 # Ring-angle folding
 # ---------------------------------------------------------------------------

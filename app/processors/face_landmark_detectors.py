@@ -1255,9 +1255,11 @@ class FaceLandmarkDetectors:
             antialias=True,
         )
         # center05: (x/255 - 0.5) / 0.5, identical to the x/127.5 - 1 in the README.
+        # Resize and to() can retain the frame's storage for a 128px float crop.
+        # Allocate on the first division before normalizing in place.
         crop = (
             crop.to(dtype=torch.float32, device=self.models_processor.device)
-            .div_(255.0)
+            .div(255.0)
             .sub_(0.5)
             .div_(0.5)
         )
