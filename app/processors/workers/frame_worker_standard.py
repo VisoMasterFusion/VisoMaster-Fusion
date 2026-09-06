@@ -11,6 +11,7 @@ from app.processors.models_data import landmark_point_counts
 from app.helpers.miscellaneous import (
     ParametersDict,
     draw_bounding_boxes_on_detected_faces,
+    draw_head_yaw_ring_on_faces,
     paint_landmarks_on_image,
     is_detected_face_eligible_for_matching,
     keypoints_adjustments,
@@ -153,6 +154,11 @@ class StandardProcessor:
 
         # FW-ARCH-FIX: Flag to know if faces were vetted by the Sequential Detector
         is_sequentially_tracked = not self.worker.is_single_frame
+
+        # Whole-head boxes for this frame, shared by the 'hrffa' landmark pass and
+        # YawNet. Bound here rather than inside the branch that fills it because only
+        # one of the paths below runs, and the YawNet block later reads it either way.
+        head_bboxes = None
 
         if is_sequentially_tracked:
             # 1. Primary Path (Video/Webcam): Use the sequentially precomputed detections
@@ -299,7 +305,6 @@ class StandardProcessor:
                 # 'hrffa' predicts on a whole-head crop, so it needs
                 # DEIMv2-Wholebody49 head boxes. Those belong to the frame, not to a
                 # face, so run the head detector once here instead of once per face.
-                head_bboxes = None
                 if landmark_mode == "hrffa":
                     head_bboxes = self.worker.function_worker.run_detect_head_bboxes(
                         img
@@ -392,6 +397,37 @@ class StandardProcessor:
                         "matched_target": None,
                     }
                 )
+
+        # Whole-head boxes for YawNet, detected once per FRAME rather than once per face
+        # (the same reasoning as the hrffa pass in STEP 3 above: heads belong to the
+        # frame). Reuses the boxes from that pass when it already ran, so 'hrffa'
+        # landmark mode pays nothing extra and other modes pay one inference per frame.
+        yawnet_enabled: bool = bool(
+            control.get("LandmarkDetectToggle", True)
+            and control.get("YawNetEnableToggle", False)
+        )
+        yawnet_min_kappa: float = float(
+            control.get("YawNetMinKappaDecimalSlider", 0.0) or 0.0
+        )
+        head_bboxes_frame = head_bboxes
+        if yawnet_enabled and det_faces_data_for_display and head_bboxes_frame is None:
+            head_bboxes_frame = self.worker.function_worker.run_detect_head_bboxes(img)
+
+        # Pre-calculate YawNet while img, face boxes, and head boxes are all still in
+        # the same rotated/scaled working coordinate space. The overlay later draws
+        # from these cached values after display-space transforms have been reversed.
+        if yawnet_enabled and det_faces_data_for_display:
+            for _fface in det_faces_data_for_display:
+                if _fface.get("bbox") is None:
+                    continue
+                _yaw_res = self.worker.function_worker.estimate_head_yaw(
+                    img,
+                    _fface["bbox"],
+                    head_bboxes=head_bboxes_frame,
+                    min_kappa=yawnet_min_kappa,
+                )
+                if _yaw_res is not None:
+                    _fface["yawnet_deg"] = _yaw_res[0]
 
         # Swapping / Editing Loop
         if det_faces_data_for_display:
@@ -524,6 +560,7 @@ class StandardProcessor:
                             target_face,
                             face_bbox=best_fface["bbox"],
                         )
+                        _yawnet_deg: float | None = best_fface.get("yawnet_deg")
                         try:
                             (
                                 img,
@@ -540,6 +577,7 @@ class StandardProcessor:
                                 control=control,
                                 dfm_model_name=params["DFMModelSelection"],
                                 kv_map=_reaging_kv,
+                                yawnet_deg=_yawnet_deg,
                             )
                             if edit_button_is_checked_global and any(
                                 params[f]
@@ -671,6 +709,7 @@ class StandardProcessor:
                             best_target,
                             face_bbox=fface["bbox"],
                         )
+                        _yawnet_deg_b: float | None = fface.get("yawnet_deg")
                         try:
                             img, fface["original_face"], fface["swap_mask"] = (
                                 self.worker.swap_core(
@@ -684,6 +723,7 @@ class StandardProcessor:
                                     control=control,
                                     dfm_model_name=params["DFMModelSelection"],
                                     kv_map=_reaging_kv,
+                                    yawnet_deg=_yawnet_deg_b,
                                 )
                             )
                             if edit_button_is_checked_global and any(
@@ -840,6 +880,15 @@ class StandardProcessor:
                 temp_permuted = processed_tensor_rgb_uint8.permute(1, 2, 0)
                 temp_permuted = paint_landmarks_on_image(temp_permuted, landmarks_data)
                 processed_tensor_rgb_uint8 = temp_permuted.permute(2, 0, 1)
+
+        if (
+            control.get("ShowYawNetRingToggle", False)
+            and yawnet_enabled
+            and det_faces_data_for_display
+        ):
+            processed_tensor_rgb_uint8 = draw_head_yaw_ring_on_faces(
+                processed_tensor_rgb_uint8, det_faces_data_for_display
+            )
 
         compare_mode_active = (
             self.worker.is_view_face_mask or self.worker.is_view_face_compare

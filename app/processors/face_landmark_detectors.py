@@ -1,3 +1,4 @@
+import logging
 import threading
 from itertools import product as product
 from typing import TYPE_CHECKING, List, Dict, Optional, Any, Callable
@@ -12,6 +13,8 @@ if TYPE_CHECKING:
     from app.processors.workers.function_worker import FunctionWorker
 from app.processors.models_data import models_dir
 from app.processors.utils import faceutil
+
+logger = logging.getLogger(__name__)
 
 
 def _kps5_is_degenerate(kps5: np.ndarray, detect_mode: str = "203") -> bool:
@@ -1005,7 +1008,7 @@ class FaceLandmarkDetectors:
         the resident face detector (FaceDetectors.current_detector_model keeps only one
         alive at a time).
         """
-        empty = np.empty((0, 5), dtype=np.float32)
+        empty: np.ndarray = np.empty((0, 5), dtype=np.float32)
         model_name = "DEIMv2Wholebody49Head"
 
         if not self.models_processor.models.get(model_name):
@@ -1047,7 +1050,12 @@ class FaceLandmarkDetectors:
         )
         # RGB in [0, 1]; this graph applies no mean/std of its own.
         det_img = (
-            torch.div(det_img.to(dtype=torch.float32), 255.0).unsqueeze(0).contiguous()
+            torch.div(
+                det_img.to(dtype=torch.float32, device=self.models_processor.device),
+                255.0,
+            )
+            .unsqueeze(0)
+            .contiguous()
         )
 
         feed: Dict[str, torch.Tensor] = {inp.name: det_img}
@@ -1144,6 +1152,153 @@ class FaceLandmarkDetectors:
         cx, cy = (fx1 + fx2) / 2.0, (fy1 + fy2) / 2.0 - 0.08 * h
         half = 0.5 * 1.5 * max(w, h)
         return np.array([cx - half, cy - half, cx + half, cy + half], dtype=np.float32)
+
+    # --- YawNet -------------------------------------------------------------
+    # Full-circle head yaw. Unlike faceutil.calc_face_yaw_pitch (a 5-landmark nose-offset
+    # ratio that saturates near +-90 deg and reads a rear view as roughly frontal), this
+    # distinguishes "profile" from "facing away", and reports its own confidence.
+    #
+    # Returned angles use the ring convention documented on the YawNet entry in
+    # models_data: 0 = facing camera, 90 = subject's right, 180 = facing away, 270 =
+    # left. Callers that want "how far from frontal" should use yaw_from_frontal().
+
+    # Minimum von Mises concentration to act on an angle. DEFAULT 0.0 = accept every
+    # reading, which is deliberate and not laziness:
+    #
+    # kappa is softplus(logit).clamp(1e-3, 100) (scripts/yawnet.py), and the kappa head's
+    # bias is initialised so softplus(1.85) ~= 2.0 "the same as the previous FIXED
+    # kappa" -- i.e. 2.0 is the model's NEUTRAL PRIOR, not a confidence floor. A
+    # threshold anywhere near it would reject ordinary predictions. Upstream's own demo
+    # reads only cos_sin and ignores kappa entirely, so there is no reference value to
+    # copy, and calibrating one needs real in-distribution footage we do not have here.
+    # Rather than ship an invented constant, the gate is off and every reading is logged
+    # at debug level so a threshold can be chosen from real material later.
+    #
+    # Leaving it off is safe for the occluder/XSeg bypass because that path already
+    # requires a COLLAPSED MASK as well as an extreme angle, so a spurious yaw on its
+    # own cannot trigger it.
+    YAWNET_MIN_KAPPA = 0.0
+
+    @staticmethod
+    def yaw_from_frontal(orientation_deg: float) -> float:
+        """
+        Fold a 0..360 ring angle onto 0..180 "degrees away from facing the camera".
+
+        0 = facing the camera, 90 = full profile (either side), 180 = facing away.
+        Side is deliberately discarded: every consumer here is symmetric, and folding
+        removes the wrap-around bug of comparing raw ring degrees against a threshold
+        (350 deg is 10 deg off frontal, not 350).
+        """
+        d = abs(float(orientation_deg)) % 360.0
+        return 360.0 - d if d > 180.0 else d
+
+    def estimate_head_yaw_yawnet(
+        self,
+        img: torch.Tensor,
+        bbox: np.ndarray,
+        head_bboxes: np.ndarray | list | None = None,
+        min_kappa: float | None = None,
+    ) -> tuple[float, float] | None:
+        """
+        Full-circle head yaw for one face, via YawNet.
+
+        img is the whole frame (3, H, W) uint8/float RGB; bbox is that face's box in
+        frame pixels. head_bboxes is the frame's DEIMv2 head boxes when the caller
+        already has them ('hrffa' landmark mode); pass None and one is detected here.
+        min_kappa overrides YAWNET_MIN_KAPPA, normally from the UI.
+
+        Returns (orientation_deg, kappa) in the ring convention, or None when the model
+        is unavailable or the prediction is too uncertain to use. None means "no
+        opinion" and callers must keep their previous behaviour -- never treat it as 0.
+        """
+        model_name = "YawNet"
+
+        if not self.models_processor.models.get(model_name):
+            if not self.models_processor.load_model(model_name):
+                print(
+                    f"[ERROR] Failed to load '{model_name}'. Head-yaw estimation is "
+                    "disabled; run download_models.py if the file is missing."
+                )
+                return None
+
+        # Re-registered every call for the same reason as DEIMv2Wholebody49Head: a
+        # deferred unload drops the name while the session is still resident.
+        self.active_landmark_models.add(model_name)
+
+        session = self.models_processor.models.get(model_name)
+        if session is None:
+            return None
+
+        if head_bboxes is None:
+            head_bboxes = self.detect_head_bboxes_wholebody49(img)
+        head_bbox = self._head_bbox_for_face(head_bboxes, bbox)
+
+        inp = session.get_inputs()[0]
+        shape = inp.shape
+        size = shape[2] if isinstance(shape[2], int) else 128
+
+        img_h, img_w = int(img.shape[1]), int(img.shape[2])
+        x1 = int(np.floor(np.clip(head_bbox[0], 0, img_w - 1)))
+        y1 = int(np.floor(np.clip(head_bbox[1], 0, img_h - 1)))
+        x2 = int(np.ceil(np.clip(head_bbox[2], 0, img_w)))
+        y2 = int(np.ceil(np.clip(head_bbox[3], 0, img_h)))
+        if x2 - x1 < 2 or y2 - y1 < 2:
+            return None
+
+        crop = img[:, y1:y2, x1:x2]
+        # A DIRECT squash to the square, aspect ratio NOT preserved -- this is what
+        # upstream's orientation.ts feeds the model, so a letterbox would be OOD.
+        crop = v2.functional.resize(
+            crop,
+            [size, size],
+            interpolation=v2.InterpolationMode.BILINEAR,
+            antialias=True,
+        )
+        # center05: (x/255 - 0.5) / 0.5, identical to the x/127.5 - 1 in the README.
+        # Resize and to() can retain the frame's storage for a 128px float crop.
+        # Allocate on the first division before normalizing in place.
+        crop = (
+            crop.to(dtype=torch.float32, device=self.models_processor.device)
+            .div(255.0)
+            .sub_(0.5)
+            .div_(0.5)
+        )
+        crop = crop.unsqueeze(0).contiguous()
+
+        net_outs = self._run_onnx_binding(
+            model_name, {inp.name: crop}, ["cos_sin", "kappa"]
+        )
+        if not net_outs or len(net_outs) < 2:
+            return None
+
+        cos_sin = np.asarray(net_outs[0], dtype=np.float32).reshape(-1)
+        kappa = float(np.asarray(net_outs[1], dtype=np.float32).reshape(-1)[0])
+        if cos_sin.size < 2:
+            return None
+        if not np.isfinite(cos_sin[:2]).all() or not np.isfinite(kappa):
+            return None
+
+        # atan2(sin, cos) -> 0..360, then MIRROR: YawNet emits the yawpose convention
+        # (+90 = screen left) and the ring convention is its mirror. Dropping this step
+        # silently flips left and right. See models_data's YawNet entry.
+        deg = (np.degrees(np.arctan2(cos_sin[1], cos_sin[0])) + 360.0) % 360.0
+        deg = (360.0 - deg) % 360.0
+
+        threshold = self.YAWNET_MIN_KAPPA if min_kappa is None else float(min_kappa)
+        # Logged before the gate, and unconditionally, so that raising the threshold
+        # from the UI is an informed choice rather than a guess: the readings you need
+        # in order to pick a value are the ones a gate would have thrown away.
+        logger.debug(
+            "YawNet: %.1f deg (kappa %.3f, min %.3f)%s",
+            deg,
+            kappa,
+            threshold,
+            " -> rejected" if threshold > 0.0 and kappa < threshold else "",
+        )
+        if threshold > 0.0 and kappa < threshold:
+            return None
+
+        return float(deg), kappa
 
     def detect_face_landmark_hrffa(
         self, img, bbox, det_kpss, from_points=False, **kwargs

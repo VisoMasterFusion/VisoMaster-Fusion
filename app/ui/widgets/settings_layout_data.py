@@ -550,6 +550,62 @@ SETTINGS_LAYOUT_DATA: Any = {
             "exec_function": control_actions.handle_landmark_model_selection_change,
             "exec_function_args": ["LandmarkDetectModelSelection"],
         },
+        "YawNetEnableToggle": {
+            "level": 2,
+            "label": "Head Yaw (YawNet)",
+            "default": False,
+            "parentToggle": "LandmarkDetectToggle",
+            "requiredToggleValue": True,
+            "help": (
+                "Estimate head yaw with YawNet, a full-circle (360 deg) pose model.\n\n"
+                "The built-in yaw estimate is a ratio between the nose and the eyes, so "
+                "it saturates near +-90 deg and reads a head turned fully away as "
+                "roughly frontal. YawNet tells those apart, which lets the occluder / "
+                "XSeg profile safeguard fire on the frames that actually need it "
+                "instead of guessing from landmark geometry.\n\n"
+                "Like hrffa it needs a whole-head crop, so it runs a "
+                "DEIMv2-Wholebody49 head detection pass. In 'hrffa' landmark mode that "
+                "pass already happens and this is nearly free; in every other mode it "
+                "adds one inference per frame. YawNet itself is ~0.3 ms.\n\n"
+                "Note this sits under 'Enable Landmark Detection': turning that off "
+                "also turns this off, and the safeguard falls back to the landmark-based "
+                "estimate."
+            ),
+        },
+        "YawNetMinKappaDecimalSlider": {
+            "level": 3,
+            "label": "Min Confidence (kappa)",
+            "min_value": "0.0",
+            "max_value": "10.0",
+            "default": "0.0",
+            "step": 0.1,
+            "decimals": 1,
+            "parentToggle": "YawNetEnableToggle",
+            "requiredToggleValue": True,
+            "help": (
+                "Discard head-angle readings whose confidence falls below this.\n\n"
+                "0 (the default) accepts every reading. Note that 2.0 is YawNet's own "
+                "neutral starting value rather than a confidence floor, so a threshold "
+                "near it will reject ordinary predictions - start low.\n\n"
+                "There is no established value for this: upstream's demo ignores "
+                "confidence entirely. Run with debug logging to see the readings your "
+                "footage actually produces before raising it."
+            ),
+        },
+        "ShowYawNetRingToggle": {
+            "level": 3,
+            "label": "Show Head Yaw Ring",
+            "default": False,
+            "parentToggle": "YawNetEnableToggle",
+            "requiredToggleValue": True,
+            "help": (
+                "Draw a YawNet orientation ring above each face in the preview, like "
+                "the ring in the upstream YawNet demo.\n\n"
+                "The needle points the way the head faces: down = toward the camera, "
+                "right / left = turned to that side, up = facing away from the "
+                "camera. Preview only - it never affects the rendered output."
+            ),
+        },
         "LandmarkDetectScoreSlider": {
             "level": 2,
             "label": "Landmark Detect Score",

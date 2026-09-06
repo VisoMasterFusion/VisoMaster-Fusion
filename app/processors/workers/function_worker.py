@@ -322,6 +322,30 @@ class FunctionWorker:
             img, score_threshold
         )
 
+    def estimate_head_yaw(
+        self,
+        img: torch.Tensor,
+        bbox: np.ndarray,
+        head_bboxes: np.ndarray | list | None = None,
+        min_kappa: float | None = None,
+    ) -> tuple[float, float] | None:
+        """
+        Full-circle head yaw for one face (YawNet). Returns (orientation_deg, kappa) in
+        the ring convention -- 0 = facing camera, 90 = right, 180 = away, 270 = left --
+        or None when unavailable or too uncertain to act on.
+
+        Pass head_bboxes when the caller already ran the head detector for this frame
+        ('hrffa' landmark mode) so it fires once per frame instead of once per face.
+        """
+        return self.face_landmark_detectors.estimate_head_yaw_yawnet(
+            img, bbox, head_bboxes, min_kappa=min_kappa
+        )
+
+    @staticmethod
+    def yaw_from_frontal(orientation_deg: float) -> float:
+        """Fold a ring angle onto 0..180 degrees away from facing the camera."""
+        return FaceLandmarkDetectors.yaw_from_frontal(orientation_deg)
+
     def get_arcface_model(self, face_swapper_model: str) -> str:
         if face_swapper_model in arcface_mapping_model_dict:
             return arcface_mapping_model_dict[face_swapper_model]
@@ -595,9 +619,14 @@ class FunctionWorker:
         amount: float,
         parameters: Optional[dict] = None,
         original_face_512: Optional[torch.Tensor] = None,
+        yaw_deg: Optional[float] = None,
     ) -> torch.Tensor | np.ndarray:
         return self.face_masks.apply_occlusion(
-            img, amount, parameters=parameters, original_face_512=original_face_512
+            img,
+            amount,
+            parameters=parameters,
+            original_face_512=original_face_512,
+            yaw_deg=yaw_deg,
         )
 
     def apply_dfl_xseg(
@@ -606,10 +635,16 @@ class FunctionWorker:
         amount: float,
         mouth: Any,
         parameters: dict,
-        inner_mouth_mask: Any,
-    ) -> np.ndarray:
+        inner_mouth_mask: Any = None,
+        yaw_deg: Optional[float] = None,
+    ) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor]:
         return self.face_masks.apply_dfl_xseg(
-            img, amount, mouth, parameters, inner_mouth_mask
+            img,
+            amount,
+            mouth,
+            parameters,
+            inner_mouth_mask=inner_mouth_mask,
+            yaw_deg=yaw_deg,
         )
 
     def process_masks_and_masks(
