@@ -1008,7 +1008,7 @@ class FaceLandmarkDetectors:
         the resident face detector (FaceDetectors.current_detector_model keeps only one
         alive at a time).
         """
-        empty = np.empty((0, 5), dtype=np.float32)
+        empty: np.ndarray = np.empty((0, 5), dtype=np.float32)
         model_name = "DEIMv2Wholebody49Head"
 
         if not self.models_processor.models.get(model_name):
@@ -1050,7 +1050,12 @@ class FaceLandmarkDetectors:
         )
         # RGB in [0, 1]; this graph applies no mean/std of its own.
         det_img = (
-            torch.div(det_img.to(dtype=torch.float32), 255.0).unsqueeze(0).contiguous()
+            torch.div(
+                det_img.to(dtype=torch.float32, device=self.models_processor.device),
+                255.0,
+            )
+            .unsqueeze(0)
+            .contiguous()
         )
 
         feed: Dict[str, torch.Tensor] = {inp.name: det_img}
@@ -1250,7 +1255,12 @@ class FaceLandmarkDetectors:
             antialias=True,
         )
         # center05: (x/255 - 0.5) / 0.5, identical to the x/127.5 - 1 in the README.
-        crop = crop.to(dtype=torch.float32).div_(255.0).sub_(0.5).div_(0.5)
+        crop = (
+            crop.to(dtype=torch.float32, device=self.models_processor.device)
+            .div_(255.0)
+            .sub_(0.5)
+            .div_(0.5)
+        )
         crop = crop.unsqueeze(0).contiguous()
 
         net_outs = self._run_onnx_binding(

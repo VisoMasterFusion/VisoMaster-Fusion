@@ -1227,12 +1227,12 @@ class FaceMasks:
     @torch.no_grad()
     def apply_occlusion(
         self,
-        img,
-        amount,
-        parameters=None,
-        original_face_512=None,
+        img: torch.Tensor,
+        amount: float,
+        parameters: dict | None = None,
+        original_face_512: torch.Tensor | None = None,
         yaw_deg: float | None = None,
-    ):
+    ) -> torch.Tensor:
         """
         Runs the Occluder model to mask out obstacles (hands, microphones, etc.).
         Includes logic to protect the inner mouth (tongue/teeth) from being occluded.
@@ -1241,7 +1241,9 @@ class FaceMasks:
         bypassed and a full clear mask (1.0) is returned, so the swap is still applied
         instead of silently vanishing. Pass yaw_deg to enable that guard.
         """
-        img = torch.div(img, 255)
+        img = torch.div(
+            img.to(dtype=torch.float32, device=self.models_processor.device), 255
+        )
         img = torch.unsqueeze(img, 0).contiguous()
 
         # Output initialisation
@@ -1375,7 +1377,7 @@ class FaceMasks:
         self,
         img: torch.Tensor,
         amount: float,
-        mouth: torch.Tensor,
+        mouth: torch.Tensor | int | float,
         parameters: dict,
         inner_mouth_mask: torch.Tensor | None = None,
         yaw_deg: float | None = None,
@@ -1396,7 +1398,7 @@ class FaceMasks:
         # Check if obstacle protection is enabled
         exclude_obstacles = parameters.get("XSegExcludeInnerObstaclesToggle", False)
 
-        img = img.type(torch.float32)
+        img = img.to(dtype=torch.float32, device=self.models_processor.device)
         img = torch.div(img, 255)
         img = torch.unsqueeze(img, 0).contiguous()
         outpred = torch.ones(

@@ -420,13 +420,29 @@ class StandardProcessor:
         # (the same reasoning as the hrffa pass in STEP 3 above: heads belong to the
         # frame). Reuses the boxes from that pass when it already ran, so 'hrffa'
         # landmark mode pays nothing extra and other modes pay one inference per frame.
-        # None is a valid value throughout: estimate_head_yaw falls back to a head box
-        # synthesised from the face box.
-        yawnet_enabled = control.get("YawNetEnableToggle", False)
-        yawnet_min_kappa = float(control.get("YawNetMinKappaDecimalSlider", 0.0) or 0.0)
+        yawnet_enabled: bool = control.get("YawNetEnableToggle", False)
+        yawnet_min_kappa: float = float(
+            control.get("YawNetMinKappaDecimalSlider", 0.0) or 0.0
+        )
         head_bboxes_frame = head_bboxes
-        if yawnet_enabled and head_bboxes_frame is None:
+        if yawnet_enabled and det_faces_data_for_display and head_bboxes_frame is None:
             head_bboxes_frame = self.worker.function_worker.run_detect_head_bboxes(img)
+
+        # Pre-calculate YawNet while img, face boxes, and head boxes are all still in
+        # the same rotated/scaled working coordinate space. The overlay later draws
+        # from these cached values after display-space transforms have been reversed.
+        if yawnet_enabled and det_faces_data_for_display:
+            for _fface in det_faces_data_for_display:
+                if _fface.get("bbox") is None:
+                    continue
+                _yaw_res = self.worker.function_worker.estimate_head_yaw(
+                    img,
+                    _fface["bbox"],
+                    head_bboxes=head_bboxes_frame,
+                    min_kappa=yawnet_min_kappa,
+                )
+                if _yaw_res is not None:
+                    _fface["yawnet_deg"] = _yaw_res[0]
 
         # Swapping / Editing Loop
         if det_faces_data_for_display:
@@ -559,21 +575,7 @@ class StandardProcessor:
                             target_face,
                             face_bbox=best_fface["bbox"],
                         )
-                        # Full-circle head yaw for the occluder / XSeg profile
-                        # safeguard. Computed before the swap so it reads the real head
-                        # pose; the swap preserves pose, so an earlier face already
-                        # composited into img does not affect this one.
-                        _yawnet_deg = None
-                        if yawnet_enabled:
-                            _yaw = self.worker.function_worker.estimate_head_yaw(
-                                img,
-                                best_fface["bbox"],
-                                head_bboxes=head_bboxes_frame,
-                                min_kappa=yawnet_min_kappa,
-                            )
-                            if _yaw is not None:
-                                _yawnet_deg = _yaw[0]
-                                best_fface["yawnet_deg"] = _yawnet_deg
+                        _yawnet_deg: float | None = best_fface.get("yawnet_deg")
                         try:
                             (
                                 img,
@@ -722,18 +724,7 @@ class StandardProcessor:
                             best_target,
                             face_bbox=fface["bbox"],
                         )
-                        # See the matching block in the best-match branch above.
-                        _yawnet_deg_b = None
-                        if yawnet_enabled:
-                            _yaw_b = self.worker.function_worker.estimate_head_yaw(
-                                img,
-                                fface["bbox"],
-                                head_bboxes=head_bboxes_frame,
-                                min_kappa=yawnet_min_kappa,
-                            )
-                            if _yaw_b is not None:
-                                _yawnet_deg_b = _yaw_b[0]
-                                fface["yawnet_deg"] = _yawnet_deg_b
+                        _yawnet_deg_b: float | None = fface.get("yawnet_deg")
                         try:
                             img, fface["original_face"], fface["swap_mask"] = (
                                 self.worker.swap_core(
@@ -910,19 +901,6 @@ class StandardProcessor:
             and control.get("YawNetEnableToggle", False)
             and det_faces_data_for_display
         ):
-            # Measure any face the swap loop skipped (unmatched faces still get a
-            # ring), then draw. draw_head_yaw_ring_on_faces ignores faces with no
-            # angle, so a failed estimate simply draws nothing for that face.
-            for _fface in det_faces_data_for_display:
-                if _fface.get("yawnet_deg") is None and _fface.get("bbox") is not None:
-                    _yaw_v = self.worker.function_worker.estimate_head_yaw(
-                        processed_tensor_rgb_uint8,
-                        _fface["bbox"],
-                        head_bboxes=head_bboxes_frame,
-                        min_kappa=yawnet_min_kappa,
-                    )
-                    if _yaw_v is not None:
-                        _fface["yawnet_deg"] = _yaw_v[0]
             processed_tensor_rgb_uint8 = draw_head_yaw_ring_on_faces(
                 processed_tensor_rgb_uint8, det_faces_data_for_display
             )
