@@ -162,7 +162,20 @@ class MainWindow(QtWidgets.QMainWindow, Ui_MainWindow):
         self.parameters_list = {}
         self.control: ControlTypes = {}
         self.parameter_widgets: ParametersWidgetTypes = {}
-        self.parameter_section_states: dict[str, bool] = {}
+        # First-run defaults only: a saved workspace's own section states
+        # (loaded later) always take priority over these. Keeps the two
+        # sections people touch every session open, collapses the rest so
+        # the Face Swap tab isn't a wall of expanded accordions on launch.
+        self.parameter_section_states: dict[str, bool] = {
+            "swapper:swapper": True,
+            "swapper:masks": True,
+            "swapper:swap_strength_and_likeness": False,
+            "swapper:original_face_parsers": False,
+            "swapper:textures_and_colors": False,
+            "swapper:face_landmarks_correction": False,
+            "swapper:blend_adjustments": False,
+            "swapper:face_re_aging": False,
+        }
         self.parameter_sections: dict[str, widget_components.CollapsibleSection] = {}
 
         # UNet related
