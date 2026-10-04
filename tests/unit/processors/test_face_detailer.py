@@ -239,7 +239,8 @@ def test_canonical_names_set_by_ui_are_shared_and_extra_slot_is_released():
 
 
 def test_ui_disable_of_pipeline_slot_preserves_detailer_model():
-    from app.ui.widgets.actions import control_actions
+    # Follow the application import order: UI action/layout modules are cyclic.
+    from app.ui.main_ui import control_actions
 
     restorers, processor = _restorers()
     _select(restorers, "GPEN-1024", 1)
@@ -259,7 +260,8 @@ def test_ui_disable_of_pipeline_slot_preserves_detailer_model():
 
 
 def test_ui_detailer_disable_updates_liveness_before_release():
-    from app.ui.widgets.actions import control_actions
+    # Follow the application import order: UI action/layout modules are cyclic.
+    from app.ui.main_ui import control_actions
 
     restorers, processor = _restorers()
     window = SimpleNamespace(
@@ -283,8 +285,7 @@ def test_ui_detailer_disable_updates_liveness_before_release():
 
 
 def test_detailer_controls_are_global_settings():
-    from app.ui.widgets.common_layout_data import COMMON_LAYOUT_DATA
-    from app.ui.widgets.settings_layout_data import SETTINGS_LAYOUT_DATA
+    from app.ui.main_ui import COMMON_LAYOUT_DATA, SETTINGS_LAYOUT_DATA
 
     assert "Face Detailer" in SETTINGS_LAYOUT_DATA
     assert "Face Detailer" not in COMMON_LAYOUT_DATA
