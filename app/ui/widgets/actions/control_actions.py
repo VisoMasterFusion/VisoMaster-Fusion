@@ -530,7 +530,8 @@ def handle_landmark_state_change(
                 f"[INFO] Landmark detection enabled. Loading selected model: {model_to_load}"
             )
             models_processor.load_model(model_to_load)
-            landmark_detectors.active_landmark_models.add(model_to_load)
+            with landmark_detectors._cache_lock:
+                landmark_detectors.active_landmark_models.add(model_to_load)
             landmark_detectors.current_landmark_model_name = model_to_load
 
 
@@ -564,14 +565,15 @@ def handle_landmark_model_selection_change(
         print(f"[INFO] Unloading previously selected landmark model: {old_model_name}")
         models_processor.unload_model(old_model_name)
         # We also need to remove it from the active_landmark_models set
-        if old_model_name in landmark_detectors.active_landmark_models:
-            landmark_detectors.active_landmark_models.remove(old_model_name)
+        with landmark_detectors._cache_lock:
+            landmark_detectors.active_landmark_models.discard(old_model_name)
 
     # If the main toggle is enabled, load the new model
     if is_enabled:
         print(f"[INFO] Loading selected landmark model: {new_model_name}")
         models_processor.load_model(new_model_name)
-        landmark_detectors.active_landmark_models.add(new_model_name)
+        with landmark_detectors._cache_lock:
+            landmark_detectors.active_landmark_models.add(new_model_name)
 
     # Update the state variable to remember the new model
     landmark_detectors.current_landmark_model_name = new_model_name

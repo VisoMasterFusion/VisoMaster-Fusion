@@ -131,7 +131,8 @@ class FaceLandmarkDetectors:
         """
         MODEL_203_NAME = "FaceLandmark203"  # Essential model
 
-        models_to_unload = list(self.active_landmark_models)
+        with self._cache_lock:
+            models_to_unload = list(self.active_landmark_models)
 
         for model_name in models_to_unload:
             if keep_essential and model_name == MODEL_203_NAME:
@@ -140,12 +141,11 @@ class FaceLandmarkDetectors:
 
             self.models_processor.unload_model(model_name)
             # Also remove it from the active_landmark_models set
-            if model_name in self.active_landmark_models:
-                self.active_landmark_models.remove(model_name)
+            with self._cache_lock:
+                self.active_landmark_models.discard(model_name)
 
-        # If keep_essential is False, active_landmark_models has already been fully
-        # emptied by the per-model remove() calls in the loop above; no extra
-        # .clear() is needed here.
+        # Keep models registered concurrently after the snapshot for the next unload.
+        # Never hold _cache_lock while calling the model manager (it has its own lock).
 
     def __init__(
         self,
@@ -258,7 +258,8 @@ class FaceLandmarkDetectors:
         if not loaded_model_instance:
             loaded_model_instance = self.models_processor.load_model(model_name)
             if loaded_model_instance:
-                self.active_landmark_models.add(model_name)
+                with self._cache_lock:
+                    self.active_landmark_models.add(model_name)
 
         # If model still not loaded (e.g., failed to load), print a warning and return empty
         if not loaded_model_instance:
@@ -842,7 +843,8 @@ class FaceLandmarkDetectors:
                 )
                 return [], [], []  # Fail fast
             else:
-                self.active_landmark_models.add("FaceBlendShapes")
+                with self._cache_lock:
+                    self.active_landmark_models.add("FaceBlendShapes")
 
         aimg, _, IM = self._prepare_crop(
             img,
@@ -1024,7 +1026,8 @@ class FaceLandmarkDetectors:
         # unload ("Smart Unload" during playback) drops the name from
         # active_landmark_models while the session is still resident, and it has to go
         # back in or unload_models() will never free it.
-        self.active_landmark_models.add(model_name)
+        with self._cache_lock:
+            self.active_landmark_models.add(model_name)
 
         session = self.models_processor.models.get(model_name)
         if session is None:
@@ -1223,7 +1226,8 @@ class FaceLandmarkDetectors:
 
         # Re-registered every call for the same reason as DEIMv2Wholebody49Head: a
         # deferred unload drops the name while the session is still resident.
-        self.active_landmark_models.add(model_name)
+        with self._cache_lock:
+            self.active_landmark_models.add(model_name)
 
         session = self.models_processor.models.get(model_name)
         if session is None:

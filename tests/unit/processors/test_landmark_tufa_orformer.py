@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import threading
+
 from types import SimpleNamespace
 
 import numpy as np
@@ -29,6 +31,7 @@ def _detectors() -> FaceLandmarkDetectors:
     )
     inst.function_worker = SimpleNamespace()  # type: ignore[assignment]
     inst.active_landmark_models = set()
+    inst._cache_lock = threading.Lock()
     inst.detector_map = {
         "tufa98": {
             "model_name": "FaceLandmarkTUFA98",
