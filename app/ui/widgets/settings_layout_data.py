@@ -27,6 +27,7 @@ SETTINGS_LAYOUT_DATA: Any = {
             "level": 1,
             "label": "Theme",
             "options": [
+                "Glass Studio",
                 "True-Dark",
                 "OLED-Black",
                 "Windows11-Dark",
@@ -40,7 +41,7 @@ SETTINGS_LAYOUT_DATA: Any = {
                 "Gruvbox",
                 "Monokai",
             ],
-            "default": "True-Dark",
+            "default": "Glass Studio",
             "help": "Select the theme to be used",
             "exec_function": control_actions.change_theme,
             "exec_function_args": [],

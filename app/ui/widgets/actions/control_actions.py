@@ -144,7 +144,13 @@ def change_theme(main_window: "MainWindow", new_theme):
     app = QtWidgets.QApplication.instance()
 
     _style = ""
-    if new_theme == "Dark":
+    if new_theme == "Glass Studio":
+        _style = get_style_data(
+            "glass_studio.qss",
+            "dark",
+            {"primary": "#d0bcff"},
+        )
+    elif new_theme == "Dark":
         _style = get_style_data(
             "dark_styles.qss",
             "dark",
