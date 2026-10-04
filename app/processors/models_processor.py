@@ -1180,6 +1180,13 @@ class ModelsProcessor(QtCore.QObject):
                 if not hasattr(p, "get"):
                     return False
 
+                if (
+                    _is_truthy(p.get("FaceDetailerEnableToggle", False))
+                    and p.get("FaceDetailerRestorerTypeSelection", "GPEN-1024")
+                    == expected_combo
+                ):
+                    return True
+
                 # Slot 1 Verification: Toggle enabled AND combo selection matches
                 if (
                     _is_truthy(p.get("FaceRestorerEnableToggle", False))

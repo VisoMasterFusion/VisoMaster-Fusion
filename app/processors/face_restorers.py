@@ -1,5 +1,6 @@
 import json
 import math
+import threading
 from pathlib import Path
 from typing import TYPE_CHECKING, Any, Dict, List, Optional, Tuple
 
@@ -31,6 +32,8 @@ class FaceRestorers:
         self.function_worker = function_worker
         self.active_model_slot1: Optional[str] = None
         self.active_model_slot2: Optional[str] = None
+        self._active_extra_slots: dict[int, str] = {}
+        self._slot_lock = threading.Lock()
         self._warned_models: set[str] = set()
         self.model_map: Dict[str, str] = {
             "GFPGAN-v1.4": "GFPGANv1.4",
@@ -59,9 +62,59 @@ class FaceRestorers:
 
         self.active_model_slot1 = None
         self.active_model_slot2 = None
+        with self._slot_lock:
+            self._active_extra_slots.clear()
         self._osdface_timestep = None
         self._osdface_alpha = None
         self._osdface_alphas_cumprod = None
+
+    def is_model_used_by_extra_slots(self, model_name: str) -> bool:
+        """Compare canonical names, including names set by UI callbacks."""
+        canonical = self.model_map.get(model_name, model_name)
+        control = self.models_processor.main_window.control
+        if control.get("FaceDetailerEnableToggle", False) and self.model_map.get(
+            control.get("FaceDetailerRestorerTypeSelection", "GPEN-1024")
+        ) == canonical:
+            return True
+        with self._slot_lock:
+            return any(
+                self.model_map.get(active, active) == canonical
+                for active in self._active_extra_slots.values()
+            )
+
+    def _set_active_model(self, slot_id: int, restorer_type: str | None) -> None:
+        """Update ownership before releasing an unshared model, outside the lock."""
+        with self._slot_lock:
+            if slot_id == 1:
+                previous = self.active_model_slot1
+                self.active_model_slot1 = restorer_type
+            elif slot_id == 2:
+                previous = self.active_model_slot2
+                self.active_model_slot2 = restorer_type
+            else:
+                previous = self._active_extra_slots.pop(slot_id, None)
+                if restorer_type is not None:
+                    self._active_extra_slots[slot_id] = restorer_type
+            active = [self.active_model_slot1, self.active_model_slot2]
+            active.extend(self._active_extra_slots.values())
+            previous_model = self.model_map.get(previous, previous) if previous else None
+            still_used = any(
+                (self.model_map.get(name, name) if name else None) == previous_model
+                for name in active
+            )
+
+        # Per-face and marker selections can also keep this model active.
+        if (
+            previous_model
+            and not still_used
+            and not self.models_processor.is_model_active_in_ui(previous_model)
+        ):
+            self.models_processor.unload_model(previous_model)
+
+    def release_extra_slot(self, slot_id: int) -> None:
+        if slot_id < 3:
+            raise ValueError("Only auxiliary restorer slots can be released here")
+        self._set_active_model(slot_id, None)
 
     def _get_model_session(self, model_name: str) -> Optional[Any]:
         """
@@ -179,28 +232,8 @@ class FaceRestorers:
         if not model_name_to_load:
             return swapped_face_upscaled
 
-        # --- Strict VRAM Lifecycle Management Across Slots ---
-        current_active = (
-            self.active_model_slot1 if slot_id == 1 else self.active_model_slot2
-        )
-        other_active = (
-            self.active_model_slot2 if slot_id == 1 else self.active_model_slot1
-        )
-
-        if current_active is not None and current_active != restorer_type:
-            if current_active != other_active:
-                if current_active == "OSDFace":
-                    for m_name in self.osdface_model_names:
-                        self.models_processor.unload_model(m_name)
-                else:
-                    prev_model = self.model_map.get(current_active)
-                    if prev_model and prev_model != "OSDFace":
-                        self.models_processor.unload_model(prev_model)
-
-        if slot_id == 1:
-            self.active_model_slot1 = restorer_type
-        else:
-            self.active_model_slot2 = restorer_type
+        # Slot 3 belongs to the detailer; never evict a model owned by another slot.
+        self._set_active_model(slot_id, restorer_type)
 
         # If using a separate detection mode
         if restorer_det_type in ["Blend", "Reference"]:
@@ -319,7 +352,8 @@ class FaceRestorers:
                 dtype=torch.float32,
                 device=self.models_processor.device,
             ).contiguous()
-            self.run_GFPGAN(temp, outpred)
+            if self.run_GFPGAN(temp, outpred) is False:
+                return swapped_face_upscaled
 
         elif restorer_type == "GFPGAN-1024":
             outpred = torch.empty(
@@ -327,7 +361,8 @@ class FaceRestorers:
                 dtype=torch.float32,
                 device=self.models_processor.device,
             ).contiguous()
-            self.run_GFPGAN1024(temp, outpred)
+            if self.run_GFPGAN1024(temp, outpred) is False:
+                return swapped_face_upscaled
 
         elif restorer_type == "CodeFormer":
             outpred = torch.empty(
@@ -335,7 +370,8 @@ class FaceRestorers:
                 dtype=torch.float32,
                 device=self.models_processor.device,
             ).contiguous()
-            self.run_codeformer(temp, outpred, fidelity_weight)
+            if self.run_codeformer(temp, outpred, fidelity_weight) is False:
+                return swapped_face_upscaled
 
         elif restorer_type == "GPEN-256":
             outpred = torch.empty(
@@ -343,7 +379,8 @@ class FaceRestorers:
                 dtype=torch.float32,
                 device=self.models_processor.device,
             ).contiguous()
-            self.run_GPEN_256(temp, outpred)
+            if self.run_GPEN_256(temp, outpred) is False:
+                return swapped_face_upscaled
 
         elif restorer_type == "GPEN-512":
             outpred = torch.empty(
@@ -351,7 +388,8 @@ class FaceRestorers:
                 dtype=torch.float32,
                 device=self.models_processor.device,
             ).contiguous()
-            self.run_GPEN_512(temp, outpred)
+            if self.run_GPEN_512(temp, outpred) is False:
+                return swapped_face_upscaled
 
         elif restorer_type == "GPEN-1024":
             outpred = torch.empty(
@@ -359,7 +397,8 @@ class FaceRestorers:
                 dtype=torch.float32,
                 device=self.models_processor.device,
             ).contiguous()
-            self.run_GPEN_1024(temp, outpred)
+            if self.run_GPEN_1024(temp, outpred) is False:
+                return swapped_face_upscaled
 
         elif restorer_type == "GPEN-2048":
             outpred = torch.empty(
@@ -367,7 +406,8 @@ class FaceRestorers:
                 dtype=torch.float32,
                 device=self.models_processor.device,
             ).contiguous()
-            self.run_GPEN_2048(temp, outpred)
+            if self.run_GPEN_2048(temp, outpred) is False:
+                return swapped_face_upscaled
 
         elif restorer_type == "RestoreFormer++":
             outpred = torch.empty(
@@ -375,7 +415,8 @@ class FaceRestorers:
                 dtype=torch.float32,
                 device=self.models_processor.device,
             ).contiguous()
-            self.run_RestoreFormerPlusPlus(temp, outpred)
+            if self.run_RestoreFormerPlusPlus(temp, outpred) is False:
+                return swapped_face_upscaled
 
         elif restorer_type == "VQFR-v2":
             outpred = torch.empty(
@@ -383,7 +424,8 @@ class FaceRestorers:
                 dtype=torch.float32,
                 device=self.models_processor.device,
             ).contiguous()
-            self.run_VQFR_v2(temp, outpred, fidelity_weight)
+            if self.run_VQFR_v2(temp, outpred, fidelity_weight) is False:
+                return swapped_face_upscaled
 
         elif restorer_type == "OSDFace":
             outpred = torch.empty(
@@ -864,11 +906,11 @@ class FaceRestorers:
         # Run the model with lazy build handling
         self._run_model_with_lazy_build_check(model_name, ort_session, io_binding)
 
-    def run_GFPGAN(self, image: torch.Tensor, output: torch.Tensor) -> None:
+    def run_GFPGAN(self, image: torch.Tensor, output: torch.Tensor) -> bool:
         model_name = "GFPGANv1.4"
         ort_session = self._get_model_session(model_name)
         if not ort_session:
-            return  # Silently skip if model failed to load
+            return False  # Keep the caller from reading an unwritten output buffer
 
         io_binding = ort_session.io_binding()
         io_binding.bind_input(
@@ -889,12 +931,13 @@ class FaceRestorers:
         )
         # Run the model with lazy build handling
         self._run_model_with_lazy_build_check(model_name, ort_session, io_binding)
+        return True
 
-    def run_GFPGAN1024(self, image: torch.Tensor, output: torch.Tensor) -> None:
+    def run_GFPGAN1024(self, image: torch.Tensor, output: torch.Tensor) -> bool:
         model_name = "GFPGAN1024"
         ort_session = self._get_model_session(model_name)
         if not ort_session:
-            return  # Silently skip if model failed to load
+            return False  # Keep the caller from reading an unwritten output buffer
 
         io_binding = ort_session.io_binding()
         io_binding.bind_input(
@@ -915,12 +958,13 @@ class FaceRestorers:
         )
         # Run the model with lazy build handling
         self._run_model_with_lazy_build_check(model_name, ort_session, io_binding)
+        return True
 
-    def run_GPEN_256(self, image: torch.Tensor, output: torch.Tensor) -> None:
+    def run_GPEN_256(self, image: torch.Tensor, output: torch.Tensor) -> bool:
         model_name = "GPENBFR256"
         ort_session = self._get_model_session(model_name)
         if not ort_session:
-            return  # Silently skip if model failed to load
+            return False  # Keep the caller from reading an unwritten output buffer
 
         io_binding = ort_session.io_binding()
         io_binding.bind_input(
@@ -941,12 +985,13 @@ class FaceRestorers:
         )
         # Run the model with lazy build handling
         self._run_model_with_lazy_build_check(model_name, ort_session, io_binding)
+        return True
 
-    def run_GPEN_512(self, image: torch.Tensor, output: torch.Tensor) -> None:
+    def run_GPEN_512(self, image: torch.Tensor, output: torch.Tensor) -> bool:
         model_name = "GPENBFR512"
         ort_session = self._get_model_session(model_name)
         if not ort_session:
-            return  # Silently skip if model failed to load
+            return False  # Keep the caller from reading an unwritten output buffer
 
         io_binding = ort_session.io_binding()
         io_binding.bind_input(
@@ -967,12 +1012,13 @@ class FaceRestorers:
         )
         # Run the model with lazy build handling
         self._run_model_with_lazy_build_check(model_name, ort_session, io_binding)
+        return True
 
-    def run_GPEN_1024(self, image: torch.Tensor, output: torch.Tensor) -> None:
+    def run_GPEN_1024(self, image: torch.Tensor, output: torch.Tensor) -> bool:
         model_name = "GPENBFR1024"
         ort_session = self._get_model_session(model_name)
         if not ort_session:
-            return  # Silently skip if model failed to load
+            return False  # Keep the caller from reading an unwritten output buffer
 
         io_binding = ort_session.io_binding()
         io_binding.bind_input(
@@ -993,12 +1039,13 @@ class FaceRestorers:
         )
         # Run the model with lazy build handling
         self._run_model_with_lazy_build_check(model_name, ort_session, io_binding)
+        return True
 
-    def run_GPEN_2048(self, image: torch.Tensor, output: torch.Tensor) -> None:
+    def run_GPEN_2048(self, image: torch.Tensor, output: torch.Tensor) -> bool:
         model_name = "GPENBFR2048"
         ort_session = self._get_model_session(model_name)
         if not ort_session:
-            return  # Silently skip if model failed to load
+            return False  # Keep the caller from reading an unwritten output buffer
 
         io_binding = ort_session.io_binding()
         io_binding.bind_input(
@@ -1019,17 +1066,18 @@ class FaceRestorers:
         )
         # Run the model with lazy build handling
         self._run_model_with_lazy_build_check(model_name, ort_session, io_binding)
+        return True
 
     def run_codeformer(
         self,
         image: torch.Tensor,
         output: torch.Tensor,
         fidelity_weight_value: float = 0.9,
-    ) -> None:
+    ) -> bool:
         model_name = "CodeFormer"
         ort_session = self._get_model_session(model_name)
         if not ort_session:
-            return  # Silently skip if model failed to load
+            return False
 
         io_binding = ort_session.io_binding()
         io_binding.bind_input(
@@ -1052,14 +1100,15 @@ class FaceRestorers:
         )
         # Run the model with lazy build handling
         self._run_model_with_lazy_build_check(model_name, ort_session, io_binding)
+        return True
 
     def run_VQFR_v2(
         self, image: torch.Tensor, output: torch.Tensor, fidelity_ratio_value: float
-    ) -> None:
+    ) -> bool:
         model_name = "VQFRv2"
         ort_session = self._get_model_session(model_name)
         if not ort_session:
-            return  # Silently skip if model failed to load
+            return False  # Keep the caller from reading an unwritten output buffer
 
         if not (0.0 <= fidelity_ratio_value <= 1.0):
             raise ValueError(
@@ -1113,14 +1162,15 @@ class FaceRestorers:
         )
         # Run the model with lazy build handling
         self._run_model_with_lazy_build_check(model_name, ort_session, io_binding)
+        return True
 
     def run_RestoreFormerPlusPlus(
         self, image: torch.Tensor, output: torch.Tensor
-    ) -> None:
+    ) -> bool:
         model_name = "RestoreFormerPlusPlus"
         ort_session = self._get_model_session(model_name)
         if not ort_session:
-            return  # Silently skip if model failed to load
+            return False  # Keep the caller from reading an unwritten output buffer
 
         io_binding = ort_session.io_binding()
         io_binding.bind_input(
@@ -1211,3 +1261,4 @@ class FaceRestorers:
         )
         # Run the model with lazy build handling
         self._run_model_with_lazy_build_check(model_name, ort_session, io_binding)
+        return True

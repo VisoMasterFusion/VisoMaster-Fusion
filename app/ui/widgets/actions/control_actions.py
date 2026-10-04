@@ -433,7 +433,10 @@ def handle_restorer_state_change(
                 if other_active_model_attr
                 else None
             )
-            if model_to_change != other_model:
+            if (
+                model_to_change != other_model
+                and not face_restorers_manager.is_model_used_by_extra_slots(model_to_change)
+            ):
                 main_window.models_processor.unload_model(model_to_change)
             else:
                 print(
@@ -481,6 +484,7 @@ def handle_model_selection_change(
         old_model_name
         and old_model_name != new_model_name
         and old_model_name != other_model
+        and not face_restorers_manager.is_model_used_by_extra_slots(old_model_name)
     ):
         main_window.models_processor.unload_model(old_model_name)
 
@@ -501,6 +505,19 @@ def handle_model_selection_change(
             )
     elif active_model_attr:
         setattr(face_restorers_manager, active_model_attr, None)
+
+
+def handle_face_detailer_change(main_window: "MainWindow", new_value, control_name: str):
+    """Release the detailer slot when disabled or its model selection changes."""
+    from app.processors.face_detailer import DETAILER_RESTORER_SLOT_ID
+
+    # update_control invokes callbacks before storing the new value. Model liveness
+    # checks must see the new selection before deciding which sessions to release.
+    main_window.control[control_name] = new_value
+    main_window.function_worker.face_restorers.release_extra_slot(
+        DETAILER_RESTORER_SLOT_ID
+    )
+    main_window.models_processor.purge_unused_restorers()
 
 
 def handle_landmark_state_change(
@@ -1112,7 +1129,7 @@ def reset_face_editor_expression_params(main_window: "MainWindow"):
             common_widget_actions.refresh_frame(main_window)
 
 
-def handle_auto_load_target_folder_toggle(main_window: "MainWindow", enabled: bool = None):
+def handle_auto_load_target_folder_toggle(main_window: "MainWindow", enabled: bool | None = None):
     from app.ui.widgets.actions import list_view_actions
 
     # Always use the MAIN auto-load toggle. The recursive option also calls

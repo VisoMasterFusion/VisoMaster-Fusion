@@ -17,6 +17,7 @@ from app.processors.face_editors import FaceEditors
 from app.processors.face_reaging import FaceReaging
 from app.processors.perform_recast import PerformRecast
 from app.processors.face_denoiser import FaceDenoiser
+from app.processors.face_detailer import FaceDetailer
 from app.processors.frame_edits import FrameEdits
 from app.processors.models_data import arcface_mapping_model_dict
 from app.processors.utils import platform_support
@@ -67,6 +68,7 @@ class FunctionWorker:
         self.face_reaging = FaceReaging(self.mp, self)
         self.perform_recast = PerformRecast(self.mp, self)
         self.face_denoiser = FaceDenoiser(self.mp, self)
+        self.face_detailer = FaceDetailer(self.mp, self)
         self.frame_edits = FrameEdits(self.mp, self)
 
     def _get_session_lock(self, session: Any) -> threading.RLock:
@@ -862,7 +864,7 @@ class FunctionWorker:
 
     def apply_facerestorer(
         self,
-        swapped_face_upscaled: np.ndarray,
+        swapped_face_upscaled: torch.Tensor,
         restorer_det_type: str,
         restorer_type: str,
         restorer_blend: float,
@@ -872,7 +874,7 @@ class FunctionWorker:
         slot_id: int = 1,
         osdface_timestep: int = 399,
         osdface_latent_strength: float = 1.0,
-    ) -> np.ndarray:
+    ) -> torch.Tensor:
         return self.face_restorers.apply_facerestorer(
             swapped_face_upscaled,
             restorer_det_type,
@@ -893,3 +895,11 @@ class FunctionWorker:
         target_age: int,
     ) -> torch.Tensor:
         return self.face_reaging.apply_reaging(face_chw_uint8, source_age, target_age)
+
+    def apply_face_detailer(
+        self,
+        img_chw_uint8: torch.Tensor,
+        control: dict[str, Any],
+    ) -> torch.Tensor:
+        """Small-face magnify-and-restore post-pass (see FaceDetailer)."""
+        return self.face_detailer.apply(img_chw_uint8, control)
