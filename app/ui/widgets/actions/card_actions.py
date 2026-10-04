@@ -134,6 +134,16 @@ def clear_merged_embeddings(main_window: "MainWindow"):
         target_face.assigned_merged_embeddings = {}
         target_face.calculate_assigned_input_embedding()
 
+    # Keep active tab state in sync
+    states = getattr(main_window, "embedding_tab_states", None)
+    tabs = getattr(main_window, "embeddingTabs", None)
+    if states and tabs is not None:
+        idx = tabs.currentIndex()
+        if 0 <= idx < len(states):
+            states[idx]["embeddings"] = main_window.merged_embeddings
+            states[idx]["filename"] = ""
+            states[idx]["list_widget"] = main_window.inputEmbeddingsList
+
     # Force VRAM cleanup
     if torch.cuda.is_available():
         torch.cuda.empty_cache()
@@ -168,11 +178,17 @@ def uncheck_all_merged_embeddings(main_window: "MainWindow"):
         torch.cuda.empty_cache()
 
 
-def find_target_faces(main_window: "MainWindow"):
+def find_target_faces(
+    main_window: "MainWindow", clear_removed_faces: bool = False
+):
     from app.ui.widgets.actions import video_control_actions
 
     if video_control_actions.block_if_issue_scan_active(main_window, "find faces"):
         return
+
+    # Manual "Find Faces" clears the ignore list so removed faces can be found again
+    if clear_removed_faces:
+        main_window._removed_target_face_embeddings = []
 
     control = main_window.control.copy()
     video_processor = main_window.video_processor
@@ -251,18 +267,25 @@ def find_target_faces(main_window: "MainWindow"):
 
             faces_list: list = []
             similarity_type = str("Auto")
+            recognition_model = str(
+                control.get("RecognitionModelSelection", "arcface_128")
+            )
             for face_kps in kpss_5:
                 face_emb, cropped_img = (
                     main_window.function_worker.run_recognize_direct(
                         img,
                         face_kps,
                         similarity_type,
-                        control.get("RecognitionModelSelection", "arcface_128"),
+                        recognition_model,
                     )
                 )
                 faces_list.append([face_kps, face_emb, cropped_img, img])
 
             if faces_list:
+                removed_embeddings = getattr(
+                    main_window, "_removed_target_face_embeddings", []
+                ) or []
+
                 # Loop through all faces in video frame
                 for face in faces_list:
                     found = False
@@ -271,17 +294,20 @@ def find_target_faces(main_window: "MainWindow"):
                         parameters = main_window.parameters[target_face.face_id]
                         threshhold = parameters.get("SimilarityThresholdSlider", 0.6)
                         if main_window.function_worker.findCosineDistance(
-                            target_face.get_embedding(
-                                str(
-                                    control.get(
-                                        "RecognitionModelSelection", "arcface_128"
-                                    )
-                                )
-                            ),
+                            target_face.get_embedding(recognition_model),
                             face[1],
                         ) >= float(threshhold):
                             found = True
                             break
+
+                    # Skip faces the user removed until Find Faces is pressed again
+                    if not found and removed_embeddings:
+                        for removed_emb in removed_embeddings:
+                            if main_window.function_worker.findCosineDistance(
+                                removed_emb, face[1]
+                            ) >= 0.6:
+                                found = True
+                                break
 
                     if not found:
                         face_img = face[2].cpu().numpy()

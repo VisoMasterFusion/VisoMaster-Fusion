@@ -6,26 +6,41 @@ MASK_SHOW_DEFAULT = "swap_mask"
 
 # Widgets in Face Swap tab are created from this Layout
 SWAPPER_LAYOUT_DATA: Any = {  # noqa: F811
-    "Swapper": {
-        "SwapModelSelection": {
-            "level": 1,
-            "label": "Swapper Model",
-            "options": [
-                "Inswapper128",
-                "AlphaFace",
-                "InStyleSwapper256 Version A",
-                "InStyleSwapper256 Version B",
-                "InStyleSwapper256 Version C",
-                "DeepFaceLive (DFM)",
-                "SimSwap512",
-                "GhostFace-v1",
-                "GhostFace-v2",
-                "GhostFace-v3",
-                "CSCS",
-            ],
-            "default": "Inswapper128",
-            "help": "Choose which swapper model to use for face swapping.",
+"Swapper": {
+    "SwapModelSelection": {
+        "level": 1,
+        "label": "Swapper Model  ",
+        "options": [
+            "Inswapper128",
+            "AlphaFace",
+            "InStyleSwapper256 Version A",
+            "InStyleSwapper256 Version B",
+            "InStyleSwapper256 Version C",
+            "DeepFaceLive (DFM)",
+            "SimSwap512",
+            "GhostFace-v1",
+            "GhostFace-v2",
+            "GhostFace-v3",
+            "CSCS",
+        ],
+        "default": "Inswapper128",
+        "help": (
+            "Choose which swapper model to use for face swapping.\n"
+            "(VRAM costs are APPROXIMATE and only as a guide):\n\n"
+            "• Inswapper128 — Fast, general-purpose; best for speed (~1–2 GB)\n"
+            "• GhostFace-v1 — Lightweight; fast face swapping (~1–2 GB)\n"
+            "• GhostFace-v2 — Lightweight; better identity/detail (~1–2 GB)\n"
+            "• GhostFace-v3 — Lightweight; strongest GhostFace variant (~1–2 GB)\n"
+            "• InStyleSwapper256 A — Style/lighting preservation (~2–3 GB)\n"
+            "• InStyleSwapper256 B — Style/lighting preservation (~2–3 GB)\n"
+            "• InStyleSwapper256 C — Style/lighting preservation (~2–3 GB)\n"
+            "• AlphaFace — Strong identity; better for angled faces (~2–3 GB)\n"
+            "• CSCS — Strong identity preservation; challenging angles (~2–4 GB)\n"
+            "• SimSwap512 — High-resolution; fine detail and fidelity (~3–4 GB)\n"
+            "• DeepFaceLive (DFM) — High-quality video/character-specific swap (~3–5 GB+)"
+            ),
         },
+
         "SwapperResSelection": {
             "level": 2,
             "label": "Swapper Resolution",
@@ -115,7 +130,7 @@ SWAPPER_LAYOUT_DATA: Any = {  # noqa: F811
             "default": "AlphaFace",
             "parentToggle": "SecondarySwapperEnableToggle",
             "requiredToggleValue": True,
-            "help": "Choose the secondary swapper model to blend with the primary. Restricted to models sharing the Inswapper128ArcFace latent space.",
+            "help": "Choose the secondary swapper model to blend with the primary. This will generally increase detail of the faces.\n Restricted to models sharing the Inswapper128ArcFace latent space.",
         },
         "SecondarySwapperResSelection": {
             "level": 2,

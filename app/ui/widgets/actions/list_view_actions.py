@@ -22,7 +22,7 @@ if TYPE_CHECKING:
     from app.ui.main_ui import MainWindow
 
 _WORKER_STOP_TIMEOUT_MS = 1000
-_TARGET_BUTTON_SIZE = (96, 96)
+_TARGET_BUTTON_SIZE = (85, 85)
 _SMALL_FACE_BUTTON_SIZE = (70, 70)
 _LARGE_FACE_BUTTON_SIZE = (96, 96)
 _FACE_BUTTON_SIZE = _SMALL_FACE_BUTTON_SIZE
@@ -511,34 +511,7 @@ def initialize_embeddings_list_widget(main_window: "MainWindow"):
         QtWidgets.QAbstractItemView.ScrollPerPixel
     )
 
-    # Smooth / slower wheel scrolling so embedding cards are easier to hit
-    class _SmoothWheelFilter(QtCore.QObject):
-        def __init__(self, list_widget: QtWidgets.QListWidget):
-            super().__init__(list_widget)
-            self._list = list_widget
-            self._step_px = 24  # pixels per wheel notch (lower = slower)
-
-        def eventFilter(self, obj, event):
-            if event.type() == QtCore.QEvent.Type.Wheel:
-                delta = event.angleDelta().y()
-                if delta == 0:
-                    delta = event.angleDelta().x()
-                # Prefer horizontal bar when content is laid out left-to-right
-                hbar = self._list.horizontalScrollBar()
-                vbar = self._list.verticalScrollBar()
-                steps = -1 if delta > 0 else 1
-                if hbar.maximum() > 0:
-                    hbar.setValue(hbar.value() + steps * self._step_px)
-                elif vbar.maximum() > 0:
-                    vbar.setValue(vbar.value() + steps * self._step_px)
-                return True
-            return super().eventFilter(obj, event)
-
-    if not getattr(inputEmbeddingsList, "_smooth_wheel_filter", None):
-        filt = _SmoothWheelFilter(inputEmbeddingsList)
-        inputEmbeddingsList.viewport().installEventFilter(filt)
-        inputEmbeddingsList._smooth_wheel_filter = filt
-
+    _install_smooth_wheel_filter(inputEmbeddingsList)
     inputEmbeddingsList.setHorizontalScrollMode(
         QtWidgets.QAbstractItemView.ScrollPerPixel
     )
@@ -649,12 +622,16 @@ def select_target_medias(
         files_list = QtWidgets.QFileDialog.getOpenFileNames()[0]
         if not files_list:
             return
-        # Get Folder name from the first file
+    # Get Folder name from the first file
         file_dir = misc_helpers.get_dir_of_file(files_list[0])
         main_window.targetVideosPathLineEdit.setText(file_dir)
         main_window.targetVideosPathLineEdit.setToolTip(file_dir)
         main_window.last_target_media_folder_path = file_dir
+
+    main_window._target_folder_seen_paths = set()
+    main_window._target_folder_loading_paths = set()
     main_window._target_folder_ignored_paths = set()
+
     clear_stop_loading_target_media(main_window)
     card_actions.clear_target_faces(main_window)
 
@@ -780,25 +757,33 @@ def clear_all_target_media(main_window: "MainWindow") -> bool:
 
     clear_stop_loading_target_media(main_window, clear_list=False)
 
-    # Stop processor first so nothing tries to read a cleared path. Some
-    # lightweight callers only provide the target-media panel, so keep the
-    # processor cleanup optional.
-    vp = getattr(main_window, "video_processor", None)
-    if vp is not None:
-        vp.stop_processing()
-        vp.media_path = None
-        vp.file_type = None
-        vp.current_frame = None
-        if vp.media_capture:
-            try:
-                vp.media_capture.release()
-            except Exception:
-                pass
-            vp.media_capture = None
-        vp._clear_single_frame_preview_caches()
+    # Stop processor first so nothing tries to read a cleared path
+    vp = main_window.video_processor
+    vp.stop_processing()
+    vp.media_path = None
+    vp.file_type = None
+    vp.current_frame = None
+    if vp.media_capture:
+        try:
+            vp.media_capture.release()
+        except Exception:
+            pass
+        vp.media_capture = None
+    vp._clear_single_frame_preview_caches()
 
     # Don't auto-readd these while they still exist on disk
-    main_window._target_folder_ignored_paths = _existing_target_media_paths(main_window)
+    seen = getattr(main_window, "_target_folder_seen_paths", None)
+    if seen is None:
+        seen = set()
+        main_window._target_folder_seen_paths = seen
+    ignored = getattr(main_window, "_target_folder_ignored_paths", None)
+    if ignored is None:
+        ignored = set()
+        main_window._target_folder_ignored_paths = ignored
+    for p in _existing_target_media_paths(main_window):
+        np = _normalize_media_path(p)
+        seen.add(np)
+        ignored.add(np)
 
     # Remove items WHILE selected_video_button is still set so deselect
     # clears the preview for the active item
@@ -812,23 +797,14 @@ def clear_all_target_media(main_window: "MainWindow") -> bool:
     main_window.selected_video_button = None
 
     # Ensure preview is cleared even if nothing was selected
-    scene = getattr(main_window, "scene", None)
-    if scene is not None:
-        scene.clear()
-    graphics_view = getattr(main_window, "graphicsViewFrame", None)
-    if graphics_view is not None:
-        graphics_view.update()
+    main_window.scene.clear()
+    main_window.graphicsViewFrame.update()
     if hasattr(main_window, "timelineContainer"):
         main_window.timelineContainer.thumbnail_track.request_thumbnails()
-    video_seek_slider = getattr(main_window, "videoSeekSlider", None)
-    if video_seek_slider is not None:
-        video_seek_slider.blockSignals(True)
-        video_seek_slider.setMaximum(1)
-        video_seek_slider.setValue(0)
-        video_seek_slider.blockSignals(False)
-
-    _set_path_line_edit_value(main_window.targetVideosPathLineEdit, "")
-    main_window.last_target_media_folder_path = ""
+    main_window.videoSeekSlider.blockSignals(True)
+    main_window.videoSeekSlider.setMaximum(1)
+    main_window.videoSeekSlider.setValue(0)
+    main_window.videoSeekSlider.blockSignals(False)
 
     main_window.placeholder_update_signal.emit(main_window.targetVideosList, False)
 
@@ -1394,16 +1370,17 @@ def _existing_target_media_paths(main_window: "MainWindow") -> set[str]:
     for button in (main_window.target_videos or {}).values():
         media_path = getattr(button, "media_path", None)
         if media_path:
-            paths.add(os.path.abspath(media_path))
+            paths.add(_normalize_media_path(media_path))
     return paths
 
 
 def _collect_watch_dirs(folder: str, recursive: bool) -> list[str]:
+    folder = os.path.abspath(folder)
     dirs = [folder]
     if recursive:
         for dirpath, dirnames, _ in os.walk(folder):
             for d in dirnames:
-                dirs.append(os.path.join(dirpath, d))
+                dirs.append(os.path.abspath(os.path.join(dirpath, d)))
     return dirs
 
 
@@ -1454,6 +1431,9 @@ def _is_target_media_file_stable(main_window: "MainWindow", path: str) -> bool:
 _TARGET_MEDIA_STABILITY_TIMEOUT_SECONDS = 30.0
 
 
+def _normalize_media_path(path: str) -> str:
+    return os.path.normcase(os.path.abspath(path))
+
 def scan_and_append_new_target_media(main_window: "MainWindow"):
     """Append only new media files from the configured target folder."""
     from app.ui.widgets.actions import video_control_actions
@@ -1472,32 +1452,61 @@ def scan_and_append_new_target_media(main_window: "MainWindow"):
     recursive = bool(
         main_window.control.get("AutoLoadTargetFolderRecursiveToggle", False)
     )
+
     if recursive:
         media_files = []
         for dirpath, _, filenames in os.walk(folder):
             for filename in filenames:
-                full = os.path.abspath(os.path.join(dirpath, filename))
+                full = _normalize_media_path(os.path.join(dirpath, filename))
                 if misc_helpers.get_file_type(full):
                     media_files.append(full)
     else:
         media_files = [
-            os.path.abspath(p)
+            _normalize_media_path(p)
             for p in (
                 misc_helpers.get_video_files(folder, False)
                 + misc_helpers.get_image_files(folder, False)
             )
         ]
 
+    seen = getattr(main_window, "_target_folder_seen_paths", None)
+    if seen is None:
+        seen = set()
+        main_window._target_folder_seen_paths = seen
+
     ignored = getattr(main_window, "_target_folder_ignored_paths", None)
     if ignored is None:
         ignored = set()
         main_window._target_folder_ignored_paths = ignored
     else:
-        # Drop ignores for files no longer on disk so a re-added file can load
-        ignored.intersection_update(p for p in list(ignored) if os.path.exists(p))
+        ignored.intersection_update(
+            _normalize_media_path(p) for p in list(ignored) if os.path.exists(p)
+        )
 
-    existing = _existing_target_media_paths(main_window)
-    new_files = [p for p in media_files if p not in existing and p not in ignored]
+    existing = {
+        _normalize_media_path(p) for p in _existing_target_media_paths(main_window)
+    }
+
+    loading = getattr(main_window, "_target_folder_loading_paths", None)
+    if loading is None:
+        loading = set()
+        main_window._target_folder_loading_paths = loading
+
+    pending_queue = getattr(main_window, "_pending_target_media_thumbnails", None)
+    if pending_queue:
+        for item in pending_queue:
+            media_path = item[0]
+            if media_path:
+                loading.add(_normalize_media_path(media_path))
+
+    new_files = [
+        p
+        for p in media_files
+        if p not in existing
+        and p not in seen
+        and p not in ignored
+        and p not in loading
+    ]
     if not new_files:
         return
 
@@ -1532,7 +1541,14 @@ def scan_and_append_new_target_media(main_window: "MainWindow"):
         main_window.video_loader_worker is not None
         and main_window.video_loader_worker.isRunning()
     ):
+        timer = getattr(main_window, "_target_folder_watch_timer", None)
+        if timer is not None:
+            timer.start()
         return
+
+    for p in ready_files:
+        seen.add(p)
+        loading.add(p)
 
     main_window.video_loader_worker = ui_workers.TargetMediaLoaderWorker(
         main_window=main_window,
@@ -1556,7 +1572,6 @@ def set_target_folder_auto_watch(main_window: "MainWindow", enabled: bool):
         try:
             watcher = QtCore.QFileSystemWatcher(main_window)
         except TypeError:
-            # Test doubles and non-Qt callers cannot be used as QObject parents.
             watcher = QtCore.QFileSystemWatcher()
         main_window._target_folder_watcher = watcher
 
@@ -1577,11 +1592,26 @@ def set_target_folder_auto_watch(main_window: "MainWindow", enabled: bool):
         timer.timeout.connect(partial(scan_and_append_new_target_media, main_window))
         main_window._target_folder_watch_timer = timer
 
+    # Always drop every watched path first (releases Windows directory handles)
     for d in list(watcher.directories()):
         watcher.removePath(d)
 
+    poll = getattr(main_window, "_target_folder_poll_timer", None)
+    if poll is None:
+        try:
+            poll = QtCore.QTimer(main_window)
+        except TypeError:
+            poll = QtCore.QTimer()
+        poll.setInterval(3000)
+        poll.timeout.connect(partial(scan_and_append_new_target_media, main_window))
+        main_window._target_folder_poll_timer = poll
+
     if not enabled:
         timer.stop()
+        poll.stop()
+        main_window._target_folder_seen_paths = set()
+        main_window._target_folder_loading_paths = set()
+        main_window._target_folder_ignored_paths = set()
         return
 
     folder = _get_target_folder_path(main_window)
@@ -1591,7 +1621,359 @@ def set_target_folder_auto_watch(main_window: "MainWindow", enabled: bool):
     recursive = bool(
         main_window.control.get("AutoLoadTargetFolderRecursiveToggle", False)
     )
-    for d in _collect_watch_dirs(folder, recursive):
-        watcher.addPath(d)
+
+    # Watch ONLY the root folder. Recursive discovery uses os.walk + poll.
+    # Watching every subdir on Windows locks those folders (Access is denied).
+    watcher.addPath(os.path.abspath(folder))
+
+    if recursive:
+        poll.start()
+    else:
+        poll.stop()
 
     scan_and_append_new_target_media(main_window)
+
+class _SmoothWheelFilter(QtCore.QObject):
+    def __init__(self, list_widget: QtWidgets.QListWidget):
+        super().__init__(list_widget)
+        self._list = list_widget
+        self._step_px = 24
+
+    def eventFilter(self, obj, event):
+        if event.type() == QtCore.QEvent.Type.Wheel:
+            delta = event.angleDelta().y()
+            if delta == 0:
+                delta = event.angleDelta().x()
+            hbar = self._list.horizontalScrollBar()
+            vbar = self._list.verticalScrollBar()
+            steps = -1 if delta > 0 else 1
+            if hbar.maximum() > 0:
+                hbar.setValue(hbar.value() + steps * self._step_px)
+            elif vbar.maximum() > 0:
+                vbar.setValue(vbar.value() + steps * self._step_px)
+            return True
+        return super().eventFilter(obj, event)
+
+
+def _install_smooth_wheel_filter(list_widget: QtWidgets.QListWidget) -> None:
+    if getattr(list_widget, "_smooth_wheel_filter", None):
+        return
+    filt = _SmoothWheelFilter(list_widget)
+    list_widget.viewport().installEventFilter(filt)
+    list_widget._smooth_wheel_filter = filt
+
+def _make_embeddings_list_widget(main_window: "MainWindow") -> QtWidgets.QListWidget:
+    """Create a list widget configured like the original inputEmbeddingsList."""
+    lw = QtWidgets.QListWidget()
+    lw.setWrapping(True)
+    lw.setFlow(QtWidgets.QListView.TopToBottom)
+    lw.setResizeMode(QtWidgets.QListView.Adjust)
+    lw.setSpacing(4)
+    lw.setUniformItemSizes(False)
+    lw.setViewMode(QtWidgets.QListView.IconMode)
+    lw.setMovement(QtWidgets.QListView.Static)
+    lw.setMinimumHeight(0)
+    lw.setMaximumHeight(16777215)
+    lw.setSizePolicy(
+        QtWidgets.QSizePolicy.Policy.Expanding,
+        QtWidgets.QSizePolicy.Policy.Expanding,
+    )
+    lw.setVerticalScrollBarPolicy(QtCore.Qt.ScrollBarAlwaysOff)
+    lw.setHorizontalScrollBarPolicy(QtCore.Qt.ScrollBarAsNeeded)
+    lw.setVerticalScrollMode(QtWidgets.QAbstractItemView.ScrollPerPixel)
+    lw.setHorizontalScrollMode(QtWidgets.QAbstractItemView.ScrollPerPixel)
+    lw.setLayoutDirection(QtCore.Qt.LeftToRight)
+    lw.setLayoutMode(QtWidgets.QListView.SinglePass)
+    _install_smooth_wheel_filter(lw)
+    _set_up_panel_context_menu(main_window, lw, "embeddings")
+    return lw
+
+
+def setup_embedding_tabs(main_window: "MainWindow") -> None:
+    """Wrap the existing embeddings list in a tab widget with a + button."""
+    old_list = main_window.inputEmbeddingsList
+    parent = old_list.parent()
+    layout = parent.layout() if parent is not None else None
+
+    tabs_container = QtWidgets.QWidget(parent)
+    tabs_container_layout = QtWidgets.QHBoxLayout(tabs_container)
+    tabs_container_layout.setContentsMargins(0, 0, 0, 0)
+    tabs_container_layout.setSpacing(6)
+
+    tabs = QtWidgets.QTabWidget(tabs_container)
+    tabs.setTabsClosable(True)
+    tabs.setMovable(True)
+    tabs.setDocumentMode(True)
+    tabs.setElideMode(QtCore.Qt.TextElideMode.ElideRight)
+    tabs.setUsesScrollButtons(True)
+    tabs.tabBar().setExpanding(False)
+    tabs.setStyleSheet(
+        """
+        QTabWidget::pane {
+            border: 1px solid #3a3a3a;
+            top: -1px;
+        }
+        QTabBar::tab {
+            padding: 4px 3px 4px 6px;
+            margin-right: 2px;
+        }
+        QTabBar::close-button {
+            subcontrol-position: right;
+            subcontrol-origin: padding;
+            margin: 2px;
+        }
+        """
+    )
+
+    list_h = _EMBED_LIST_HEIGHT
+    tab_bar_h = 26
+    pane_extra = 10
+    total_h = list_h + tab_bar_h + pane_extra
+
+    tabs.setFixedHeight(total_h)
+    tabs.setMinimumHeight(total_h)
+    tabs.setMaximumHeight(total_h)
+    tabs.setSizePolicy(
+        QtWidgets.QSizePolicy.Policy.Expanding,
+        QtWidgets.QSizePolicy.Policy.Fixed,
+    )
+
+    add_btn = QtWidgets.QToolButton(tabs_container)
+    add_btn.setText("+")
+    add_btn.setToolTip("New embeddings tab")
+    add_btn.setAutoRaise(False)
+    add_btn.setFixedSize(20, 20)
+    add_btn.setStyleSheet(
+        "QToolButton {"
+        "  border: 1px solid #3a3a3a;"
+        "  border-radius: 3px;"
+        "  padding: 0px 0px 2px 0px;"  # lift text up ~2px
+        "}"
+        "QToolButton:hover { border-color: #5a5a5a; }"
+    )
+    add_btn.clicked.connect(partial(add_embedding_tab, main_window))
+
+    tabs_container_layout.addWidget(tabs, 1)
+    tabs_container_layout.addWidget(
+        add_btn, 0, QtCore.Qt.AlignmentFlag.AlignTop
+    )
+
+    if layout is not None:
+        idx = layout.indexOf(old_list)
+        if idx >= 0:
+            row, col, rowspan, colspan = layout.getItemPosition(idx)
+            layout.removeWidget(old_list)
+            layout.addWidget(tabs_container, row, col, rowspan, colspan)
+            if hasattr(layout, "setRowStretch"):
+                layout.setRowStretch(row, 0)
+        else:
+            old_list.hide()
+            tabs_container.setGeometry(old_list.geometry())
+            tabs_container.show()
+    else:
+        old_list.hide()
+
+    main_window.embeddingTabs = tabs
+    main_window.embedding_tab_states = []
+
+    old_list.setParent(tabs)
+    old_list.setMinimumHeight(0)
+    old_list.setMaximumHeight(16777215)
+    old_list.setSizePolicy(
+        QtWidgets.QSizePolicy.Policy.Expanding,
+        QtWidgets.QSizePolicy.Policy.Expanding,
+    )
+
+    add_embedding_tab(
+        main_window,
+        list_widget=old_list,
+        embeddings=main_window.merged_embeddings,
+        filename=getattr(main_window, "loaded_embedding_filename", "") or "",
+        title="Embeddings",
+    )
+
+    tabs.currentChanged.connect(partial(_on_embedding_tab_changed, main_window))
+    tabs.tabCloseRequested.connect(partial(_on_embedding_tab_close, main_window))
+
+def add_embedding_tab(
+    main_window: "MainWindow",
+    list_widget: QtWidgets.QListWidget | None = None,
+    embeddings: dict | None = None,
+    filename: str = "",
+    title: str | None = None,
+) -> int:
+    """Create an embeddings tab (empty by default, or with given list/state)."""
+    tabs: QtWidgets.QTabWidget = main_window.embeddingTabs
+    if list_widget is None:
+        list_widget = _make_embeddings_list_widget(main_window)
+    if embeddings is None:
+        embeddings = {}
+    if title is None:
+        n = len(getattr(main_window, "embedding_tab_states", [])) + 1
+        title = f"Embeddings {n}"
+
+    state = {
+        "list_widget": list_widget,
+        "embeddings": embeddings,
+        "filename": filename or "",
+    }
+    main_window.embedding_tab_states.append(state)
+    index = tabs.addTab(list_widget, title)
+    tabs.setCurrentIndex(index)
+    _activate_embedding_tab(main_window, index)
+    return index
+
+
+def _activate_embedding_tab(main_window: "MainWindow", index: int) -> None:
+    states = getattr(main_window, "embedding_tab_states", [])
+    if index < 0 or index >= len(states):
+        return
+    state = states[index]
+    main_window.inputEmbeddingsList = state["list_widget"]
+    main_window.merged_embeddings = state["embeddings"]
+    main_window.loaded_embedding_filename = state["filename"]
+
+    active_ids = set(main_window.merged_embeddings.keys())
+    for target_face in (main_window.target_faces or {}).values():
+        stale = [
+            eid
+            for eid in list(target_face.assigned_merged_embeddings.keys())
+            if eid not in active_ids
+        ]
+        for eid in stale:
+            target_face.assigned_merged_embeddings.pop(eid, None)
+        if stale:
+            target_face.calculate_assigned_input_embedding()
+
+    # The filter worker is created once at startup and bound to the first
+    # tab's list. Recreate it against the newly-active tab's list so the
+    # search box filters the correct widget.
+    main_window.merged_embeddings_filter_worker = ui_workers.FilterWorker(
+        main_window=main_window,
+        search_text="",
+        filter_list="merged_embeddings",
+    )
+
+    search_box = getattr(main_window, "inputEmbeddingsSearchBox", None)
+    if search_box is not None:
+        search_box.blockSignals(True)
+        search_box.clear()
+        search_box.blockSignals(False)
+        QtCore.QTimer.singleShot(
+            0,
+            partial(filter_actions.filter_merged_embeddings, main_window, ""),
+        )
+
+
+def _on_embedding_tab_changed(main_window: "MainWindow", index: int) -> None:
+    _activate_embedding_tab(main_window, index)
+
+
+def _on_embedding_tab_close(main_window: "MainWindow", index: int) -> None:
+    tabs: QtWidgets.QTabWidget = main_window.embeddingTabs
+    states = main_window.embedding_tab_states
+    if len(states) <= 1:
+        return
+
+    for btn in list(states[index]["embeddings"].values()):
+        try:
+            btn.setChecked(False)
+        except RuntimeError:
+            pass
+
+    tabs.removeTab(index)
+    state = states.pop(index)
+    try:
+        state["list_widget"].deleteLater()
+    except RuntimeError:
+        pass
+
+    new_index = min(index, len(states) - 1)
+    tabs.setCurrentIndex(new_index)
+    _activate_embedding_tab(main_window, new_index)
+
+
+def update_active_embedding_tab_title(main_window: "MainWindow") -> None:
+    """Set the current tab title from the loaded filename."""
+    tabs = getattr(main_window, "embeddingTabs", None)
+    if tabs is None:
+        return
+    index = tabs.currentIndex()
+    if index < 0:
+        return
+    states = main_window.embedding_tab_states
+    if index >= len(states):
+        return
+    filename = states[index].get("filename") or ""
+    if filename:
+        title = Path(filename).stem
+    else:
+        title = f"Embeddings {index + 1}"
+    tabs.setTabText(index, title)
+    tabs.setTabToolTip(index, filename or title)
+
+
+def get_embedding_tabs_state(main_window: "MainWindow") -> dict:
+    """Snapshot of open embedding tabs for workspace save."""
+    states = getattr(main_window, "embedding_tab_states", None) or []
+    tabs = getattr(main_window, "embeddingTabs", None)
+    active = tabs.currentIndex() if tabs is not None else 0
+    out = []
+    for i, state in enumerate(states):
+        filename = state.get("filename") or ""
+        title = ""
+        if tabs is not None and i < tabs.count():
+            title = tabs.tabText(i)
+        out.append({"filename": filename, "title": title})
+    return {"tabs": out, "active_index": max(0, active)}
+
+
+def restore_embedding_tabs_state(main_window: "MainWindow", data: dict) -> None:
+    """Rebuild embedding tabs from workspace data."""
+    from app.ui.widgets.actions import save_load_actions
+    from app.ui.widgets.actions import card_actions
+
+    if not getattr(main_window, "embeddingTabs", None):
+        return
+
+    tabs_data = (data or {}).get("tabs") or []
+    active_index = int((data or {}).get("active_index", 0))
+
+    while len(main_window.embedding_tab_states) > 1:
+        _on_embedding_tab_close(main_window, len(main_window.embedding_tab_states) - 1)
+
+    main_window.embeddingTabs.setCurrentIndex(0)
+    _activate_embedding_tab(main_window, 0)
+    card_actions.clear_merged_embeddings(main_window)
+    states = main_window.embedding_tab_states
+    if states:
+        states[0]["filename"] = ""
+        states[0]["embeddings"] = main_window.merged_embeddings
+    main_window.embeddingTabs.setTabText(0, "Embeddings")
+
+    if not tabs_data:
+        return
+
+    first = True
+    for i, tab_info in enumerate(tabs_data):
+        filename = (tab_info.get("filename") or "").strip()
+        title = (tab_info.get("title") or "").strip() or (
+            Path(filename).stem if filename else f"Embeddings {i + 1}"
+        )
+
+        if first:
+            first = False
+            main_window.embeddingTabs.setTabText(0, title)
+        else:
+            add_embedding_tab(main_window, title=title)
+
+        if filename and os.path.isfile(filename):
+            save_load_actions.load_embeddings_into_current_tab(
+                main_window, filename
+            )
+        update_active_embedding_tab_title(main_window)
+
+    if tabs_data:
+        idx = min(max(0, active_index), len(main_window.embedding_tab_states) - 1)
+        main_window.embeddingTabs.setCurrentIndex(idx)
+        _activate_embedding_tab(main_window, idx)

@@ -72,7 +72,7 @@ ParametersWidgetTypes = Dict[
 _FACE_STRIP_MAX_HEIGHT = 120
 _FACE_STRIP_LIST_HEIGHT = 80
 _FACE_STRIP_BUTTONS_HEIGHT = 32
-_FACES_PANEL_ROW_HEIGHT = 144
+_FACES_PANEL_ROW_HEIGHT = 147
 
 
 class MainWindow(QtWidgets.QMainWindow, Ui_MainWindow):
@@ -238,6 +238,7 @@ class MainWindow(QtWidgets.QMainWindow, Ui_MainWindow):
         # Initialize list widgets with consistent sizing and layout configuration
         list_view_actions.initialize_media_list_widgets(self)
         list_view_actions.initialize_embeddings_list_widget(self)
+        list_view_actions.setup_embedding_tabs(self)
         self._configure_output_folder_controls()
         self._configure_file_menu_actions()
 
@@ -446,7 +447,7 @@ class MainWindow(QtWidgets.QMainWindow, Ui_MainWindow):
         )
         # self.buttonMediaStop.clicked.connect(partial(self.video_processor.stop_processing))
         self.findTargetFacesButton.clicked.connect(
-            partial(card_actions.find_target_faces, self)
+            partial(card_actions.find_target_faces, self, clear_removed_faces=True)
         )
         self.clearTargetFacesButton.clicked.connect(
             partial(card_actions.clear_target_faces, self)
@@ -1892,9 +1893,28 @@ class MainWindow(QtWidgets.QMainWindow, Ui_MainWindow):
 
         self.targetFacesList.setMinimumHeight(_FACES_PANEL_ROW_HEIGHT)
         self.targetFacesList.setMaximumHeight(_FACES_PANEL_ROW_HEIGHT)
-        self.inputEmbeddingsList.setMinimumHeight(_FACES_PANEL_ROW_HEIGHT)
-        self.inputEmbeddingsList.setMaximumHeight(_FACES_PANEL_ROW_HEIGHT)
+        if getattr(self, "_faces_list_offset_container", None) is None:
+            self._faces_list_offset_container = QtWidgets.QWidget(self)
+            offset_layout = QtWidgets.QVBoxLayout(self._faces_list_offset_container)
+            offset_layout.setContentsMargins(0, 30, 0, 0)  # push list down 30px
+            offset_layout.setSpacing(0)
+            self.gridLayout_2.removeWidget(self.targetFacesList)
+            offset_layout.addWidget(self.targetFacesList)
+            self.gridLayout_2.addWidget(
+                self._faces_list_offset_container, 1, 1, 1, 1
+            )
 
+        self.targetFacesList.setMinimumHeight(_FACES_PANEL_ROW_HEIGHT)
+        self.targetFacesList.setMaximumHeight(_FACES_PANEL_ROW_HEIGHT)
+
+        margins = self.controlButtonsLayout.contentsMargins()
+        _btns_top_offset = 30  # match faces list offset
+        self.controlButtonsLayout.setContentsMargins(
+            margins.left(),
+            margins.top() + _btns_top_offset,
+            margins.right(),
+            margins.bottom(),
+        )
         margins = self.controlButtonsLayout.contentsMargins()
         spacing_total = self.controlButtonsLayout.spacing() * (len(buttons) - 1)
         margins_total = margins.top() + margins.bottom()
@@ -2013,7 +2033,12 @@ class MainWindow(QtWidgets.QMainWindow, Ui_MainWindow):
 
     def _restore_faces_strip_to_panel(self):
         """Restores widgets to their original left panel seamlessly."""
-        self.gridLayout_2.addWidget(self.targetFacesList, 1, 1, 1, 1)
+        if getattr(self, "_faces_list_offset_container", None) is not None:
+            self.gridLayout_2.addWidget(
+                self._faces_list_offset_container, 1, 1, 1, 1
+            )
+        else:
+            self.gridLayout_2.addWidget(self.targetFacesList, 1, 1, 1, 1)
 
         btns = [
             self.findTargetFacesButton,

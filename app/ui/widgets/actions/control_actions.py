@@ -1106,13 +1106,14 @@ def reset_face_editor_expression_params(main_window: "MainWindow"):
             common_widget_actions.refresh_frame(main_window)
 
 
-def handle_auto_load_target_folder_toggle(main_window: "MainWindow", enabled: bool):
+def handle_auto_load_target_folder_toggle(main_window: "MainWindow", enabled: bool = None):
     from app.ui.widgets.actions import list_view_actions
 
-    enabled = bool(enabled)
+    # Always use the MAIN auto-load toggle. The recursive option also calls
+    # this handler; its own True/False must not enable/disable the watcher.
+    watch_enabled = bool(main_window.control.get("AutoLoadTargetFolderToggle", False))
 
-    # Restore path into the line edit if only last_target_media_folder_path is set
-    if enabled:
+    if watch_enabled:
         line = getattr(main_window, "targetVideosPathLineEdit", None)
         current = (line.text() or "").strip() if line is not None else ""
         last = (getattr(main_window, "last_target_media_folder_path", "") or "").strip()
@@ -1121,7 +1122,7 @@ def handle_auto_load_target_folder_toggle(main_window: "MainWindow", enabled: bo
                 line.setText(last)
                 line.setToolTip(last)
 
-    list_view_actions.set_target_folder_auto_watch(main_window, enabled)
+    list_view_actions.set_target_folder_auto_watch(main_window, watch_enabled)
 
 
 def on_target_folder_path_changed(main_window: "MainWindow"):

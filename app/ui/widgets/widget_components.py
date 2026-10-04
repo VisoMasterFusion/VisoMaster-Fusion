@@ -291,6 +291,7 @@ class TargetMediaCardButton(CardButton):
         video_control_actions.set_up_video_seek_line_edit(main_window)
         # Clear current target faces
         card_actions.clear_target_faces(main_window, refresh_frame=False)
+        main_window._removed_target_face_embeddings = []
         # Check if the user wants to keep input faces/embeddings selected
         # Keep Inputs checked if KeepInput, AutoSwap or Batch is active
         if not (
@@ -1265,6 +1266,25 @@ class TargetFaceCardButton(CardButton):
 
         i = self.get_item_position()
         main_window.targetFacesList.takeItem(i)
+
+        # Remember this face so AutoSwap / seek will not re-add it
+        # until the user presses Find Faces again.
+        recognition_model = str(
+            main_window.control.get("RecognitionModelSelection", "arcface_128")
+        )
+        try:
+            emb = self.get_embedding(recognition_model)
+            if emb is not None:
+                removed = getattr(
+                    main_window, "_removed_target_face_embeddings", None
+                )
+                if removed is None:
+                    removed = []
+                    main_window._removed_target_face_embeddings = removed
+                removed.append(emb.copy() if hasattr(emb, "copy") else emb)
+        except Exception:
+            pass
+
         main_window.target_faces.pop(self.face_id)
         from app.ui.widgets.actions import list_view_actions
 
@@ -1789,6 +1809,20 @@ class EmbeddingCardButton(CardButton):
             self._restore_pre_click_checked_state()
             return
 
+        def _uncheck_other_embeddings():
+            # Active tab
+            for embedding_id, embed_button in main_window.merged_embeddings.items():
+                if embed_button != self:
+                    embed_button.setChecked(False)
+            # Other tabs
+            for state in getattr(main_window, "embedding_tab_states", None) or []:
+                for embedding_id, embed_button in (state.get("embeddings") or {}).items():
+                    if embed_button != self:
+                        try:
+                            embed_button.setChecked(False)
+                        except RuntimeError:
+                            pass
+
         if main_window.cur_selected_target_face_button:
             cur_selected_target_face_button = (
                 main_window.cur_selected_target_face_button
@@ -1797,12 +1831,15 @@ class EmbeddingCardButton(CardButton):
                 not QtWidgets.QApplication.keyboardModifiers()
                 == QtCore.Qt.ControlModifier
             ):
-                for (
-                    embedding_id
-                ) in cur_selected_target_face_button.assigned_merged_embeddings.keys():
-                    embed_button = main_window.merged_embeddings[embedding_id]
+                for embedding_id in list(
+                    cur_selected_target_face_button.assigned_merged_embeddings.keys()
+                ):
+                    embed_button = main_window.merged_embeddings.get(embedding_id)
+                    if embed_button is None:
+                        continue
                     if embed_button != self:
                         embed_button.setChecked(False)
+                _uncheck_other_embeddings()
                 cur_selected_target_face_button.assigned_merged_embeddings = {}
 
             cur_selected_target_face_button.assigned_merged_embeddings[
@@ -1823,10 +1860,7 @@ class EmbeddingCardButton(CardButton):
                 not QtWidgets.QApplication.keyboardModifiers()
                 == QtCore.Qt.ControlModifier
             ):
-                # If there is no target face selected, uncheck all other input faces
-                for embedding_id, embed_button in main_window.merged_embeddings.items():
-                    if embed_button != self:
-                        embed_button.setChecked(False)
+                _uncheck_other_embeddings()
 
         common_widget_actions.refresh_frame(main_window)
 

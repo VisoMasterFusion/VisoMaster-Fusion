@@ -44,6 +44,11 @@ def toggle_target_video_filters_sorting(main_window: "MainWindow") -> None:
     _set_layout_widgets_visible(main_window.horizontalLayout_9b_gridLayout_3, checked)
     filter_actions.filter_target_videos(main_window)
 
+    main_window.input_Target_DockWidget.setMinimumWidth(0)
+    content = main_window.input_Target_DockWidget.widget()
+    if content:
+        content.setMinimumWidth(0)
+
 
 def current_sort_needs_metadata(main_window: "MainWindow") -> bool:
     sort_mode = main_window.targetVideosSortComboBox.currentData()

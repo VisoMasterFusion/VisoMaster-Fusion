@@ -405,6 +405,78 @@ def open_embeddings_from_file(main_window: "MainWindow"):
         embedding_filename or main_window.loaded_embedding_filename
     )
 
+    # Sync active embedding tab state
+    tabs = getattr(main_window, "embeddingTabs", None)
+    states = getattr(main_window, "embedding_tab_states", None)
+    if tabs is not None and states:
+        idx = tabs.currentIndex()
+        if 0 <= idx < len(states):
+            states[idx]["embeddings"] = main_window.merged_embeddings
+            states[idx]["filename"] = main_window.loaded_embedding_filename or ""
+            states[idx]["list_widget"] = main_window.inputEmbeddingsList
+            list_view_actions.update_active_embedding_tab_title(main_window)
+
+def load_embeddings_into_current_tab(
+    main_window: "MainWindow", embedding_filename: str
+) -> bool:
+    """Load an embeddings JSON into the active tab (no file dialog)."""
+    if not embedding_filename or not os.path.isfile(embedding_filename):
+        return False
+
+    try:
+        with open(embedding_filename, "r", encoding="utf-8") as embed_file:
+            embeddings_list = json.load(embed_file)
+            card_actions.clear_merged_embeddings(main_window)
+
+            for embed_data in embeddings_list:
+                embedding_store = embed_data.get("embedding_store", {})
+                for recogn_model, embed in embedding_store.items():
+                    embedding_store[recogn_model] = np.array(embed)
+
+                embedding_id = str(uuid.uuid1().int)
+                list_view_actions.create_and_add_embed_button_to_list(
+                    main_window,
+                    embed_data["name"],
+                    embedding_store,
+                    embedding_id=embedding_id,
+                )
+
+                if embedding_id in main_window.merged_embeddings:
+                    embed_button = main_window.merged_embeddings[embedding_id]
+                    kv_map_path = embed_data.get("kv_map")
+                    if kv_map_path and os.path.exists(kv_map_path):
+                        try:
+                            payload = torch.load(
+                                kv_map_path, map_location="cpu", weights_only=False
+                            )
+                            if isinstance(payload, dict):
+                                if "kv_map_list" in payload:
+                                    embed_button.kv_map_list = payload["kv_map_list"]
+                                else:
+                                    embed_button.kv_map = payload.get("kv_map")
+                            else:
+                                embed_button.kv_map = payload
+                        except Exception as e:
+                            print(
+                                f"[ERROR] Error loading K/V map for "
+                                f"{embed_data.get('name')}: {e}"
+                            )
+
+        main_window.loaded_embedding_filename = embedding_filename
+
+        tabs = getattr(main_window, "embeddingTabs", None)
+        states = getattr(main_window, "embedding_tab_states", None)
+        if tabs is not None and states:
+            idx = tabs.currentIndex()
+            if 0 <= idx < len(states):
+                states[idx]["embeddings"] = main_window.merged_embeddings
+                states[idx]["filename"] = embedding_filename
+                states[idx]["list_widget"] = main_window.inputEmbeddingsList
+                list_view_actions.update_active_embedding_tab_title(main_window)
+        return True
+    except Exception as e:
+        print(f"[ERROR] Failed to load embeddings from {embedding_filename}: {e}")
+        return False
 
 def save_embeddings_to_file(main_window: "MainWindow", save_as=False):
     if not main_window.merged_embeddings:
@@ -981,6 +1053,13 @@ def load_saved_workspace(
             main_window.loaded_embedding_filename = data.get(
                 "loaded_embedding_filename", ""
             )
+
+            embedding_tabs_state = data.get("embedding_tabs_state")
+            if embedding_tabs_state:
+                list_view_actions.restore_embedding_tabs_state(
+                    main_window, embedding_tabs_state
+                )
+
             common_widget_actions.set_control_widgets_values(main_window)
             # Set output folder using .get() with a default empty string
             output_folder = control.get("OutputMediaFolder", "")
@@ -1482,6 +1561,9 @@ def save_current_workspace(
         "last_target_media_folder_path": main_window.last_target_media_folder_path,
         "last_input_media_folder_path": main_window.last_input_media_folder_path,
         "loaded_embedding_filename": main_window.loaded_embedding_filename,
+        "embedding_tabs_state": list_view_actions.get_embedding_tabs_state(
+            main_window
+        ),
         "current_widget_parameters": current_params_to_save,  # Use the safely prepared dict
         "tab_state": tab_state,  # Add the tab state to the saved data
         "window_state_data": window_state_data,

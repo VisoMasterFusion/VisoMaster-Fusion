@@ -13,7 +13,7 @@ COMMON_LAYOUT_DATA: Any = {
         },
         "FaceRestorerTypeSelection": {
             "level": 2,
-            "label": "Restorer Type",
+            "label": "Restorer Type  ",
             "options": [
                 "GFPGAN-v1.4",
                 "GFPGAN-1024",
@@ -26,10 +26,23 @@ COMMON_LAYOUT_DATA: Any = {
                 "VQFR-v2",
                 "OSDFace",
             ],
+            "help": (
+                "Select the model type for face restoration.\n\n"
+                "Models (lightest → heaviest VRAM):\n"
+                "• GPEN-256 — Fast; small/low-detail faces (~1–2 GB)\n"
+                "• GFPGAN-v1.4 — General-purpose; natural results (~2–3 GB)\n"
+                "• CodeFormer — Degraded faces; identity/fidelity control (~2–3 GB)\n"
+                "• GPEN-512 — Speed/quality balance (~2–3 GB)\n"
+                "• RestoreFormer++ — Realistic, structural restoration (~2–3 GB)\n"
+                "• GFPGAN-1024 — Higher-resolution GFPGAN (~3–4 GB)\n"
+                "• GPEN-1024 — High-resolution faces (~3–4 GB)\n"
+                "• VQFR-v2 — Heavily degraded faces (~3–4 GB)\n"
+                "• GPEN-2048 — Maximum GPEN detail (~5–6 GB)\n"
+                "• OSDFace — High-quality one-step diffusion restoration (~4–6 GB FP16)"
+            ),
             "default": "GFPGAN-v1.4",
             "parentToggle": "FaceRestorerEnableToggle",
             "requiredToggleValue": True,
-            "help": "Select the model type for face restoration.",
             "exec_function": control_actions.handle_model_selection_change,
             "exec_function_args": ["FaceRestorerTypeSelection"],
         },
@@ -135,7 +148,7 @@ COMMON_LAYOUT_DATA: Any = {
             "level": 1,
             "label": "Enable Face Restorer 2",
             "default": False,
-            "help": "Enable the use of a face restoration model to improve the quality of the face after swapping.",
+            "help": "A second restorer pass can significantly improve sharpness and details but will double the VRAM cost",
             "exec_function": control_actions.handle_restorer_state_change,
             "exec_function_args": ["FaceRestorerEnable2Toggle"],
         },
@@ -145,7 +158,7 @@ COMMON_LAYOUT_DATA: Any = {
             "default": False,
             "parentToggle": "FaceRestorerEnable2Toggle",
             "requiredToggleValue": True,
-            "help": "Apply the second restorer at end of pipeline (after Face Editor to compensate the sharpness loss, befor final-blur and jpeg/mpeg-Compression. when disabled apply directly after first restorer like originaly.",
+            "help": "Apply the second restorer at end of pipeline (after Face Editor to compensate the sharpness loss, before final-blur and jpeg/mpeg-Compression. When disabled, apply directly after first restorer like originaly.",
         },
         "FaceRestorerType2Selection": {
             "level": 2,
@@ -165,7 +178,7 @@ COMMON_LAYOUT_DATA: Any = {
             "default": "GFPGAN-v1.4",
             "parentToggle": "FaceRestorerEnable2Toggle",
             "requiredToggleValue": True,
-            "help": "Select the model type for face restoration.",
+            "help": "Select the model type for second pass face restoration.",
             "exec_function": control_actions.handle_model_selection_change,
             "exec_function_args": ["FaceRestorerType2Selection"],
         },

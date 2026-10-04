@@ -1,4 +1,5 @@
 from types import SimpleNamespace
+from unittest.mock import MagicMock
 
 from PySide6 import QtWidgets
 
@@ -47,6 +48,7 @@ class _DummyTargetMediaButton:
     def __init__(self, main_window, media_id):
         self.main_window = main_window
         self.media_id = media_id
+        self.media_path = f"E:/media/{media_id}.mp4"
         self.removed = 0
 
     def remove_target_media_from_list(self):
@@ -95,6 +97,10 @@ def test_clear_all_target_media_cancel_leaves_state_unchanged(monkeypatch):
         targetVideosList=_DummyListWidget(),
         placeholder_update_signal=placeholder_signal,
         video_loader_worker=None,
+        video_processor=MagicMock(),
+        scene=MagicMock(),
+        graphicsViewFrame=MagicMock(),
+        videoSeekSlider=MagicMock(),
     )
     button = _DummyTargetMediaButton(main_window, "media_1")
     main_window.target_videos["media_1"] = button
@@ -123,7 +129,7 @@ def test_clear_all_target_media_confirm_clears_state(monkeypatch):
     path_line_edit = _DummyLineEdit("E:/media")
     clear_target_faces_calls = []
     main_window = SimpleNamespace(
-        control={},
+        control={"AutoLoadTargetFolderToggle": True},
         target_videos={},
         target_faces={"face_1": object()},
         selected_video_button=object(),
@@ -132,6 +138,10 @@ def test_clear_all_target_media_confirm_clears_state(monkeypatch):
         targetVideosList=_DummyListWidget(),
         placeholder_update_signal=placeholder_signal,
         video_loader_worker=None,
+        video_processor=MagicMock(),
+        scene=MagicMock(),
+        graphicsViewFrame=MagicMock(),
+        videoSeekSlider=MagicMock(),
     )
     button_a = _DummyTargetMediaButton(main_window, "media_1")
     button_b = _DummyTargetMediaButton(main_window, "media_2")
@@ -156,16 +166,38 @@ def test_clear_all_target_media_confirm_clears_state(monkeypatch):
         ),
     )
 
+    watch_calls = []
+    monkeypatch.setattr(
+        list_view_actions, "set_target_folder_auto_watch",
+        lambda mw, enabled: watch_calls.append((mw, enabled)),
+    )
+
     assert list_view_actions.clear_all_target_media(main_window) is True
     assert main_window.target_videos == {}
     assert main_window.selected_video_button is None
-    assert main_window.targetVideosPathLineEdit.value == ""
-    assert main_window.targetVideosPathLineEdit.tooltip == ""
-    assert main_window.last_target_media_folder_path == ""
+    assert main_window.targetVideosPathLineEdit.value == "E:/media"
+    assert main_window.targetVideosPathLineEdit.tooltip == "E:/media"
+    assert main_window.last_target_media_folder_path == "E:/media"
+    main_window.video_processor.stop_processing.assert_called_once_with()
+    assert main_window.video_processor.media_capture is None
+    assert main_window.video_processor.media_path is None
+    assert main_window.video_processor.current_frame is None
+    main_window.scene.clear.assert_called_once_with()
+    main_window.graphicsViewFrame.update.assert_called_once_with()
+    main_window.videoSeekSlider.setMaximum.assert_called_once_with(1)
+    main_window.videoSeekSlider.setValue.assert_called_once_with(0)
     assert placeholder_signal.calls == [(main_window.targetVideosList, False)]
     assert button_a.removed == 1
     assert button_b.removed == 1
     assert clear_target_faces_calls == [(main_window, False)]
+
+    assert watch_calls == [(main_window, True)]
+    expected_paths = {
+        list_view_actions._normalize_media_path(button.media_path)
+        for button in (button_a, button_b)
+    }
+    assert main_window._target_folder_seen_paths == expected_paths
+    assert main_window._target_folder_ignored_paths == expected_paths
 
 
 def test_clear_all_target_media_skips_confirmation_when_toggle_is_set(monkeypatch):
@@ -179,6 +211,10 @@ def test_clear_all_target_media_skips_confirmation_when_toggle_is_set(monkeypatc
         targetVideosList=_DummyListWidget(),
         placeholder_update_signal=_DummySignal(),
         video_loader_worker=None,
+        video_processor=MagicMock(),
+        scene=MagicMock(),
+        graphicsViewFrame=MagicMock(),
+        videoSeekSlider=MagicMock(),
     )
     main_window.target_videos["media_1"] = _DummyTargetMediaButton(
         main_window, "media_1"
@@ -208,6 +244,10 @@ def test_clear_all_target_media_blocked_leaves_state_unchanged(monkeypatch):
         targetVideosList=_DummyListWidget(),
         placeholder_update_signal=_DummySignal(),
         video_loader_worker=None,
+        video_processor=MagicMock(),
+        scene=MagicMock(),
+        graphicsViewFrame=MagicMock(),
+        videoSeekSlider=MagicMock(),
     )
 
     monkeypatch.setattr(
