@@ -1822,6 +1822,7 @@ class PipelineProcessor:
         dfm_model_name: str | None = None,
         is_perspective_crop: bool = False,
         kv_map: dict[str, Any] | None = None,
+        yawnet_deg: float | None = None,
     ) -> tuple[torch.Tensor, torch.Tensor | None, torch.Tensor | None]:
         """
         Core function for face swapping. Handles:
@@ -2265,6 +2266,19 @@ class PipelineProcessor:
         # --- DYNAMIC MASKS INITIALIZATION ---
         current_swap_h, current_swap_w = swap.shape[1], swap.shape[2]
         yaw_deg, pitch_deg = faceutil.calc_face_yaw_pitch(kps_5)
+
+        # Degrees away from facing the camera, for the occluder / XSeg profile safeguard
+        # only. When YawNet ran for this face we use its true full-circle angle; without
+        # it we fall back to the 5-landmark pseudo-degrees.
+        #
+        # Deliberately NOT substituted into yaw_deg itself: yaw_deg feeds
+        # get_dynamic_side_mask, whose ProfileAngleMaskThresholdSlider is calibrated in
+        # those pseudo-degrees, so swapping the scale underneath it would silently change
+        # what every saved user setting means.
+        if yawnet_deg is not None:
+            guard_yaw_deg = self.worker.function_worker.yaw_from_frontal(yawnet_deg)
+        else:
+            guard_yaw_deg = abs(float(yaw_deg))
         side_mask = self.get_dynamic_side_mask(
             yaw_deg,
             pitch_deg,
@@ -2456,6 +2470,7 @@ class PipelineProcessor:
                 parameters["OccluderSizeSlider"],
                 parameters=parameters,
                 original_face_512=swap_restorecalc,
+                yaw_deg=guard_yaw_deg,
             )
             if mask.shape[-1] != swap_mask.shape[-1]:
                 mask = _resize_func(
@@ -2648,6 +2663,7 @@ class PipelineProcessor:
                     mouth_256 if mouth_256 is not None else 0,
                     parameters,
                     inner_mouth_mask=inner_mouth_protection_256,
+                    yaw_deg=guard_yaw_deg,
                 )
             )
 

@@ -35,6 +35,10 @@ hrffa_repo = (
     "https://github.com/PINTO0309/High-Angle_Robust_Fast_FaceAlignment"
     "/releases/download/weights"
 )
+# YawNet, by the same author, linked upstream for the same reason as hrffa_repo.
+# MIT, and trained purely on a synthetic 42k-image set (CC BY 4.0), so unlike the
+# HRFFA students there is no teacher-licence question to inherit. See docs/yawnet.md.
+yawnet_repo = "https://github.com/PINTO0309/YawNet/releases/download/resources"
 
 ARCFACE_DST = np.array(
     [
@@ -315,6 +319,9 @@ restorer_model_mapping: dict[str, str] = {
 # fails silently for TUFA) and DEIMv2 is a DETR-style decoder (the shape whose fp16
 # build killed ORFormer). Both are cheap enough in fp32 that guessing is not worth the
 # risk of a silent ~70 px error. Measure before adding either.
+# YawNet is absent on the same unmeasured grounds: it is a tiny CNN, but its output is
+# a unit biternion whose ANGLE is the product, so a small fp16 drift in (cos, sin) is a
+# silently wrong pose rather than a visible artefact. It costs ~0.3 ms in fp32.
 fp16_safe_models_list = [
     # --- LivePortrait ---
     "LivePortraitAppearanceFeatureExtractor",
@@ -641,6 +648,39 @@ models_list: list[dict[str, Any]] = [
         ),
         "hash": "f24d8fa18583c75ce8d802e3d983af9d13a07fdc294267968a206dc79df85d36",
         "url": (f"{hrffa_repo}/deimv2_hgnetv2_n_wholebody49_boxes_only_webgpu.onnx"),
+    },
+    {
+        # YawNet — FULL-CIRCLE (360 deg) head-yaw regression. This is the only pose
+        # estimate here that can tell a profile from a head facing AWAY; the 5-landmark
+        # faceutil.calc_face_yaw_pitch cannot, because it is a nose-offset ratio that
+        # saturates near +-90 and reads a rear view as roughly frontal.
+        # Like HRFFA it wants a WHOLE-HEAD crop and shares the DEIMv2Wholebody49Head
+        # dependency, so enabling it outside 'hrffa' landmark mode force-loads that
+        # detector (FaceLandmarkDetectors.estimate_head_yaw_yawnet).
+        #
+        # This is the 128 px `kappa` student (0.77M params, MAAE 12.62 deg, the most
+        # accurate of the three students; 64/96 differ by <0.4 deg). The `kappa` export
+        # adds a von Mises concentration output at no measurable cost, and callers need
+        # it: acting on a low-confidence angle is worse than not acting.
+        # Input "images": RGB float32, NCHW 1x3x128x128, center05 normalised
+        # ((x/255 - 0.5) / 0.5), from the head box squashed to the square WITHOUT
+        # preserving aspect ratio (upstream's demo/web/src/hrffa/orientation.ts does the
+        # same; a letterbox is out of distribution).
+        # Outputs: "cos_sin" (1,2) unit biternion and "kappa" (1) confidence.
+        # NOTE the angle convention, which is easy to get wrong -- YawNet emits the
+        # `yawpose` convention and needs a MIRROR to become the documented ring:
+        #   deg = (degrees(atan2(sin, cos)) + 360) % 360; deg = (360 - deg) % 360
+        # giving 0 = facing camera, 90 = subject's right, 180 = facing away, 270 = left.
+        # NOT fp16-safe: unmeasured, like HRFFA. A biternion unit-vector head is exactly
+        # the precision-sensitive shape that fails SILENTLY for TUFA, and a quietly
+        # wrong angle here would mis-trigger the occluder/XSeg bypass rather than crash.
+        # Measure before adding it to fp16_safe_models_list.
+        "model_name": "YawNet",
+        "local_path": (
+            f"{models_dir}/yawnet_distill_128_unified_v6u_kappa_1x3x128x128.onnx"
+        ),
+        "hash": "08e5ecf68e6688fac5fba1de997f283fbd71cd3fdd2794261dc57e2de55314f8",
+        "url": (f"{yawnet_repo}/yawnet_distill_128_unified_v6u_kappa_1x3x128x128.onnx"),
     },
     {
         "model_name": "FaceBlendShapes",

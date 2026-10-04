@@ -13,6 +13,8 @@ Requires both ONNX files in model_assets/ (download_models.py fetches them).
 
 from __future__ import annotations
 
+import threading
+
 from pathlib import Path
 from types import SimpleNamespace
 
@@ -71,6 +73,7 @@ def _harness() -> FaceLandmarkDetectors:
         run_ort_with_iobinding=lambda sess, binding: sess.run_with_iobinding(binding)
     )
     inst.active_landmark_models = set()
+    inst._cache_lock = threading.Lock()
     inst.detector_map = {
         "hrffa": {
             "model_name": "FaceLandmarkHRFFA",

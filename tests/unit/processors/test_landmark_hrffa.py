@@ -9,6 +9,8 @@ class-7 filter, the normalised-vs-absolute box decode, the head-to-face matching
 
 from __future__ import annotations
 
+import threading
+
 from types import SimpleNamespace
 
 import numpy as np
@@ -38,6 +40,7 @@ def _detectors(models: dict | None = None) -> FaceLandmarkDetectors:
     )
     inst.function_worker = SimpleNamespace()  # type: ignore[assignment]
     inst.active_landmark_models = set()
+    inst._cache_lock = threading.Lock()
     inst.detector_map = {
         "hrffa": {
             "model_name": "FaceLandmarkHRFFA",

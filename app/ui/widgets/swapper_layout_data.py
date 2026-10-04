@@ -477,6 +477,65 @@ SWAPPER_LAYOUT_DATA: Any = {  # noqa: F811
             "requiredToggleValue": True,
             "help": "Blend value for Occluder and XSeg.",
         },
+        "SegGuardEnableToggle": {
+            "level": 1,
+            "label": "Profile Safeguard",
+            "default": True,
+            "parentToggle": "OccluderEnableToggle | DFLXSegEnableToggle",
+            "requiredToggleValue": True,
+            "help": (
+                "The Occluder and DFL XSeg models are trained mostly on frontal faces "
+                "and can collapse on extreme side angles, marking the whole face as "
+                "occluded. That empties the mask and the swap silently disappears for "
+                "those frames - the swap comes back if you disable the mask.\n\n"
+                "With this on, a model that collapses is skipped for that frame and "
+                "the swap is applied unmasked instead of vanishing.\n\n"
+                "It only triggers when the head is at an extreme angle AND almost "
+                "nothing of the face survives, because a low face ratio on its own is "
+                "also what a CORRECT prediction looks like when a hand really does "
+                "cover the face. Turn this off to get the old behaviour back."
+            ),
+        },
+        "SegGuardMinYawSlider": {
+            "level": 2,
+            "label": "Min Head Angle",
+            "min_value": "0",
+            "max_value": "180",
+            "default": "40",
+            "step": 1,
+            "parentToggle": "SegGuardEnableToggle",
+            "requiredToggleValue": True,
+            "help": (
+                "How far the head must be turned away from the camera before a "
+                "collapsed mask is treated as model failure. 0 = facing the camera, "
+                "90 = full profile, 180 = facing away.\n\n"
+                "Lower fires on more frames (more swaps rescued, but more risk of "
+                "ignoring real occlusion); higher fires on fewer. 180 effectively "
+                "disables the safeguard.\n\n"
+                "Read from YawNet when 'Head Yaw (YawNet)' is enabled in Settings, "
+                "otherwise from the landmark-based estimate, which is less reliable at "
+                "exactly these angles. This default is a plausible guess, not a "
+                "measured value - tune it on your own footage."
+            ),
+        },
+        "SegGuardMinFaceRatioSlider": {
+            "level": 2,
+            "label": "Min Face Area",
+            "min_value": "0",
+            "max_value": "100",
+            "default": "30",
+            "step": 1,
+            "parentToggle": "SegGuardEnableToggle",
+            "requiredToggleValue": True,
+            "help": (
+                "How little of the face must survive the mask before it counts as a "
+                "collapse, as a percentage of the crop.\n\n"
+                "At 30, a mask keeping less than 30% of the crop is suspect. Raise it "
+                "if profile swaps still vanish; lower it if real occlusion (a hand, a "
+                "microphone) is being ignored. 0 disables the safeguard.\n\n"
+                "This default is a plausible guess, not a measured value."
+            ),
+        },
         "XSegMouthEnableToggle": {
             "level": 2,
             "label": "Xseg Mouth",
