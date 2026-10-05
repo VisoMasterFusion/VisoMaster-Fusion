@@ -337,6 +337,7 @@ fp16_safe_models_list = [
     # --- Masking ---
     "FaceParser",
     "Occluder",
+    "MODNet",
     # --- Upscaling ---
     "RealEsrganx2Plus",
     "RealEsrganx4Plus",
@@ -914,6 +915,13 @@ models_list: list[dict[str, Any]] = [
         "local_path": f"{models_dir}/faceparser_resnet34.onnx",
         "hash": "5b805bba7b5660ab7070b5a381dcf75e5b3e04199f1e9387232a77a00095102e",
         "url": f"{assets_repo}/v0.1.0/faceparser_resnet34.onnx",
+    },
+    {
+        # Trimap-free portrait matting used by the Hair Matting mask stage.
+        "model_name": "MODNet",
+        "local_path": f"{models_dir}/modnet_photographic_portrait_matting.onnx",
+        "hash": "07c308cf0fc7e6e8b2065a12ed7fc07e1de8febb7dc7839d7b7f15dd66584df9",
+        "url": "https://huggingface.co/gradio/Modnet/resolve/main/modnet.onnx",
     },
     {
         "model_name": "combo_relu3_3_relu3_1",
