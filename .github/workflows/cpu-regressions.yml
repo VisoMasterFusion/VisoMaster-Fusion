@@ -23,6 +23,11 @@ jobs:
           python-version: '3.12'
       - name: Install CPU PyTorch
         run: python -m pip install torch==2.11.0 torchvision==0.26.0 --index-url https://download.pytorch.org/whl/cpu
+      # The app uses this pure-Python release on Python 3.12, but its published
+      # metadata still caps Python at 3.11. Override only this package's metadata;
+      # its darkdetect dependency remains in the normally resolved requirements.
+      - name: Install application theme with legacy Python metadata
+        run: python -m pip install --no-deps --ignore-requires-python pyqtdarktheme==2.1.0
       - name: Install application dependencies without CUDA and TensorRT
         shell: python
         run: |
@@ -31,7 +36,7 @@ jobs:
           for line in pathlib.Path('requirements_cu13.txt').read_text().splitlines():
               name = line.split('==')[0].lower()
               if name.startswith(('nvidia-', 'tensorrt', 'cuda-')) or name in {
-                  'torch', 'torchvision', 'torchaudio', 'onnxruntime-gpu'
+                  'torch', 'torchvision', 'torchaudio', 'onnxruntime-gpu', 'pyqtdarktheme'
               }:
                   continue
               requirements.append(line)
