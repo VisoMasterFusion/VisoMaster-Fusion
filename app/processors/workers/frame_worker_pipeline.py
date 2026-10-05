@@ -1160,7 +1160,7 @@ class PipelineProcessor:
                     input_face_affined = swapper_output.permute(1, 2, 0)
                     output = torch.clamp(input_face_affined * 255.0, 0, 255)
                 else:
-                    input_face_affined = swapper_output.permute(1, 2, 0)
+                    input_face_affined = input_face_affined.permute(1, 2, 0)
                     output = torch.clamp(input_face_affined * 255.0, 0, 255)
 
         # --- DeepFaceLive (DFM) Path ---
@@ -3524,11 +3524,12 @@ class PipelineProcessor:
                 swap = faceutil.apply_reinhard_color_transfer(
                     original_face_512,
                     swap,
-                    parameters["EndingColorBlendAmountSlider"],
                     mask_autocolor_end,
+                    parameters["EndingColorBlendAmountSlider"],
                 )
             elif (
-                parameters["EndingColorTransferTypeSelection"] == "AdaIN (Core Masked)"
+                parameters["EndingColorTransferTypeSelection"]
+                == "AdaIN (Core Masked)"
             ):
                 swap = faceutil.apply_adain_color_transfer(
                     swap,
@@ -3690,6 +3691,17 @@ class PipelineProcessor:
         if swap.shape[-1] != 512:
             swap = t512_mask(swap)
             swap_mask = t512_mask(swap_mask)
+
+        # Hair Matting (MODNet): keep the target's own hair out from under the
+        # swapped face (or just soften the hairline band), right before the
+        # composite multiply so every downstream blend sees the adjusted mask.
+        if parameters.get("HairMattingEnableToggle", False):
+            try:
+                swap_mask = self.worker.function_worker.apply_hair_matting(
+                    swap_mask, original_face_512, parameters
+                )
+            except Exception as e:
+                print(f"[WARN] Hair matting skipped: {e}")
 
         swap = torch.mul(swap, swap_mask)
 
