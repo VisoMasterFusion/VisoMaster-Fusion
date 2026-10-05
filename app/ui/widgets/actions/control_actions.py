@@ -358,6 +358,14 @@ def handle_average_kv_toggle_change(
     common_widget_actions.refresh_frame(main_window)
 
 
+def handle_hair_matting_state_change(main_window, new_value, control_name):
+    """Release only models no longer requested by any face or shared feature."""
+    if not new_value:
+        for name in ("MODNet", "FaceParser"):
+            if not main_window.models_processor.is_model_active_in_ui(name):
+                main_window.models_processor.unload_model(name)
+
+
 def handle_face_mask_state_change(
     main_window: "MainWindow", new_value: bool, control_name: str
 ):
@@ -374,7 +382,8 @@ def handle_face_mask_state_change(
     if new_value:
         main_window.models_processor.load_model(model_to_change)
     else:
-        main_window.models_processor.unload_model(model_to_change)
+        if not main_window.models_processor.is_model_active_in_ui(model_to_change):
+            main_window.models_processor.unload_model(model_to_change)
 
 
 def handle_restorer_state_change(
