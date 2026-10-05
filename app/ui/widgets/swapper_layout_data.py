@@ -9,7 +9,7 @@ SWAPPER_LAYOUT_DATA: Any = {  # noqa: F811
 "Swapper": {
     "SwapModelSelection": {
         "level": 1,
-        "label": "Swapper Model  ",
+        "label": "Swapper Model  ",
         "options": [
             "Inswapper128",
             "AlphaFace",
@@ -645,6 +645,70 @@ SWAPPER_LAYOUT_DATA: Any = {  # noqa: F811
             "help": "Increase to strengthen the effect.",
         },
     },
+    "Hair Matting (MODNet)": {
+        "HairMattingEnableToggle": {
+            "level": 1,
+            "label": "Enable Hair Matting",
+            "default": False,
+            "help": "Runs MODNet portrait matting on the aligned target crop and uses the hair region to adjust the swap mask before blending. Fixes the 'helmet hairline' artifact where swapped content covers the target's hair.",
+        },
+        "HairMattingModeSelection": {
+            "level": 2,
+            "label": "Mode",
+            "options": [
+                "Protect Target Hair",
+                "Soften Hairline",
+            ],
+            "default": "Protect Target Hair",
+            "parentToggle": "HairMattingEnableToggle",
+            "requiredToggleValue": True,
+            "help": "Protect Target Hair: carves the target's hair out of the swap mask so it survives the composite. Soften Hairline: only widens the blend band where hair is detected, keeping coverage unchanged.",
+        },
+        "HairMattingStrengthSlider": {
+            "level": 2,
+            "label": "Strength",
+            "min_value": "0",
+            "max_value": "100",
+            "default": "100",
+            "step": 1,
+            "parentToggle": "HairMattingEnableToggle",
+            "requiredToggleValue": True,
+            "help": "How strongly the hair region affects the swap mask. 0 disables the effect.",
+        },
+        "HairMattingThresholdSlider": {
+            "level": 2,
+            "label": "Matte Threshold",
+            "min_value": "0",
+            "max_value": "100",
+            "default": "40",
+            "step": 1,
+            "parentToggle": "HairMattingEnableToggle",
+            "requiredToggleValue": True,
+            "help": "MODNet alpha below this is treated as background. Raise it if skin/background is being mistaken for hair; lower it to catch faint strands.",
+        },
+        "HairMattingFaceDilationSlider": {
+            "level": 2,
+            "label": "Face Dilation",
+            "min_value": "0",
+            "max_value": "50",
+            "default": "12",
+            "step": 1,
+            "parentToggle": "HairMattingEnableToggle",
+            "requiredToggleValue": True,
+            "help": "Grows the face mask (in pixels) before subtracting it from the matte, so the face edge itself is never classified as hair. Raise it if the hairline eats into the face.",
+        },
+        "HairMattingFeatherSlider": {
+            "level": 2,
+            "label": "Feather",
+            "min_value": "0",
+            "max_value": "50",
+            "default": "6",
+            "step": 1,
+            "parentToggle": "HairMattingEnableToggle",
+            "requiredToggleValue": True,
+            "help": "Blur radius (in pixels) applied to the adjusted mask. In Soften Hairline mode, doubles as the width of the extra-soft transition band.",
+        },
+    },
     "Original Face Parsers": {
         "MouthParserStretchToggle": {
             "level": 1,
@@ -1009,7 +1073,7 @@ SWAPPER_LAYOUT_DATA: Any = {  # noqa: F811
             "step": 0.1,
             "parentToggle": "RestoreEyesEnableToggle",
             "requiredToggleValue": True,
-            "help": "These parameters determine the shape of the mask. If both are equal to 1.0, the mask will be circular. If either one is greater or less than 1.0, the mask will become oval, stretching or shrinking along the corresponding direction.",
+            "help": "These parameters determine the shape of the mask. If both are equal to 1.0, the mask will become circular. If either one is greater or less than 1.0, the mask will become oval, stretching or shrinking along the corresponding direction.",
         },
         "RestoreXEyesOffsetSlider": {
             "level": 2,
@@ -1105,7 +1169,7 @@ SWAPPER_LAYOUT_DATA: Any = {  # noqa: F811
             "step": 0.1,
             "parentToggle": "RestoreMouthEnableToggle",
             "requiredToggleValue": True,
-            "help": "These parameters determine the shape of the mask. If both are equal to 1.0, the mask will be circular. If either one is greater or less than 1.0, the mask will become oval, stretching or shrinking along the corresponding direction.",
+            "help": "These parameters determine the shape of the mask. If both are equal to 1.0, the mask will become circular. If either one is greater or less than 1.0, the mask will become oval, stretching or shrinking along the corresponding direction.",
         },
         "RestoreXMouthOffsetSlider": {
             "level": 2,
