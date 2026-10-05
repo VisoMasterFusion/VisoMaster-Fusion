@@ -724,7 +724,7 @@ def load_saved_workspace(
             main_window.target_videos = {}
             card_actions.clear_input_faces(main_window)
             card_actions.clear_target_faces(main_window)
-            card_actions.clear_merged_embeddings(main_window)
+            list_view_actions.reset_embedding_tabs(main_window)
 
             # Load control (settings)
             control = sanitize_state_dictionary(
@@ -904,6 +904,9 @@ def load_saved_workspace(
                                 f"[ERROR] Error loading K/V map for embedding from {kv_map_path}: {e}"
                             )
 
+            list_view_actions.restore_embedding_tabs_state(
+                main_window, data.get("embedding_tabs_state", {}))
+
             # Add target_faces
             for face_id, target_face_data in data.get("target_faces_data", {}).items():
                 cropped_face = np.array(target_face_data["cropped_face"]).astype(
@@ -936,14 +939,15 @@ def load_saved_workspace(
                 )
 
                 # Set assigned embeddinng buttons
-                embed_buttons = main_window.merged_embeddings
+                embed_buttons = list_view_actions.get_all_merged_embeddings(main_window)
                 assigned_merged_embeddings: list = target_face_data[
                     "assigned_merged_embeddings"
                 ]
                 for assigned_merged_embedding_id in assigned_merged_embeddings:
-                    main_window.target_faces[face_id].assigned_merged_embeddings[
-                        assigned_merged_embedding_id
-                    ] = embed_buttons[assigned_merged_embedding_id].embedding_store
+                    if assigned_merged_embedding_id in embed_buttons:
+                        main_window.target_faces[face_id].assigned_merged_embeddings[
+                            assigned_merged_embedding_id
+                        ] = embed_buttons[assigned_merged_embedding_id].embedding_store
 
                 # Set assigned input face buttons
                 assigned_input_faces: list = target_face_data["assigned_input_faces"]
@@ -1050,14 +1054,9 @@ def load_saved_workspace(
             main_window.inputFacesPathLineEdit.setToolTip(
                 main_window.last_input_media_folder_path
             )
-            main_window.loaded_embedding_filename = data.get(
-                "loaded_embedding_filename", ""
-            )
-
-            embedding_tabs_state = data.get("embedding_tabs_state")
-            if embedding_tabs_state:
-                list_view_actions.restore_embedding_tabs_state(
-                    main_window, embedding_tabs_state
+            if not data.get("embedding_tabs_state"):
+                main_window.loaded_embedding_filename = data.get(
+                    "loaded_embedding_filename", ""
                 )
 
             common_widget_actions.set_control_widgets_values(main_window)
@@ -1462,7 +1461,7 @@ def save_current_workspace(
         }
 
     # --- Serialize Embeddings ---
-    for embedding_id, embedding_button in main_window.merged_embeddings.items():
+    for embedding_id, embedding_button in list_view_actions.get_all_merged_embeddings(main_window).items():
         kv_map_path = None
         # Check for either the new list format or the legacy map format
         kv_payload_to_save = getattr(embedding_button, "kv_map_list", None) or getattr(
@@ -1680,7 +1679,7 @@ def save_current_job(main_window: "MainWindow"):
 
     # --- Serialize Embeddings for Job ---
     embeddings_data = {}
-    for eid, emb in main_window.merged_embeddings.items():
+    for eid, emb in list_view_actions.get_all_merged_embeddings(main_window).items():
         kv_map_path = None
         # Check for either the new list format or the legacy map format
         kv_payload_to_save = getattr(emb, "kv_map_list", None) or getattr(

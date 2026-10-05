@@ -1793,6 +1793,7 @@ def setup_embedding_tabs(main_window: "MainWindow") -> None:
     )
 
     tabs.currentChanged.connect(partial(_on_embedding_tab_changed, main_window))
+    tabs.tabBar().tabMoved.connect(lambda *_: _activate_embedding_tab(main_window, tabs.currentIndex()))
     tabs.tabCloseRequested.connect(partial(_on_embedding_tab_close, main_window))
 
 def add_embedding_tab(
@@ -1828,22 +1829,14 @@ def _activate_embedding_tab(main_window: "MainWindow", index: int) -> None:
     states = getattr(main_window, "embedding_tab_states", [])
     if index < 0 or index >= len(states):
         return
+    # Qt can emit currentChanged before tabMoved; resolve by widget identity.
+    by_widget = {state["list_widget"]: state for state in states}
+    states[:] = [by_widget[main_window.embeddingTabs.widget(i)]
+                 for i in range(main_window.embeddingTabs.count())]
     state = states[index]
     main_window.inputEmbeddingsList = state["list_widget"]
     main_window.merged_embeddings = state["embeddings"]
     main_window.loaded_embedding_filename = state["filename"]
-
-    active_ids = set(main_window.merged_embeddings.keys())
-    for target_face in (main_window.target_faces or {}).values():
-        stale = [
-            eid
-            for eid in list(target_face.assigned_merged_embeddings.keys())
-            if eid not in active_ids
-        ]
-        for eid in stale:
-            target_face.assigned_merged_embeddings.pop(eid, None)
-        if stale:
-            target_face.calculate_assigned_input_embedding()
 
     # The filter worker is created once at startup and bound to the first
     # tab's list. Recreate it against the newly-active tab's list so the
@@ -1881,8 +1874,17 @@ def _on_embedding_tab_close(main_window: "MainWindow", index: int) -> None:
         except RuntimeError:
             pass
 
+    state = states[index]
+    removed_ids = set(state["embeddings"])
+    for face in main_window.target_faces.values():
+        if removed_ids.intersection(face.assigned_merged_embeddings):
+            for eid in removed_ids:
+                face.assigned_merged_embeddings.pop(eid, None)
+            face.calculate_assigned_input_embedding()
+    tabs.blockSignals(True)
+    states.pop(index)
     tabs.removeTab(index)
-    state = states.pop(index)
+    tabs.blockSignals(False)
     try:
         state["list_widget"].deleteLater()
     except RuntimeError:
@@ -1924,56 +1926,83 @@ def get_embedding_tabs_state(main_window: "MainWindow") -> dict:
         title = ""
         if tabs is not None and i < tabs.count():
             title = tabs.tabText(i)
-        out.append({"filename": filename, "title": title})
+        out.append({"filename": filename, "title": title,
+                    "embedding_ids": list(state["embeddings"])})
     return {"tabs": out, "active_index": max(0, active)}
 
 
-def restore_embedding_tabs_state(main_window: "MainWindow", data: dict) -> None:
-    """Rebuild embedding tabs from workspace data."""
-    from app.ui.widgets.actions import save_load_actions
-    from app.ui.widgets.actions import card_actions
+def get_all_merged_embeddings(main_window):
+    """Registry across tabs; display/file operations still use the active dict."""
+    result = {}
+    for state in getattr(main_window, "embedding_tab_states", []) or []:
+        result.update(state["embeddings"])
+    result.update(main_window.merged_embeddings)
+    return result
 
-    if not getattr(main_window, "embeddingTabs", None):
+
+def reset_embedding_tabs(main_window):
+    """Reset all tabs before loading a new workspace, after clearing faces."""
+    tabs = getattr(main_window, "embeddingTabs", None)
+    if tabs is None:
+        card_actions.clear_merged_embeddings(main_window)
         return
-
-    tabs_data = (data or {}).get("tabs") or []
-    active_index = int((data or {}).get("active_index", 0))
-
-    while len(main_window.embedding_tab_states) > 1:
-        _on_embedding_tab_close(main_window, len(main_window.embedding_tab_states) - 1)
-
-    main_window.embeddingTabs.setCurrentIndex(0)
+    tabs.blockSignals(True)
+    for state in main_window.embedding_tab_states[1:]:
+        state["list_widget"].deleteLater()
+    while tabs.count() > 1:
+        tabs.removeTab(tabs.count()-1)
+    main_window.embedding_tab_states[:] = main_window.embedding_tab_states[:1]
+    tabs.blockSignals(False)
     _activate_embedding_tab(main_window, 0)
     card_actions.clear_merged_embeddings(main_window)
-    states = main_window.embedding_tab_states
-    if states:
-        states[0]["filename"] = ""
-        states[0]["embeddings"] = main_window.merged_embeddings
-    main_window.embeddingTabs.setTabText(0, "Embeddings")
 
-    if not tabs_data:
+
+def restore_embedding_tabs_state(main_window, data):
+    """Distribute already restored stable-ID buttons; never reload source files.
+
+    Legacy filename-only snapshots retain their inline data in the active tab.
+    Empty/missing external files cannot replace workspace-owned embeddings.
+    """
+    tabs = getattr(main_window, "embeddingTabs", None)
+    infos = (data or {}).get("tabs") or []
+    if tabs is None or not infos:
         return
-
-    first = True
-    for i, tab_info in enumerate(tabs_data):
-        filename = (tab_info.get("filename") or "").strip()
-        title = (tab_info.get("title") or "").strip() or (
-            Path(filename).stem if filename else f"Embeddings {i + 1}"
-        )
-
-        if first:
-            first = False
-            main_window.embeddingTabs.setTabText(0, title)
-        else:
-            add_embedding_tab(main_window, title=title)
-
-        if filename and os.path.isfile(filename):
-            save_load_actions.load_embeddings_into_current_tab(
-                main_window, filename
-            )
-        update_active_embedding_tab_title(main_window)
-
-    if tabs_data:
-        idx = min(max(0, active_index), len(main_window.embedding_tab_states) - 1)
-        main_window.embeddingTabs.setCurrentIndex(idx)
-        _activate_embedding_tab(main_window, idx)
+    registry = get_all_merged_embeddings(main_window)
+    active = min(max(0, int(data.get("active_index", 0))), len(infos)-1)
+    for i, info in enumerate(infos):
+        if i:
+            add_embedding_tab(main_window, title=info.get("title") or f"Embeddings {i+1}")
+        state = main_window.embedding_tab_states[i]
+        state["embeddings"] = {}
+        state["filename"] = info.get("filename") or ""
+        tabs.setTabText(i, info.get("title") or f"Embeddings {i+1}")
+        tabs.setTabToolTip(i, state["filename"])
+    owned = set()
+    for i, info in enumerate(infos):
+        ids = info.get("embedding_ids", list(registry) if i == active else [])
+        state = main_window.embedding_tab_states[i]
+        for eid in ids:
+            if eid not in registry or eid in owned:
+                continue
+            button = registry[eid]
+            old_list = button.list_item.listWidget()
+            if old_list:
+                old_list.removeItemWidget(button.list_item)
+                old_list.takeItem(old_list.row(button.list_item))
+            state["list_widget"].addItem(button.list_item)
+            state["list_widget"].setItemWidget(button.list_item, button)
+            state["embeddings"][eid] = button
+            owned.add(eid)
+    # Preserve inline entries absent from legacy/incomplete tab metadata.
+    state = main_window.embedding_tab_states[active]
+    for eid in registry.keys()-owned:
+        button = registry[eid]
+        old_list = button.list_item.listWidget()
+        if old_list:
+            old_list.removeItemWidget(button.list_item)
+            old_list.takeItem(old_list.row(button.list_item))
+        state["list_widget"].addItem(button.list_item)
+        state["list_widget"].setItemWidget(button.list_item, button)
+        state["embeddings"][eid] = button
+    tabs.setCurrentIndex(active)
+    _activate_embedding_tab(main_window, active)
