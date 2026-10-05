@@ -1169,7 +1169,7 @@ SWAPPER_LAYOUT_DATA: Any = {  # noqa: F811
             "step": 0.1,
             "parentToggle": "RestoreMouthEnableToggle",
             "requiredToggleValue": True,
-            "help": "These parameters determine the shape of the mask. If both are equal to 1.0, the mask will become circular. If either one is greater or less than 1.0, the mask will become oval, stretching or shrinking along the corresponding direction.",
+            "help": "These parameters determine the shape of the mask. If both are equal to 1.0, the mask will be circular. If either one is greater or less than 1.0, the mask will become oval, stretching or shrinking along the corresponding direction.",
         },
         "RestoreXMouthOffsetSlider": {
             "level": 2,
