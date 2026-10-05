@@ -916,6 +916,13 @@ models_list: list[dict[str, Any]] = [
         "url": f"{assets_repo}/v0.1.0/faceparser_resnet34.onnx",
     },
     {
+        # Trimap-free portrait matting used by the Hair Matting mask stage.
+        "model_name": "MODNet",
+        "local_path": f"{models_dir}/modnet_photographic_portrait_matting.onnx",
+        "hash": "07c308cf0fc7e6e8b2065a12ed7fc07e1de8febb7dc7839d7b7f15dd66584df9",
+        "url": "https://huggingface.co/gradio/Modnet/resolve/main/modnet.onnx",
+    },
+    {
         "model_name": "combo_relu3_3_relu3_1",
         "local_path": f"{models_dir}/vgg_combo_relu3_3_relu3_1.onnx",
         "hash": "1068ee41e3c67dcfbbeccbc93e539eb06f89bba08618951bb33e9be2c1fbc986",
