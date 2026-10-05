@@ -1160,7 +1160,7 @@ class PipelineProcessor:
                     input_face_affined = swapper_output.permute(1, 2, 0)
                     output = torch.clamp(input_face_affined * 255.0, 0, 255)
                 else:
-                    input_face_affined = input_face_affined.permute(1, 2, 0)
+                    input_face_affined = swapper_output.permute(1, 2, 0)
                     output = torch.clamp(input_face_affined * 255.0, 0, 255)
 
         # --- DeepFaceLive (DFM) Path ---
@@ -2399,7 +2399,7 @@ class PipelineProcessor:
             parameters.get("FaceShapingEnableToggle", False)
             and not parameters.get("FaceShapingPreSwapToggle", False)
             and self.worker.local_control_state_from_feeder.get("edit_enabled", True)
-            and parameters.get("FaceEditorBeforeTypeSelection", "Beginning")
+            and parameters["FaceEditorBeforeTypeSelection", "Beginning"]
             == "Beginning"
         ):
             swap = self.worker.function_worker.apply_face_shaping_gpu(
@@ -2858,7 +2858,7 @@ class PipelineProcessor:
             parameters.get("FaceShapingEnableToggle", False)
             and not parameters.get("FaceShapingPreSwapToggle", False)
             and self.worker.local_control_state_from_feeder.get("edit_enabled", True)
-            and parameters.get("FaceEditorBeforeTypeSelection", "Beginning")
+            and parameters["FaceEditorBeforeTypeSelection", "Beginning"]
             == "After First Restorer"
         ):
             swap = self.worker.function_worker.apply_face_shaping_gpu(
@@ -2968,7 +2968,7 @@ class PipelineProcessor:
             parameters.get("FaceShapingEnableToggle", False)
             and not parameters.get("FaceShapingPreSwapToggle", False)
             and self.worker.local_control_state_from_feeder.get("edit_enabled", True)
-            and parameters.get("FaceEditorBeforeTypeSelection", "Beginning")
+            and parameters["FaceEditorBeforeTypeSelection", "Beginning"]
             == "After Second Restorer"
         ):
             swap = self.worker.function_worker.apply_face_shaping_gpu(
@@ -3341,7 +3341,7 @@ class PipelineProcessor:
             parameters.get("FaceShapingEnableToggle", False)
             and not parameters.get("FaceShapingPreSwapToggle", False)
             and self.worker.local_control_state_from_feeder.get("edit_enabled", True)
-            and parameters.get("FaceEditorBeforeTypeSelection", "Beginning")
+            and parameters["FaceEditorBeforeTypeSelection", "Beginning"]
             == "After Texture Transfer"
         ):
             swap = self.worker.function_worker.apply_face_shaping_gpu(
@@ -3524,12 +3524,11 @@ class PipelineProcessor:
                 swap = faceutil.apply_reinhard_color_transfer(
                     original_face_512,
                     swap,
-                    mask_autocolor_end,
                     parameters["EndingColorBlendAmountSlider"],
+                    mask_autocolor_end,
                 )
             elif (
-                parameters["EndingColorTransferTypeSelection"]
-                == "AdaIN (Core Masked)"
+                parameters["EndingColorTransferTypeSelection"] == "AdaIN (Core Masked)"
             ):
                 swap = faceutil.apply_adain_color_transfer(
                     swap,
@@ -4274,7 +4273,7 @@ class PipelineProcessor:
         lap_n = robust_norm(lap.abs(), m)
         grad_n = robust_norm(grad, m)
 
-        smap = comb_weight * lap_n + (1.0 - comb_weight) * grad_n  # [H,W]
+        smap = comb_weight * lap_n + (1 - comb_weight) * grad_n  # [H,W]
 
         # Optional smoothing to avoid noisy alpha
         # FW-ROBUST-09: ensure kernel size is odd and at least 3
