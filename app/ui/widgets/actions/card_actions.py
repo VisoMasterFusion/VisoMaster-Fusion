@@ -128,10 +128,12 @@ def clear_merged_embeddings(main_window: "MainWindow"):
             embed_button.kv_map = None
         embed_button.deleteLater()
 
+    removed_ids = set(main_window.merged_embeddings)
     main_window.merged_embeddings.clear()
 
     for target_face in main_window.target_faces.values():
-        target_face.assigned_merged_embeddings = {}
+        for eid in removed_ids:
+            target_face.assigned_merged_embeddings.pop(eid, None)
         target_face.calculate_assigned_input_embedding()
 
     # Keep active tab state in sync
@@ -168,7 +170,7 @@ def uncheck_all_input_faces(main_window: "MainWindow"):
 
 
 def uncheck_all_merged_embeddings(main_window: "MainWindow"):
-    for _, embed_button in main_window.merged_embeddings.items():
+    for embed_button in list_view_actions.get_all_merged_embeddings(main_window).values():
         embed_button.setChecked(False)
 
     # Force Garbage Collection for dangling merged tensors

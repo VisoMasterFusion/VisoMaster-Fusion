@@ -21,6 +21,7 @@ from app.ui.widgets.actions import video_control_actions
 from app.ui.widgets.actions import graphics_view_actions
 from app.ui.widgets.actions import card_actions
 from app.ui.widgets.actions import save_load_actions
+from app.ui.widgets.actions import list_view_actions
 import app.helpers.miscellaneous as misc_helpers
 from app.helpers.miscellaneous import get_video_rotation
 
@@ -915,8 +916,8 @@ class TargetFaceCardButton(CardButton):
                 if main_window.input_faces.get(input_face_id):
                     main_window.input_faces[input_face_id].setChecked(True)
             for embedding_id in self.assigned_merged_embeddings.keys():
-                if main_window.merged_embeddings.get(embedding_id):
-                    main_window.merged_embeddings[embedding_id].setChecked(True)
+                if list_view_actions.get_all_merged_embeddings(main_window).get(embedding_id):
+                    list_view_actions.get_all_merged_embeddings(main_window)[embedding_id].setChecked(True)
 
         main_window.selected_target_face_id = self.face_id
         main_window.current_kv_tensors_map = self.assigned_kv_map
@@ -1002,7 +1003,7 @@ class TargetFaceCardButton(CardButton):
 
             # 1. Embeddings priority
             for embedding_id in self.assigned_merged_embeddings.keys():
-                embed_button = main_window.merged_embeddings.get(embedding_id)
+                embed_button = list_view_actions.get_all_merged_embeddings(main_window).get(embedding_id)
                 if not embed_button:
                     continue
 
@@ -1834,7 +1835,7 @@ class EmbeddingCardButton(CardButton):
                 for embedding_id in list(
                     cur_selected_target_face_button.assigned_merged_embeddings.keys()
                 ):
-                    embed_button = main_window.merged_embeddings.get(embedding_id)
+                    embed_button = list_view_actions.get_all_merged_embeddings(main_window).get(embedding_id)
                     if embed_button is None:
                         continue
                     if embed_button != self:

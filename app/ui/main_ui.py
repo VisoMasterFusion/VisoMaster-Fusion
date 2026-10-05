@@ -1921,10 +1921,12 @@ class MainWindow(QtWidgets.QMainWindow, Ui_MainWindow):
         self.targetFacesList.setMaximumHeight(_FACES_PANEL_ROW_HEIGHT)
 
         margins = self.controlButtonsLayout.contentsMargins()
+        if not hasattr(self, "_faces_buttons_base_top_margin"):
+            self._faces_buttons_base_top_margin = margins.top()
         _btns_top_offset = 30  # match faces list offset
         self.controlButtonsLayout.setContentsMargins(
             margins.left(),
-            margins.top() + _btns_top_offset,
+            self._faces_buttons_base_top_margin + _btns_top_offset,
             margins.right(),
             margins.bottom(),
         )
@@ -2047,6 +2049,7 @@ class MainWindow(QtWidgets.QMainWindow, Ui_MainWindow):
     def _restore_faces_strip_to_panel(self):
         """Restores widgets to their original left panel seamlessly."""
         if getattr(self, "_faces_list_offset_container", None) is not None:
+            self._faces_list_offset_container.layout().addWidget(self.targetFacesList)
             self.gridLayout_2.addWidget(
                 self._faces_list_offset_container, 1, 1, 1, 1
             )

@@ -1,44 +1,13 @@
 """Schema tests for the PerformRecast "Recast" widgets in COMMON_LAYOUT_DATA.
 
-Pure data-validation — no Qt/GPU. control_actions is stubbed so the module
-imports without PySide6.
+Data validation using real application callbacks, without GPU inference.
 """
 
 from __future__ import annotations
 
-import sys
-from unittest.mock import MagicMock
+from app.ui import main_ui  # noqa: F401 -- initialize callbacks through application entrypoint
+from app.ui.widgets.common_layout_data import COMMON_LAYOUT_DATA
 
-
-def _stub_module(name: str) -> MagicMock:
-    mod = MagicMock()
-    mod.__name__ = name
-    mod.__spec__ = None
-    return mod
-
-
-for _mod_name in [
-    "PySide6",
-    "PySide6.QtWidgets",
-    "PySide6.QtCore",
-    "PySide6.QtGui",
-    "app.ui.widgets.actions.control_actions",
-]:
-    if _mod_name not in sys.modules:
-        sys.modules[_mod_name] = _stub_module(_mod_name)
-
-try:
-    import cv2  # noqa: F401
-except ImportError:
-    sys.modules["cv2"] = MagicMock()
-
-# common_layout_data uses `import app.ui.widgets.actions.control_actions as ...`.
-# With the leaf stubbed but the parent namespace package not yet imported, that
-# dotted form fails to resolve `actions`. Import the real (cheap, __init__-less)
-# namespace package first so the stubbed leaf binds correctly.
-import app.ui.widgets.actions  # noqa: E402,F401
-
-from app.ui.widgets.common_layout_data import COMMON_LAYOUT_DATA  # noqa: E402
 
 FACE_EXPR = COMMON_LAYOUT_DATA["Face expressions"]
 RECAST_WIDGETS = [

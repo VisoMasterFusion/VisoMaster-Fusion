@@ -1,56 +1,15 @@
 """
 SLD-* tests for app.ui.widgets.settings_layout_data
 
-Pure data-validation tests — no Qt, no GPU, no mocks required.
+Data-validation tests using real application callbacks; no GPU inference.
 These catch schema regressions when settings are added or changed.
 """
 
 from __future__ import annotations
 
-import sys
-from unittest.mock import MagicMock
+from app.ui import main_ui  # noqa: F401 -- initialize callbacks through application entrypoint
+from app.ui.widgets.settings_layout_data import SETTINGS_LAYOUT_DATA
 
-
-# ---------------------------------------------------------------------------
-# Stub out PySide6 and action modules before importing settings_layout_data
-# so this test file works without Qt installed.
-# ---------------------------------------------------------------------------
-
-
-def _stub_module(name: str) -> MagicMock:
-    # Do NOT pass spec= — we need free attribute access so that e.g.
-    # control_actions.change_theme resolves to a callable MagicMock.
-    mod = MagicMock()
-    mod.__name__ = name
-    mod.__spec__ = None
-    return mod
-
-
-_QT_MODULES = [
-    "PySide6",
-    "PySide6.QtWidgets",
-    "PySide6.QtCore",
-    "PySide6.QtGui",
-]
-_ACTION_MODULES = [
-    # Do NOT stub the parent package — it's a namespace package and stubbing it
-    # prevents sibling test files from importing real submodules in the same session.
-    "app.ui.widgets.actions.control_actions",
-    "app.ui.widgets.actions.video_control_actions",
-]
-
-for _mod_name in _QT_MODULES + _ACTION_MODULES:
-    if _mod_name not in sys.modules:
-        sys.modules[_mod_name] = _stub_module(_mod_name)
-
-# Also stub cv2 if not available (may not be in minimal env)
-try:
-    import cv2  # noqa: F401
-except ImportError:
-    sys.modules["cv2"] = MagicMock()
-
-# Now import the real module
-from app.ui.widgets.settings_layout_data import SETTINGS_LAYOUT_DATA  # noqa: E402
 
 
 # ---------------------------------------------------------------------------
