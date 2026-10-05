@@ -1,0 +1,6 @@
+A◜B
+X	Y
+"Test →	CDF Histogram"
+"label": "Swapper Model  ",
+"foo\nbar"
+• — – → end
