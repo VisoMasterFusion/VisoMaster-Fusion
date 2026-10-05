@@ -649,8 +649,10 @@ SWAPPER_LAYOUT_DATA: Any = {  # noqa: F811
         "HairMattingEnableToggle": {
             "level": 1,
             "label": "Enable Hair Matting",
+            "exec_function": control_actions.handle_hair_matting_state_change,
+            "exec_function_args": ["HairMattingEnableToggle"],
             "default": False,
-            "help": "Runs MODNet portrait matting on the aligned target crop and uses the hair region to adjust the swap mask before blending. Fixes the 'helmet hairline' artifact where swapped content covers the target's hair.",
+            "help": "Combines FaceParser semantic hair labels with MODNet portrait alpha to protect target hair before blending. Requires both models.",
         },
         "HairMattingModeSelection": {
             "level": 2,
@@ -662,7 +664,7 @@ SWAPPER_LAYOUT_DATA: Any = {  # noqa: F811
             "default": "Protect Target Hair",
             "parentToggle": "HairMattingEnableToggle",
             "requiredToggleValue": True,
-            "help": "Protect Target Hair: carves the target's hair out of the swap mask so it survives the composite. Soften Hairline: only widens the blend band where hair is detected, keeping coverage unchanged.",
+            "help": "Protect Target Hair: carves the target's hair out of the swap mask so it survives the composite. Soften Hairline: only widens the blend band where hair is detected, preserving existing mask exclusions.",
         },
         "HairMattingStrengthSlider": {
             "level": 2,
@@ -695,7 +697,7 @@ SWAPPER_LAYOUT_DATA: Any = {  # noqa: F811
             "step": 1,
             "parentToggle": "HairMattingEnableToggle",
             "requiredToggleValue": True,
-            "help": "Grows the face mask (in pixels) before subtracting it from the matte, so the face edge itself is never classified as hair. Raise it if the hairline eats into the face.",
+            "help": "Grows semantic facial regions before excluding them from hair protection. Raise it if protection eats into the face.",
         },
         "HairMattingFeatherSlider": {
             "level": 2,
@@ -706,7 +708,7 @@ SWAPPER_LAYOUT_DATA: Any = {  # noqa: F811
             "step": 1,
             "parentToggle": "HairMattingEnableToggle",
             "requiredToggleValue": True,
-            "help": "Blur radius (in pixels) applied to the adjusted mask. In Soften Hairline mode, doubles as the width of the extra-soft transition band.",
+            "help": "Blur radius (in pixels) applied to hair protection. In Soften Hairline mode, doubles as the width of the extra-soft transition band.",
         },
     },
     "Original Face Parsers": {

@@ -337,7 +337,6 @@ fp16_safe_models_list = [
     # --- Masking ---
     "FaceParser",
     "Occluder",
-    "MODNet",
     # --- Upscaling ---
     "RealEsrganx2Plus",
     "RealEsrganx4Plus",

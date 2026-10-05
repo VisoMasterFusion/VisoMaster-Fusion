@@ -1,224 +1,168 @@
-"""Unit tests for app.processors.face_mattings.
-
-Covers the pure-tensor mask math (compute_hair_region, _soft_blur) and the
-no-op guarantees of apply_hair_matting: missing model, zero strength, and
-empty hair region must all return the input mask unchanged.
-"""
-
-from __future__ import annotations
-
+import ctypes
+import threading
+from types import SimpleNamespace
 from unittest.mock import MagicMock
 
 import pytest
 import torch
 
 from app.processors.face_mattings import FaceMattings
+from app.processors.models_processor import ModelsProcessor
 
 
-def _make_mattings(matte: torch.Tensor | None = None) -> FaceMattings:
-    """FaceMattings with a stubbed processor and run_modnet replaced."""
-    mp = MagicMock()
-    mp.device = torch.device("cpu")
-    mp.models = {}
-    fm = FaceMattings(mp, MagicMock())
-    fm.run_modnet = lambda _img: matte  # noqa: E731
-    return fm
-
-
-def _ring_mask(size: int = 512) -> torch.Tensor:
-    """(1, size, size) mask that is 1 inside a centered ellipse, 0 outside."""
-    yy, xx = torch.meshgrid(
-        torch.arange(size, dtype=torch.float32),
-        torch.arange(size, dtype=torch.float32),
-        indexing="ij",
+def setup():
+    return FaceMattings(
+        SimpleNamespace(
+            device="cpu",
+            device_type="cpu",
+            binding_device_id=0,
+            models={},
+            model_lock=threading.RLock(),
+        ),
+        MagicMock(),
     )
-    c = (size - 1) / 2
-    r = ((yy - c) / (0.35 * size)) ** 2 + ((xx - c) / (0.30 * size)) ** 2
-    return (r <= 1.0).float().unsqueeze(0)
 
 
-# ---------------------------------------------------------------------------
-# compute_hair_region
-# ---------------------------------------------------------------------------
-
-
-def test_hair_region_is_matte_minus_dilated_face() -> None:
-    size = 128
-    matte = torch.ones(1, size, size)  # whole portrait is subject
-    face = _ring_mask(size)
-    hair = FaceMattings.compute_hair_region(
-        matte, face, threshold=0.4, face_dilation_px=4
-    )
-    assert hair.shape == (1, size, size)
-    assert hair.min() >= 0.0 and hair.max() <= 1.0
-    # Center of the face must never be classified as hair.
-    assert hair[0, size // 2, size // 2] == 0.0
-    # Corners (matte=1, far from face) must be hair.
-    assert hair[0, 2, 2] > 0.9
-
-
-def test_hair_region_zero_when_matte_below_threshold() -> None:
-    size = 64
-    matte = torch.full((1, size, size), 0.3)
-    face = torch.zeros(1, size, size)
-    hair = FaceMattings.compute_hair_region(
-        matte, face, threshold=0.4, face_dilation_px=0
-    )
-    assert float(hair.max()) == 0.0
-
-
-def test_hair_region_accepts_mismatched_mask_size() -> None:
-    matte = torch.ones(1, 100, 100)
-    face = torch.zeros(1, 512, 512)
-    hair = FaceMattings.compute_hair_region(
-        matte, face, threshold=0.0, face_dilation_px=0
-    )
-    assert hair.shape == (1, 100, 100)
-
-
-def test_face_dilation_shrinks_hair_region() -> None:
-    size = 128
-    matte = torch.ones(1, size, size)
-    face = _ring_mask(size)
-    small = FaceMattings.compute_hair_region(
-        matte, face, threshold=0.0, face_dilation_px=2
-    )
-    large = FaceMattings.compute_hair_region(
-        matte, face, threshold=0.0, face_dilation_px=16
-    )
-    assert float(large.sum()) < float(small.sum())
-
-
-# ---------------------------------------------------------------------------
-# _soft_blur
-# ---------------------------------------------------------------------------
-
-
-def test_soft_blur_preserves_shape_and_range() -> None:
-    mask = _ring_mask(64)
-    out = FaceMattings._soft_blur(mask, 6)
-    assert out.shape == mask.shape
-    assert out.min() >= 0.0 and out.max() <= 1.0
-    # Blur must soften the hard edge: intermediate values appear.
-    assert ((out > 0.05) & (out < 0.95)).any()
-
-
-def test_soft_blur_zero_feather_is_identity() -> None:
-    mask = _ring_mask(64)
-    out = FaceMattings._soft_blur(mask, 0)
-    assert torch.equal(out, mask)
-
-
-# ---------------------------------------------------------------------------
-# apply_hair_matting no-op guarantees
-# ---------------------------------------------------------------------------
-
-
-def test_apply_returns_input_when_model_missing() -> None:
-    fm = _make_mattings(matte=None)
-    swap_mask = _ring_mask()
-    crop = torch.zeros(3, 512, 512)
-    out = fm.apply_hair_matting(swap_mask, crop, {"HairMattingStrengthSlider": 100})
-    assert out is swap_mask
-
-
-def test_apply_returns_input_when_strength_zero() -> None:
-    fm = _make_mattings(matte=torch.ones(1, 512, 512))
-    swap_mask = _ring_mask()
-    crop = torch.zeros(3, 512, 512)
-    out = fm.apply_hair_matting(swap_mask, crop, {"HairMattingStrengthSlider": 0})
-    assert out is swap_mask
-
-
-def test_apply_returns_input_when_no_hair_found() -> None:
-    # Matte everywhere zero -> hair region empty -> unchanged mask.
-    fm = _make_mattings(matte=torch.zeros(1, 512, 512))
-    swap_mask = _ring_mask()
-    crop = torch.zeros(3, 512, 512)
+@pytest.mark.parametrize("mode", ["Protect Target Hair", "Soften Hairline"])
+@pytest.mark.parametrize("feather", [0, 6])
+def test_hair_inside_opaque_coverage_and_exclusions(mode, feather):
+    fm = setup()
+    mask = torch.ones(1, 64, 64)
+    mask[:, :4] = 0
+    mask[:, 20:25, 20:25] = 0
+    labels = torch.zeros(64, 64, dtype=torch.long)
+    labels[5:32] = 17
+    labels[40:] = 1
+    fm.run_modnet = lambda _: torch.ones_like(mask)
+    fm.run_hair_labels = lambda _: labels
+    original = mask.clone()
     out = fm.apply_hair_matting(
-        swap_mask, crop, {"HairMattingStrengthSlider": 100}
-    )
-    assert out is swap_mask
-
-
-def test_apply_never_raises_on_garbage_parameters() -> None:
-    fm = _make_mattings(matte=torch.ones(1, 512, 512))
-    swap_mask = _ring_mask()
-    crop = torch.zeros(3, 512, 512)
-    out = fm.apply_hair_matting(swap_mask, crop, {"HairMattingStrengthSlider": "x"})
-    assert out.shape == swap_mask.shape
-
-
-# ---------------------------------------------------------------------------
-# apply_hair_matting modes
-# ---------------------------------------------------------------------------
-
-
-def _full_matte_setup():
-    """Matte = 1 everywhere, face = ellipse -> hair = everything but face."""
-    fm = _make_mattings(matte=torch.ones(1, 512, 512))
-    swap_mask = _ring_mask()
-    crop = torch.zeros(3, 512, 512)
-    params = {
-        "HairMattingStrengthSlider": 100,
-        "HairMattingThresholdSlider": 0,
-        "HairMattingFaceDilationSlider": 12,
-        "HairMattingFeatherSlider": 6,
-    }
-    return fm, swap_mask, crop, params
-
-
-def test_protect_mode_carves_hair_out_of_mask() -> None:
-    fm, swap_mask, crop, params = _full_matte_setup()
-    params["HairMattingModeSelection"] = "Protect Target Hair"
-    out = fm.apply_hair_matting(swap_mask, crop, params)
-    assert out.shape == swap_mask.shape
-    # Far outside the face the original mask was 0; the hair ring around the
-    # face (mask ~1 edge outside dilation) must have been pushed toward 0.
-    # Compare band just outside the face edge at the top center.
-    assert float(out.sum()) < float(swap_mask.sum())
-
-
-def test_protect_mode_full_strength_zeroes_hair_ring() -> None:
-    fm, swap_mask, crop, params = _full_matte_setup()
-    params["HairMattingModeSelection"] = "Protect Target Hair"
-    params["HairMattingFeatherSlider"] = 0
-    out = fm.apply_hair_matting(swap_mask, crop, params)
-    # With matte=1 everywhere and strength=1, out = mask * (1 - hair).
-    # Just outside the dilated face, hair ~1 -> out ~0 where mask was ~0..1.
-    hair = FaceMattings.compute_hair_region(
-        torch.ones(1, 512, 512), swap_mask, threshold=0.0, face_dilation_px=12
-    )
-    ring = (hair > 0.9)
-    assert ring.any()
-    assert float(out[ring].max()) < 0.05
-
-
-def test_soften_mode_preserves_coverage() -> None:
-    fm, swap_mask, crop, params = _full_matte_setup()
-    params["HairMattingModeSelection"] = "Soften Hairline"
-    out = fm.apply_hair_matting(swap_mask, crop, params)
-    assert out.shape == swap_mask.shape
-    # Coverage barely changes: soften only blurs, so total mass stays close.
-    assert abs(float(out.sum()) - float(swap_mask.sum())) < 0.05 * float(
-        swap_mask.sum()
-    )
-    # But the mask did change at the hairline.
-    assert not torch.allclose(out, swap_mask)
-
-
-def test_apply_resizes_mismatched_crop_matte() -> None:
-    # Crop at a non-512 size (face-scale adjustment) must still return a
-    # 512-space mask.
-    fm = _make_mattings(matte=torch.ones(1, 538, 538))
-    swap_mask = _ring_mask()
-    crop = torch.zeros(3, 538, 538)
-    out = fm.apply_hair_matting(
-        swap_mask,
-        crop,
+        mask,
+        torch.zeros(3, 64, 64),
         {
-            "HairMattingStrengthSlider": 100,
-            "HairMattingModeSelection": "Protect Target Hair",
+            "HairMattingModeSelection": mode,
+            "HairMattingFaceDilationSlider": 0,
+            "HairMattingFeatherSlider": feather,
         },
     )
-    assert out.shape == swap_mask.shape
+    assert torch.equal(mask, original)
+    assert torch.all(out <= mask)
+    assert out[0, 48, 48] == 1
+    if mode == "Protect Target Hair":
+        assert out[0, 10, 10] < 0.05
+    else:
+        assert out[0, 20, 19] < 1
+    assert torch.equal(out[mask == 0], mask[mask == 0])
+
+
+def test_semantic_face_dilation():
+    labels = torch.full((64, 64), 17)
+    labels[25:40, 25:40] = 1
+    matte = torch.ones(1, 64, 64)
+    small = FaceMattings.compute_hair_region(matte, labels, face_dilation_px=0)
+    large = FaceMattings.compute_hair_region(matte, labels, face_dilation_px=5)
+    assert large.sum() < small.sum()
+    assert large[0, 5, 5] == 1
+
+
+@pytest.mark.parametrize("bad", [float("nan"), float("inf")])
+def test_invalid_matte_noop(bad):
+    fm = setup()
+    mask = torch.ones(1, 64, 64)
+    fm.run_modnet = lambda _: torch.full_like(mask, bad)
+    fm.run_hair_labels = MagicMock()
+    assert fm.apply_hair_matting(mask, torch.zeros(3, 64, 64), {}) is mask
+    fm.run_hair_labels.assert_not_called()
+
+
+def test_zero_strength_skips_inference():
+    fm = setup()
+    fm.run_modnet = MagicMock()
+    mask = torch.ones(1, 64, 64)
+    assert fm.apply_hair_matting(mask, None, {"HairMattingStrengthSlider": 0}) is mask
+    fm.run_modnet.assert_not_called()
+
+
+def test_missing_model_and_bad_parameters_noop():
+    fm = setup()
+    mask = torch.ones(1, 64, 64)
+    crop = torch.zeros(3, 64, 64)
+    fm.models_processor.load_model = lambda _: None
+    assert fm.apply_hair_matting(mask, crop, {}) is mask
+    assert (
+        fm.apply_hair_matting(mask, crop, {"HairMattingStrengthSlider": "bad"}) is mask
+    )
+
+
+def test_empty_hair_region_preserves_coverage():
+    fm = setup()
+    mask = torch.rand(1, 64, 64)
+    fm.run_modnet = lambda _: torch.ones_like(mask)
+    fm.run_hair_labels = lambda _: torch.ones(512, 512, dtype=torch.long)
+    out = fm.apply_hair_matting(mask, torch.zeros(3, 128, 128), {})
+    assert torch.equal(mask, out)
+
+
+@pytest.mark.parametrize("dtype", [torch.float32, torch.uint8])
+@pytest.mark.parametrize("size", [512, 128])
+@pytest.mark.parametrize("failure", [False, True])
+def test_inference_preserves_shared_source(dtype, size, failure):
+    fm = setup()
+    backing = torch.full((3, size, size * 2), 128, dtype=dtype)
+    source = backing[:, :, ::2]
+    original = backing.clone()
+    session = MagicMock()
+    fm.models_processor.models["MODNet"] = session
+
+    def output(**kw):
+        array = (ctypes.c_float * (512 * 512)).from_address(kw["buffer_ptr"])
+        for i in range(len(array)):
+            array[i] = 0.75
+
+    session.io_binding.return_value.bind_output.side_effect = output
+
+    def run(*_):
+        if failure:
+            raise RuntimeError("injected")
+
+    fm._run_model_with_lazy_build_check = run
+    result = fm.run_modnet(source)
+    assert torch.equal(backing, original)
+    assert (result is None) == failure
+    if not failure:
+        assert result.shape == (1, size, size)
+        assert torch.allclose(result, torch.full_like(result, 0.75))
+
+
+def test_shared_model_liveness():
+    mp = ModelsProcessor.__new__(ModelsProcessor)
+    mp.main_window = SimpleNamespace(
+        default_parameters={},
+        control={},
+        parameters={
+            "a": {"HairMattingEnableToggle": True},
+            "b": {"HairMattingEnableToggle": False},
+        },
+    )
+    assert mp.is_model_active_in_ui("MODNet") and mp.is_model_active_in_ui("FaceParser")
+    mp.main_window.parameters["a"]["HairMattingEnableToggle"] = False
+    assert not mp.is_model_active_in_ui("MODNet")
+    mp.main_window.parameters["b"]["FaceParserEnableToggle"] = True
+    assert mp.is_model_active_in_ui("FaceParser")
+    mp.main_window.parameters["a"]["HairMattingEnableToggle"] = True
+    assert mp.is_model_active_in_ui("MODNet")
+
+
+def test_clear_reload_tracking():
+    fm = setup()
+    fm.models_processor.load_model = lambda _: MagicMock()
+    fm.models_processor.unload_model = MagicMock()
+    fm._run_model_with_lazy_build_check = MagicMock(
+        side_effect=RuntimeError("injected")
+    )
+    fm.run_modnet(torch.zeros(3, 512, 512))
+    assert fm.active_models == {"MODNet"}
+    fm.unload_models()
+    assert not fm.active_models
+    fm.run_modnet(torch.zeros(3, 512, 512))
+    assert fm.active_models == {"MODNet"}

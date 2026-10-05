@@ -1,25 +1,6 @@
-"""Portrait matting (MODNet) for hairline-aware swap blending.
+"""Semantic target-hair protection using FaceParser labels and MODNet alpha."""
 
-Uses MODNet ("Real-Time Trimap-Free Portrait Matting", AAAI 2022) to produce an
-alpha matte of the *target* face crop, extracts the hair region as the part of
-the matte that lies outside the swap mask, and adjusts the final swap mask so
-the target's own hair survives the composite.
-
-Two modes, both operating on the 512x512 aligned swap mask right before
-paste-back:
-
-- ``Protect Target Hair``: hair pixels are subtracted from the swap mask, so
-  swapped content never covers the target's hairline / stray strands. This is
-  the fix for the classic "helmet hairline" swap artifact.
-- ``Soften Hairline``: the swap mask gets an extra gaussian blur only where
-  hair is present, widening the transition band at the forehead edge instead
-  of changing coverage.
-
-The model is the community ONNX export of ``modnet_photographic_portrait_matting``
-(512x512 fixed input, RGB, normalized to [-1, 1] with mean/scale 127.5).
-"""
-
-from typing import TYPE_CHECKING, Optional
+from typing import TYPE_CHECKING
 
 import numpy as np
 import torch
@@ -58,7 +39,7 @@ class FaceMattings:
     # Inference
     # ------------------------------------------------------------------
     @torch.no_grad()
-    def run_modnet(self, img_chw: torch.Tensor) -> Optional[torch.Tensor]:
+    def run_modnet(self, img_chw: torch.Tensor) -> torch.Tensor | None:
         """
         Runs MODNet on a CHW RGB tensor (float or uint8, 0-255, any size).
 
@@ -66,7 +47,12 @@ class FaceMattings:
             Alpha matte as (1, H, W) float32 in [0, 1] at the input's spatial
             size, or None if the model is unavailable or inference failed.
         """
-        if img_chw is None or img_chw.dim() != 3:
+        if (
+            img_chw is None
+            or img_chw.dim() != 3
+            or img_chw.shape[0] != 3
+            or min(img_chw.shape[-2:]) <= 0
+        ):
             return None
 
         ort_session = self.models_processor.models.get(MODNET_MODEL_NAME)
@@ -81,11 +67,12 @@ class FaceMattings:
                 )
                 self._warned = True
             return None
-        self.active_models.add(MODNET_MODEL_NAME)
+        with self.models_processor.model_lock:
+            self.active_models.add(MODNET_MODEL_NAME)
 
         _, in_h, in_w = img_chw.shape
         try:
-            x = img_chw.float()
+            x = img_chw.to(device=self.models_processor.device, dtype=torch.float32)
             if (in_h, in_w) != (_MODNET_INPUT_SIZE, _MODNET_INPUT_SIZE):
                 x = v2.functional.resize(
                     x.unsqueeze(0),
@@ -94,7 +81,7 @@ class FaceMattings:
                     antialias=True,
                 ).squeeze(0)
             # Mean/scale 127.5 -> [-1, 1]
-            x = x.sub_(127.5).div_(127.5).unsqueeze(0).contiguous()
+            x = x.sub(127.5).div(127.5).unsqueeze(0).contiguous()
 
             matte = torch.empty(
                 (1, 1, _MODNET_INPUT_SIZE, _MODNET_INPUT_SIZE),
@@ -122,10 +109,12 @@ class FaceMattings:
                 buffer_ptr=matte.data_ptr(),
             )
             self._run_model_with_lazy_build_check(ort_session, io_binding)
-        except Exception as e:
+        except Exception as e:  # noqa: BLE001 -- optional provider failures must preserve the crop
             print(f"[WARN] MODNet inference failed: {e}")
             return None
 
+        if not torch.isfinite(matte).all():
+            return None
         matte = matte.clamp_(0.0, 1.0)
         if (in_h, in_w) != (_MODNET_INPUT_SIZE, _MODNET_INPUT_SIZE):
             matte = v2.functional.resize(
@@ -155,50 +144,37 @@ class FaceMattings:
     # ------------------------------------------------------------------
     # Hair region extraction and mask adjustment
     # ------------------------------------------------------------------
+    def run_hair_labels(self, crop: torch.Tensor) -> torch.Tensor:
+        crop = crop.to(device=self.models_processor.device, dtype=torch.float32)
+        crop = F.interpolate(
+            crop.unsqueeze(0), size=(512, 512), mode="bilinear", align_corners=False
+        ).squeeze(0)
+        labels = self.function_worker.face_masks._faceparser_labels(crop)
+        with self.models_processor.model_lock:
+            self.active_models.add("FaceParser")
+        return labels
+
     @staticmethod
-    def compute_hair_region(
-        matte: torch.Tensor,
-        face_mask: torch.Tensor,
-        *,
-        threshold: float = 0.4,
-        face_dilation_px: int = 12,
-    ) -> torch.Tensor:
+    def compute_hair_region(matte, labels, *, threshold=0.4, face_dilation_px=12):
+        """Hair class 17, independently of swap coverage, gated by portrait alpha.
+
+        Face dilation uses semantic skin/nose/eyes/brows/ears/mouth/neck labels;
+        background and clothing must not erode hair.
         """
-        Extracts the hair region from a portrait matte.
-
-        Hair is defined as the matte alpha *outside* the (dilated) face mask:
-        subtracting the dilated mask from the continuous matte leaves a soft
-        gradient right at the hairline, which is exactly where blending wants
-        to be gentle.
-
-        Args:
-            matte: (1, H, W) float in [0, 1], MODNet output.
-            face_mask: (1, H, W) float in [0, 1], the current swap mask.
-            threshold: matte alpha below this is treated as background.
-            face_dilation_px: how far the face mask is grown before the
-                subtraction, so the face edge itself is never called hair.
-
-        Returns:
-            (1, H, W) float in [0, 1] hair-region mask.
-        """
-        if matte.shape != face_mask.shape:
-            face_mask = v2.functional.resize(
-                face_mask.unsqueeze(0),
-                [matte.shape[-2], matte.shape[-1]],
-                interpolation=v2.InterpolationMode.BILINEAR,
-                antialias=False,
+        labels = F.interpolate(
+            labels.float().reshape(1, 1, *labels.shape[-2:]),
+            size=matte.shape[-2:],
+            mode="nearest",
+        ).squeeze(0)
+        hair = (labels == 17).float()
+        face = ((labels >= 1) & (labels <= 14)).float()
+        dilation = max(0, min(50, int(face_dilation_px)))
+        if dilation:
+            face = F.max_pool2d(
+                face.unsqueeze(0), 2 * dilation + 1, 1, dilation
             ).squeeze(0)
-
-        m = matte.clamp(0.0, 1.0)
-        if threshold > 0.0:
-            m = (m - threshold).clamp_(min=0.0) / max(1.0 - threshold, 1e-6)
-
-        fm = face_mask.clamp(0.0, 1.0)
-        if face_dilation_px > 0:
-            k = int(2 * face_dilation_px + 1)
-            fm = F.max_pool2d(fm.unsqueeze(0), kernel_size=k, stride=1, padding=face_dilation_px).squeeze(0)
-
-        return (m - fm).clamp_(0.0, 1.0)
+        alpha = (matte.clamp(0, 1) - threshold).clamp(min=0) / max(1 - threshold, 1e-6)
+        return hair * (1 - face) * alpha.clamp(0, 1)
 
     @staticmethod
     def _soft_blur(mask: torch.Tensor, feather_px: int) -> torch.Tensor:
@@ -232,61 +208,56 @@ class FaceMattings:
             unchanged, so the pass can only ever be a no-op, never a crash.
         """
         try:
+            strength = float(parameters.get("HairMattingStrengthSlider", 100)) / 100
+            if not np.isfinite(strength) or strength <= 0:
+                return swap_mask
+            if (
+                swap_mask.ndim != 3
+                or swap_mask.shape[0] != 1
+                or not torch.isfinite(swap_mask).all()
+            ):
+                return swap_mask
             matte = self.run_modnet(target_face_crop)
-            if matte is None:
+            if matte is None or matte.ndim != 3 or matte.shape[0] != 1:
                 return swap_mask
-
-            # Face-scale adjustments may leave the crop at a size other than
-            # the mask's; work strictly in swap-mask space from here on.
-            if matte.shape[-2:] != swap_mask.shape[-2:]:
-                matte = v2.functional.resize(
-                    matte.unsqueeze(0),
-                    [swap_mask.shape[-2], swap_mask.shape[-1]],
-                    interpolation=v2.InterpolationMode.BILINEAR,
-                    antialias=False,
-                ).squeeze(0)
-
-            strength = (
-                float(parameters.get("HairMattingStrengthSlider", 100)) / 100.0
-            )
-            if strength <= 0.0:
+            if not torch.isfinite(matte).all():
                 return swap_mask
-
+            matte = matte.to(device=swap_mask.device, dtype=torch.float32)
+            matte = F.interpolate(
+                matte.unsqueeze(0),
+                size=swap_mask.shape[-2:],
+                mode="bilinear",
+                align_corners=False,
+            ).squeeze(0)
+            labels = self.run_hair_labels(target_face_crop)
+            if labels.ndim != 2 or not torch.isfinite(labels).all():
+                return swap_mask
             hair = self.compute_hair_region(
                 matte,
-                swap_mask,
-                threshold=float(parameters.get("HairMattingThresholdSlider", 40))
-                / 100.0,
+                labels.to(swap_mask.device),
+                threshold=max(
+                    0,
+                    min(
+                        1, float(parameters.get("HairMattingThresholdSlider", 40)) / 100
+                    ),
+                ),
                 face_dilation_px=int(
                     parameters.get("HairMattingFaceDilationSlider", 12)
                 ),
             )
-            feather = int(parameters.get("HairMattingFeatherSlider", 6))
-            if float(hair.max()) <= 1e-4:
-                return swap_mask
-
-            mode = str(
-                parameters.get("HairMattingModeSelection", "Protect Target Hair")
+            feather = max(
+                0, min(50, int(parameters.get("HairMattingFeatherSlider", 6)))
             )
-            if mode == "Soften Hairline":
-                # Extra blur only where hair lives: widen the transition band
-                # at the hairline without changing overall coverage. The mask's
-                # own edge band (where blur changes anything) is included in the
-                # weight, because face dilation carves exactly that strip out of
-                # the hair region — without it, softening would be a no-op right
-                # at the hairline where it matters.
+            # Blur the protection field, never the allowed coverage. Earlier
+            # occluder and border exclusions remain upper bounds in both modes.
+            protection = self._soft_blur(hair, feather).clamp(0, 1)
+            weight = (protection * min(strength, 1)).clamp(0, 1)
+            if parameters.get("HairMattingModeSelection") == "Soften Hairline":
                 blurred = self._soft_blur(swap_mask, max(feather * 2, 3))
-                edge_band = (blurred - swap_mask).abs().clamp_(0.0, 1.0)
-                weight = (torch.maximum(hair, edge_band) * strength).clamp_(
-                    0.0, 1.0
-                )
-                return torch.lerp(swap_mask, blurred, weight).clamp_(0.0, 1.0)
-
-            # Default: "Protect Target Hair" — carve hair out of the swap mask
-            # so the target's own hair survives the composite.
-            protected = swap_mask * (1.0 - (hair * strength).clamp(0.0, 1.0))
-            protected = self._soft_blur(protected, feather)
-            return protected.clamp_(0.0, 1.0)
-        except Exception as e:
+                return torch.minimum(
+                    swap_mask, torch.lerp(swap_mask, blurred, weight)
+                ).clamp(0, 1)
+            return (swap_mask * (1 - weight)).clamp(0, 1)
+        except Exception as e:  # noqa: BLE001 -- optional pass must preserve earlier masks
             print(f"[WARN] Hair matting pass failed: {e}")
             return swap_mask
