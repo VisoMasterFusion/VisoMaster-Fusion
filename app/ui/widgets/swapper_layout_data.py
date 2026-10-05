@@ -9,7 +9,7 @@ SWAPPER_LAYOUT_DATA: Any = {  # noqa: F811
 "Swapper": {
     "SwapModelSelection": {
         "level": 1,
-        "label": "Swapper Model  ",
+        "label": "Swapper Model  ◜",
         "options": [
             "Inswapper128",
             "AlphaFace",
@@ -1623,10 +1623,10 @@ SWAPPER_LAYOUT_DATA: Any = {  # noqa: F811
             "requiredToggleValue": True,
             "help": (
                 "Select the Ending AutoColor transfer method type :\n"
-                "Test →\tCDF Histogram = Exact Cumulative Distribution Function matching in RGB space.\n"
+                "Test →	CDF Histogram = Exact Cumulative Distribution Function matching in RGB space.\n"
                 "Test_Mask → CDF Histogram (Masked) = Exact CDF matching, bounded by the face mask.\n"
                 "DFL_Test → Reinhard Transfer = Mean/Variance statistical transfer in LAB color space.\n"
-                "DFL_Orig →\tReinhard Transfer (Masked) = Mean/Variance transfer in LAB space, ignoring padding.\n"
+                "DFL_Orig →	Reinhard Transfer (Masked) = Mean/Variance transfer in LAB space, ignoring padding.\n"
                 "AdaIN_Statistical → AdaIN (Core Masked) = Adaptive Instance Normalization with soft-mask erosion."
             ),
         },
