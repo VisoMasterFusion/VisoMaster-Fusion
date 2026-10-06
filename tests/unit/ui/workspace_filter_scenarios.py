@@ -41,7 +41,7 @@ def window():
         merged_embeddings={},
         target_faces={},
         control={},
-        video_processor=None,
+        video_processor=SimpleNamespace(processing=True, ui_state_is_dirty=False),
         targetVideosList=QtWidgets.QListWidget(),
         inputFacesList=QtWidgets.QListWidget(),
     )

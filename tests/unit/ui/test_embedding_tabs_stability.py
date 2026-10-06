@@ -23,7 +23,6 @@ from app.ui.widgets.actions import (
 @pytest.fixture
 def window(monkeypatch):
     app = QtWidgets.QApplication.instance() or QtWidgets.QApplication([])
-    monkeypatch.setattr(lva.ui_workers, "FilterWorker", lambda **_: None)
     monkeypatch.setattr(lva.common_widget_actions, "refresh_frame", lambda **_: None)
     w = SimpleNamespace(
         embeddingTabs=QtWidgets.QTabWidget(),
@@ -42,6 +41,7 @@ def window(monkeypatch):
     )
     lva.add_embedding_tab(w, list_widget=QtWidgets.QListWidget(), title="A")
     yield w
+    lva.stop_filter_workers(w)
     w.embeddingTabs.deleteLater()
     app.processEvents()
 
