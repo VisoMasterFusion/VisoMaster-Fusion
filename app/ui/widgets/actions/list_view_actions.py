@@ -1825,7 +1825,27 @@ def add_embedding_tab(
     return index
 
 
-def _activate_embedding_tab(main_window: "MainWindow", index: int) -> None:
+def stop_embedding_filter_worker(main_window):
+    """Cancel scheduled filters, then join before replacing/deleting their list."""
+    main_window._embedding_filter_sequence = getattr(main_window, "_embedding_filter_sequence", 0) + 1
+    worker = getattr(main_window, "merged_embeddings_filter_worker", None)
+    if worker is not None:
+        worker.retire()
+        main_window.merged_embeddings_filter_worker = None
+
+
+def stop_filter_workers(main_window):
+    """Prevent queued searches from restarting filters during window shutdown."""
+    main_window._closing = True
+    stop_embedding_filter_worker(main_window)
+    for name in ("target_videos_filter_worker", "input_faces_filter_worker"):
+        worker = getattr(main_window, name, None)
+        if worker is not None:
+            worker.retire()
+            setattr(main_window, name, None)
+
+
+def _activate_embedding_tab(main_window: "MainWindow", index: int, *, filter_after=True) -> None:
     states = getattr(main_window, "embedding_tab_states", [])
     if index < 0 or index >= len(states):
         return
@@ -1834,28 +1854,32 @@ def _activate_embedding_tab(main_window: "MainWindow", index: int) -> None:
     states[:] = [by_widget[main_window.embeddingTabs.widget(i)]
                  for i in range(main_window.embeddingTabs.count())]
     state = states[index]
+    worker = getattr(main_window, "merged_embeddings_filter_worker", None)
+    if worker is not None and worker.filter_list_widget is not state["list_widget"]:
+        stop_embedding_filter_worker(main_window)
     main_window.inputEmbeddingsList = state["list_widget"]
     main_window.merged_embeddings = state["embeddings"]
     main_window.loaded_embedding_filename = state["filename"]
 
-    # The filter worker is created once at startup and bound to the first
-    # tab's list. Recreate it against the newly-active tab's list so the
-    # search box filters the correct widget.
-    main_window.merged_embeddings_filter_worker = ui_workers.FilterWorker(
-        main_window=main_window,
-        search_text="",
-        filter_list="merged_embeddings",
-    )
+    if getattr(main_window, "_closing", False) or getattr(main_window, "_embedding_tabs_rebuilding", False):
+        return
+    filter_actions.ensure_embedding_filter_worker(main_window)
 
     search_box = getattr(main_window, "inputEmbeddingsSearchBox", None)
     if search_box is not None:
         search_box.blockSignals(True)
         search_box.clear()
         search_box.blockSignals(False)
-        QtCore.QTimer.singleShot(
-            0,
-            partial(filter_actions.filter_merged_embeddings, main_window, ""),
-        )
+        if filter_after:
+            sequence = getattr(main_window, "_embedding_filter_sequence", 0) + 1
+            main_window._embedding_filter_sequence = sequence
+
+            def filter_active_tab():
+                if (getattr(main_window, "_embedding_filter_sequence", None) == sequence
+                        and not getattr(main_window, "_closing", False)):
+                    filter_actions.filter_merged_embeddings(main_window)
+
+            QtCore.QTimer.singleShot(0, filter_active_tab)
 
 
 def _on_embedding_tab_changed(main_window: "MainWindow", index: int) -> None:
@@ -1867,6 +1891,8 @@ def _on_embedding_tab_close(main_window: "MainWindow", index: int) -> None:
     states = main_window.embedding_tab_states
     if len(states) <= 1:
         return
+
+    stop_embedding_filter_worker(main_window)
 
     for btn in list(states[index]["embeddings"].values()):
         try:
@@ -1942,6 +1968,7 @@ def get_all_merged_embeddings(main_window):
 
 def reset_embedding_tabs(main_window):
     """Reset all tabs before loading a new workspace, after clearing faces."""
+    stop_embedding_filter_worker(main_window)
     tabs = getattr(main_window, "embeddingTabs", None)
     if tabs is None:
         card_actions.clear_merged_embeddings(main_window)
@@ -1953,11 +1980,25 @@ def reset_embedding_tabs(main_window):
         tabs.removeTab(tabs.count()-1)
     main_window.embedding_tab_states[:] = main_window.embedding_tab_states[:1]
     tabs.blockSignals(False)
-    _activate_embedding_tab(main_window, 0)
+    _activate_embedding_tab(main_window, 0, filter_after=False)
     card_actions.clear_merged_embeddings(main_window)
 
 
 def restore_embedding_tabs_state(main_window, data):
+    """Rebuild without intermediate filter threads or stale widget updates."""
+    stop_embedding_filter_worker(main_window)
+    was_rebuilding = getattr(main_window, "_embedding_tabs_rebuilding", False)
+    main_window._embedding_tabs_rebuilding = True
+    try:
+        _restore_embedding_tabs_contents(main_window, data)
+    finally:
+        main_window._embedding_tabs_rebuilding = was_rebuilding
+        tabs = getattr(main_window, "embeddingTabs", None)
+        if tabs is not None and not was_rebuilding:
+            _activate_embedding_tab(main_window, tabs.currentIndex())
+
+
+def _restore_embedding_tabs_contents(main_window, data):
     """Distribute already restored stable-ID buttons; never reload source files.
 
     Legacy filename-only snapshots retain their inline data in the active tab.
@@ -1984,25 +2025,36 @@ def restore_embedding_tabs_state(main_window, data):
         for eid in ids:
             if eid not in registry or eid in owned:
                 continue
-            button = registry[eid]
-            old_list = button.list_item.listWidget()
-            if old_list:
-                old_list.removeItemWidget(button.list_item)
-                old_list.takeItem(old_list.row(button.list_item))
-            state["list_widget"].addItem(button.list_item)
-            state["list_widget"].setItemWidget(button.list_item, button)
-            state["embeddings"][eid] = button
+            _place_restored_embedding(main_window, state, eid, registry[eid])
             owned.add(eid)
     # Preserve inline entries absent from legacy/incomplete tab metadata.
     state = main_window.embedding_tab_states[active]
     for eid in registry.keys()-owned:
-        button = registry[eid]
-        old_list = button.list_item.listWidget()
-        if old_list:
-            old_list.removeItemWidget(button.list_item)
-            old_list.takeItem(old_list.row(button.list_item))
-        state["list_widget"].addItem(button.list_item)
-        state["list_widget"].setItemWidget(button.list_item, button)
-        state["embeddings"][eid] = button
+        _place_restored_embedding(main_window, state, eid, registry[eid])
     tabs.setCurrentIndex(active)
     _activate_embedding_tab(main_window, active)
+
+
+def _place_restored_embedding(main_window, state, embedding_id, button):
+    """Keep same-list cards; recreate moved cards with their stable ID and data.
+
+    QListWidget.removeItemWidget schedules deletion of its owned widget, even
+    if that widget is immediately installed into another list.
+    """
+    old_list = button.list_item.listWidget()
+    if old_list is state["list_widget"]:
+        state["embeddings"][embedding_id] = button
+        return
+    main_window.inputEmbeddingsList = state["list_widget"]
+    main_window.merged_embeddings = state["embeddings"]
+    create_and_add_embed_button_to_list(
+        main_window, button.embedding_name, button.embedding_store, embedding_id
+    )
+    restored = state["embeddings"][embedding_id]
+    restored.kv_map = getattr(button, "kv_map", None)
+    restored.kv_map_list = getattr(button, "kv_map_list", None)
+    restored.setChecked(button.isChecked())
+    if old_list is not None:
+        old_list.removeItemWidget(button.list_item)
+        old_list.takeItem(old_list.row(button.list_item))
+    button.deleteLater()

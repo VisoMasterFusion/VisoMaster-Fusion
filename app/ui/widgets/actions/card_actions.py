@@ -119,6 +119,7 @@ def clear_merged_embeddings(main_window: "MainWindow"):
     ):
         return
 
+    list_view_actions.stop_embedding_filter_worker(main_window)
     main_window.inputEmbeddingsList.clear()
 
     for embed_button in list(main_window.merged_embeddings.values()):

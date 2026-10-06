@@ -1,5 +1,4 @@
 import uuid
-from functools import partial
 from typing import TYPE_CHECKING, Dict, List, Tuple, Optional
 import traceback
 import os
@@ -541,7 +540,7 @@ class InputFacesLoaderWorker(qtc.QThread):
 
 
 class FilterWorker(qtc.QThread):
-    filtered_results = qtc.Signal(list, int)  # (visible_indices, snapshot_size)
+    filtered_results = qtc.Signal(list, int, int)  # indices, snapshot size, generation
 
     def __init__(
         self, main_window: "MainWindow", search_text="", filter_list="target_videos"
@@ -555,14 +554,36 @@ class FilterWorker(qtc.QThread):
         self.items_snapshot: list = []
         self.include_file_types: list = []
         self.min_image_size: tuple[int, int] = (0, 0)
+        self._generation = 0
+        self._running_generation = 0
+        self._retired = False
         self.filter_list_widget = self.get_list_widget()
-        self.filtered_results.connect(
-            partial(
-                filter_actions.update_filtered_list,
-                main_window,
-                self.filter_list_widget,
+        self.filtered_results.connect(self._apply_filtered_results)
+
+    def start(self, priority=qtc.QThread.Priority.InheritPriority):
+        if self._retired:
+            return
+        self._generation += 1
+        self._running_generation = self._generation
+        super().start(priority)
+
+    @qtc.Slot(list, int, int)
+    def _apply_filtered_results(self, visible_indices, snapshot_size, generation):
+        # The QThread object lives on the UI thread. Reject obsolete queued
+        # signals here and again when the deferred widget update executes.
+        def is_current():
+            return not self._retired and generation == self._generation
+
+        if is_current():
+            filter_actions.update_filtered_list(
+                self.main_window, self.filter_list_widget, visible_indices,
+                snapshot_size, is_current=is_current,
             )
-        )
+
+    def retire(self):
+        """Invalidate callbacks and join before the owner releases this worker."""
+        self._retired = True
+        self.stop_thread()
 
     def get_list_widget(self):
         list_widget = False
@@ -601,7 +622,7 @@ class FilterWorker(qtc.QThread):
                 continue
             visible_indices.append(index)
 
-        self.filtered_results.emit(visible_indices, len(self.items_snapshot))
+        self.filtered_results.emit(visible_indices, len(self.items_snapshot), self._running_generation)
 
     def filter_input_faces(self):
         # Operates only on pre-captured plain Python data — no Qt widget access.
@@ -612,7 +633,7 @@ class FilterWorker(qtc.QThread):
             if not search_text or search_text in media_path.lower():
                 visible_indices.append(index)
 
-        self.filtered_results.emit(visible_indices, len(self.items_snapshot))
+        self.filtered_results.emit(visible_indices, len(self.items_snapshot), self._running_generation)
 
     def filter_merged_embeddings(self):
         # Operates only on pre-captured plain Python data — no Qt widget access.
@@ -623,8 +644,9 @@ class FilterWorker(qtc.QThread):
             if not search_text or search_text in embedding_name.lower():
                 visible_indices.append(index)
 
-        self.filtered_results.emit(visible_indices, len(self.items_snapshot))
+        self.filtered_results.emit(visible_indices, len(self.items_snapshot), self._running_generation)
 
     def stop_thread(self):
+        self._generation += 1
         self.quit()
         self.wait()
