@@ -7,7 +7,8 @@ from unittest.mock import MagicMock
 
 import numpy as np
 import pytest
-from PySide6 import QtWidgets
+from PySide6 import QtCore, QtWidgets
+from shiboken6 import isValid
 
 from app.ui import main_ui
 from app.ui.widgets.actions import (
@@ -89,11 +90,14 @@ def test_restore_all_tabs_without_external_files(window):
         "active_index": 1,
     }
     lva.restore_embedding_tabs_state(w, snapshot)
-    assert lva.get_all_merged_embeddings(w) == {"a": a, "b": b}
+    restored = lva.get_all_merged_embeddings(w)
+    QtCore.QCoreApplication.sendPostedEvents(None, QtCore.QEvent.Type.DeferredDelete)
+    assert set(restored) == {"a", "b"}
+    assert all(isValid(button) for button in restored.values())
     assert w.embedding_tab_states[0]["embeddings"] == {"a": a}
-    assert w.embedding_tab_states[1]["embeddings"] == {"b": b}
-    assert w.merged_embeddings == {"b": b}
-    assert np.array_equal(b.embedding_store["ArcFace"], [1, 2])
+    assert w.embedding_tab_states[1]["embeddings"] == {"b": restored["b"]}
+    assert w.merged_embeddings == {"b": restored["b"]}
+    assert np.array_equal(restored["b"].embedding_store["ArcFace"], [1, 2])
     assert w.loaded_embedding_filename == "missing.json"
 
 
