@@ -905,7 +905,7 @@ class ModelsProcessor(QtCore.QObject):
                             )
                             return None  # Abort the load
 
-            # Now, proceed with the *actual* load in the main thread.
+            # Now, proceed with the *actual* load in the calling thread.
             try:
                 # MP-01: Double-checked load after re-acquiring the lock.
                 # Another thread may have loaded this model while we were in the probe.
@@ -921,11 +921,52 @@ class ModelsProcessor(QtCore.QObject):
                 # Force log_severity_level to 3 (ERROR) for the actual load as well, to suppress non-critical warnings from ONNX Runtime that can clutter the console.
                 session_options.log_severity_level = 3
 
-                model_instance = onnxruntime.InferenceSession(
-                    onnx_path,
-                    sess_options=session_options,
-                    providers=model_providers,
+                if build_was_triggered:
+                    self.build_dialog_stage.emit(
+                        "Loading the built engine into the app..."
+                    )
+
+                # Deserializing an engine cache can take a while for large
+                # models. When load_model runs on the GUI thread, do the
+                # load in a worker and pump the event loop meanwhile, so
+                # Windows never marks the window "Not Responding". (ORT
+                # releases the GIL during session creation; if that ever
+                # changes, this degrades gracefully to the old behavior.)
+                app = QtCore.QCoreApplication.instance()
+                on_gui_thread = (
+                    app is not None
+                    and QtCore.QThread.currentThread() == app.thread()
                 )
+                if on_gui_thread:
+                    load_outcome: Dict[str, Any] = {}
+
+                    def _load_session_worker() -> None:
+                        try:
+                            load_outcome["instance"] = onnxruntime.InferenceSession(
+                                onnx_path,
+                                sess_options=session_options,
+                                providers=model_providers,
+                            )
+                        except BaseException as load_err:
+                            load_outcome["error"] = load_err
+
+                    load_thread = threading.Thread(
+                        target=_load_session_worker, daemon=True
+                    )
+                    load_thread.start()
+                    while load_thread.is_alive():
+                        QtCore.QCoreApplication.processEvents()
+                        time.sleep(0.05)
+                    load_thread.join()
+                    if "error" in load_outcome:
+                        raise load_outcome["error"]
+                    model_instance = load_outcome.get("instance")
+                else:
+                    model_instance = onnxruntime.InferenceSession(
+                        onnx_path,
+                        sess_options=session_options,
+                        providers=model_providers,
+                    )
 
                 # This ensures the CUDA context is synchronized after a new TRT
                 # engine build, before we try to load it.
