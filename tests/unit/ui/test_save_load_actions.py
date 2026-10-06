@@ -21,6 +21,8 @@ from unittest.mock import MagicMock
 
 import numpy as np
 import pytest
+from app.ui import main_ui  # noqa: F401 -- initialize real modules before isolated imports
+from app.ui.widgets.actions import list_view_actions as real_list_view_actions
 
 # ---------------------------------------------------------------------------
 # Stub every heavy import before the module is loaded
@@ -55,6 +57,14 @@ _STUBS = [
 
 
 def _load_save_load_actions_module():
+    parent_attributes = {}
+    for name in _STUBS + ["app.ui.widgets.actions.save_load_actions"]:
+        if "." not in name:
+            continue
+        parent_name, attribute = name.rsplit(".", 1)
+        parent = sys.modules.get(parent_name)
+        if parent is not None:
+            parent_attributes[(parent, attribute)] = getattr(parent, attribute, None)
     original_modules = {stub_name: sys.modules.get(stub_name) for stub_name in _STUBS}
     original_save_load_actions = sys.modules.pop(
         "app.ui.widgets.actions.save_load_actions", None
@@ -64,6 +74,9 @@ def _load_save_load_actions_module():
             sys.modules[stub_name] = _stub(stub_name)
 
         widget_components_stub = sys.modules["app.ui.widgets.widget_components"]
+        list_stub = sys.modules["app.ui.widgets.actions.list_view_actions"]
+        list_stub.get_all_merged_embeddings = real_list_view_actions.get_all_merged_embeddings
+        list_stub.get_embedding_tabs_state = real_list_view_actions.get_embedding_tabs_state
         setattr(
             widget_components_stub,
             "TargetMediaCardButton",
@@ -86,6 +99,12 @@ def _load_save_load_actions_module():
             sys.modules.pop("app.ui.widgets.actions.save_load_actions", None)
 
     # These tests validate serialization/window-state behavior, not Qt UI display.
+    for (parent, attribute), original in parent_attributes.items():
+        if original is None:
+            if hasattr(parent, attribute):
+                delattr(parent, attribute)
+        else:
+            setattr(parent, attribute, original)
     module.common_widget_actions.create_and_show_toast_message = MagicMock()
     module.common_widget_actions.create_and_show_messagebox = MagicMock()
     return module
@@ -676,6 +695,26 @@ def _make_workspace_main_window(
 
 def _read_saved_workspace(path: Path) -> dict:
     return json.loads(path.read_text())
+
+
+def test_save_workspace_includes_inactive_tabs_and_stable_ids(tmp_path, monkeypatch):
+    window = _make_workspace_main_window(tmp_path, is_theatre_mode=False, is_full_screen=False, is_maximized=False)
+    a = SimpleNamespace(embedding_name="A", embedding_store={"ArcFace": np.array([1., 2.])}, kv_map=None)
+    b = SimpleNamespace(embedding_name="B", embedding_store={"ArcFace": np.array([3., 4.])}, kv_map={"key": "value"})
+    window.merged_embeddings = {"a": a}
+    window.embedding_tab_states = [
+        {"embeddings": {"a": a}, "filename": "", "list_widget": None},
+        {"embeddings": {"b": b}, "filename": "missing.json", "list_widget": None},
+    ]
+    window.embeddingTabs = SimpleNamespace(currentIndex=lambda: 0, count=lambda: 2, tabText=lambda i: ["A", "B"][i])
+    monkeypatch.setattr(save_load_actions, "_save_hashed_kv_payload", lambda *a, **kw: "preserved-kv.pth")
+    path = tmp_path / "workspace.json"
+    save_current_workspace(window, str(path))
+    saved = _read_saved_workspace(path)
+    assert set(saved["embeddings_data"]) == {"a", "b"}
+    assert saved["embeddings_data"]["b"]["embedding_store"]["ArcFace"] == [3., 4.]
+    assert saved["embeddings_data"]["b"]["kv_map"] == "preserved-kv.pth"
+    assert saved["embedding_tabs_state"]["tabs"][1]["embedding_ids"] == ["b"]
 
 
 def test_save_workspace_non_theatre_uses_live_window_state(tmp_path):

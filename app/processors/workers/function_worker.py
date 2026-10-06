@@ -18,6 +18,7 @@ from app.processors.face_reaging import FaceReaging
 from app.processors.perform_recast import PerformRecast
 from app.processors.face_denoiser import FaceDenoiser
 from app.processors.face_detailer import FaceDetailer
+from app.processors.face_mattings import FaceMattings
 from app.processors.frame_edits import FrameEdits
 from app.processors.models_data import arcface_mapping_model_dict
 from app.processors.utils import platform_support
@@ -69,6 +70,7 @@ class FunctionWorker:
         self.perform_recast = PerformRecast(self.mp, self)
         self.face_denoiser = FaceDenoiser(self.mp, self)
         self.face_detailer = FaceDetailer(self.mp, self)
+        self.face_mattings = FaceMattings(self.mp, self)
         self.frame_edits = FrameEdits(self.mp, self)
 
     def _get_session_lock(self, session: Any) -> threading.RLock:
@@ -179,6 +181,11 @@ class FunctionWorker:
         with self.mp.model_lock:
             self.face_swappers.unload_models()
 
+    def unload_face_matting_models(self) -> None:
+        """Unloads the MODNet matting model under the model lock."""
+        with self.mp.model_lock:
+            self.face_mattings.unload_models()
+
     # HARDWARE ORCHESTRATION
 
     def clear_gpu_memory(self) -> None:
@@ -213,6 +220,7 @@ class FunctionWorker:
             self.unload_frame_enhancer_models()
             self.unload_face_editor_models()
             self.unload_perform_recast_models()
+            self.unload_face_matting_models()
 
             self.mp.delete_models()
             self.mp.delete_models_dfm()
@@ -903,3 +911,14 @@ class FunctionWorker:
     ) -> torch.Tensor:
         """Small-face magnify-and-restore post-pass (see FaceDetailer)."""
         return self.face_detailer.apply(img_chw_uint8, control)
+
+    def apply_hair_matting(
+        self,
+        swap_mask: torch.Tensor,
+        target_face_crop: torch.Tensor,
+        parameters: dict[str, Any],
+    ) -> torch.Tensor:
+        """Adjust the swap composite mask around hair via MODNet (see FaceMattings)."""
+        return self.face_mattings.apply_hair_matting(
+            swap_mask, target_face_crop, parameters
+        )

@@ -24,6 +24,7 @@ class ToggleDef:
 # Models missing from this list (like Core Detectors, Swappers, ArcFace or facial landmarks)
 # are considered always active if requested, bypassing the UI state check.
 MODELS_TOGGLE_MAP: Dict[str, List[ToggleDef]] = {
+    "MODNet": [ToggleDef("HairMattingEnableToggle", ToggleScope.PER_FACE)],
     # --- DENOISERS (ReF-LDM UNet & VAEs) ---
     "RefLDMVAEEncoder": [
         ToggleDef("DenoiserUNetEnableBeforeRestorersToggle", ToggleScope.GLOBAL),
@@ -118,6 +119,7 @@ MODELS_TOGGLE_MAP: Dict[str, List[ToggleDef]] = {
     "XSeg": [ToggleDef("DFLXSegEnableToggle", ToggleScope.PER_FACE)],
     "RD64ClipText": [ToggleDef("ClipEnableToggle", ToggleScope.PER_FACE)],
     "FaceParser": [
+        ToggleDef("HairMattingEnableToggle", ToggleScope.PER_FACE),
         ToggleDef("FaceParserEnableToggle", ToggleScope.PER_FACE),
         ToggleDef("RestoreEyesEnableToggle", ToggleScope.PER_FACE),
         ToggleDef("RestoreMouthEnableToggle", ToggleScope.PER_FACE),

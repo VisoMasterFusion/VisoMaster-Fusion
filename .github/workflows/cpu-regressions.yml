@@ -1,0 +1,74 @@
+name: CPU stability regressions
+
+on:
+  pull_request:
+    branches: [dev]
+  push:
+    branches: [dev]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  regressions:
+    runs-on: windows-latest
+    timeout-minutes: 30
+    env:
+      QT_QPA_PLATFORM: offscreen
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - name: Install CPU PyTorch
+        run: python -m pip install torch==2.11.0 torchvision==0.26.0 --index-url https://download.pytorch.org/whl/cpu
+      # The app uses this pure-Python release on Python 3.12, but its published
+      # metadata still caps Python at 3.11. Override only this package's metadata;
+      # its darkdetect dependency remains in the normally resolved requirements.
+      - name: Install application theme with legacy Python metadata
+        run: python -m pip install --no-deps --ignore-requires-python pyqtdarktheme==2.1.0
+      - name: Install application dependencies without CUDA and TensorRT
+        shell: python
+        run: |
+          import pathlib, subprocess, sys, tempfile
+          requirements = []
+          for line in pathlib.Path('requirements_cu13.txt').read_text().splitlines():
+              name = line.split('==')[0].lower()
+              if name.startswith(('nvidia-', 'tensorrt', 'cuda-')) or name in {
+                  'torch', 'torchvision', 'torchaudio', 'onnxruntime-gpu', 'pyqtdarktheme'
+              }:
+                  continue
+              requirements.append(line)
+          requirements.extend(['onnxruntime>=1.23.2,<2', 'pytest'])
+          target = pathlib.Path(tempfile.gettempdir()) / 'visomaster-cpu-ci.txt'
+          target.write_text('\n'.join(requirements))
+          subprocess.run([sys.executable, '-m', 'pip', 'install', '-r', str(target)], check=True)
+      - name: Run processing, workspace and real Qt regressions together
+        shell: python
+        run: |
+          import pathlib, subprocess, sys
+          files = [
+              'processors/test_face_detailer.py',
+              'processors/test_landmark_model_tracking.py',
+              'processors/test_yawnet_logic.py',
+              'processors/test_landmark_hrffa.py',
+              'processors/test_landmark_tufa_orformer.py',
+              'processors/test_face_masks_logic.py',
+              'processors/test_frame_worker_quality.py',
+              'processors/test_frame_worker_vr.py',
+              'processors/test_osdface_models.py',
+              'processors/test_perform_recast.py',
+              'ui/test_save_load_actions.py',
+              'ui/test_embedding_tabs_stability.py',
+              'ui/test_settings_layout_data.py',
+              'ui/test_common_layout_recast.py',
+              'ui/test_list_view_actions.py',
+              'ui/test_video_control_actions.py',
+          ]
+          # Include PR 361's regressions as soon as that feature lands.
+          if pathlib.Path('tests/unit/processors/test_face_mattings.py').exists():
+              files.append('processors/test_face_mattings.py')
+          subprocess.run([sys.executable, '-m', 'pytest', *[
+              'tests/unit/' + file for file in files
+          ], '-q', '-p', 'no:cacheprovider', '--import-mode=importlib'], check=True)
