@@ -2,10 +2,12 @@ import threading
 import os
 import subprocess as sp
 import gc
-import traceback
-import multiprocessing
+import json
 import re
+import sys
+import tempfile
 import time
+import traceback
 from typing import Dict, TYPE_CHECKING, Any, Optional
 from packaging import version
 import numpy as np
@@ -49,7 +51,9 @@ except ModuleNotFoundError:
     trt = None
 
 from app.processors.utils.dfm_model import DFMModel
+from app.helpers.build_progress import BuildTimeStore, StageTracker
 from app.processors.models_data import (
+    models_dir,
     models_list,
     compound_models_mapping,
     restorer_model_mapping,
@@ -69,68 +73,11 @@ onnxruntime.set_default_logger_severity(4)
 onnxruntime.log_verbosity_level = -1
 
 
-# --- Isolated Process Workers ---
-# These functions run in a separate process to prevent fatal C++/CUDA
-# crashes (like segmentation faults) from killing the main application.
-def _probe_onnx_model_worker(
-    model_path, providers_list, trt_options, session_options_dict
-):
-    """
-    Worker function to be run in an isolated process to "warm up"
-    an ONNX model, especially for the TensorRT provider.
-    This triggers the engine cache build without freezing the main thread.
-    """
-    # Move all imports to top of function so sys.exit(1) is always available
-    import os
-    import sys
-    import traceback
-    import onnxruntime
-    import torch
-
-    try:
-        # Create the SessionOptions object *inside* the worker process.
-        session_options = onnxruntime.SessionOptions()
-        if session_options_dict:
-            for key, value in session_options_dict.items():
-                # Use setattr to configure the SessionOptions object
-                setattr(session_options, key, value)
-
-        # Set the CUDA device to match the TRT provider's device_id
-        gpu_id = trt_options.get("device_id", 0)
-        if gpu_id != 0 and torch.cuda.is_available():
-            torch.cuda.set_device(gpu_id)
-
-        # Reconstruct the providers tuple
-        providers = []
-        for p in providers_list:
-            name = p[0] if isinstance(p, tuple) else p
-            if name == "TensorrtExecutionProvider":
-                providers.append((name, trt_options))
-            elif isinstance(p, tuple) and len(p) > 1:
-                providers.append(p)
-            else:
-                providers.append(name)
-
-        print(f"[ONNX Prober]: Attempting to load {os.path.basename(model_path)}...")
-        # This line is the one that triggers the build/cache generation
-        session = onnxruntime.InferenceSession(
-            model_path, sess_options=session_options, providers=providers
-        )
-
-        # Force this prober process to wait until all CUDA operations
-        # (i.e., the engine build and serialization to disk)
-        # are *fully* complete before this process exits.
-        if torch.cuda.is_available():
-            torch.cuda.synchronize()
-
-        # If we get here, the load and the synchronization worked.
-        del session
-        print("[ONNX Prober]: Load successful. TRT engine cache built and flushed.")
-        sys.exit(0)  # Success
-    except Exception:
-        print("[ONNX Prober]: ERROR during model load probe.")
-        traceback.print_exc()
-        sys.exit(1)  # Failure
+# --- Isolated Process Worker ---
+# The ONNX/TensorRT engine-build probe lives in
+# app/processors/onnx_probe_runner.py and is launched as a subprocess with
+# piped output (see _run_build_probe), so the build log can be streamed to
+# the progress dialog while the build runs.
 
 
 class ModelsProcessor(QtCore.QObject):
@@ -151,6 +98,16 @@ class ModelsProcessor(QtCore.QObject):
     show_build_dialog = QtCore.Signal(str, str)
     # Signal to request the GUI thread to hide the build dialog
     hide_build_dialog = QtCore.Signal()
+
+    # Rich TensorRT engine-build progress dialog (app/ui/widgets/trt_build_dialog.py).
+    # Emitted from arbitrary worker threads and connected to the internal
+    # slots below; because this QObject has GUI-thread affinity, the slots run
+    # in the GUI thread and are the only place the dialog is touched.
+    # Arguments: (window_title, model_label, expected_build_seconds, build_number)
+    build_dialog_show = QtCore.Signal(str, str, float, int)
+    build_dialog_log = QtCore.Signal(str)  # one streamed probe log line
+    build_dialog_stage = QtCore.Signal(str)  # human-readable build phase
+    build_dialog_hide = QtCore.Signal()
 
     def __init__(self, main_window: "MainWindow", device: str = "") -> None:
         """
@@ -249,6 +206,22 @@ class ModelsProcessor(QtCore.QObject):
         # A set to keep track of models that have been loaded but
         # have not had their engine built (lazy build).
         self.models_pending_build: set = set()
+
+        # --- TENSORRT BUILD PROGRESS STATE ---
+        # The dialog is created lazily on first show, always in the GUI thread.
+        self._trt_build_dialog: Any = None
+        # Set by the dialog's Cancel button; polled by the probe wait loop.
+        self._build_cancel_event = threading.Event()
+        # How many engine builds were triggered this session (dialog counter).
+        self._trt_build_session_count = 0
+        # Remembers past per-model build durations for the dialog's estimate.
+        self._build_time_store = BuildTimeStore(
+            os.path.join(str(models_dir), "trt_build_times.json")
+        )
+        self.build_dialog_show.connect(self._on_build_dialog_show)
+        self.build_dialog_log.connect(self._on_build_dialog_log)
+        self.build_dialog_stage.connect(self._on_build_dialog_stage)
+        self.build_dialog_hide.connect(self._on_build_dialog_hide)
         self.providers: list = self._default_providers()
         self.syncvec = torch.empty((1, 1), dtype=torch.float32, device=self.device)
         self.nThreads = 1
@@ -306,6 +279,172 @@ class ModelsProcessor(QtCore.QObject):
     @property
     def binding_device_id(self) -> int:
         return self.gpu_id if self.device_type != "cpu" else 0
+
+    # --- TensorRT build progress dialog plumbing ---
+    # These slots are connected in __init__ and, thanks to this QObject's
+    # GUI-thread affinity, always execute in the GUI thread no matter which
+    # worker thread emitted the signal.
+
+    @QtCore.Slot(str, str, float, int)
+    def _on_build_dialog_show(
+        self, title: str, model_label: str, expected_seconds: float, build_number: int
+    ) -> None:
+        if self._trt_build_dialog is None:
+            # Imported here so that importing this module never requires a
+            # running QApplication (unit tests construct ModelsProcessor
+            # headlessly).
+            from app.ui.widgets.trt_build_dialog import TrtBuildDialog
+
+            self._trt_build_dialog = TrtBuildDialog(self.main_window)
+            self._trt_build_dialog.cancel_requested.connect(
+                self._build_cancel_event.set
+            )
+        self._build_cancel_event.clear()
+        self._trt_build_dialog.start_build(
+            title, model_label, expected_seconds, build_number
+        )
+
+    @QtCore.Slot(str)
+    def _on_build_dialog_log(self, line: str) -> None:
+        if self._trt_build_dialog is not None:
+            self._trt_build_dialog.append_log_line(line)
+
+    @QtCore.Slot(str)
+    def _on_build_dialog_stage(self, stage_label: str) -> None:
+        if self._trt_build_dialog is not None:
+            self._trt_build_dialog.set_stage(stage_label)
+
+    @QtCore.Slot()
+    def _on_build_dialog_hide(self) -> None:
+        if self._trt_build_dialog is not None:
+            self._trt_build_dialog.finish()
+
+    @staticmethod
+    def _terminate_probe(probe_process) -> None:
+        """Terminate a probe subprocess, escalating to kill() if needed."""
+        probe_process.terminate()
+        try:
+            probe_process.wait(timeout=10)
+        except sp.TimeoutExpired:
+            probe_process.kill()
+            try:
+                probe_process.wait(timeout=10)
+            except sp.TimeoutExpired:
+                pass
+
+    def _run_build_probe(
+        self,
+        onnx_path: str,
+        providers_list: list,
+        trt_options: Dict[str, Any],
+        session_options_dict: Dict[str, Any],
+        model_name: str,
+        timeout_seconds: int = 900,
+    ) -> int:
+        """Run the isolated engine-build probe as a subprocess.
+
+        Returns the probe's exit code (0 = cache built). While the probe runs,
+        its output is streamed line by line to the console (as before) *and*
+        into the progress dialog, and the wait loop keeps the UI responsive
+        and honours the dialog's Cancel button.
+        """
+        config = {
+            "model_path": onnx_path,
+            "providers": providers_list,
+            "trt_options": trt_options,
+            "session_options": session_options_dict,
+        }
+
+        config_path = None
+        probe_process = None
+        try:
+            with tempfile.NamedTemporaryFile(
+                mode="w",
+                suffix=".json",
+                prefix="vm_probe_",
+                delete=False,
+                encoding="utf-8",
+            ) as handle:
+                json.dump(config, handle)
+                config_path = handle.name
+
+            runner_path = os.path.join(
+                os.path.dirname(os.path.abspath(__file__)), "onnx_probe_runner.py"
+            )
+            # -u: unbuffered output, so build log lines reach the dialog
+            # immediately instead of accumulating in the pipe buffer.
+            probe_process = sp.Popen(
+                [sys.executable, "-u", runner_path, config_path],
+                stdout=sp.PIPE,
+                stderr=sp.STDOUT,
+                text=True,
+                encoding="utf-8",
+                errors="replace",
+                bufsize=1,
+            )
+
+            # Dedicated reader thread: echo lines to the console (previous
+            # behavior), feed the dialog's log tail, and advance the build
+            # stage label when a known phase marker scrolls by.
+            stage_tracker = StageTracker()
+
+            def _pump_output() -> None:
+                assert probe_process.stdout is not None
+                for line in probe_process.stdout:
+                    stripped = line.rstrip("\r\n")
+                    print(stripped, flush=True)  # keep console behavior
+                    self.build_dialog_log.emit(stripped)
+                    new_stage = stage_tracker.update(stripped)
+                    if new_stage is not None:
+                        self.build_dialog_stage.emit(new_stage)
+
+            reader = threading.Thread(target=_pump_output, daemon=True)
+            reader.start()
+
+            deadline = time.monotonic() + timeout_seconds
+            app = QtCore.QCoreApplication.instance()
+            on_gui_thread = (
+                app is not None and QtCore.QThread.currentThread() == app.thread()
+            )
+            while probe_process.poll() is None:
+                if self._build_cancel_event.is_set():
+                    print(f"[INFO] Engine build for {model_name} cancelled by user.")
+                    self._terminate_probe(probe_process)
+                    self._clean_tensorrt_cache(onnx_path, trt_options)
+                    raise RuntimeError("TensorRT engine build cancelled by user.")
+                if time.monotonic() > deadline:
+                    # Recover if the compiler locks up.
+                    print(
+                        f"[ERROR] Probe process for {model_name} timed out! Terminating."
+                    )
+                    self._terminate_probe(probe_process)
+                    # Clean up corrupted caches caused by the timeout.
+                    print(
+                        f"[INFO] Cleaning up corrupted TensorRT cache for {model_name} due to timeout..."
+                    )
+                    self._clean_tensorrt_cache(onnx_path, trt_options)
+                    raise RuntimeError("TensorRT Engine build timed out.")
+                if on_gui_thread:
+                    # load_model is sometimes called synchronously from the GUI
+                    # thread; keep the event loop pumping so Windows never
+                    # marks the window "Not Responding" during long builds.
+                    QtCore.QCoreApplication.processEvents()
+                time.sleep(0.1)
+
+            reader.join(timeout=5)
+            return (
+                probe_process.returncode
+                if probe_process.returncode is not None
+                else 1
+            )
+        finally:
+            if probe_process is not None and probe_process.poll() is None:
+                self._terminate_probe(probe_process)
+            if config_path:
+                try:
+                    os.remove(config_path)
+                except OSError:
+                    pass
 
     def _ensure_trt_ready_onnx(self, model_name: str, onnx_path: str) -> str:
         """Return an ONNX path that the TensorRT EP can build an engine from.
@@ -667,21 +806,25 @@ class ModelsProcessor(QtCore.QObject):
                         )
 
                         try:
-                            # We emit signals to ask the main GUI thread to show the dialog.
-                            dialog_title = "Building TensorRT Cache"
-                            dialog_text = (
-                                f"Building TensorRT engine cache for:\n"
-                                f"{os.path.basename(onnx_path)}\n\n"
-                                f"This may take several minutes.\n"
-                                f"The application will continue once finished."
-                            )
-
                             # The trt engine build worker process use this SessionOptions
                             # to use only 1 thread for building engines
                             sess_options_dict = {"intra_op_num_threads": 1}
 
-                            # Ask the main thread to show the dialog
-                            self.show_build_dialog.emit(dialog_title, dialog_text)
+                            self._trt_build_session_count += 1
+                            expected_seconds = (
+                                self._build_time_store.expected_seconds(canonical_name)
+                                or -1.0
+                            )
+
+                            # Ask the GUI thread to show the progress dialog.
+                            self.build_dialog_show.emit(
+                                "Building TensorRT Cache",
+                                "Building TensorRT engine cache for:\n"
+                                f"{os.path.basename(onnx_path)}",
+                                float(expected_seconds),
+                                self._trt_build_session_count,
+                            )
+                            build_was_triggered = True
 
                             probe_successful = False
                             last_exit_code = None
@@ -691,55 +834,33 @@ class ModelsProcessor(QtCore.QObject):
                                 print(
                                     f"[INFO] Probe attempt {attempt + 1} of {max_retries} for {canonical_name}..."
                                 )
+                                if attempt > 0:
+                                    self.build_dialog_stage.emit(
+                                        f"Retrying the build (attempt {attempt + 1} of {max_retries})..."
+                                    )
 
-                                # Use 'spawn' context for CUDA/TRT safety
-                                ctx = multiprocessing.get_context("spawn")
-                                # Pass full providers list (with tuples) so the worker
-                                # can reconstruct them with device_id options.
-                                current_providers_list = list(model_providers)
-                                probe_process = ctx.Process(
-                                    target=_probe_onnx_model_worker,
-                                    args=(
-                                        onnx_path,
-                                        current_providers_list,
-                                        model_trt_options,
-                                        sess_options_dict,
-                                    ),
+                                build_started = time.monotonic()
+                                # Pass the full providers list (with tuples) so the
+                                # probe can reconstruct them with device_id options.
+                                # Timeout of 15 minutes recovers from compiler lockups;
+                                # the dialog's Cancel button aborts via RuntimeError.
+                                exitcode = self._run_build_probe(
+                                    onnx_path,
+                                    list(model_providers),
+                                    model_trt_options,
+                                    sess_options_dict,
+                                    canonical_name,
+                                    timeout_seconds=900,
                                 )
-
-                                try:
-                                    probe_process.start()
-                                    build_was_triggered = True
-
-                                    # Timeout at 15 minutes to recover if compiler locks up
-                                    probe_process.join(timeout=900)
-
-                                    if probe_process.is_alive():
-                                        print(
-                                            f"[ERROR] Probe process for {canonical_name} timed out! Terminating."
-                                        )
-                                        probe_process.terminate()
-                                        probe_process.join()
-
-                                        # Clean up corrupted caches caused by the timeout before raising
-                                        print(
-                                            f"[INFO] Cleaning up corrupted TensorRT cache for {canonical_name} due to timeout..."
-                                        )
-                                        self._clean_tensorrt_cache(
-                                            onnx_path, model_trt_options
-                                        )
-
-                                        raise RuntimeError(
-                                            "TensorRT Engine build timed out."
-                                        )
-                                except Exception as e:
-                                    print(f"[ERROR] Process execution failed: {e}")
-
-                                # Process finished, get exit code
-                                exitcode = probe_process.exitcode
                                 last_exit_code = exitcode
 
                                 if exitcode == 0:
+                                    # Remember how long the build took so the
+                                    # dialog can estimate remaining time on
+                                    # the next rebuild of this model.
+                                    self._build_time_store.record(
+                                        canonical_name, time.monotonic() - build_started
+                                    )
                                     print(
                                         f"[INFO] Probe successful for {canonical_name}. Cache should be built."
                                     )
@@ -770,7 +891,7 @@ class ModelsProcessor(QtCore.QObject):
                         except Exception:
                             # MP-05: only emit hide_build_dialog when build was triggered
                             if build_was_triggered:
-                                self.hide_build_dialog.emit()
+                                self.build_dialog_hide.emit()
 
                             print(
                                 f"[ERROR] Isolated probe failed for {canonical_name}."
@@ -784,7 +905,7 @@ class ModelsProcessor(QtCore.QObject):
                             )
                             return None  # Abort the load
 
-            # Now, proceed with the *actual* load in the main thread.
+            # Now, proceed with the *actual* load in the calling thread.
             try:
                 # MP-01: Double-checked load after re-acquiring the lock.
                 # Another thread may have loaded this model while we were in the probe.
@@ -800,11 +921,52 @@ class ModelsProcessor(QtCore.QObject):
                 # Force log_severity_level to 3 (ERROR) for the actual load as well, to suppress non-critical warnings from ONNX Runtime that can clutter the console.
                 session_options.log_severity_level = 3
 
-                model_instance = onnxruntime.InferenceSession(
-                    onnx_path,
-                    sess_options=session_options,
-                    providers=model_providers,
+                if build_was_triggered:
+                    self.build_dialog_stage.emit(
+                        "Loading the built engine into the app..."
+                    )
+
+                # Deserializing an engine cache can take a while for large
+                # models. When load_model runs on the GUI thread, do the
+                # load in a worker and pump the event loop meanwhile, so
+                # Windows never marks the window "Not Responding". (ORT
+                # releases the GIL during session creation; if that ever
+                # changes, this degrades gracefully to the old behavior.)
+                app = QtCore.QCoreApplication.instance()
+                on_gui_thread = (
+                    app is not None
+                    and QtCore.QThread.currentThread() == app.thread()
                 )
+                if on_gui_thread:
+                    load_outcome: Dict[str, Any] = {}
+
+                    def _load_session_worker() -> None:
+                        try:
+                            load_outcome["instance"] = onnxruntime.InferenceSession(
+                                onnx_path,
+                                sess_options=session_options,
+                                providers=model_providers,
+                            )
+                        except BaseException as load_err:
+                            load_outcome["error"] = load_err
+
+                    load_thread = threading.Thread(
+                        target=_load_session_worker, daemon=True
+                    )
+                    load_thread.start()
+                    while load_thread.is_alive():
+                        QtCore.QCoreApplication.processEvents()
+                        time.sleep(0.05)
+                    load_thread.join()
+                    if "error" in load_outcome:
+                        raise load_outcome["error"]
+                    model_instance = load_outcome.get("instance")
+                else:
+                    model_instance = onnxruntime.InferenceSession(
+                        onnx_path,
+                        sess_options=session_options,
+                        providers=model_providers,
+                    )
 
                 # This ensures the CUDA context is synchronized after a new TRT
                 # engine build, before we try to load it.
@@ -865,7 +1027,7 @@ class ModelsProcessor(QtCore.QObject):
             finally:
                 # MP-05: Only emit hide_build_dialog when a build was triggered.
                 if build_was_triggered:
-                    self.hide_build_dialog.emit()
+                    self.build_dialog_hide.emit()
 
     def check_and_clear_pending_build(self, model_name: str) -> bool:
         """
