@@ -1676,10 +1676,8 @@ def _remove_subfolder_target_media(main_window: "MainWindow", folder: str) -> No
 
 def _clear_auto_loaded_target_media(main_window: "MainWindow") -> None:
     """Stop loaders and clear all non-webcam target media from the list."""
-    # Stop worker only — do NOT clear the list yet (avoids deleted C++ items).
     clear_stop_loading_target_media(main_window, clear_list=False)
 
-    # Optional on partial mocks used by unit tests
     if hasattr(main_window, "targetFacesList"):
         try:
             card_actions.clear_target_faces(main_window, refresh_frame=False)
@@ -1723,25 +1721,35 @@ def _clear_auto_loaded_target_media(main_window: "MainWindow") -> None:
     if list_widget is None:
         return
 
-    list_widget.setUpdatesEnabled(False)
+    updates_fn = getattr(list_widget, "setUpdatesEnabled", None)
+    if callable(updates_fn):
+        updates_fn(False)
     try:
-        for i in range(list_widget.count() - 1, -1, -1):
-            item = list_widget.item(i)
-            button = list_widget.itemWidget(item) if item is not None else None
+        count_fn = getattr(list_widget, "count", None)
+        item_fn = getattr(list_widget, "item", None)
+        item_widget_fn = getattr(list_widget, "itemWidget", None)
+        take_fn = getattr(list_widget, "takeItem", None)
+        if not all(callable(f) for f in (count_fn, item_fn, take_fn)):
+            return
+
+        for i in range(count_fn() - 1, -1, -1):
+            item = item_fn(i)
+            button = item_widget_fn(item) if callable(item_widget_fn) and item is not None else None
             if button is not None and getattr(button, "is_webcam", False):
                 continue
             media_id = getattr(button, "media_id", None) if button else None
-            list_widget.takeItem(i)
+            take_fn(i)
             target_videos = getattr(main_window, "target_videos", None)
             if media_id is not None and isinstance(target_videos, dict):
                 target_videos.pop(media_id, None)
             if button is not None:
                 try:
                     button.deleteLater()
-                except RuntimeError:
+                except Exception:
                     pass
     finally:
-        list_widget.setUpdatesEnabled(True)
+        if callable(updates_fn):
+            updates_fn(True)
 
     signal = getattr(main_window, "placeholder_update_signal", None)
     if signal is not None:
