@@ -625,6 +625,7 @@ class MainWindow(QtWidgets.QMainWindow, Ui_MainWindow):
         # widget_actions.add_groupbox_and_widgets_from_layout_map(self)
 
         job_manager_actions.setup_job_manager_ui(self)
+        self._constrain_job_manager_min_width()
 
         # Connect Denoiser Mode SelectionBox signals to update visibility
         denoiser_mode_before_combo = self.parameter_widgets.get(
@@ -1629,6 +1630,40 @@ class MainWindow(QtWidgets.QMainWindow, Ui_MainWindow):
             action.blockSignals(True)
             action.setChecked(checked)
             action.blockSignals(False)
+
+    def _constrain_job_manager_min_width(self):
+        """Prevent Job Manager content from forcing a large left-dock min width."""
+        dock = getattr(self, "jobManagerDockWidget", None)
+        if dock is None:
+            return
+        dock.setMinimumWidth(80)
+        contents = dock.widget()
+        if contents is not None:
+            contents.setMinimumWidth(80)
+            contents.setSizePolicy(
+                QtWidgets.QSizePolicy.Policy.Preferred,
+                QtWidgets.QSizePolicy.Policy.Preferred,
+            )
+        for btn_name in (
+            "addJobButton",
+            "loadJobButton",
+            "deleteJobButton",
+            "refreshJobListButton",
+            "buttonProcessAll",
+            "buttonProcessSelected",
+        ):
+            btn = getattr(self, btn_name, None)
+            if btn is None:
+                continue
+            btn.setMinimumWidth(0)
+            sp = btn.sizePolicy()
+            sp.setHorizontalPolicy(QtWidgets.QSizePolicy.Policy.Minimum)
+            btn.setSizePolicy(sp)
+        job_list = getattr(self, "jobQueueList", None)
+        if job_list is not None:
+            job_list.setMinimumWidth(0)
+    
+
 
     def _panel_widget_for_key(self, panel_key: str):
         panel_widgets = {

@@ -1141,9 +1141,27 @@ def reset_face_editor_expression_params(main_window: "MainWindow"):
 def handle_auto_load_target_folder_toggle(main_window: "MainWindow", enabled: bool | None = None):
     from app.ui.widgets.actions import list_view_actions
 
-    # Always use the MAIN auto-load toggle. The recursive option also calls
-    # this handler; its own True/False must not enable/disable the watcher.
+    # Widgets already hold the new UI value; control is updated after this handler.
+    main_widget = main_window.parameter_widgets.get("AutoLoadTargetFolderToggle")
+    recursive_widget = main_window.parameter_widgets.get(
+        "AutoLoadTargetFolderRecursiveToggle"
+    )
+    if main_widget is not None:
+        main_window.control["AutoLoadTargetFolderToggle"] = bool(main_widget.isChecked())
+    if recursive_widget is not None:
+        main_window.control["AutoLoadTargetFolderRecursiveToggle"] = bool(
+            recursive_widget.isChecked()
+        )
+
     watch_enabled = bool(main_window.control.get("AutoLoadTargetFolderToggle", False))
+
+    # Main OFF → force subfolders OFF
+    if not watch_enabled:
+        if recursive_widget is not None and recursive_widget.isChecked():
+            recursive_widget.blockSignals(True)
+            recursive_widget.setChecked(False)
+            recursive_widget.blockSignals(False)
+        main_window.control["AutoLoadTargetFolderRecursiveToggle"] = False
 
     if watch_enabled:
         line = getattr(main_window, "targetVideosPathLineEdit", None)
