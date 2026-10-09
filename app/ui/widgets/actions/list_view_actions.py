@@ -1678,40 +1678,63 @@ def _clear_auto_loaded_target_media(main_window: "MainWindow") -> None:
     """Stop loaders and clear all non-webcam target media from the list."""
     # Stop worker only — do NOT clear the list yet (avoids deleted C++ items).
     clear_stop_loading_target_media(main_window, clear_list=False)
-    card_actions.clear_target_faces(main_window, refresh_frame=False)
 
-    selected = main_window.selected_video_button
-    if selected is not None and not getattr(selected, "is_webcam", False):
+    # Optional on partial mocks used by unit tests
+    if hasattr(main_window, "targetFacesList"):
         try:
-            main_window.video_processor.stop_processing()
+            card_actions.clear_target_faces(main_window, refresh_frame=False)
         except Exception:
             pass
-        main_window.selected_video_button = None
-        main_window.selected_target_face_id = None
-        main_window.parameters = {}
-        if getattr(main_window.video_processor, "media_capture", None):
+
+    selected = getattr(main_window, "selected_video_button", None)
+    if selected is not None and not getattr(selected, "is_webcam", False):
+        video_processor = getattr(main_window, "video_processor", None)
+        if video_processor is not None:
             try:
-                main_window.video_processor.media_capture.release()
+                video_processor.stop_processing()
             except Exception:
                 pass
-            main_window.video_processor.media_capture = None
+            media_capture = getattr(video_processor, "media_capture", None)
+            if media_capture is not None:
+                try:
+                    media_capture.release()
+                except Exception:
+                    pass
+                try:
+                    video_processor.media_capture = None
+                except Exception:
+                    pass
         try:
-            main_window.scene.clear()
+            main_window.selected_video_button = None
         except Exception:
             pass
+        if hasattr(main_window, "selected_target_face_id"):
+            main_window.selected_target_face_id = None
+        if hasattr(main_window, "parameters"):
+            main_window.parameters = {}
+        scene = getattr(main_window, "scene", None)
+        if scene is not None:
+            try:
+                scene.clear()
+            except Exception:
+                pass
 
-    list_widget = main_window.targetVideosList
+    list_widget = getattr(main_window, "targetVideosList", None)
+    if list_widget is None:
+        return
+
     list_widget.setUpdatesEnabled(False)
     try:
         for i in range(list_widget.count() - 1, -1, -1):
             item = list_widget.item(i)
-            button = list_widget.itemWidget(item)
+            button = list_widget.itemWidget(item) if item is not None else None
             if button is not None and getattr(button, "is_webcam", False):
                 continue
             media_id = getattr(button, "media_id", None) if button else None
             list_widget.takeItem(i)
-            if media_id is not None:
-                main_window.target_videos.pop(media_id, None)
+            target_videos = getattr(main_window, "target_videos", None)
+            if media_id is not None and isinstance(target_videos, dict):
+                target_videos.pop(media_id, None)
             if button is not None:
                 try:
                     button.deleteLater()
@@ -1720,7 +1743,12 @@ def _clear_auto_loaded_target_media(main_window: "MainWindow") -> None:
     finally:
         list_widget.setUpdatesEnabled(True)
 
-    main_window.placeholder_update_signal.emit(list_widget, False)
+    signal = getattr(main_window, "placeholder_update_signal", None)
+    if signal is not None:
+        try:
+            signal.emit(list_widget, False)
+        except Exception:
+            pass
 
 
 def set_target_folder_auto_watch(main_window: "MainWindow", enabled: bool):
