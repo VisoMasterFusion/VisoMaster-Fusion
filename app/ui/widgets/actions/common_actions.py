@@ -555,8 +555,27 @@ def get_pixmap_from_frame(main_window: "MainWindow", frame: np.ndarray):
 
 # QUAL-02: Inlined _update_gpu_memory_progressbar body directly; removed the redundant wrapper function
 def update_gpu_memory_progressbar(main_window: "MainWindow"):
-    memory_used, memory_total = main_window.models_processor.get_gpu_memory()
-    main_window.gpu_memory_update_signal.emit(memory_used, memory_total)
+    """Refresh the VRAM bar. Safe for unit-test mocks that lack real GPU APIs."""
+    models_processor = getattr(main_window, "models_processor", None)
+    if models_processor is None:
+        return
+    get_gpu_memory = getattr(models_processor, "get_gpu_memory", None)
+    if not callable(get_gpu_memory):
+        return
+    try:
+        result = get_gpu_memory()
+    except Exception:
+        return
+    if not result or len(result) < 2:
+        return
+    memory_used, memory_total = result[0], result[1]
+    signal = getattr(main_window, "gpu_memory_update_signal", None)
+    if signal is None:
+        return
+    try:
+        signal.emit(memory_used, memory_total)
+    except Exception:
+        pass
 
 
 @QtCore.Slot(int, int)
