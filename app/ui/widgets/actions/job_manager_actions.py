@@ -1702,6 +1702,15 @@ def load_job_settings(main_window: "MainWindow", job_data: dict):
         # 2. Load target faces and parameters.
         _load_job_target_faces_and_params(main_window, job_data)
 
+        # Restore the selected face used to resolve the output embedding subfolder.
+        selected_face_id = job_data["selected_target_face_id"]
+        if selected_face_id is not None:
+            main_window.selected_target_face_id = selected_face_id
+            main_window.cur_selected_target_face_button = main_window.target_faces[
+                selected_face_id
+            ]
+            main_window.cur_selected_target_face_button.setChecked(True)
+
         # 3. Load controls/state.
         _load_job_controls_and_state(main_window, job_data, is_batch_load=True)
 
