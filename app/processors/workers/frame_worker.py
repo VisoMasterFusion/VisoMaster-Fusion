@@ -266,10 +266,14 @@ class FrameWorker(threading.Thread):
 
             while not self.stop_event.is_set():
                 task = None  # Ensure task is defined for 'finally'
+                # True once get() returned an item (a task OR the poison pill): every
+                # item taken from the queue must be matched by exactly one task_done().
+                got_item = False
                 try:
                     # Block until a task is available or a poison pill is received
                     # Use a timeout to periodically check the stop_event
                     task = self.frame_queue.get(timeout=1.0)
+                    got_item = True
 
                     if task is None:
                         # Poison pill received: Exit the loop
@@ -381,8 +385,11 @@ class FrameWorker(threading.Thread):
                     traceback.print_exc()
 
                 finally:
-                    # This block executes *no matter what* (success, exception, or break)
-                    if task is not None and self.frame_queue is not None:
+                    # This block executes *no matter what* (success, exception, or break).
+                    # The poison pill (None) counts too: skipping it left unfinished_tasks
+                    # at the number of workers, so the recording tail-drain waited for
+                    # TAIL_PENDING_STALL_TIMEOUT_SEC (8 s) before forcing finalization.
+                    if got_item and self.frame_queue is not None:
                         try:
                             self.frame_queue.task_done()
                         except ValueError:
