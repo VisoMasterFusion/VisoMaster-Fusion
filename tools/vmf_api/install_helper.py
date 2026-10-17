@@ -5,6 +5,7 @@ Run with the portable Python:  portable-files\\python\\python.exe -I install_hel
 
 from __future__ import annotations
 
+import json
 import os
 import shutil
 import subprocess
@@ -109,8 +110,14 @@ def install():
     say(f"  mcp          : {ver}")
     say()
     say("OK. In the launcher, tick \"Enable API / MCP\", then launch VisoMaster.")
-    say("Claude Code command:")
-    say(f'  claude mcp add visomaster -- "{venv_py}" "{VMF_DIR / "vmf_cli.py"}" mcp')
+    say()
+    say("MCP server, for any MCP client (add a local / stdio server):")
+    say(f"  command   : {venv_py}")
+    say(f"  arguments : {VMF_DIR / 'vmf_cli.py'} mcp")
+    say("JSON (\"mcpServers\" section of most clients):")
+    cfg = {"mcpServers": {"visomaster": {"command": str(venv_py), "args": [str(VMF_DIR / "vmf_cli.py"), "mcp"]}}}
+    say(json.dumps(cfg, indent=2))
+    say("Other client formats: docs\\MCP.md")
 
 
 def uninstall():

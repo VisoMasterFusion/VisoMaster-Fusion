@@ -2,13 +2,94 @@
 
 A client of the [HTTP API](API.md) for people and scripts. Standard library only: any Python 3.10+ runs it.
 
+## Getting started
+
+1. Run `install.bat` once and start VisoMaster with **Enable API / MCP** ticked ([README](../README.md#install)).
+2. Open a terminal (cmd or PowerShell) in `VisoMaster-Fusion\tools\vmf_api` and type:
+
+   ```
+   .\vmf-cli status
+   ```
+
+   It prints VisoMaster's state as JSON: the media loaded, the target faces, whether the swap is on, the VRAM used.
+   If it answers that VisoMaster is not running with the API, start it with the box ticked (or `vmf-cli launch`).
+
+To type `vmf-cli` from any folder, add `tools\vmf_api` to your `PATH`. Without the `.bat`:
+`<python> vmf_cli.py <subcommand>`.
+
+`vmf-cli --help` lists the subcommands, `vmf-cli <subcommand> --help` their options. Every subcommand with its
+arguments: [REFERENCE.md](REFERENCE.md#cli-subcommands).
+
+## Everyday tasks
+
+**Start and stop VisoMaster without the launcher**
 ```
-vmf_api\vmf-cli.bat <subcommand> [options]          (uses vmf_api\.venv, works from any folder)
-<python> vmf_api\vmf_cli.py <subcommand> [options]
+vmf-cli launch                 start it with the API, wait until it is ready
+vmf-cli launch --hidden        same, with no window at all (unattended jobs)
+vmf-cli quit                   close it (saves the workspace, as the window's close button does)
+vmf-cli quit --no-save         close it without saving
 ```
 
-Add `vmf_api` to `PATH` to type `vmf-cli` anywhere. `vmf-cli --help` lists the subcommands,
-`vmf-cli <subcommand> --help` their options. Every subcommand: [REFERENCE.md](REFERENCE.md#cli-subcommands).
+**Find a setting and change it**
+```
+vmf-cli schema                         list of the setting groups
+vmf-cli schema restorer                every setting whose name contains "restorer": type, default, choices
+vmf-cli get-config --keys FaceRestorerEnableToggle FaceRestorerTypeSelection
+vmf-cli set FaceRestorerEnableToggle true
+vmf-cli set FaceRestorerTypeSelection GFPGAN-v1.4
+```
+Per-face settings apply to the selected target face (`--face-id` for another one).
+
+**Import someone else's settings without losing yours**
+```
+vmf-cli diff D:\received\their_workspace.json          what would change
+vmf-cli apply-config D:\received\their_workspace.json  apply it (a backup is written first)
+vmf-cli restore-backup                                 undo: back to the last backup
+```
+Paths, GPU, threads, appearance and other machine settings are never overwritten (`personal_keys.json`).
+`--faces all` applies the face parameters to every target face, not only the selected one.
+
+**Keep a known state and come back to it**
+```
+vmf-cli save-backup my-settings
+vmf-cli list-backups
+vmf-cli restore-backup my-settings
+```
+
+**Set up a swap**
+```
+vmf-cli load-target-media D:\videos\clip.mp4 --wait
+vmf-cli select-target-media clip.mp4
+vmf-cli run-action findTargetFacesButton
+vmf-cli select-target-face                 list the target faces found
+vmf-cli list-embeddings
+vmf-cli select-embedding "My face"         use this embedding for the selected target face
+```
+
+**Record a video**
+```
+vmf-cli start-recording --from-start
+vmf-cli recording-wait                     progress on screen, then the output file and its timings
+```
+
+**Run VisoMaster's image batch**
+```
+vmf-cli load-target-media D:\images --wait
+vmf-cli run-action batchallImageButton
+vmf-cli recording-wait
+```
+
+**Build the TensorRT engines ahead of time**
+```
+vmf-cli list-tensorrt-models
+vmf-cli build-tensorrt-cache               the models the current settings use ("all" for every model)
+vmf-cli tensorrt-wait
+```
+
+**See the current frame**
+```
+vmf-cli snapshot D:\out\frame.png
+```
 
 ## Names
 

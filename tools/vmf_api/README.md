@@ -5,7 +5,7 @@ file of VisoMaster**: the add-on hooks into the app at start-up and stays inert 
 
 - **HTTP API** inside VisoMaster: `POST http://127.0.0.1:<port>/api/<command>`, JSON in and out, token required.
 - **CLI** `vmf-cli`: one subcommand per API command, plus waits (`ready-wait`, `recording-wait`…), `launch` and `quit`.
-- **MCP server** (`vmf_cli.py mcp`, stdio): the same commands as tools for Claude Code or any MCP client.
+- **MCP server** (`vmf_cli.py mcp`, stdio): the same commands as tools for any AI app or agent that supports MCP.
 
 All three run the same code (`commands.py`): a command does the same thing whichever door it comes through.
 
@@ -20,52 +20,45 @@ Tested with VisoMaster Fusion 3.17.2 on Windows (portable install).
 
 ## Install
 
-Two places are supported:
+For the Windows portable install of VisoMaster Fusion (the one started with `Start_Portable.bat`). The add-on is
+already there, in `VisoMaster-Fusion\tools\vmf_api`.
 
-```
-<BASE_DIR>\                        portable install (Start_Portable.bat)
-├── portable-files\python\python.exe
-├── VisoMaster-Fusion\             the git checkout
-│   └── tools\vmf_api\             <- here (inside the repository) ...
-└── vmf_api\                       <- ... or here (next to it; wins if both exist)
-```
+1. Double-click `install.bat` in that folder, once. It prepares the portable Python and prints the lines to give to
+   an MCP client. Run it again only if you reinstall the portable Python (`uninstall.bat` undoes it).
+2. Start VisoMaster with the launcher as usual, tick **Enable API / MCP**, then **Launch**. The box is unticked
+   each time the launcher opens, so the API only runs when you ask for it.
 
-1. Run `vmf_api\install.bat` (idempotent). It checks the portable Python, copies `vmf_api_hook.pth` and
-   `vmf_api_bootstrap.py` into its `site-packages`, creates `vmf_api\.venv` with the `mcp` SDK, and prints the
-   `claude mcp add` command. Re-run it only if `portable-files\python` is reinstalled; `uninstall.bat` removes the two files.
-2. Start VisoMaster as usual (launcher), tick **Enable API / MCP**, then *Launch*. The box is unticked each time the
-   launcher opens: the API only runs when asked for. `vmf-cli launch [--hidden]` starts VisoMaster with the API
-   without the launcher.
+Check that it answers: open a terminal in `tools\vmf_api` and type `.\vmf-cli status`.
 
-## Quick start
+## Use it
+
+**From the command line**: [docs/CLI.md](docs/CLI.md) starts with the everyday tasks. A few examples:
 
 ```bat
 vmf-cli status
 vmf-cli diff D:\received\their_workspace.json
-vmf-cli apply-config D:\received\their_workspace.json --faces all
-vmf-cli restore-backup
-```
-
-```bat
-vmf-cli launch --hidden
-vmf-cli load-target-media D:\images --wait
-vmf-cli run-action batchallImageButton
+vmf-cli apply-config D:\received\their_workspace.json
+vmf-cli start-recording --from-start
 vmf-cli recording-wait
-vmf-cli quit --no-save
 ```
 
-Claude Code:
+**From an AI app or agent** (any MCP client): add a local MCP server that runs this command. `install.bat` prints
+it with the full paths of your install, ready to paste; [docs/MCP.md](docs/MCP.md) shows where each kind of client
+expects it.
+
 ```
-claude mcp add visomaster -- <vmf_api>\.venv\Scripts\python.exe <vmf_api>\vmf_cli.py mcp
+<vmf_api>\.venv\Scripts\python.exe <vmf_api>\vmf_cli.py mcp
 ```
+
+**From your own code**: plain HTTP + JSON, see [docs/API.md](docs/API.md).
 
 ## Documentation
 
 | | |
 |---|---|
 | [docs/API.md](docs/API.md) | HTTP protocol, authentication, errors, asynchronous operations, examples (PowerShell, Python, curl) |
-| [docs/CLI.md](docs/CLI.md) | `vmf-cli`: output, exit codes, waits, scripting |
-| [docs/MCP.md](docs/MCP.md) | MCP server: setup, tools, rules given to the model |
+| [docs/CLI.md](docs/CLI.md) | `vmf-cli`: everyday tasks, output, exit codes, waits, scripting |
+| [docs/MCP.md](docs/MCP.md) | MCP server: setup in any MCP client, tools, rules given to the model |
 | [docs/DEVELOPING.md](docs/DEVELOPING.md) | architecture, how to add a command, security model, tests |
 | [docs/REFERENCE.md](docs/REFERENCE.md) | every HTTP command, CLI subcommand and MCP tool (generated from the code) |
 

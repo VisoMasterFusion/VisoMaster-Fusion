@@ -1,28 +1,48 @@
 # MCP server
 
 `vmf_cli.py mcp` serves the API commands as [Model Context Protocol](https://modelcontextprotocol.io) tools
-over stdio, so that an AI assistant can drive VisoMaster. It is a client of the [HTTP API](API.md) like the
-CLI, and runs in `vmf_api\.venv` (the official `mcp` SDK, installed by `install.bat`), not in VisoMaster's Python.
-Every tool: [REFERENCE.md](REFERENCE.md#mcp-tools).
+over stdio, so that an AI app or agent can drive VisoMaster. It is a standard MCP server: it works with any
+client that supports MCP, and nothing in it is tied to one assistant. It is a client of the [HTTP API](API.md)
+like the CLI, and runs in `vmf_api\.venv` (the official `mcp` SDK, installed by `install.bat`), not in
+VisoMaster's Python. Every tool: [REFERENCE.md](REFERENCE.md#mcp-tools).
 
 ## Setup
 
-Claude Code:
-```
-claude mcp add visomaster -- <vmf_api>\.venv\Scripts\python.exe <vmf_api>\vmf_cli.py mcp
-```
+In your MCP client, add a **local server** (also called *stdio* or *command* server) with:
 
-Other clients (JSON configuration):
+| Field | Value |
+|---|---|
+| name | `visomaster` (any name) |
+| command | `<vmf_api>\.venv\Scripts\python.exe` |
+| arguments | `<vmf_api>\vmf_cli.py` `mcp` |
+
+`<vmf_api>` is the full path of the `VisoMaster-Fusion\tools\vmf_api` folder. `install.bat` prints the
+command and the JSON below with your real paths, ready to paste. No environment variable, port or token to set:
+the server finds VisoMaster's API by itself.
+
+Most clients read a JSON file with an `mcpServers` section (desktop AI apps, IDE assistants, agent CLIs; the file
+name and place depend on the client, see its MCP documentation):
 ```json
 {
   "mcpServers": {
     "visomaster": {
-      "command": "<vmf_api>\\.venv\\Scripts\\python.exe",
-      "args": ["<vmf_api>\\vmf_cli.py", "mcp"]
+      "command": "C:\\VisoMaster\\VisoMaster-Fusion\\tools\\vmf_api\\.venv\\Scripts\\python.exe",
+      "args": ["C:\\VisoMaster\\VisoMaster-Fusion\\tools\\vmf_api\\vmf_cli.py", "mcp"]
     }
   }
 }
 ```
+
+Other formats you may meet, same command and arguments:
+
+- a `servers` section with `"type": "stdio"` (e.g. VS Code's `mcp.json`);
+- TOML, `[mcp_servers.visomaster]` with `command = "…"` and `args = ["…", "mcp"]` (e.g. Codex CLI);
+- a command line, e.g. Claude Code:
+  `claude mcp add visomaster -- <vmf_api>\.venv\Scripts\python.exe <vmf_api>\vmf_cli.py mcp`.
+
+The client must run on the same Windows machine as VisoMaster: the server talks to it on `127.0.0.1`. A client
+that only accepts remote servers (a URL) needs a stdio-to-HTTP MCP bridge in front of this command; keep that
+bridge on the local machine, since whoever reaches it controls VisoMaster.
 
 The server starts without VisoMaster: `launch_visomaster` starts it (with `hidden=true`, no window at all),
 and every other tool answers "VisoMaster is not running with the API" (or "API unreachable" when a
