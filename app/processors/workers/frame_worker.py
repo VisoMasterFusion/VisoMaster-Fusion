@@ -327,6 +327,8 @@ class FrameWorker(threading.Thread):
                             # Active reclamation: force GC sweep and return PyTorch cache blocks to driver
                             gc.collect()
                             torch.cuda.empty_cache()
+                            # ...and the unused ORT arena memory, on the next run of each session
+                            self.function_worker.request_ort_arena_shrink()
 
                             # Re-sample actual free VRAM post-purge
                             free_vram_os, _ = torch.cuda.mem_get_info(device_id)

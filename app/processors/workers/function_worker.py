@@ -57,6 +57,15 @@ class FunctionWorker:
         self._ort_gate_writer_active = False
         self._ort_gate_writers_waiting = 0
 
+        # CUDA provider: ONNX Runtime keeps the GPU memory it frees in each session's
+        # arena and does not give it back. Runs made from new threads (every recording
+        # starts new workers) leave that memory unused, so VRAM grows on every
+        # recording until the card is full. After request_ort_arena_shrink(), the next
+        # run of each session releases the unused part of its arena.
+        self._ort_shrink_generation = 0
+        self._ort_shrunk_generation: dict[int, int] = {}
+        self._ort_shrink_run_options: Optional[Any] = None
+
         # Initialize Sub-Processors centrally.
         # We pass `self.mp` for VRAM management, and `self` so they can route calls through this Facade.
         self.face_detectors = FaceDetectors(self.mp, self)
@@ -80,6 +89,33 @@ class FunctionWorker:
             if session_id not in self._session_locks:
                 self._session_locks[session_id] = threading.RLock()
             return self._session_locks[session_id]
+
+    def request_ort_arena_shrink(self) -> None:
+        """Asks each ORT session to release its unused GPU arena memory on its next run."""
+        if self.mp.provider_name != "CUDA":
+            return
+        with self._session_locks_mutex:
+            self._ort_shrink_generation += 1
+
+    def _ort_run_options(self, session: Any) -> Optional[Any]:
+        """RunOptions that shrink the session's arena, once per shrink request."""
+        if self._ort_shrink_generation == 0:
+            return None
+        session_id = id(session)
+        with self._session_locks_mutex:
+            generation = self._ort_shrink_generation
+            if self._ort_shrunk_generation.get(session_id) == generation:
+                return None
+            self._ort_shrunk_generation[session_id] = generation
+            if self._ort_shrink_run_options is None:
+                import onnxruntime
+
+                run_options = onnxruntime.RunOptions()
+                run_options.add_run_config_entry(
+                    "memory.enable_memory_arena_shrinkage", f"gpu:{self.mp.gpu_id}"
+                )
+                self._ort_shrink_run_options = run_options
+            return self._ort_shrink_run_options
 
     @contextmanager
     def _ort_inference_gate(self, exclusive: bool) -> Iterator[None]:
@@ -124,13 +160,14 @@ class FunctionWorker:
             self.mp.syncvec.cpu()
 
         exclusive = self.mp.models.get("GFPGANv1.4") is session
+        run_options = self._ort_run_options(session)
 
         # 2. Keep GFPGAN isolated from every other ORT/TensorRT inference.
         with self._ort_inference_gate(exclusive):
             # 3. INFERENCE AND CORRECT POST-SYNC (Inside the session lock)
             with session_lock:
                 # Execute ONNX Runtime / TensorRT.
-                session.run_with_iobinding(io_binding)
+                session.run_with_iobinding(io_binding, run_options)
 
                 # 4. POST-INFERENCE SYNC (MUST BE INSIDE BOTH LOCKS)
                 # We use ORT's native synchronization instead of PyTorch's stream sync.

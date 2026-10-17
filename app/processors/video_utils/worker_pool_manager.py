@@ -196,6 +196,8 @@ class WorkerPoolManager(QObject):
         # 5. Release module-level VR and pipeline tensor caches BEFORE running allocator cleanup
         if clear_module_caches:
             self._clear_module_vram_caches()
+            # The ORT arenas keep what these workers used: release it on the next runs.
+            self.main_window.function_worker.request_ort_arena_shrink()
 
         # 6. Strict VRAM Garbage Collection
         # Enforce GC and empty_cache AFTER releasing all cached tensor references.
