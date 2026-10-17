@@ -1,0 +1,12 @@
+# Re-include what the repository's .gitignore excludes (*.json, *.pth) for this folder
+!*.json
+!*.pth
+
+# Local state of each install
+config.json
+runtime/
+backups/
+exports/
+snapshots/
+.venv/
+__pycache__/
