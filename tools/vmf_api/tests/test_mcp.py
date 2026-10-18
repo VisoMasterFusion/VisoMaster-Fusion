@@ -125,6 +125,13 @@ class McpToolsTests(unittest.TestCase):
             sent = {c: a for c, a in FakeApi.calls}
             self.assertEqual(sent["run_action"].get("name"), "x")
             self.assertEqual(sent["restore_backup"].get("name", "absent"), "absent")  # optional, not sent
+            # a refused path keeps its reason (regression: the SDK showed only "Error executing tool")
+            send({"jsonrpc": "2.0", "id": 900, "method": "tools/call",
+                  "params": {"name": "load_target_media", "arguments": {"paths": ["\\\\host\\share\\x.mp4"]}}})
+            res = recv(900)["result"]
+            text = " ".join(c.get("text", "") for c in res["content"] if c["type"] == "text")
+            self.assertTrue(res.get("isError"))
+            self.assertIn("network or device path", text)
         finally:
             # Always kill the MCP server: a leftover child keeps the pipes open and hangs the caller.
             if p is not None:

@@ -31,6 +31,7 @@ from vmf_common import (
     PERSONAL_KEYS_PATH,
     SNAPSHOT_DIR,
     VMF_DIR,
+    log,
     write_json_atomic,
 )
 
@@ -196,6 +197,7 @@ def install_hooks(mw):
     _install_console_tap()
     _install_load_hooks(mw)
     _install_rec_hooks(mw)
+    _install_workspace_hook()
 
 
 # [WARN] / [ERROR] lines VisoMaster prints, with their time: reported with a recording's result.
@@ -423,6 +425,7 @@ def _readiness(mw) -> dict:
 # ---------------------------------------------------------------------------
 
 _REC: dict = {}  # current or last recording, see _rec_update
+_SEG_START: dict = {}  # VisoMaster's frame counter when the last segment recording started
 _OUTPUTS: list = []  # (time, path) returned by VisoMaster's get_output_file_path
 
 
@@ -451,8 +454,23 @@ def _install_output_hook():
     misc.get_output_file_path = get_output_file_path
 
 
+def _frames_written(vp, rec) -> int:
+    """Frames this recording sent to the encoder: VisoMaster's counter minus its value at the start."""
+    return max(0, int(getattr(vp, "frames_written", 0) or 0) - int(rec.get("written_base", 0) or 0))
+
+
+def _segments(vp) -> list:
+    """[(first, last), ...] of a segment recording (Record Start / End markers), else []."""
+    if not getattr(vp, "is_processing_segments", False):
+        return []
+    try:
+        return [(int(s), int(e)) for s, e in (getattr(vp, "segments_to_process", None) or [])]
+    except (TypeError, ValueError):
+        return []
+
+
 def _rec_progress(vp, rec) -> dict:
-    written = int(getattr(vp, "frames_written", 0) or 0)
+    written = _frames_written(vp, rec)
     total = rec.get("total_frames") or 0
     elapsed = time.time() - rec["started_at"]
     out = {"frames_written": written, "total_frames": total or None, "elapsed_s": round(elapsed, 1)}
@@ -498,11 +516,29 @@ def _install_rec_hooks(mw):
         fn = getattr(vp, name, None)
         if fn is not None and not getattr(fn, "_vmf_wrapped", False):
             setattr(vp, name, _wrap_finalize(fn, mw))
+    # A segment recording goes on from VisoMaster's frame counter (only a normal recording resets it):
+    # note the counter when one starts.
+    fn = getattr(vp, "start_multi_segment_recording", None)
+    if fn is not None and not getattr(fn, "_vmf_wrapped", False):
+        setattr(vp, "start_multi_segment_recording", _wrap_segment_start(fn, vp))
     try:
         # VisoMaster refreshes its VRAM bar every 5 s while processing: keep the peak.
         mw.gpu_memory_update_signal.connect(lambda used, total: _rec_vram_sample(used))
     except Exception:
         pass
+
+
+def _wrap_segment_start(fn, vp):
+    def start_multi_segment_recording(*a, **k):
+        try:
+            _SEG_START["written"] = int(getattr(vp, "frames_written", 0) or 0)
+        except Exception:
+            pass
+        return fn(*a, **k)
+
+    start_multi_segment_recording._vmf_wrapped = True
+    start_multi_segment_recording.__wrapped__ = fn
+    return start_multi_segment_recording
 
 
 def _wrap_finalize(fn, mw=None):
@@ -582,8 +618,17 @@ def _rec_update_locked(mw, install_hooks: bool) -> dict | None:
         _rec_finish(mw, vp, int((_REC.get("progress") or {}).get("frames_written", 0) or 0))
     if active and not _REC.get("active"):
         written = int(getattr(vp, "frames_written", 0) or 0)
-        start = max(0, int(getattr(vp, "next_frame_to_display", 0) or 0) - written)
-        total = max(0, int(getattr(vp, "max_frame_number", 0) or 0) + 1 - start)
+        base = 0
+        segments = _segments(vp)
+        if segments:
+            # Only the segments are recorded, and VisoMaster's counter goes on from the previous recording.
+            base = min(written, int(_SEG_START.pop("written", 0) or 0))
+            written -= base
+            start = segments[0][0]
+            total = sum(e - s + 1 for s, e in segments)
+        else:
+            start = max(0, int(getattr(vp, "next_frame_to_display", 0) or 0) - written)
+            total = max(0, int(getattr(vp, "max_frame_number", 0) or 0) + 1 - start)
         _REC.clear()
         _REC.update(
             active=True,
@@ -593,12 +638,15 @@ def _rec_update_locked(mw, install_hooks: bool) -> dict | None:
             media=Path(str(getattr(vp, "media_path", "") or "")).name or None,
             start_frame=start,
             total_frames=total or None,
+            written_base=base,
             fps=round(float(getattr(vp, "fps", 0) or 0), 3) or None,
             output_folder=str(mw.control.get("OutputMediaFolder", "") or "") or None,
             swap_enabled=_swap_state(mw)["enabled"],
             lazy_at_start=_lazy_pending(mw),
             vp_start=vp_start,
         )
+        if segments:
+            _REC["segments"] = len(segments)
         v = _vram(mw)
         if v:
             _REC["vram_start_mb"] = _REC["vram_peak_mb"] = v["used_mb"]
@@ -619,7 +667,7 @@ def _rec_finish(mw, vp, written: int | None = None) -> None:
     # Ended: VisoMaster finalizes (audio merge) on the UI thread, so it is done by now.
     prog = _REC.get("progress") or {}
     if written is None:
-        written = int(getattr(vp, "frames_written", 0) or prog.get("frames_written", 0) or 0)
+        written = _frames_written(vp, _REC) or int(prog.get("frames_written", 0) or 0)
     out = _rec_output(_REC["started_at"] - 1)
     exists = bool(out and Path(out).is_file())
     total = _REC.get("total_frames") or 0
@@ -706,7 +754,7 @@ _REC_STARTER: dict = {}
 def _rec_view(rec: dict | None) -> dict | None:
     if not rec:
         return None
-    keys = ("id", "active", "started_by", "media", "start_frame", "total_frames", "fps", "output_folder",
+    keys = ("id", "active", "started_by", "media", "start_frame", "total_frames", "segments", "fps", "output_folder",
             "swap_enabled", "progress", "result")
     return {k: rec[k] for k in keys if k in rec}
 
@@ -1646,9 +1694,17 @@ def cmd_schema(ctx, key: str | None = None, group: str | None = None):
 # ---------------------------------------------------------------------------
 
 
+def _snapshot_out(path: str | None, save: bool) -> Path | None:
+    out = _out_path(path, ".png")
+    if out is None and save:
+        out = SNAPSHOT_DIR / f"vmf-snapshot-{_stamp()}.png"
+    return out
+
+
 @command("snapshot", timeout=30)
-def cmd_snapshot(ctx, path: str | None = None, view: bool = False, include_data: bool = True):
-    """Preview PNG: processed frame at full resolution (view=true: the view as displayed)."""
+def cmd_snapshot(ctx, path: str | None = None, view: bool = False, include_data: bool = True, save: bool = False):
+    """Preview PNG: processed frame at full resolution (view=true: the view as displayed).
+    save=true without path: written in vmf_api\\snapshots."""
     from PySide6 import QtCore, QtWidgets
 
     mw = ctx.mw
@@ -1675,7 +1731,7 @@ def cmd_snapshot(ctx, path: str | None = None, view: bool = False, include_data:
     png = bytes(buf.data())
     buf.close()
     res = {"source": source, "width": image.width(), "height": image.height(), "bytes": len(png)}
-    out = _out_path(path, ".png")
+    out = _snapshot_out(path, save)
     if out is not None:
         out.parent.mkdir(parents=True, exist_ok=True)
         kept = _keep_previous(out)
@@ -2414,6 +2470,54 @@ def cmd_save_workspace(ctx, path: str | None = None):
         out["previous_kept"] = kept
     _save_workspace_file(mw, p, kept)
     return {"saved": str(p), **out}
+
+
+# Window place and size in a workspace file (window_state_data). A hidden VisoMaster (Qt offscreen) has no
+# real place on screen: saving its own would open the next normal start off screen or resized.
+_WINDOW_KEYS = ("x", "y", "width", "height", "isMaximized", "isFullScreen", "dock_state")
+
+
+def _window_state(path) -> dict | None:
+    try:
+        ws = json.loads(Path(path).read_text(encoding="utf-8")).get("window_state_data") or {}
+    except (OSError, ValueError, TypeError, AttributeError):
+        return None
+    keep = {k: ws[k] for k in _WINDOW_KEYS if k in ws}
+    return keep or None
+
+
+def _wrap_workspace_save(fn):
+    def save_current_workspace(main_window, data_filename=False):
+        keep = None
+        if data_filename:
+            keep = _window_state(data_filename) or _window_state(getattr(main_window, "last_workspace_path", ""))
+        res = fn(main_window, data_filename)
+        if keep:
+            try:
+                p = Path(data_filename)
+                data = json.loads(p.read_text(encoding="utf-8"))
+                data.setdefault("window_state_data", {}).update(keep)
+                write_json_atomic(p, data, indent=4)  # same layout as VisoMaster's own save
+            except (OSError, ValueError, TypeError, AttributeError) as e:
+                log(f"window place not kept in {data_filename}: {e}")
+        return res
+
+    save_current_workspace._vmf_wrapped = True
+    save_current_workspace.__wrapped__ = fn
+    return save_current_workspace
+
+
+def _install_workspace_hook():
+    """Hidden VisoMaster only: its workspace saves keep the window place of the file they replace."""
+    if os.environ.get("QT_QPA_PLATFORM") != "offscreen":
+        return
+    try:
+        from app.ui.widgets.actions import save_load_actions as sla
+    except Exception as e:
+        log(f"workspace save hook not installed: {e}")
+        return
+    if not getattr(sla.save_current_workspace, "_vmf_wrapped", False):
+        sla.save_current_workspace = _wrap_workspace_save(sla.save_current_workspace)
 
 
 def _keep_last_workspace(last: Path) -> str | None:

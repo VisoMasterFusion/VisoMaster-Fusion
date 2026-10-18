@@ -35,6 +35,7 @@ from vmf_common import (  # noqa: E402
     BACKUP_DIR,
     PERSONAL_KEYS_PATH,
     RUNTIME_PATH,
+    VMF_DIR,
     read_config,
     read_runtime,
     write_config,
@@ -117,6 +118,17 @@ def _abs(p: str | None) -> str | None:
     if str(p).replace("/", "\\").startswith("\\\\"):
         raise ApiError(f"refused: network or device path ({p}): use a local file or folder")
     return str(Path(p).expanduser().resolve())
+
+
+def _snapshot_path(path: str | None, cwd: Path) -> str | None:
+    """Where `vmf-cli snapshot` writes: the given path, else the current folder. None when the current folder
+    is VisoMaster's or vmf_api's (the API writes nothing there): the API then saves in vmf_api\\snapshots."""
+    if path:
+        return _abs(path)
+    cwd = cwd.resolve()
+    if any(cwd.is_relative_to(root.resolve()) for root in (APP_DIR, VMF_DIR)):
+        return None
+    return str(cwd / f"vmf-snapshot-{time.strftime('%Y%m%d-%H%M%S')}.png")
 
 
 def _trt_progress_line(st: dict) -> str:
@@ -697,8 +709,8 @@ def run_cli(a):
     if c == "schema":
         return call("schema", {"key": a.key, "group": a.group})
     if c == "snapshot":
-        out = _abs(a.path) or str(Path.cwd() / f"vmf-snapshot-{time.strftime('%Y%m%d-%H%M%S')}.png")
-        res = call("snapshot", {"path": out, "view": a.view, "include_data": False})
+        out = _snapshot_path(a.path, Path.cwd())
+        res = call("snapshot", {"path": out, "view": a.view, "include_data": False, "save": out is None})
         return res
     if c == "list-actions":
         return call("list_actions", {"include_disabled": not a.enabled_only})
@@ -859,6 +871,13 @@ def build_mcp():
         except Exception as e:  # never let the SDK hide the reason behind "Error executing tool"
             raise ToolError(f"{type(e).__name__}: {e}") from None
 
+    def _path(p):
+        # _abs refuses network paths: as a ToolError, or the SDK shows only "Error executing tool".
+        try:
+            return _abs(p)
+        except ApiError as e:
+            raise ToolError(str(e)) from None
+
     @mcp.tool()
     def status() -> dict:
         """VisoMaster version, provider, busy state, media, faces, swap state (enabled? does each target
@@ -875,14 +894,14 @@ def build_mcp():
         """Export the config in preset format {parameters, control}, without personal keys (include_personal=true:
         with them, e.g. paths and GPU settings). path: a .json file outside VisoMaster's and vmf_api's folders
         (default: vmf_api/exports); an existing file is copied to backups/overwritten first."""
-        return _call("export_config", path=_abs(path), face_id=face_id, include_personal=include_personal)
+        return _call("export_config", path=_path(path), face_id=face_id, include_personal=include_personal)
 
     @mcp.tool()
     def diff(path: str, faces: str = "selected", no_control: bool = False, no_params: bool = False,
              source_face: str | None = None, missing: str = "keep") -> dict:
         """What importing this file (preset or last_workspace.json) would change: changed, excluded (personal),
         unknown (obsolete), invalid, missing. faces: all | selected | <face_id>."""
-        return _call("diff", path=_abs(path), faces=faces, no_control=no_control, no_params=no_params,
+        return _call("diff", path=_path(path), faces=faces, no_control=no_control, no_params=no_params,
                      source_face=source_face, missing=missing)
 
     @mcp.tool()
@@ -890,7 +909,7 @@ def build_mcp():
                      source_face: str | None = None, missing: str = "keep", dry_run: bool = False) -> dict:
         """Import someone else's preset/workspace without overwriting personal settings.
         Automatic backup first (restore_backup to undo)."""
-        return _call("apply_config", path=_abs(path), faces=faces, no_control=no_control, no_params=no_params,
+        return _call("apply_config", path=_path(path), faces=faces, no_control=no_control, no_params=no_params,
                      source_face=source_face, missing=missing, dry_run=dry_run)
 
     @mcp.tool()
@@ -928,7 +947,7 @@ def build_mcp():
         (only apply_config protects them): the result says personal=true and why. A relative path for a
         ...Folder key is made absolute from the MCP server's folder."""
         if key.endswith("Folder") and isinstance(value, str) and value:
-            value = _abs(value)
+            value = _path(value)
         return _call("set", key=key, value=value, face_id=face_id)
 
     @mcp.tool()
@@ -945,7 +964,7 @@ def build_mcp():
     def snapshot(view: bool = False, path: str | None = None, include_image: bool = True):
         """PNG capture of the preview (processed frame; view=true: the view as displayed).
         include_image=false: only source / width / height / size (and path if given), no image returned."""
-        res = _call("snapshot", view=view, path=_abs(path), include_data=include_image)
+        res = _call("snapshot", view=view, path=_path(path), include_data=include_image)
         if not include_image:
             return res
         data = base64.b64decode(res.pop("png_base64"))
@@ -974,25 +993,25 @@ def build_mcp():
     @mcp.tool()
     def load_workspace(path: str) -> dict:
         """Load a full workspace (replaces media, faces, settings). The current one is saved first."""
-        return _call("load_workspace", path=_abs(path))
+        return _call("load_workspace", path=_path(path))
 
     @mcp.tool()
     def save_workspace(path: str | None = None) -> dict:
         """Save the workspace to a .json file (default: last_workspace.json, its previous content kept in
         backups). Refused while busy (a batch's temporary media and faces would be saved)."""
-        return _call("save_workspace", path=_abs(path))
+        return _call("save_workspace", path=_path(path))
 
     @mcp.tool()
     def load_target_media(paths: list[str]) -> dict:
         """Load a folder (single path) or a list of files as target media. Asynchronous (cards arrive one
         by one): call wait_ready before using them; batches refuse to start while it loads."""
-        return _call("load_target_media", path=[_abs(p) for p in paths])
+        return _call("load_target_media", path=[_path(p) for p in paths])
 
     @mcp.tool()
     def load_input_faces(paths: list[str]) -> dict:
         """Load a folder (single path) or a list of images as input faces. Asynchronous (cards arrive one
         by one): call wait_ready before using them; batches refuse to start while it loads."""
-        return _call("load_input_faces", path=[_abs(p) for p in paths])
+        return _call("load_input_faces", path=[_path(p) for p in paths])
 
     @mcp.tool()
     def select_target_media(name: str | None = None):

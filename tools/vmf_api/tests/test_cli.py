@@ -109,5 +109,22 @@ class PollTests(unittest.TestCase):
         self.assertEqual(len(calls), 1)
 
 
+
+class SnapshotPathTests(unittest.TestCase):
+    def test_current_folder_outside_visomaster(self):
+        import tempfile
+        cwd = Path(tempfile.gettempdir())
+        out = vmf_cli._snapshot_path(None, cwd)
+        self.assertEqual(Path(out).parent, cwd.resolve())
+        self.assertTrue(Path(out).name.startswith("vmf-snapshot-"))
+
+    def test_inside_visomaster_or_vmf_api_left_to_the_api(self):
+        self.assertIsNone(vmf_cli._snapshot_path(None, vmf_cli.VMF_DIR))
+        self.assertIsNone(vmf_cli._snapshot_path(None, vmf_cli.APP_DIR / "app"))
+
+    def test_given_path_kept(self):
+        self.assertEqual(vmf_cli._snapshot_path("C:/out/a.png", Path.cwd()), str(Path("C:/out/a.png").resolve()))
+
+
 if __name__ == "__main__":
     unittest.main()

@@ -1,8 +1,11 @@
 """Write commands are refused while recording / scanning / running jobs (no Qt needed)."""
 
+import json
+import os
 import sys
 import unittest
 from pathlib import Path
+from unittest import mock
 from types import SimpleNamespace
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
@@ -888,6 +891,121 @@ def time_now():
     import time
 
     return time.time()
+
+
+
+class SegmentRecordingTests(unittest.TestCase):
+    """A segment recording records only the segments, and VisoMaster's frame counter goes on from the
+    previous recording (only a normal recording resets it)."""
+
+    def setUp(self):
+        import tempfile
+        commands._REC.clear()
+        commands._OUTPUTS.clear()
+        commands._SEG_START.clear()
+        self.dir = Path(tempfile.mkdtemp(prefix="vmf_seg_"))
+        self.vp = SimpleNamespace(recording=False, is_processing_segments=False, processing=False,
+                                  frames_written=207, next_frame_to_display=269, max_frame_number=269,
+                                  fps=25.0, media_path="C:/x/clip.mp4", segments_to_process=[])
+        self.mw = SimpleNamespace(video_processor=self.vp, control={"OutputMediaFolder": str(self.dir)})
+
+    def tearDown(self):
+        import shutil
+        commands._REC.clear()
+        commands._OUTPUTS.clear()
+        commands._SEG_START.clear()
+        shutil.rmtree(self.dir, ignore_errors=True)
+
+    def test_start_hook_notes_the_counter(self):
+        calls = []
+        start = commands._wrap_segment_start(lambda *a, **k: calls.append(a), self.vp)
+        start([(35, 112)])
+        self.assertEqual(commands._SEG_START["written"], 207)
+        self.assertEqual(calls, [([(35, 112)],)])
+        self.assertIs(commands._wrap_segment_start(start, self.vp).__wrapped__, start)
+
+    def test_counts_only_this_recording(self):
+        import time
+        vp = self.vp
+        commands._SEG_START["written"] = 207  # left by the previous recording
+        vp.is_processing_segments = True
+        vp.segments_to_process = [(35, 112), (134, 209), (217, 269)]
+        rec = commands._rec_update(self.mw)
+        self.assertEqual((rec["start_frame"], rec["total_frames"], rec["segments"]), (35, 207, 3))
+        vp.frames_written = 207 + 100
+        prog = commands._rec_update(self.mw)["progress"]
+        self.assertEqual(prog["frames_written"], 100)
+        self.assertAlmostEqual(prog["percent"], 48.3, places=1)
+        vp.frames_written = 207 + 207
+        out = self.dir / "clip_seg.mp4"
+        commands._OUTPUTS.append((time.time(), str(out)))
+        out.write_bytes(b"x" * 10)
+        vp.is_processing_segments = False
+        res = commands._rec_update(self.mw)["result"]
+        self.assertEqual((res["state"], res["frames_written"]), ("finished", 207))
+
+    def test_normal_recording_unchanged(self):
+        commands._SEG_START["written"] = 999  # never used outside segment recordings
+        self.vp.frames_written, self.vp.next_frame_to_display = 0, 0
+        self.vp.recording = True
+        rec = commands._rec_update(self.mw)
+        self.assertEqual((rec["start_frame"], rec["total_frames"]), (0, 270))
+        self.assertNotIn("segments", rec)
+
+
+class HiddenWorkspaceSaveTests(unittest.TestCase):
+    """A hidden VisoMaster (Qt offscreen) keeps the window place of the workspace file it replaces."""
+
+    def setUp(self):
+        import tempfile
+        self.dir = Path(tempfile.mkdtemp(prefix="vmf_ws_"))
+        self.last = self.dir / "last_workspace.json"
+        self.window = {"x": 67, "y": 261, "width": 2323, "height": 1015, "isMaximized": False,
+                       "isFullScreen": False, "dock_state": "AAA", "jobs": True}
+        self.last.write_text(json.dumps({"window_state_data": self.window, "control": {"a": 1}}), encoding="utf-8")
+        self.mw = SimpleNamespace(last_workspace_path=self.last)
+
+    def tearDown(self):
+        import shutil
+        shutil.rmtree(self.dir, ignore_errors=True)
+
+    @staticmethod
+    def offscreen_save(mw, data_filename=False):
+        hidden = {"x": -1110, "y": -18, "width": 2104, "height": 828, "isMaximized": False,
+                  "isFullScreen": False, "dock_state": "BBB", "jobs": False}
+        Path(data_filename).write_text(json.dumps({"window_state_data": hidden, "control": {"a": 2}}),
+                                       encoding="utf-8")
+
+    def test_window_place_kept_settings_saved(self):
+        commands._wrap_workspace_save(self.offscreen_save)(self.mw, str(self.last))
+        data = json.loads(self.last.read_text(encoding="utf-8"))
+        self.assertEqual(data["window_state_data"], {**self.window, "jobs": False})  # panels: the new state
+        self.assertEqual(data["control"], {"a": 2})
+
+    def test_new_file_takes_the_last_workspace_place(self):
+        other = self.dir / "other.json"
+        commands._wrap_workspace_save(self.offscreen_save)(self.mw, str(other))
+        self.assertEqual(json.loads(other.read_text(encoding="utf-8"))["window_state_data"]["x"], 67)
+
+    def test_installed_only_when_hidden(self):
+        # No VisoMaster here: the import fails and is logged, but only when the hook is wanted.
+        with mock.patch.dict(sys.modules, {"app.ui.widgets.actions": None}),                 mock.patch.object(commands, "log") as log:
+            with mock.patch.dict(os.environ, {"QT_QPA_PLATFORM": "windows"}):
+                commands._install_workspace_hook()
+            log.assert_not_called()
+            with mock.patch.dict(os.environ, {"QT_QPA_PLATFORM": "offscreen"}):
+                commands._install_workspace_hook()
+            log.assert_called_once()
+
+
+class SnapshotDefaultTests(unittest.TestCase):
+    def test_save_without_path_goes_to_snapshots(self):
+        out = commands._snapshot_out(None, True)
+        self.assertEqual(out.parent, commands.SNAPSHOT_DIR)
+        self.assertEqual(out.suffix, ".png")
+
+    def test_no_file_without_path_or_save(self):
+        self.assertIsNone(commands._snapshot_out(None, False))
 
 
 if __name__ == "__main__":
