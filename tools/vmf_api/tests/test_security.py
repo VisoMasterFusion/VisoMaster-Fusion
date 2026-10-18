@@ -53,6 +53,22 @@ class WorkspaceTests(unittest.TestCase):
             found = commands._foreign_kv_maps(p)
         self.assertEqual(found, ["C:/x/evil.pt"])
 
+    def test_kv_map_network_path_refused_unchecked(self):
+        # A network host could answer "missing" to the check, then serve the pickle to VisoMaster.
+        unc = r"\\host\share\x.pt"
+        p = self._ws({"control": {}, "input_faces_data": {"a": {"media_path": "a.png", "kv_map": unc},
+                                                         "b": {"media_path": "b.png", "kv_map": "//host/s/y.pt"}}})
+        real_resolve = Path.resolve
+
+        def resolve(self, *a, **k):
+            if "host" in str(self):
+                raise AssertionError("network path resolved")
+            return real_resolve(self, *a, **k)
+
+        with mock.patch("pathlib.Path.resolve", resolve):
+            found = commands._foreign_kv_maps(p)
+        self.assertEqual(sorted(found), sorted([unc, "//host/s/y.pt"]))
+
     def test_not_a_workspace(self):
         for data in ([1, 2], {"control": {}}, {"parameters": {}, "control": {}}):
             with self.assertRaises(commands.CommandError):
@@ -91,6 +107,38 @@ class OutputPathTests(unittest.TestCase):
                 commands._out_path(str(root / "presets" / "x.json"), ".json")
         last = commands.APP_DIR / "last_workspace.json"
         self.assertEqual(commands._out_path(str(last), ".json", allowed=(last,)), last.resolve())
+
+    def test_network_paths_refused(self):
+        for bad in (r"\\host\share\a.json", "//host/share/a.json", r"\\?\UNC\host\a.json"):
+            with self.assertRaisesRegex(commands.CommandError, "network"):
+                commands._abs(bad)
+            with self.assertRaisesRegex(vmf_cli.ApiError, "network"):
+                vmf_cli._abs(bad)
+
+    def test_existing_foreign_file_not_overwritten(self):
+        d = Path(tempfile.mkdtemp())
+        other = d / "settings.json"
+        other.write_text(json.dumps({"editor.fontSize": 14}))
+        with self.assertRaisesRegex(commands.CommandError, "already exists"):
+            commands._out_path(str(other), ".json")
+        image = d / "photo.png"
+        image.write_bytes(b"x")
+        with self.assertRaisesRegex(commands.CommandError, "already exists"):
+            commands._out_path(str(image), ".png")
+        mine = d / "preset.json"
+        mine.write_text(json.dumps({"control": {}, "parameters": {}}))
+        self.assertEqual(commands._out_path(str(mine), ".json"), mine.resolve())
+
+    def test_recent_overwritten_copies_kept(self):
+        d = Path(tempfile.mkdtemp())
+        target = d / "out.json"
+        target.write_text("first")
+        with mock.patch.object(commands, "OVERWRITTEN_DIR", d / "overwritten"):
+            first = commands._keep_previous(target)
+            for i in range(25):
+                target.write_text(str(i))
+                commands._keep_previous(target)
+        self.assertTrue(Path(first).is_file())  # younger than 30 days: never pruned by a burst
 
     def test_previous_file_kept(self):
         tmp = tempfile.TemporaryDirectory()

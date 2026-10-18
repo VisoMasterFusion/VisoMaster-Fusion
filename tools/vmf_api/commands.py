@@ -1192,10 +1192,19 @@ def _version() -> str | None:
         return None
 
 
+def _is_network_path(path: str) -> bool:
+    """UNC, WebDAV or device path (\\\\host\\share, //host/share, \\\\?\\..., \\\\.\\...). Merely checking such a
+    path makes Windows contact the host and send the user's credentials to it."""
+    return str(path).replace("/", "\\").startswith("\\\\")
+
+
 def _abs(path: str | None) -> Path | None:
     if not path:
         return None
-    return Path(os.path.expandvars(os.path.expanduser(path))).resolve()
+    path = os.path.expandvars(os.path.expanduser(path))
+    if _is_network_path(path):
+        raise CommandError(f"refused: network or device path ({path}): use a local file or folder")
+    return Path(path).resolve()
 
 
 def _out_path(path: str | None, suffix: str, allowed: tuple = ()) -> Path | None:
@@ -1212,14 +1221,30 @@ def _out_path(path: str | None, suffix: str, allowed: tuple = ()) -> Path | None
             if p.is_relative_to(root.resolve()):
                 raise CommandError(f"refused: {p} is inside {root} (VisoMaster's or vmf_api's own files): "
                                    f"choose another folder, or leave the path out for the default")
+        if p.exists() and not _replaceable(p):
+            raise CommandError(f"refused: {p} already exists and is not a VisoMaster config or workspace: "
+                               f"choose a new file name")
     return p
+
+
+def _replaceable(p: Path) -> bool:
+    """An existing file the API may overwrite: only a VisoMaster config, export or workspace (JSON). Any other
+    file, an image included, could belong to another program or be a personal file."""
+    if p.suffix.lower() != ".json" or not p.is_file():
+        return False
+    try:
+        data = json.loads(p.read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        return False
+    return isinstance(data, dict) and any(k in data for k in ("control", "parameters", "_vmf_export"))
 
 
 OVERWRITTEN_DIR = BACKUP_DIR / "overwritten"
 
 
 def _keep_previous(p: Path) -> str | None:
-    """Copy of a file about to be overwritten, in backups/overwritten (the 20 most recent are kept)."""
+    """Copy of a file about to be overwritten, in backups/overwritten (kept 30 days, at least the 20 most
+    recent: a burst of overwrites cannot push out an older original)."""
     if not p.is_file():
         return None
     OVERWRITTEN_DIR.mkdir(parents=True, exist_ok=True)
@@ -1228,16 +1253,19 @@ def _keep_previous(p: Path) -> str | None:
         n += 1
         keep = OVERWRITTEN_DIR / f"{_stamp()}.{n}-{p.name}"
     shutil.copy2(p, keep)
-    _prune(OVERWRITTEN_DIR, "*", 20)
+    os.utime(keep)  # age counted from the copy, not from the original's last change
+    _prune(OVERWRITTEN_DIR, "*", 20, min_age_days=30)
     return str(keep)
 
 
-def _prune(folder: Path, pattern: str, keep: int) -> None:
-    """Delete all but the `keep` most recent files of folder/pattern (backups the API itself wrote)."""
+def _prune(folder: Path, pattern: str, keep: int, min_age_days: float = 0) -> None:
+    """Delete all but the `keep` most recent files of folder/pattern (backups the API itself wrote), and only
+    those older than `min_age_days`."""
     try:
         files = sorted(folder.glob(pattern), key=lambda f: f.stat().st_mtime, reverse=True)
+        limit = time.time() - min_age_days * 86400
         for f in files[keep:]:
-            if f.is_file():
+            if f.is_file() and f.stat().st_mtime < limit:
                 f.unlink()
     except OSError:
         pass
@@ -2647,6 +2675,11 @@ def _foreign_kv_maps(path: Path) -> list:
     root = (APP_DIR / "model_assets").resolve()
     out = []
     for f in found:
+        # Never resolved: a network host could answer "missing" to this check and serve the file to
+        # VisoMaster's own load just after.
+        if _is_network_path(f):
+            out.append(f)
+            continue
         try:
             r = Path(f).resolve()
         except (OSError, ValueError):

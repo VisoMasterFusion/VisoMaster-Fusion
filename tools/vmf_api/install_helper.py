@@ -136,7 +136,8 @@ def uninstall():
                 p.unlink()
                 removed += 1
                 say(f"  removed: {p}")
-    say(f"{removed} file(s) removed. The vmf_api folder (config, backups, venv) is kept.")
+    say(f"{removed} file(s) removed. The vmf_api folder (config, backups, venv) is kept. Its backups\\ folder "
+        f"holds workspace copies with your face crops and embeddings: delete the folder if you no longer need it.")
 
 
 def check():

@@ -255,7 +255,7 @@ def _make_handler(api: ApiServer):
                 args = json.loads(raw.decode("utf-8")) if raw else {}
                 if not isinstance(args, dict):
                     raise ValueError("JSON object expected")
-            except ValueError as e:
+            except (ValueError, RecursionError) as e:
                 self._send(400, {"ok": False, "error": f"invalid JSON: {e}"})
                 return
             self._send(200, api.handle(name, args))

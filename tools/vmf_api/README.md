@@ -69,6 +69,7 @@ expects it.
 - Write commands are refused while VisoMaster records, runs a batch, an issue scan, a job queue or a TensorRT build.
 - Destructive actions need a confirmation code from a first call. Backups are written before `apply_config`,
   `restore_backup`, destructive actions, reset buttons, `load_workspace` and before `last_workspace.json` or an
-  existing output file is overwritten.
+  existing output file is overwritten (only a VisoMaster config or workspace can be overwritten).
+- Network paths (`\\host\share\…`) are refused.
 - Never exposed: dialogs, creating / editing / deleting embeddings, turning on a webcam or the virtual camera,
   loading K/V map files from outside `model_assets`, extra environment variables other than `VISOMASTER_*` / `VMF_*`.

@@ -66,10 +66,13 @@ against mistakes, not against a client that is determined to run the action: it 
 ## Files and paths
 
 - Paths are resolved by VisoMaster's process: send **absolute** paths (the CLI and the MCP server do it).
+- Network and device paths (`\\host\share\…`, `//host/…`, `\\?\…`) are refused: merely checking one makes
+  Windows send your credentials to that host.
 - Files the API writes where you ask must have the expected extension: `.json` (`export_config`,
   `save_workspace`), `.png` (`snapshot`), and be outside VisoMaster's and vmf_api's folders (except
-  `last_workspace.json` for `save_workspace`). An existing file is copied to `backups\overwritten\` first
-  (the 20 most recent copies are kept).
+  `last_workspace.json` for `save_workspace`). An existing file is only replaced if it is a VisoMaster config,
+  export or workspace (never an image or another program's JSON), after a copy to `backups\overwritten\`
+  (copies are kept 30 days, and at least the 20 most recent).
 - Config backups (`save_backup`, and before `apply_config`, `restore_backup`, a destructive `run_action`, a
   reset `press_parameter_button`) go to `vmf_api\backups\`. Whole workspaces too: the current one before
   `load_workspace` (nothing is loaded if it fails), the previous `last_workspace.json` before `save_workspace`

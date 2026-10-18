@@ -62,6 +62,13 @@ def call(command: str, args: dict | None = None, timeout: float = 700.0):
             "VisoMaster is not running with the API (no runtime/server.json). "
             "Tick \"Enable API / MCP\" in the launcher, then launch VisoMaster."
         )
+    if rt.get("pid") and _pid_gone(rt["pid"]):
+        # Left over by a VisoMaster that crashed: another program may now listen on that port and would
+        # receive the token and the arguments.
+        raise ApiError(
+            "VisoMaster is not running with the API (runtime/server.json is left over from a closed session). "
+            "Tick \"Enable API / MCP\" in the launcher, then launch VisoMaster."
+        )
     url = f"http://127.0.0.1:{int(rt['port'])}/api/{command}"
     body = json.dumps({k: v for k, v in (args or {}).items() if v is not None}).encode("utf-8")
     req = urllib.request.Request(
@@ -104,7 +111,12 @@ def poll(command: str, args: dict | None = None, tries: int = 3):
 
 
 def _abs(p: str | None) -> str | None:
-    return str(Path(p).expanduser().resolve()) if p else None
+    if not p:
+        return None
+    # Never resolved: merely checking a \\host\share path makes Windows send the user's credentials to the host.
+    if str(p).replace("/", "\\").startswith("\\\\"):
+        raise ApiError(f"refused: network or device path ({p}): use a local file or folder")
+    return str(Path(p).expanduser().resolve())
 
 
 def _trt_progress_line(st: dict) -> str:
@@ -288,8 +300,11 @@ def visomaster_running() -> tuple[bool | None, str]:
             "Get-CimInstance Win32_Process -Filter \"Name like 'python%'\" | "
             "ForEach-Object { \"$($_.ProcessId)`t$($_.ExecutablePath)`t$($_.CommandLine)\" }"
         )
+        # Full path: a bare "powershell" is looked up in the current folder first, where a planted
+        # powershell.exe would run instead.
+        powershell = Path(os.environ.get("SystemRoot", r"C:\Windows")) / "System32" / "WindowsPowerShell" / "v1.0" / "powershell.exe"
         out = subprocess.run(
-            ["powershell", "-NoProfile", "-NonInteractive", "-Command", ps],
+            [str(powershell), "-NoProfile", "-NonInteractive", "-Command", ps],
             capture_output=True, text=True, timeout=30,
         ).stdout
     except Exception as e:
@@ -326,6 +341,23 @@ def _pid_alive(pid) -> bool:
         k.GetExitCodeProcess(h, ctypes.byref(code))
         k.CloseHandle(h)
         return code.value == 259  # STILL_ACTIVE
+    except Exception:
+        return False
+
+
+def _pid_gone(pid) -> bool:
+    """True only when Windows says this process does not exist or has exited (False when it cannot tell)."""
+    try:
+        import ctypes
+
+        k = ctypes.WinDLL("kernel32", use_last_error=True)
+        h = k.OpenProcess(0x1000, False, int(pid))  # PROCESS_QUERY_LIMITED_INFORMATION
+        if not h:
+            return ctypes.get_last_error() == 87  # ERROR_INVALID_PARAMETER: no such process
+        code = ctypes.c_ulong()
+        ok = k.GetExitCodeProcess(h, ctypes.byref(code))
+        k.CloseHandle(h)
+        return bool(ok) and code.value != 259  # STILL_ACTIVE
     except Exception:
         return False
 
