@@ -107,8 +107,7 @@ that only the local user's own programs can call it, and that a mistaken or mali
   against mistakes, not proof of a human); backups before `apply_config`, `restore_backup`, destructive actions and reset buttons, before
   `load_workspace` (nothing is loaded if that backup fails), before overwriting `last_workspace.json` (`save_workspace`,
   `quit`) or an existing output file; personal settings never imported by `apply_config`.
-- **What is not hidden**: the token file is readable by whoever can read the `vmf_api` folder; diagnostics
-  (`VMF_DETECT_LOG=1`) write face boxes and landmarks to `runtime\` until deleted.
+- **What is not hidden**: the token file is readable by whoever can read the `vmf_api` folder.
 
 ## Diagnostics
 
@@ -116,10 +115,6 @@ Environment variables for VisoMaster's process (`vmf-cli launch --env KEY=VALUE`
 
 | Variable | Effect |
 |---|---|
-| `VMF_PROFILE_DETECTOR=1` | samples the detector and swap threads every ~1 ms, writes the costliest functions to `runtime\detector_profile.txt` after each recording |
-| `VMF_GIL_PROBE=1` | adds `gil_probe` (delay to get the GIL back) to recording results |
-| `VMF_GIL_SWITCH_INTERVAL_MS` | changes Python's GIL switch interval (default 5 ms) |
-| `VMF_DETECT_LOG=1` | writes per-frame detections and frame MD5s to `runtime\` to check that a VisoMaster change keeps the output identical |
 | `VMF_ALLOW_POWER_THROTTLING=1` | leaves Windows power throttling (EcoQoS) as Windows sets it, instead of turning it off (`winqos.py`), to compare |
 
 ## Install layouts

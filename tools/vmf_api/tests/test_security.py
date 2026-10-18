@@ -29,7 +29,7 @@ except ImportError:  # pragma: no cover
 class LaunchEnvAllowlistTests(unittest.TestCase):
     def test_allowed_names(self):
         self.assertTrue(vmf_cli._env_allowed("VISOMASTER_CUDA_SPIN_SYNC"))
-        self.assertTrue(vmf_cli._env_allowed("VMF_GIL_SWITCH_INTERVAL_MS"))
+        self.assertTrue(vmf_cli._env_allowed("VMF_ALLOW_POWER_THROTTLING"))
         for name in ("PYTHONSTARTUP", "PYTHONPATH", "PATH", "VMF_API", "VMF_API_PORT", "VMF_API_HOME", "VMF_PYTHON"):
             self.assertFalse(vmf_cli._env_allowed(name), name)
 

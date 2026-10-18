@@ -273,14 +273,6 @@ def start(main_window, port: int) -> ApiServer | None:
     else:
         qos = winqos.disable_power_throttling()
         log("power throttling disabled" if qos.get("applied") else f"power throttling unchanged: {qos.get('reason')}")
-    gil_ms = os.environ.get("VMF_GIL_SWITCH_INTERVAL_MS")
-    if gil_ms:
-        # Experiment: how often Python hands the GIL to another waiting thread (default 5 ms).
-        try:
-            sys.setswitchinterval(float(gil_ms) / 1000.0)
-            log(f"GIL switch interval set to {sys.getswitchinterval() * 1000:g} ms")
-        except Exception as e:
-            log(f"GIL switch interval unchanged: {e}")
     try:
         commands.install_hooks(main_window)
     except Exception as e:

@@ -726,38 +726,6 @@ class ConsoleTapTests(unittest.TestCase):
         self.assertFalse(any("[INFO]" in g for g in got))
 
 
-class DetectorTimingTests(unittest.TestCase):
-    def test_wrap_and_stats(self):
-        import time as _time
-
-        session = object()
-        fw = SimpleNamespace(run_ort_with_iobinding=lambda s, b: None)
-        mw = SimpleNamespace(function_worker=fw, models_processor=SimpleNamespace(models={"RetinaFace": session}))
-
-        def run(**k):
-            mw.function_worker.run_ort_with_iobinding(session, None)
-            return ("b", "k5", "k", "k203")
-
-        det = SimpleNamespace(run=run)
-        mw.video_processor = SimpleNamespace(sequential_detector=det)
-        commands._DETECT.clear()
-        commands._install_rec_hooks(mw)
-        wrapped = det.run
-        commands._install_rec_hooks(mw)  # no double wrap
-        self.assertIs(det.run, wrapped)
-        t0 = _time.perf_counter()
-        self.assertEqual(det.run(frame_number=1), ("b", "k5", "k", "k203"))
-        det.run(frame_number=2)
-        t1 = _time.perf_counter()
-        s = commands._detector_stats(t0, t1, 2.0)
-        self.assertEqual(s["frames"], 2)
-        self.assertIn("share_of_frames_time", s)
-        self.assertEqual(s["models"]["RetinaFace"]["calls"], 2)
-        self.assertIn("not_on_cpu", s["breakdown_ms_per_frame"])
-        fw.run_ort_with_iobinding(session, None)  # outside the detector: not counted
-        self.assertIsNone(commands._detector_stats(t1 + 1, t1 + 2, 2.0))
-
-
 class TensorRTSummaryTests(unittest.TestCase):
     def test_summary(self):
         s = commands._trt_summary([
