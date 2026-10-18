@@ -37,8 +37,9 @@ Other formats you may meet, same command and arguments:
 
 - a `servers` section with `"type": "stdio"` (e.g. VS Code's `mcp.json`);
 - TOML, `[mcp_servers.visomaster]` with `command = "…"` and `args = ["…", "mcp"]` (e.g. Codex CLI);
-- a command line, e.g. Claude Code:
-  `claude mcp add visomaster -- <vmf_api>\.venv\Scripts\python.exe <vmf_api>\vmf_cli.py mcp`.
+- a command line, e.g. Claude Code (`--scope user`: in every project; without it, only in the folder where the
+  command was typed):
+  `claude mcp add --scope user visomaster -- <vmf_api>\.venv\Scripts\python.exe <vmf_api>\vmf_cli.py mcp`.
 
 The client must run on the same Windows machine as VisoMaster: the server talks to it on `127.0.0.1`. A client
 that only accepts remote servers (a URL) needs a stdio-to-HTTP MCP bridge in front of this command; keep that
