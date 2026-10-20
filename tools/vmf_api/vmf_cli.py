@@ -469,7 +469,19 @@ def launch(hidden: bool = False, port: int | None = None, max_wait: float = 300,
         if on_progress:
             on_progress({"waiting_for": ["VisoMaster starting"]})
         time.sleep(1)
-    ready = wait_ready(max_wait=max(30.0, max_wait - (time.time() - t0)), on_progress=on_progress)
+    try:
+        ready = wait_ready(max_wait=max(30.0, max_wait - (time.time() - t0)), on_progress=on_progress)
+    except ApiError:
+        # Closed while loading (its window, or a crash): its API file goes first, so the wait would only
+        # say "not running with the API" and advise the launcher checkbox, which was ticked by this launch.
+        try:
+            code = proc.wait(timeout=15)
+        except subprocess.TimeoutExpired:
+            code = None
+        if code is None:
+            raise
+        raise ApiError(f"VisoMaster was closed before it was ready (exit code {code}). It had started with "
+                       f"the API: launch it again to use it; see {LAUNCH_LOG}") from None
     return {
         "launched": True, "pid": proc.pid, "port": port, "hidden": hidden,
         "startup_s": round(time.time() - t0, 1), "ready": ready.get("ready"), "log": str(LAUNCH_LOG),

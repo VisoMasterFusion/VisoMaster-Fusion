@@ -3,6 +3,7 @@
 import contextlib
 import io
 import sys
+import tempfile
 import unittest
 from pathlib import Path
 from unittest import mock
@@ -10,6 +11,48 @@ from unittest import mock
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
 import vmf_cli  # noqa: E402
+
+
+class LaunchClosedTests(unittest.TestCase):
+    """VisoMaster closed while launch waits for it to be ready."""
+
+    NO_API = "VisoMaster is not running with the API (no runtime/server.json). Tick \"Enable API / MCP\" ..."
+
+    def _launch(self, proc):
+        patches = [
+            mock.patch.object(vmf_cli, "LAUNCH_LOG", Path(tempfile.mkdtemp()) / "visomaster.log"),
+            mock.patch.object(vmf_cli, "visomaster_running", return_value=(False, "")),
+            mock.patch.object(vmf_cli, "read_config", return_value={"port": 1}),
+            mock.patch.object(vmf_cli, "_port_open", side_effect=[False, True]),
+            mock.patch.object(vmf_cli, "_launch_env", return_value={}),
+            mock.patch.object(vmf_cli, "_python_exe", return_value=Path("python.exe")),
+            mock.patch.object(vmf_cli.subprocess, "Popen", return_value=proc),
+            mock.patch.object(vmf_cli, "read_runtime", return_value={"pid": 42, "port": 1}),
+            mock.patch.object(vmf_cli, "wait_ready", side_effect=vmf_cli.ApiError(self.NO_API)),
+        ]
+        for p in patches:
+            p.start()
+            self.addCleanup(p.stop)
+        with self.assertRaises(vmf_cli.ApiError) as cm:
+            vmf_cli.launch()
+        return str(cm.exception)
+
+    def _proc(self, wait):
+        proc = mock.Mock(pid=42)
+        proc.poll.return_value = None
+        proc.wait.side_effect = wait
+        return proc
+
+    def test_closed_says_so(self):
+        msg = self._launch(self._proc(lambda timeout: 0))
+        self.assertTrue(msg.startswith("VisoMaster was closed before it was ready (exit code 0)"), msg)
+        self.assertNotIn("Tick", msg)
+
+    def test_still_running_keeps_the_error(self):
+        def wait(timeout):
+            raise vmf_cli.subprocess.TimeoutExpired("python.exe", timeout)
+
+        self.assertEqual(self._launch(self._proc(wait)), self.NO_API)
 
 
 class ProgressLineTests(unittest.TestCase):
