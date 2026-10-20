@@ -122,6 +122,15 @@ def parse_config(path: str | os.PathLike, schema: Schema | None = None, source_f
         data = json.load(f)
     if not isinstance(data, dict):
         raise ValueError("the JSON file must contain an object")
+    return parse_data(data, schema, source_face, path)
+
+
+def parse_data(data: dict, schema: Schema | None = None, source_face: str | None = None,
+               path: str | None = None) -> ImportedConfig:
+    """parse_config for a config already in memory. path: the file it comes from, if any (a presets-folder
+    file has its controls in <name>_ctl.json next to it)."""
+    if not isinstance(data, dict):
+        raise ValueError("the config must be a JSON object")
 
     if is_workspace(data):
         faces = {
@@ -165,6 +174,8 @@ def parse_config(path: str | os.PathLike, schema: Schema | None = None, source_f
     if n_ctl > n_param:
         return ImportedConfig(fmt="flat_control", control=dict(data))
     cfg = ImportedConfig(fmt="flat_params", parameters=dict(data))
+    if path is None:
+        return cfg
     root, ext = os.path.splitext(path)
     ctl_path = root + "_ctl" + ext
     if os.path.isfile(ctl_path):

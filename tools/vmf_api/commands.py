@@ -1253,19 +1253,29 @@ def cmd_export_config(ctx, path: str | None = None, face_id: str | None = None, 
 # ---------------------------------------------------------------------------
 
 
-def _build_plans(ctx, path, faces, no_control, no_params, source_face, missing):
+def _build_plans(ctx, path, config, faces, no_control, no_params, source_face, missing):
     mw = ctx.mw
-    p = _abs(path)
-    if p is None or not p.is_file():
-        raise CommandError(f"file not found: {path}")
+    if (path is None) == (config is None):
+        raise CommandError("give either path (a .json file) or config (the JSON object itself)")
     if missing not in ("keep", "default"):
         raise CommandError("missing must be 'keep' or 'default'")
-    try:
-        imported = merge.parse_config(p, ctx.schema, source_face=source_face)
-    except (ValueError, json.JSONDecodeError) as e:
-        raise CommandError(f"unreadable file: {e}") from None
+    if config is not None:
+        try:
+            imported = merge.parse_data(config, ctx.schema, source_face=source_face)
+        except ValueError as e:
+            raise CommandError(f"invalid config: {e}") from None
+        out = {"inline": True}
+    else:
+        p = _abs(path)
+        if p is None or not p.is_file():
+            raise CommandError(f"file not found: {path}")
+        try:
+            imported = merge.parse_config(p, ctx.schema, source_face=source_face)
+        except (ValueError, json.JSONDecodeError) as e:
+            raise CommandError(f"unreadable file: {e}") from None
+        out = {"file": str(p)}
     rules = ctx.rules
-    out = {"file": str(p), "format": imported.fmt, "notes": list(imported.notes)}
+    out.update({"format": imported.fmt, "notes": list(imported.notes)})
     control_plan = None
     if not no_control:
         if imported.control is None:
@@ -1306,20 +1316,23 @@ def _build_plans(ctx, path, faces, no_control, no_params, source_face, missing):
 
 
 @command("diff")
-def cmd_diff(ctx, path: str, faces: str = "selected", no_control: bool = False, no_params: bool = False,
-             source_face: str | None = None, missing: str = "keep"):
-    """What would change: changed / excluded (personal) / unknown (obsolete) / invalid / missing."""
-    out, *_ = _build_plans(ctx, path, faces, no_control, no_params, source_face, missing)
+def cmd_diff(ctx, path: str | None = None, faces: str = "selected", no_control: bool = False, no_params: bool = False,
+             source_face: str | None = None, missing: str = "keep", config: dict | None = None):
+    """What would change: changed / excluded (personal) / unknown (obsolete) / invalid / missing.
+    path: a .json file, or config: the JSON object itself (same formats)."""
+    out, *_ = _build_plans(ctx, path, config, faces, no_control, no_params, source_face, missing)
     return out
 
 
 @command("apply_config", write=True, timeout=120)
-def cmd_apply_config(ctx, path: str, faces: str = "selected", no_control: bool = False, no_params: bool = False,
-                     source_face: str | None = None, missing: str = "keep", dry_run: bool = False):
-    """Import a preset/workspace without touching personal keys. Backup first in vmf_api/backups."""
+def cmd_apply_config(ctx, path: str | None = None, faces: str = "selected", no_control: bool = False,
+                     no_params: bool = False, source_face: str | None = None, missing: str = "keep",
+                     dry_run: bool = False, config: dict | None = None):
+    """Import a preset/workspace without touching personal keys. Backup first in vmf_api/backups.
+    path: a .json file, or config: the JSON object itself (same formats)."""
     mw = ctx.mw
     out, control_plan, param_plans, face_ids, cwp_plan = _build_plans(
-        ctx, path, faces, no_control, no_params, source_face, missing
+        ctx, path, config, faces, no_control, no_params, source_face, missing
     )
     if dry_run:
         out["dry_run"] = True

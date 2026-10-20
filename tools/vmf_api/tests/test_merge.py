@@ -214,6 +214,16 @@ class FormatTests(unittest.TestCase):
         self.assertEqual(cfg.parameters, {"SwapperResSelection": "256"})
         self.assertEqual(cfg.control, {"nThreadsSlider": 3})
 
+    def test_data_in_memory(self):
+        data = {"parameters": {"SwapperResSelection": "256"}, "control": {"nThreadsSlider": 3}}
+        p = write_json(self.tmp, "p.json", data)
+        a, b = merge.parse_config(p, SCHEMA), merge.parse_data(data, SCHEMA)
+        self.assertEqual((a.fmt, a.parameters, a.control), (b.fmt, b.parameters, b.control))
+        flat = merge.parse_data({k: v for k, v in list(PARAM_DEFAULTS.items())[:20]}, SCHEMA)
+        self.assertEqual((flat.fmt, flat.control), ("flat_params", None))  # no file: no _ctl.json to look for
+        with self.assertRaises(ValueError):
+            merge.parse_data(["not", "an", "object"], SCHEMA)
+
     def test_presets_folder_format(self):
         params = {k: v for k, v in list(PARAM_DEFAULTS.items())[:20]}
         p = write_json(self.tmp, "mine.json", params)

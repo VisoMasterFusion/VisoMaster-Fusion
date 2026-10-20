@@ -953,6 +953,26 @@ class SegmentRecordingTests(unittest.TestCase):
         self.assertNotIn("segments", rec)
 
 
+class InlineConfigTests(unittest.TestCase):
+    """diff / apply_config with the config itself instead of a file."""
+
+    def _ctx(self):
+        return SimpleNamespace(mw=SimpleNamespace(control={}), schema=None, rules=None)
+
+    def test_path_or_config(self):
+        for kw in ({}, {"path": "x.json", "config": {"control": {}}}):
+            with self.assertRaises(commands.CommandError) as cm:
+                commands.cmd_diff(self._ctx(), **kw)
+            self.assertIn("either path", str(cm.exception))
+
+    def test_inline(self):
+        out = commands.cmd_diff(self._ctx(), config={"control": {}}, no_control=True, no_params=True)
+        self.assertEqual(out, {"inline": True, "format": "preset", "notes": []})
+        with self.assertRaises(commands.CommandError) as cm:
+            commands.cmd_apply_config(self._ctx(), config=[1, 2])
+        self.assertIn("invalid config", str(cm.exception))
+
+
 class HiddenWorkspaceSaveTests(unittest.TestCase):
     """A hidden VisoMaster (Qt offscreen) keeps the window place of the workspace file it replaces."""
 

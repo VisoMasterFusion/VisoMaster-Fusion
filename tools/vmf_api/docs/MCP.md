@@ -62,7 +62,8 @@ Mostly one tool per API command, same name (`set` is `set_value`, `quit` is `qui
 | `snapshot` | returns the PNG as an image the model can see (`include_image=false`: size only) |
 | `apply_offline` | merge a config into `last_workspace.json` while VisoMaster is closed |
 
-Paths are made absolute by the MCP process before they are sent.
+Paths are made absolute by the MCP process before they are sent. `diff` and `apply_config` also take `config`, the
+JSON object itself (e.g. settings read from screenshots), in place of `path`: no file to write first.
 
 ## Rules given to the model
 

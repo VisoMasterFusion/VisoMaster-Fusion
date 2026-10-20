@@ -909,20 +909,22 @@ def build_mcp():
         return _call("export_config", path=_path(path), face_id=face_id, include_personal=include_personal)
 
     @mcp.tool()
-    def diff(path: str, faces: str = "selected", no_control: bool = False, no_params: bool = False,
-             source_face: str | None = None, missing: str = "keep") -> dict:
-        """What importing this file (preset or last_workspace.json) would change: changed, excluded (personal),
-        unknown (obsolete), invalid, missing. faces: all | selected | <face_id>."""
-        return _call("diff", path=_path(path), faces=faces, no_control=no_control, no_params=no_params,
-                     source_face=source_face, missing=missing)
+    def diff(path: str | None = None, config: dict | None = None, faces: str = "selected", no_control: bool = False,
+             no_params: bool = False, source_face: str | None = None, missing: str = "keep") -> dict:
+        """What importing a config (preset or last_workspace.json) would change: changed, excluded (personal),
+        unknown (obsolete), invalid, missing. Either path (a .json file) or config (the JSON object itself,
+        e.g. {"parameters": {...}, "control": {...}}: no file to write). faces: all | selected | <face_id>."""
+        return _call("diff", path=_path(path), config=config, faces=faces, no_control=no_control,
+                     no_params=no_params, source_face=source_face, missing=missing)
 
     @mcp.tool()
-    def apply_config(path: str, faces: str = "selected", no_control: bool = False, no_params: bool = False,
-                     source_face: str | None = None, missing: str = "keep", dry_run: bool = False) -> dict:
-        """Import someone else's preset/workspace without overwriting personal settings.
-        Automatic backup first (restore_backup to undo)."""
-        return _call("apply_config", path=_path(path), faces=faces, no_control=no_control, no_params=no_params,
-                     source_face=source_face, missing=missing, dry_run=dry_run)
+    def apply_config(path: str | None = None, config: dict | None = None, faces: str = "selected",
+                     no_control: bool = False, no_params: bool = False, source_face: str | None = None,
+                     missing: str = "keep", dry_run: bool = False) -> dict:
+        """Import someone else's preset/workspace without overwriting personal settings: path (a .json file)
+        or config (the JSON object itself, as for diff). Automatic backup first (restore_backup to undo)."""
+        return _call("apply_config", path=_path(path), config=config, faces=faces, no_control=no_control,
+                     no_params=no_params, source_face=source_face, missing=missing, dry_run=dry_run)
 
     @mcp.tool()
     def list_backups() -> dict:

@@ -125,6 +125,14 @@ class McpToolsTests(unittest.TestCase):
             sent = {c: a for c, a in FakeApi.calls}
             self.assertEqual(sent["run_action"].get("name"), "x")
             self.assertEqual(sent["restore_backup"].get("name", "absent"), "absent")  # optional, not sent
+            # a config given inline reaches the API as a JSON object
+            cfg = {"parameters": {"SwapperResSelection": "Auto"}, "control": {"nThreadsSlider": 3}}
+            send({"jsonrpc": "2.0", "id": 901, "method": "tools/call",
+                  "params": {"name": "diff", "arguments": {"config": cfg}}})
+            self.assertFalse(recv(901)["result"].get("isError"))
+            self.assertEqual(FakeApi.calls[-1][0], "diff")
+            self.assertEqual(FakeApi.calls[-1][1].get("config"), cfg)
+            self.assertNotIn("path", FakeApi.calls[-1][1])
             # a refused path keeps its reason (regression: the SDK showed only "Error executing tool")
             send({"jsonrpc": "2.0", "id": 900, "method": "tools/call",
                   "params": {"name": "load_target_media", "arguments": {"paths": ["\\\\host\\share\\x.mp4"]}}})
