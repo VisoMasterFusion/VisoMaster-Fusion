@@ -1273,10 +1273,20 @@ class MediaPipeline(QObject):
             frame = self.webcam_frames_to_display.get()
         else:
             draining_tail = self.is_draining_tail()
-            if draining_tail and self.frames_to_display:
+            frame_number_to_display = self.vp.next_frame_to_display
+            if (
+                draining_tail
+                and self.frames_to_display
+                and frame_number_to_display not in self.frames_to_display
+                and (
+                    self.vp._safe_unfinished_tasks() == 0
+                    or self.vp.tail_force_finalize_due_to_stall
+                )
+            ):
+                # The next frame will not come (lost or skipped): flush what is
+                # left. While a worker may still deliver it, wait for it instead,
+                # or a late frame would be written after the ones that follow it.
                 frame_number_to_display = min(self.frames_to_display)
-            else:
-                frame_number_to_display = self.vp.next_frame_to_display
 
             original_frame = frame_number_to_display
             while (
