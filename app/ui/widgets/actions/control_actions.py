@@ -317,6 +317,7 @@ def handle_denoiser_state_change(
                 pass_suffix_to_update, current_mode_text
             )
 
+    common_widget_actions.update_gpu_memory_progressbar(main_window)
     # Frame refresh is handled by common_actions.update_control after this function returns.
 
 
@@ -364,6 +365,7 @@ def handle_hair_matting_state_change(main_window, new_value, control_name):
         for name in ("MODNet", "FaceParser"):
             if not main_window.models_processor.is_model_active_in_ui(name):
                 main_window.models_processor.unload_model(name)
+        common_widget_actions.update_gpu_memory_progressbar(main_window)
 
 
 def handle_face_mask_state_change(
@@ -385,6 +387,8 @@ def handle_face_mask_state_change(
         if not main_window.models_processor.is_model_active_in_ui(model_to_change):
             main_window.models_processor.unload_model(model_to_change)
 
+    common_widget_actions.update_gpu_memory_progressbar(main_window)
+
 
 def handle_restorer_state_change(
     main_window: "MainWindow", new_value: bool, control_name: str
@@ -396,7 +400,6 @@ def handle_restorer_state_change(
 
     model_type_key = None
     active_model_attr = None
-    # Identify which slot is being changed and which is the "other" slot
     other_active_model_attr = None
 
     if control_name == "FaceRestorerEnableToggle":
@@ -416,7 +419,6 @@ def handle_restorer_state_change(
 
     if model_to_change:
         if new_value:
-            # Check if the other slot is already using this model
             other_model = (
                 getattr(face_restorers_manager, other_active_model_attr, None)
                 if other_active_model_attr
@@ -436,7 +438,6 @@ def handle_restorer_state_change(
                     model_to_change,
                 )
         else:
-            # Check if the other slot is using this model before unloading
             other_model = (
                 getattr(face_restorers_manager, other_active_model_attr, None)
                 if other_active_model_attr
@@ -444,7 +445,9 @@ def handle_restorer_state_change(
             )
             if (
                 model_to_change != other_model
-                and not face_restorers_manager.is_model_used_by_extra_slots(model_to_change)
+                and not face_restorers_manager.is_model_used_by_extra_slots(
+                    model_to_change
+                )
             ):
                 main_window.models_processor.unload_model(model_to_change)
             else:
@@ -453,6 +456,8 @@ def handle_restorer_state_change(
                 )
             if active_model_attr:
                 setattr(face_restorers_manager, active_model_attr, None)
+
+    common_widget_actions.update_gpu_memory_progressbar(main_window)
 
 
 def handle_model_selection_change(
@@ -481,14 +486,12 @@ def handle_model_selection_change(
 
     new_model_name = model_map.get(new_model_type)
 
-    # Get the model currently used by the other slot
     other_model = (
         getattr(face_restorers_manager, other_active_model_attr, None)
         if other_active_model_attr
         else None
     )
 
-    # Unload the old model only if it's different from the new one AND not in use by the other slot.
     if (
         old_model_name
         and old_model_name != new_model_name
@@ -497,7 +500,6 @@ def handle_model_selection_change(
     ):
         main_window.models_processor.unload_model(old_model_name)
 
-    # If the enhancer is enabled, load the new model, but only if it's not already loaded by the other slot.
     if is_enabled and new_model_name:
         if new_model_name != other_model:
             main_window.models_processor.load_model(new_model_name)
@@ -515,6 +517,8 @@ def handle_model_selection_change(
     elif active_model_attr:
         setattr(face_restorers_manager, active_model_attr, None)
 
+    common_widget_actions.update_gpu_memory_progressbar(main_window)
+
 
 def handle_face_detailer_change(main_window: "MainWindow", new_value, control_name: str):
     """Release the detailer slot when disabled or its model selection changes."""
@@ -527,6 +531,7 @@ def handle_face_detailer_change(main_window: "MainWindow", new_value, control_na
         DETAILER_RESTORER_SLOT_ID
     )
     main_window.models_processor.purge_unused_restorers()
+    common_widget_actions.update_gpu_memory_progressbar(main_window)
 
 
 def handle_landmark_state_change(
@@ -565,7 +570,7 @@ def handle_landmark_state_change(
             with landmark_detectors._cache_lock:
                 landmark_detectors.active_landmark_models.add(model_to_load)
             landmark_detectors.current_landmark_model_name = model_to_load
-
+    common_widget_actions.update_gpu_memory_progressbar(main_window)
 
 def handle_landmark_model_selection_change(
     main_window: "MainWindow", new_detect_mode: str, control_name: str
@@ -609,7 +614,7 @@ def handle_landmark_model_selection_change(
 
     # Update the state variable to remember the new model
     landmark_detectors.current_landmark_model_name = new_model_name
-
+    common_widget_actions.update_gpu_memory_progressbar(main_window)
 
 def handle_frame_enhancer_state_change(
     main_window: "MainWindow", new_value: bool, control_name: str
@@ -629,7 +634,7 @@ def handle_frame_enhancer_state_change(
     else:
         # Unload the currently active model
         frame_enhancers.unload_models()
-
+    common_widget_actions.update_gpu_memory_progressbar(main_window)
 
 def handle_enhancer_model_selection_change(
     main_window: "MainWindow", new_enhancer_type: str, control_name: str
@@ -653,7 +658,7 @@ def handle_enhancer_model_selection_change(
     else:
         # If disabled, just ensure the current model is cleared
         frame_enhancers.current_enhancer_model = new_model_name
-
+    common_widget_actions.update_gpu_memory_progressbar(main_window)
 
 def _check_and_manage_face_editor_models(main_window: "MainWindow") -> None:
     """
@@ -711,7 +716,7 @@ def _check_and_manage_face_editor_models(main_window: "MainWindow") -> None:
         function_worker.unload_face_editor_models()
         if recast_loaded:
             function_worker.unload_perform_recast_models()
-
+        common_widget_actions.update_gpu_memory_progressbar(main_window)
 
 def handle_face_editor_button_click(main_window: "MainWindow"):
     """Called when the 'Edit Faces' button is clicked."""
@@ -977,6 +982,7 @@ def handle_auto_mouth_toggle(main_window: "MainWindow", new_value: bool) -> None
     if not new_value:
         MouthActionDetector.unload()
         print("[INFO] Auto Mouth Expression disabled. Mouth action detector unloaded.")
+        common_widget_actions.update_gpu_memory_progressbar(main_window)
         return
 
     detector = MouthActionDetector.get()
@@ -1141,9 +1147,27 @@ def reset_face_editor_expression_params(main_window: "MainWindow"):
 def handle_auto_load_target_folder_toggle(main_window: "MainWindow", enabled: bool | None = None):
     from app.ui.widgets.actions import list_view_actions
 
-    # Always use the MAIN auto-load toggle. The recursive option also calls
-    # this handler; its own True/False must not enable/disable the watcher.
+    # Widgets already hold the new UI value; control is updated after this handler.
+    main_widget = main_window.parameter_widgets.get("AutoLoadTargetFolderToggle")
+    recursive_widget = main_window.parameter_widgets.get(
+        "AutoLoadTargetFolderRecursiveToggle"
+    )
+    if main_widget is not None:
+        main_window.control["AutoLoadTargetFolderToggle"] = bool(main_widget.isChecked())
+    if recursive_widget is not None:
+        main_window.control["AutoLoadTargetFolderRecursiveToggle"] = bool(
+            recursive_widget.isChecked()
+        )
+
     watch_enabled = bool(main_window.control.get("AutoLoadTargetFolderToggle", False))
+
+    # Main OFF → force subfolders OFF
+    if not watch_enabled:
+        if recursive_widget is not None and recursive_widget.isChecked():
+            recursive_widget.blockSignals(True)
+            recursive_widget.setChecked(False)
+            recursive_widget.blockSignals(False)
+        main_window.control["AutoLoadTargetFolderRecursiveToggle"] = False
 
     if watch_enabled:
         line = getattr(main_window, "targetVideosPathLineEdit", None)
