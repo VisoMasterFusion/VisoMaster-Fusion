@@ -49,6 +49,7 @@ jobs:
         run: |
           import pathlib, subprocess, sys
           files = [
+              'helpers/test_build_progress.py',
               'processors/test_face_detailer.py',
               'processors/test_landmark_model_tracking.py',
               'processors/test_yawnet_logic.py',
