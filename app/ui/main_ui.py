@@ -1662,8 +1662,6 @@ class MainWindow(QtWidgets.QMainWindow, Ui_MainWindow):
         job_list = getattr(self, "jobQueueList", None)
         if job_list is not None:
             job_list.setMinimumWidth(0)
-    
-
 
     def _panel_widget_for_key(self, panel_key: str):
         panel_widgets = {

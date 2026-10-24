@@ -457,3 +457,154 @@ def test_clear_all_embeddings_blocked_leaves_state_unchanged(monkeypatch):
 
     assert list_view_actions.clear_all_embeddings(main_window) is False
     assert list(main_window.merged_embeddings) == ["embed_1"]
+
+
+
+class _FullDummyListWidget:
+    def __init__(self, buttons=None):
+        self._items = list(buttons or [])
+
+    def setUpdatesEnabled(self, _enabled):
+        pass
+
+    def count(self):
+        return len(self._items)
+
+    def item(self, index):
+        return self._items[index]
+
+    def itemWidget(self, item):
+        return item
+
+    def takeItem(self, index):
+        return self._items.pop(index)
+
+    def clear(self):
+        self._items.clear()
+
+
+def test_set_target_folder_auto_watch_false_when_inactive_preserves_loaded_media(tmp_path):
+    media_file = tmp_path / "clip.mp4"
+    media_file.write_bytes(b"00")
+    btn = SimpleNamespace(
+        media_id="m1",
+        media_path=str(media_file),
+        is_webcam=False,
+        deleteLater=MagicMock(),
+    )
+    list_widget = _FullDummyListWidget([btn])
+    worker = MagicMock()
+    main_window = SimpleNamespace(
+        control={"AutoLoadTargetFolderToggle": False},
+        target_videos={"m1": btn},
+        target_faces={"f1": object()},
+        parameters={"f1": {"SwapModelSelection": "Inswapper128"}},
+        selected_video_button=btn,
+        selected_target_face_id="f1",
+        targetVideosPathLineEdit=SimpleNamespace(text=lambda: str(tmp_path)),
+        last_target_media_folder_path=str(tmp_path),
+        targetVideosList=list_widget,
+        placeholder_update_signal=_DummySignal(),
+        video_loader_worker=worker,
+        video_processor=MagicMock(),
+        scene=MagicMock(),
+    )
+
+    list_view_actions.set_target_folder_auto_watch(main_window, False)
+
+    assert main_window.video_loader_worker is worker
+    assert list_widget.count() == 1
+    assert "m1" in main_window.target_videos
+    assert main_window.selected_video_button is btn
+    assert main_window.parameters == {"f1": {"SwapModelSelection": "Inswapper128"}}
+
+
+def test_set_target_folder_auto_watch_false_after_active_clears_media(tmp_path, monkeypatch):
+    media_file = tmp_path / "clip.mp4"
+    media_file.write_bytes(b"00")
+    btn = SimpleNamespace(
+        media_id="m1",
+        media_path=str(media_file),
+        is_webcam=False,
+        deleteLater=MagicMock(),
+    )
+    list_widget = _FullDummyListWidget([btn])
+    main_window = SimpleNamespace(
+        control={"AutoLoadTargetFolderToggle": True, "AutoLoadTargetFolderRecursiveToggle": False},
+        target_videos={"m1": btn},
+        target_faces={},
+        parameters={"f1": {"SwapModelSelection": "Inswapper128"}},
+        selected_video_button=btn,
+        selected_target_face_id="f1",
+        targetVideosPathLineEdit=SimpleNamespace(text=lambda: str(tmp_path)),
+        last_target_media_folder_path=str(tmp_path),
+        targetVideosList=list_widget,
+        placeholder_update_signal=_DummySignal(),
+        video_loader_worker=None,
+        video_processor=MagicMock(),
+        scene=MagicMock(),
+    )
+    monkeypatch.setattr(
+        list_view_actions,
+        "scan_and_append_new_target_media",
+        lambda _mw: None,
+    )
+
+    list_view_actions.set_target_folder_auto_watch(main_window, True)
+    assert main_window._target_folder_watch_active is True
+
+    list_view_actions.set_target_folder_auto_watch(main_window, False)
+    assert main_window._target_folder_watch_active is False
+    assert list_widget.count() == 0
+    assert main_window.target_videos == {}
+    assert main_window.selected_video_button is None
+
+
+def test_prune_missing_and_remove_subfolder_target_media(tmp_path):
+    sub = tmp_path / "sub"
+    sub.mkdir()
+    root_file = tmp_path / "root.mp4"
+    sub_file = sub / "nested.mp4"
+    root_file.write_bytes(b"00")
+    sub_file.write_bytes(b"00")
+
+    btn_root = SimpleNamespace(
+        media_id="root",
+        media_path=str(root_file),
+        is_webcam=False,
+        deleteLater=MagicMock(),
+    )
+    btn_sub = SimpleNamespace(
+        media_id="sub",
+        media_path=str(sub_file),
+        is_webcam=False,
+        deleteLater=MagicMock(),
+    )
+    list_widget = _FullDummyListWidget([btn_root, btn_sub])
+    capture = MagicMock()
+    main_window = SimpleNamespace(
+        target_videos={"root": btn_root, "sub": btn_sub},
+        selected_video_button=btn_sub,
+        selected_target_face_id="f1",
+        cur_selected_target_face_button=object(),
+        parameters={"f1": {}},
+        targetVideosList=list_widget,
+        placeholder_update_signal=_DummySignal(),
+        video_processor=SimpleNamespace(stop_processing=MagicMock(), media_capture=capture),
+        scene=MagicMock(),
+    )
+
+    list_view_actions._remove_subfolder_target_media(main_window, str(tmp_path))
+    assert list_widget.count() == 1
+    assert "sub" not in main_window.target_videos
+    assert "root" in main_window.target_videos
+    assert main_window.selected_video_button is None
+    assert main_window.cur_selected_target_face_button is None
+    capture.release.assert_called_once_with()
+
+    # Now prune when root_file is no longer in on_disk
+    main_window.selected_video_button = btn_root
+    list_view_actions._prune_missing_auto_loaded_target_media(main_window, str(tmp_path), set())
+    assert list_widget.count() == 0
+    assert main_window.target_videos == {}
+    assert main_window.selected_video_button is None

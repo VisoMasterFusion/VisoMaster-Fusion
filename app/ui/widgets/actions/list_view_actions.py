@@ -1434,6 +1434,7 @@ _TARGET_MEDIA_STABILITY_TIMEOUT_SECONDS = 30.0
 def _normalize_media_path(path: str) -> str:
     return os.path.normcase(os.path.abspath(path))
 
+
 def _path_is_under_folder(path: str, folder: str) -> bool:
     """True if ``path`` is ``folder`` or a descendant (no file open / no lock)."""
     try:
@@ -1445,6 +1446,47 @@ def _path_is_under_folder(path: str, folder: str) -> bool:
         return False
 
 
+def _reset_selected_target_video_if_removed(main_window: "MainWindow") -> None:
+    """Stop playback, release capture, and clear face/scene state when the active media is unloaded."""
+    if hasattr(main_window, "targetFacesList"):
+        try:
+            card_actions.clear_target_faces(main_window, refresh_frame=False)
+        except Exception:
+            pass
+    video_processor = getattr(main_window, "video_processor", None)
+    if video_processor is not None:
+        try:
+            video_processor.stop_processing()
+        except Exception:
+            pass
+        media_capture = getattr(video_processor, "media_capture", None)
+        if media_capture is not None:
+            try:
+                media_capture.release()
+            except Exception:
+                pass
+            try:
+                video_processor.media_capture = None
+            except Exception:
+                pass
+    try:
+        main_window.selected_video_button = None
+    except Exception:
+        pass
+    if hasattr(main_window, "selected_target_face_id"):
+        main_window.selected_target_face_id = None
+    if hasattr(main_window, "cur_selected_target_face_button"):
+        main_window.cur_selected_target_face_button = None
+    if hasattr(main_window, "parameters"):
+        main_window.parameters = {}
+    scene = getattr(main_window, "scene", None)
+    if scene is not None:
+        try:
+            scene.clear()
+        except Exception:
+            pass
+
+
 def _prune_missing_auto_loaded_target_media(
     main_window: "MainWindow", folder: str, on_disk: set[str]
 ) -> None:
@@ -1452,12 +1494,28 @@ def _prune_missing_auto_loaded_target_media(
 
     Uses only path membership checks (no open/read) so files are never locked.
     """
-    list_widget = main_window.targetVideosList
-    list_widget.setUpdatesEnabled(False)
+    list_widget = getattr(main_window, "targetVideosList", None)
+    if list_widget is None:
+        return
+    count_fn = getattr(list_widget, "count", None)
+    item_fn = getattr(list_widget, "item", None)
+    item_widget_fn = getattr(list_widget, "itemWidget", None)
+    take_fn = getattr(list_widget, "takeItem", None)
+    if not all(callable(f) for f in (count_fn, item_fn, take_fn)):
+        return
+
+    removed_any = False
+    updates_fn = getattr(list_widget, "setUpdatesEnabled", None)
+    if callable(updates_fn):
+        updates_fn(False)
     try:
-        for i in range(list_widget.count() - 1, -1, -1):
-            item = list_widget.item(i)
-            button = list_widget.itemWidget(item)
+        for i in range(count_fn() - 1, -1, -1):
+            item = item_fn(i)
+            button = (
+                item_widget_fn(item)
+                if callable(item_widget_fn) and item is not None
+                else None
+            )
             if button is None or getattr(button, "is_webcam", False):
                 continue
             media_path = getattr(button, "media_path", None)
@@ -1470,24 +1528,17 @@ def _prune_missing_auto_loaded_target_media(
                 continue
 
             media_id = getattr(button, "media_id", None)
-            if main_window.selected_video_button is button:
-                main_window.selected_video_button = None
-                try:
-                    main_window.video_processor.stop_processing()
-                except Exception:
-                    pass
-                main_window.selected_target_face_id = None
-                try:
-                    main_window.scene.clear()
-                except Exception:
-                    pass
+            if getattr(main_window, "selected_video_button", None) is button:
+                _reset_selected_target_video_if_removed(main_window)
 
-            list_widget.takeItem(i)
-            if media_id is not None:
-                main_window.target_videos.pop(media_id, None)
+            take_fn(i)
+            removed_any = True
+            target_videos = getattr(main_window, "target_videos", None)
+            if media_id is not None and isinstance(target_videos, dict):
+                target_videos.pop(media_id, None)
             try:
                 button.deleteLater()
-            except RuntimeError:
+            except Exception:
                 pass
 
             seen = getattr(main_window, "_target_folder_seen_paths", None)
@@ -1497,7 +1548,16 @@ def _prune_missing_auto_loaded_target_media(
             if loading is not None:
                 loading.discard(norm)
     finally:
-        list_widget.setUpdatesEnabled(True)
+        if callable(updates_fn):
+            updates_fn(True)
+
+    if removed_any and count_fn() == 0:
+        signal = getattr(main_window, "placeholder_update_signal", None)
+        if signal is not None:
+            try:
+                signal.emit(list_widget, False)
+            except Exception:
+                pass
 
 
 def scan_and_append_new_target_media(main_window: "MainWindow"):
@@ -1536,9 +1596,8 @@ def scan_and_append_new_target_media(main_window: "MainWindow"):
         ]
 
     on_disk = set(media_files)
-    # Drop list items whose files were deleted from disk (no open → no lock).
+    # Drop list items whose files were deleted from disk (no open -> no lock).
     _prune_missing_auto_loaded_target_media(main_window, folder, on_disk)
-
 
     seen = getattr(main_window, "_target_folder_seen_paths", None)
     if seen is None:
@@ -1634,35 +1693,61 @@ def scan_and_append_new_target_media(main_window: "MainWindow"):
     )
     main_window.video_loader_worker.start()
 
+
 def _remove_subfolder_target_media(main_window: "MainWindow", folder: str) -> None:
-    """Remove target media whose file is not a direct child of ``folder``."""
+    """Remove target media under ``folder`` whose file is not a direct child of ``folder``."""
     root = _normalize_media_path(folder)
-    list_widget = main_window.targetVideosList
-    list_widget.setUpdatesEnabled(False)
+    list_widget = getattr(main_window, "targetVideosList", None)
+    if list_widget is None:
+        return
+    count_fn = getattr(list_widget, "count", None)
+    item_fn = getattr(list_widget, "item", None)
+    item_widget_fn = getattr(list_widget, "itemWidget", None)
+    take_fn = getattr(list_widget, "takeItem", None)
+    if not all(callable(f) for f in (count_fn, item_fn, take_fn)):
+        return
+
+    removed_any = False
+    updates_fn = getattr(list_widget, "setUpdatesEnabled", None)
+    if callable(updates_fn):
+        updates_fn(False)
     try:
-        for i in range(list_widget.count() - 1, -1, -1):
-            item = list_widget.item(i)
-            button = list_widget.itemWidget(item)
+        for i in range(count_fn() - 1, -1, -1):
+            item = item_fn(i)
+            button = (
+                item_widget_fn(item)
+                if callable(item_widget_fn) and item is not None
+                else None
+            )
             if button is None or getattr(button, "is_webcam", False):
                 continue
             media_path = getattr(button, "media_path", None)
             if not media_path:
                 continue
+            norm = _normalize_media_path(media_path)
+            if not _path_is_under_folder(norm, folder):
+                continue
             parent = _normalize_media_path(os.path.dirname(media_path))
             if parent == root:
                 continue
             media_id = getattr(button, "media_id", None)
-            if main_window.selected_video_button is button:
-                main_window.selected_video_button = None
-            list_widget.takeItem(i)
-            if media_id is not None:
-                main_window.target_videos.pop(media_id, None)
+            if getattr(main_window, "selected_video_button", None) is button:
+                _reset_selected_target_video_if_removed(main_window)
+            take_fn(i)
+            removed_any = True
+            target_videos = getattr(main_window, "target_videos", None)
+            if media_id is not None and isinstance(target_videos, dict):
+                target_videos.pop(media_id, None)
             try:
                 button.deleteLater()
-            except RuntimeError:
+            except Exception:
                 pass
+            loading = getattr(main_window, "_target_folder_loading_paths", None)
+            if loading is not None:
+                loading.discard(norm)
     finally:
-        list_widget.setUpdatesEnabled(True)
+        if callable(updates_fn):
+            updates_fn(True)
 
     seen = getattr(main_window, "_target_folder_seen_paths", None)
     if seen is not None:
@@ -1672,6 +1757,14 @@ def _remove_subfolder_target_media(main_window: "MainWindow", folder: str) -> No
             if _normalize_media_path(os.path.dirname(p)) == root
         }
         main_window._target_folder_seen_paths = kept
+
+    if removed_any and count_fn() == 0:
+        signal = getattr(main_window, "placeholder_update_signal", None)
+        if signal is not None:
+            try:
+                signal.emit(list_widget, False)
+            except Exception:
+                pass
 
 
 def _clear_auto_loaded_target_media(main_window: "MainWindow") -> None:
@@ -1686,36 +1779,7 @@ def _clear_auto_loaded_target_media(main_window: "MainWindow") -> None:
 
     selected = getattr(main_window, "selected_video_button", None)
     if selected is not None and not getattr(selected, "is_webcam", False):
-        video_processor = getattr(main_window, "video_processor", None)
-        if video_processor is not None:
-            try:
-                video_processor.stop_processing()
-            except Exception:
-                pass
-            media_capture = getattr(video_processor, "media_capture", None)
-            if media_capture is not None:
-                try:
-                    media_capture.release()
-                except Exception:
-                    pass
-                try:
-                    video_processor.media_capture = None
-                except Exception:
-                    pass
-        try:
-            main_window.selected_video_button = None
-        except Exception:
-            pass
-        if hasattr(main_window, "selected_target_face_id"):
-            main_window.selected_target_face_id = None
-        if hasattr(main_window, "parameters"):
-            main_window.parameters = {}
-        scene = getattr(main_window, "scene", None)
-        if scene is not None:
-            try:
-                scene.clear()
-            except Exception:
-                pass
+        _reset_selected_target_video_if_removed(main_window)
 
     list_widget = getattr(main_window, "targetVideosList", None)
     if list_widget is None:
@@ -1734,7 +1798,11 @@ def _clear_auto_loaded_target_media(main_window: "MainWindow") -> None:
 
         for i in range(count_fn() - 1, -1, -1):
             item = item_fn(i)
-            button = item_widget_fn(item) if callable(item_widget_fn) and item is not None else None
+            button = (
+                item_widget_fn(item)
+                if callable(item_widget_fn) and item is not None
+                else None
+            )
             if button is not None and getattr(button, "is_webcam", False):
                 continue
             media_id = getattr(button, "media_id", None) if button else None
@@ -1801,14 +1869,20 @@ def set_target_folder_auto_watch(main_window: "MainWindow", enabled: bool):
         poll.timeout.connect(partial(scan_and_append_new_target_media, main_window))
         main_window._target_folder_poll_timer = poll
 
+    was_watching = bool(getattr(main_window, "_target_folder_watch_active", False))
+
     if not enabled:
+        main_window._target_folder_watch_active = False
         timer.stop()
         poll.stop()
         main_window._target_folder_seen_paths = set()
         main_window._target_folder_loading_paths = set()
         main_window._target_folder_ignored_paths = set()
-        _clear_auto_loaded_target_media(main_window)
+        if was_watching:
+            _clear_auto_loaded_target_media(main_window)
         return
+
+    main_window._target_folder_watch_active = True
 
     folder = _get_target_folder_path(main_window)
     if not folder:
