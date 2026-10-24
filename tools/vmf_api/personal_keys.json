@@ -1,0 +1,37 @@
+{
+    "_comment": "Personal settings never overwritten by apply_config / apply-offline. EXCLUSION list: everything else is imported (including new keys from the dev branch). 'keys' = {key: why it is personal} (a plain list also works). 'groups' = group names in SETTINGS_LAYOUT_DATA (Settings tab). 'patterns' = case-sensitive fnmatch patterns. 'force_include' wins over everything (e.g. UseReferenceExclusivePathToggle is a denoiser setting, not a path).",
+    "groups": [
+        "Appearance",
+        "Output Settings",
+        "Video Playback Settings",
+        "Webcam and Virtualcam Settings",
+        "Misc"
+    ],
+    "keys": {
+        "ProvidersPrioritySelection": "execution provider (CUDA / TensorRT / CPU) depends on this machine's GPU and install",
+        "nThreadsSlider": "thread count is tuned to this machine's hardware",
+        "nStreamSlider": "CUDA stream count is tuned to this GPU's VRAM",
+        "FrameWorkerDelayDecimalSlider": "frame worker timing is tuned to this machine's speed",
+        "ConfirmBeforeStoppingRecordingToggle": "UI preference of this user",
+        "OpenOutputToggle": "UI preference of this user (opens the output folder after recording)",
+        "MaxDFMModelsSlider": "VRAM budget for DFM models on this GPU",
+        "KeepModelsAliveToggle": "memory management choice for this machine's VRAM",
+        "ReferenceKVTensorsSelection": "selected K/V map file: embeddings data is reserved to the user"
+    },
+    "patterns": [
+        "*Path*",
+        "*Folder*",
+        "*Directory*",
+        "*Gpu*",
+        "*GPU*",
+        "*Webcam*",
+        "*WebCam*",
+        "*VirtCam*",
+        "*Theme*",
+        "*Toast*"
+    ],
+    "exclude_path_like_values": true,
+    "force_include": [
+        "UseReferenceExclusivePathToggle"
+    ]
+}
