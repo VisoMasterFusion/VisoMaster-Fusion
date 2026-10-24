@@ -256,17 +256,27 @@ def _install_load_hooks(mw):
         if fn is not None and not getattr(fn, "_vmf_wrapped", False):
             setattr(mp, name, _wrap_load(mp, fn, store))
     if not getattr(mp, "_vmf_build_hooked", False):
-        try:
-            mp.show_build_dialog.connect(_build_started)
-            mp.hide_build_dialog.connect(_build_finished)
+        hooked = False
+        for show_name, hide_name in (
+            ("show_build_dialog", "hide_build_dialog"),
+            ("build_dialog_show", "build_dialog_hide"),
+        ):
+            show_sig = getattr(mp, show_name, None)
+            hide_sig = getattr(mp, hide_name, None)
+            if show_sig is not None and hide_sig is not None:
+                try:
+                    show_sig.connect(_build_started)
+                    hide_sig.connect(_build_finished)
+                    hooked = True
+                except Exception:
+                    pass
+        if hooked:
             mp._vmf_build_hooked = True
-        except Exception:
-            pass
 
 
-def _build_started(title, text=""):
+def _build_started(title, text="", *a):
     lines = [x.strip() for x in str(text).splitlines() if x.strip()]
-    model = lines[1] if len(lines) > 1 else None
+    model = lines[1] if len(lines) > 1 else (lines[0] if lines else None)
     with _LOADS_LOCK:
         _BUILDS["running"].append({"step": str(title), "model": model, "t0": time.time()})
 
@@ -770,12 +780,16 @@ def _trt_building(mw) -> str | None:
     job = _TRT_JOB
     if job is not None and job.get("running"):
         return f"TensorRT cache build in progress ({job.get('current')})"
-    dlg = getattr(mw, "build_progress_dialog", None)
-    try:
-        if dlg is not None and dlg.isVisible():
-            return "VisoMaster is building a TensorRT engine"
-    except Exception:
-        pass
+    mp = getattr(mw, "models_processor", None)
+    for dlg in (
+        getattr(mw, "build_progress_dialog", None),
+        getattr(mp, "_trt_build_dialog", None),
+    ):
+        try:
+            if dlg is not None and dlg.isVisible():
+                return "VisoMaster is building a TensorRT engine"
+        except Exception:
+            pass
     return None
 
 
@@ -3007,28 +3021,51 @@ class _ThreadTee:
 def _load_with_capture(mp, name, item):
     """mp.load_model(name) while recording attempts / timeouts / errors in the job item."""
     item.update(attempt=None, timeouts=0, exit_codes=[], log_tail=[])
+    last_line = None
+    line_lock = threading.Lock()
 
     def on_line(line):
-        tail = item["log_tail"]
-        tail.append(line[:300])
-        del tail[:-20]
-        m = _ATTEMPT_RE.search(line)
-        if m:
-            item["attempt"] = f"{m.group(1)}/{m.group(2)}"
-        # VisoMaster prints two lines per timeout ("Probe process ... timed out!" then "TensorRT Engine
-        # build timed out."): count the probe one only.
-        if "probe process" in line.lower() and "timed out" in line.lower():
-            item["timeouts"] += 1
-        m = _EXIT_RE.search(line)
-        if m and "failed" in line.lower():
-            item["exit_codes"].append(int(m.group(1)))
+        nonlocal last_line
+        line = str(line).rstrip()
+        if not line:
+            return
+        with line_lock:
+            if line == last_line:
+                return
+            last_line = line
+            tail = item["log_tail"]
+            tail.append(line[:300])
+            del tail[:-20]
+            m = _ATTEMPT_RE.search(line)
+            if m:
+                item["attempt"] = f"{m.group(1)}/{m.group(2)}"
+            # VisoMaster prints two lines per timeout ("Probe process ... timed out!" then "TensorRT Engine
+            # build timed out."): count the probe one only.
+            if "probe process" in line.lower() and "timed out" in line.lower():
+                item["timeouts"] += 1
+            m = _EXIT_RE.search(line)
+            if m and "failed" in line.lower():
+                item["exit_codes"].append(int(m.group(1)))
 
+    log_sig = getattr(mp, "build_dialog_log", None)
+    log_connected = False
+    if log_sig is not None:
+        try:
+            log_sig.connect(on_line)
+            log_connected = True
+        except Exception:
+            pass
     ident = threading.get_ident()
     out, err = sys.stdout, sys.stderr
     sys.stdout, sys.stderr = _ThreadTee(out, ident, on_line), _ThreadTee(err, ident, on_line)
     try:
         return mp.load_model(name)
     finally:
+        if log_connected:
+            try:
+                log_sig.disconnect(on_line)
+            except Exception:
+                pass
         # Restore only if nobody replaced them meanwhile.
         if isinstance(sys.stdout, _ThreadTee):
             sys.stdout = out

@@ -129,6 +129,66 @@ class TensorRTTests(unittest.TestCase):
         mw = fake_mw()
         mw.build_progress_dialog = SimpleNamespace(isVisible=lambda: True)
         self.assertIn("TensorRT", commands.busy_reason(mw))
+        mw2 = fake_mw()
+        mw2.models_processor = SimpleNamespace(_trt_build_dialog=SimpleNamespace(isVisible=lambda: True))
+        self.assertIn("TensorRT", commands.busy_reason(mw2))
+
+    def test_new_build_dialog_signals_and_log_capture(self):
+        import threading
+
+        class FakeSig:
+            def __init__(self):
+                self._cbs = []
+
+            def connect(self, cb):
+                self._cbs.append(cb)
+
+            def disconnect(self, cb):
+                if cb in self._cbs:
+                    self._cbs.remove(cb)
+
+            def emit(self, *a):
+                for cb in list(self._cbs):
+                    cb(*a)
+
+        mp = SimpleNamespace(
+            build_dialog_show=FakeSig(),
+            build_dialog_hide=FakeSig(),
+            build_dialog_log=FakeSig(),
+        )
+        mw = fake_mw()
+        mw.models_processor = mp
+        commands._BUILDS["running"].clear()
+        commands._BUILDS["done"].clear()
+        commands._install_load_hooks(mw)
+        mp.build_dialog_show.emit("TensorRT Engine Build", "GFPGANv1.4", 42.0, 5)
+        self.assertEqual(len(commands._BUILDS["running"]), 1)
+        self.assertEqual(commands._BUILDS["running"][0]["model"], "GFPGANv1.4")
+        mp.build_dialog_hide.emit()
+        self.assertEqual(len(commands._BUILDS["running"]), 0)
+        self.assertEqual(commands._BUILDS["done"][-1]["model"], "GFPGANv1.4")
+
+        def load_via_reader_thread(name):
+            print(f"[INFO] Probe attempt 1 of 3 for {name}...")
+            mp.build_dialog_log.emit(f"[INFO] Probe attempt 1 of 3 for {name}...")
+            t = threading.Thread(
+                target=lambda: mp.build_dialog_log.emit("[ERROR] TensorRT tactic failure in subprocess")
+            )
+            t.start()
+            t.join()
+            return None
+
+        mp.load_model = load_via_reader_thread
+        item = {}
+        commands._load_with_capture(mp, "GFPGANv1.4", item)
+        self.assertEqual(item["attempt"], "1/3")
+        self.assertEqual(
+            item["log_tail"],
+            [
+                "[INFO] Probe attempt 1 of 3 for GFPGANv1.4...",
+                "[ERROR] TensorRT tactic failure in subprocess",
+            ],
+        )
 
     def test_build_refused_without_tensorrt_provider(self):
         mw = fake_mw()
