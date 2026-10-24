@@ -44,9 +44,11 @@ _VGG_STD = torch.tensor([0.229, 0.224, 0.225]).view(3, 1, 1)
 #
 # NOT CALIBRATED against real footage: this is a plausible value, not a measured one.
 # Both this and YAWNET_MIN_KAPPA want tuning on real material before being trusted.
-_SEG_GUARD_MIN_ABS_YAW = 40.0
-# Fraction of the 256x256 crop a valid face prediction is expected to keep.
-_SEG_GUARD_MIN_FACE_RATIO = 0.30
+_SEG_GUARD_MIN_ABS_YAW = 60.0
+# Fraction of the 256x256 crop below which a profile face mask is considered collapsed.
+_SEG_GUARD_MIN_FACE_RATIO = 0.10
+# Degrees over which the safeguard ramps up above _SEG_GUARD_MIN_ABS_YAW.
+_SEG_GUARD_YAW_RAMP_DEG = 15.0
 
 
 class FaceMasks:
@@ -1158,15 +1160,14 @@ class FaceMasks:
     def _seg_guard_settings(parameters: dict | None) -> tuple[bool, float, float]:
         """
         Resolve the profile-safeguard settings from the UI, falling back to the module
-        defaults when a key is absent -- which is the normal case for workspaces saved
-        before these controls existed, and for internal callers that pass no parameters
-        at all. The fallbacks preserve the previous always-on behaviour.
+        defaults when a key is absent. Disabled by default so normal XSeg / Occluder
+        masks are never altered unless the user explicitly enables the safeguard.
 
         Min Face Area is a UI percentage; it is returned as a 0..1 fraction to match
         the mask mean it is compared against.
         """
         p = parameters or {}
-        enabled = bool(p.get("SegGuardEnableToggle", True))
+        enabled = bool(p.get("SegGuardEnableToggle", False))
         min_yaw = float(p.get("SegGuardMinYawSlider", _SEG_GUARD_MIN_ABS_YAW))
         min_ratio = (
             float(
@@ -1180,20 +1181,21 @@ class FaceMasks:
         return enabled, min_yaw, min_ratio
 
     @staticmethod
-    def _seg_model_degraded(
+    def _seg_guard_weight(
         face_mask: torch.Tensor,
         yaw_deg: float | None,
         model: str,
         parameters: dict | None = None,
-    ) -> bool:
+    ) -> float:
         """
-        Decides whether a segmentation model has collapsed on an extreme head angle
-        and should be bypassed. See _SEG_GUARD_MIN_ABS_YAW for the rationale, and
-        _seg_guard_settings for the UI overrides.
+        Compute a continuous [0.0, 1.0] rescue weight when a segmentation model
+        collapses on an extreme head angle. Using a smooth ramp over both face area
+        and head angle avoids frame-to-frame flickering when values hover near the
+        thresholds.
 
         face_mask must be binarized with 1 = face, so mean() is a true area fraction.
-        yaw_deg of None means the caller cannot supply a head angle; we then never
-        bypass, keeping the model's own output authoritative.
+        yaw_deg of None means the caller cannot supply a head angle; we then return 0.0,
+        keeping the model's own output authoritative.
 
         The cheap host-side tests are checked first on purpose: frontal faces (the
         overwhelming majority of frames) never reach the .item() call and so never pay
@@ -1201,28 +1203,48 @@ class FaceMasks:
         """
         enabled, min_yaw, min_ratio = FaceMasks._seg_guard_settings(parameters)
 
-        # min_ratio of 0 can never be undercut by a mean, so treat it as off and skip
-        # the sync rather than reading the mask to compare against an impossible bar.
         if not enabled or min_ratio <= 0.0:
-            return False
+            return 0.0
 
         if yaw_deg is None or abs(yaw_deg) < min_yaw:
-            return False
+            return 0.0
 
-        face_ratio = face_mask.mean().item()
+        face_ratio = float(face_mask.mean().item())
         if face_ratio >= min_ratio:
-            return False
+            return 0.0
 
+        ratio_span = max(min_ratio * 0.5, 1e-4)
+        w_ratio = min(max((min_ratio - face_ratio) / ratio_span, 0.0), 1.0)
+        if w_ratio >= 0.8 or _SEG_GUARD_YAW_RAMP_DEG <= 0.0:
+            w_yaw = 1.0
+        else:
+            yaw_excess = max(0.0, abs(float(yaw_deg)) - min_yaw)
+            w_yaw = min(1.0, 0.35 + 0.65 * (yaw_excess / _SEG_GUARD_YAW_RAMP_DEG))
+
+        weight = round(w_yaw * w_ratio, 4)
         logger.debug(
-            "%s bypassed: face ratio %.3f < %.2f at yaw %.1f deg (min angle %.1f; "
-            "model likely collapsed on profile); applying swap unmasked for this frame.",
+            "%s safeguard active (weight=%.2f): face ratio %.3f < %.2f at yaw %.1f deg "
+            "(min angle %.1f).",
             model,
+            weight,
             face_ratio,
             min_ratio,
             yaw_deg,
             min_yaw,
         )
-        return True
+        return weight
+
+    @staticmethod
+    def _seg_model_degraded(
+        face_mask: torch.Tensor,
+        yaw_deg: float | None,
+        model: str,
+        parameters: dict | None = None,
+    ) -> bool:
+        """Boolean helper indicating whether the profile safeguard is active."""
+        return (
+            FaceMasks._seg_guard_weight(face_mask, yaw_deg, model, parameters) > 0.0
+        )
 
     @torch.no_grad()
     def apply_occlusion(
@@ -1257,7 +1279,10 @@ class FaceMasks:
         # Binarize: True(1) = Face, False(0) = Occlusion
         outpred_binary = (outpred > 0).type(torch.float32)
 
-        if self._seg_model_degraded(outpred_binary, yaw_deg, "Occluder", parameters):
+        guard_weight = self._seg_guard_weight(
+            outpred_binary, yaw_deg, "Occluder", parameters
+        )
+        if guard_weight >= 1.0:
             return torch.ones_like(outpred_binary).unsqueeze(0)
 
         outpred = torch.unsqueeze(outpred_binary, 0)
@@ -1325,6 +1350,9 @@ class FaceMasks:
         if protected_mouth_region is not None:
             # Explicit float cast to avoid boolean subtraction error
             outpred = outpred * (1.0 - protected_mouth_region.float())
+
+        if guard_weight > 0.0:
+            outpred = outpred + guard_weight * (1.0 - outpred)
 
         return outpred
 
@@ -1410,25 +1438,30 @@ class FaceMasks:
         outpred = torch.clamp(outpred, min=0.0, max=1.0)
         outpred[outpred < 0.1] = 0
 
-        # Bypass a collapsed XSeg on extreme profiles (see _seg_model_degraded). The raw
+        # Reinforce a collapsed XSeg on extreme profiles (see _seg_guard_weight). The raw
         # output is a probability map, so it must be thresholded before measuring area --
         # mean() over soft values is probability mass, not the fraction of face pixels.
-        # All four returns use the inverted convention (0 = Face), so an all-zero result
-        # makes every consumer's (1.0 - mask) a no-op and preserves the swap.
-        if self._seg_model_degraded(
+        # Instead of early-returning four all-zero square tensors (which skips Size/Blur/
+        # Mouth/BgExclude and causes AutoColor/TransferTexture/Differencing to sample the
+        # outer background corners), blend the collapsed prediction toward a soft inner-face
+        # oval before running the normal XSeg pipeline.
+        guard_weight = self._seg_guard_weight(
             (outpred > 0.5).type(torch.float32), yaw_deg, "DFL XSeg", parameters
-        ):
-            # Four independent tensors, not four references to one: callers apply
-            # in-place mask math (mul_) and aliasing here would corrupt the others.
-            bypass = [
-                torch.zeros(
-                    (1, 256, 256),
-                    dtype=torch.float32,
-                    device=self.models_processor.device,
+        )
+        if guard_weight > 0.0:
+            fallback_face = (
+                self.soft_oval_mask(
+                    256,
+                    256,
+                    center=(128, 128),
+                    radius_x=88,
+                    radius_y=108,
+                    feather_radius=20,
                 )
-                for _ in range(4)
-            ]
-            return bypass[0], bypass[1], bypass[2], bypass[3]
+                .to(device=outpred.device, dtype=outpred.dtype)
+                .squeeze()
+            )
+            outpred = torch.maximum(outpred, fallback_face * guard_weight)
 
         # Invert: Face becomes 0, Background/Obstacles become 1
         outpred = 1.0 - outpred

@@ -495,7 +495,7 @@ SWAPPER_LAYOUT_DATA: Any = {  # noqa: F811
         "SegGuardEnableToggle": {
             "level": 1,
             "label": "Profile Safeguard",
-            "default": True,
+            "default": False,
             "parentToggle": "OccluderEnableToggle | DFLXSegEnableToggle",
             "requiredToggleValue": True,
             "help": (
@@ -503,12 +503,13 @@ SWAPPER_LAYOUT_DATA: Any = {  # noqa: F811
                 "and can collapse on extreme side angles, marking the whole face as "
                 "occluded. That empties the mask and the swap silently disappears for "
                 "those frames - the swap comes back if you disable the mask.\n\n"
-                "With this on, a model that collapses is skipped for that frame and "
-                "the swap is applied unmasked instead of vanishing.\n\n"
+                "With this on, a collapsing mask is smoothly reinforced within the "
+                "inner face region instead of vanishing, while keeping normal XSeg and "
+                "downstream pipeline masks intact.\n\n"
                 "It only triggers when the head is at an extreme angle AND almost "
                 "nothing of the face survives, because a low face ratio on its own is "
                 "also what a CORRECT prediction looks like when a hand really does "
-                "cover the face. Turn this off to get the old behaviour back."
+                "cover the face."
             ),
         },
         "SegGuardMinYawSlider": {
@@ -516,7 +517,7 @@ SWAPPER_LAYOUT_DATA: Any = {  # noqa: F811
             "label": "Min Head Angle",
             "min_value": "0",
             "max_value": "180",
-            "default": "40",
+            "default": "60",
             "step": 1,
             "parentToggle": "SegGuardEnableToggle",
             "requiredToggleValue": True,
@@ -538,14 +539,14 @@ SWAPPER_LAYOUT_DATA: Any = {  # noqa: F811
             "label": "Min Face Area",
             "min_value": "0",
             "max_value": "100",
-            "default": "30",
+            "default": "10",
             "step": 1,
             "parentToggle": "SegGuardEnableToggle",
             "requiredToggleValue": True,
             "help": (
                 "How little of the face must survive the mask before it counts as a "
                 "collapse, as a percentage of the crop.\n\n"
-                "At 30, a mask keeping less than 30% of the crop is suspect. Raise it "
+                "At 10, a mask keeping less than 10% of the crop is suspect. Raise it "
                 "if profile swaps still vanish; lower it if real occlusion (a hand, a "
                 "microphone) is being ignored. 0 disables the safeguard.\n\n"
                 "This default is a plausible guess, not a measured value."

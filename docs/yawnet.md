@@ -97,9 +97,9 @@ UI specifically so they can be tuned on real footage and better defaults chosen 
 
 | Setting | Where | Default | Constant |
 |---|---|---|---|
-| Profile Safeguard | Swapper, under the mask toggles | on | — |
-| Min Head Angle | same | 40° | `_SEG_GUARD_MIN_ABS_YAW` |
-| Min Face Area | same | 30% | `_SEG_GUARD_MIN_FACE_RATIO` |
+| Profile Safeguard | Swapper, under the mask toggles | off | — |
+| Min Head Angle | same | 60° | `_SEG_GUARD_MIN_ABS_YAW` |
+| Min Face Area | same | 10% | `_SEG_GUARD_MIN_FACE_RATIO` |
 | Min Confidence (kappa) | Settings, under YawNet | 0 (off) | `YAWNET_MIN_KAPPA` |
 
 The module constants remain the fallbacks, so workspaces saved before these controls

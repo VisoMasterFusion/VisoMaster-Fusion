@@ -165,16 +165,22 @@ def _xseg_returning(fill):
     return _stub
 
 
-PROFILE_YAW = 55.0
+PROFILE_YAW = 75.0
 FRONTAL_YAW = 10.0
+GUARD_ON = {"SegGuardEnableToggle": True}
 
 
 def test_occluder_bypassed_on_profile_when_mask_collapses():
-    """Extreme yaw + collapsed mask == model failure -> bypass, swap still applied."""
+    """Extreme yaw + collapsed mask == model failure -> bypass when safeguard enabled."""
     fm = _make_face_masks()
-    fm.run_occluder = _occluder_returning(0.05)
+    fm.run_occluder = _occluder_returning(0.02)
 
-    mask = fm.apply_occlusion(torch.zeros((3, 256, 256)), amount=0, yaw_deg=PROFILE_YAW)
+    mask = fm.apply_occlusion(
+        torch.zeros((3, 256, 256)),
+        amount=0,
+        parameters=GUARD_ON,
+        yaw_deg=PROFILE_YAW,
+    )
 
     assert mask.shape == (1, 256, 256)
     assert mask.min().item() == 1.0, "bypass must return a fully clear mask"
@@ -187,60 +193,77 @@ def test_occluder_respected_when_frontal_face_is_heavily_occluded():
     occluder must be honoured, not bypassed.
     """
     fm = _make_face_masks()
-    fm.run_occluder = _occluder_returning(0.05)
+    fm.run_occluder = _occluder_returning(0.02)
 
-    mask = fm.apply_occlusion(torch.zeros((3, 256, 256)), amount=0, yaw_deg=FRONTAL_YAW)
+    mask = fm.apply_occlusion(
+        torch.zeros((3, 256, 256)),
+        amount=0,
+        parameters=GUARD_ON,
+        yaw_deg=FRONTAL_YAW,
+    )
 
     assert mask.min().item() == 0.0, "occlusion must survive on a frontal face"
     # Tolerance covers row quantization in the stub (1 row == 1/256).
-    assert abs(mask.mean().item() - 0.05) < 0.005
+    assert abs(mask.mean().item() - 0.02) < 0.005
 
 
 def test_occluder_respected_on_profile_when_mask_is_plausible():
     """Extreme yaw alone must not trigger a bypass if the mask looks sane."""
     fm = _make_face_masks()
-    fm.run_occluder = _occluder_returning(0.75)
+    fm.run_occluder = _occluder_returning(0.25)
 
-    mask = fm.apply_occlusion(torch.zeros((3, 256, 256)), amount=0, yaw_deg=PROFILE_YAW)
+    mask = fm.apply_occlusion(
+        torch.zeros((3, 256, 256)),
+        amount=0,
+        parameters=GUARD_ON,
+        yaw_deg=PROFILE_YAW,
+    )
 
-    assert abs(mask.mean().item() - 0.75) < 1e-6
+    assert abs(mask.mean().item() - 0.25) < 1e-6
 
 
 def test_occluder_not_bypassed_when_yaw_unknown():
     """Callers that cannot supply a head angle keep the model authoritative."""
     fm = _make_face_masks()
-    fm.run_occluder = _occluder_returning(0.05)
+    fm.run_occluder = _occluder_returning(0.02)
 
-    mask = fm.apply_occlusion(torch.zeros((3, 256, 256)), amount=0)
+    mask = fm.apply_occlusion(
+        torch.zeros((3, 256, 256)), amount=0, parameters=GUARD_ON
+    )
 
     assert mask.min().item() == 0.0
 
 
-def test_xseg_bypassed_on_profile_returns_four_independent_zero_masks():
+def test_xseg_rescued_on_profile_reinforces_inner_face_without_aliasing():
     """
-    XSeg returns inverted masks (0 = Face), so an all-zero bypass makes every
-    consumer's (1 - mask) a no-op. The four results must not alias each other:
-    the pipeline applies in-place mask math to them.
+    When XSeg collapses on an extreme profile and the safeguard is enabled, it
+    reinforces the inner face oval (0 = Face at center) while keeping outer corners
+    masked (1 = Background) so downstream stats masks do not sample background.
+    The four results must not alias each other.
     """
     fm = _make_face_masks()
-    fm.run_dfl_xseg = _xseg_returning(0.05)
+    fm.run_dfl_xseg = _xseg_returning(0.02)
 
     masks = fm.apply_dfl_xseg(
         torch.zeros((3, 256, 256)),
         amount=0,
         mouth=torch.zeros((1, 256, 256)),
-        parameters={},
+        parameters=dict(GUARD_ON),
         yaw_deg=PROFILE_YAW,
     )
 
     assert len(masks) == 4
     for m in masks:
         assert m.shape == (1, 256, 256)
-        assert m.max().item() == 0.0
+        # Center of face oval is rescued (0 = Face)
+        assert m[0, 128, 128].item() == pytest.approx(0.0)
+        # Outer corner stays background (1 = Background)
+        assert m[0, 255, 255].item() == pytest.approx(1.0)
 
     # Aliasing check: mutating one must not disturb the others.
-    masks[0].add_(1.0)
-    assert [m.max().item() for m in masks[1:]] == [0.0, 0.0, 0.0]
+    orig_centers = [m[0, 128, 128].item() for m in masks[1:]]
+    masks[0].add_(5.0)
+    assert [m[0, 128, 128].item() for m in masks[1:]] == orig_centers
 
 
 def test_xseg_respected_when_frontal_face_is_heavily_occluded():
@@ -251,7 +274,7 @@ def test_xseg_respected_when_frontal_face_is_heavily_occluded():
         torch.zeros((3, 256, 256)),
         amount=0,
         mouth=torch.zeros((1, 256, 256)),
-        parameters={},
+        parameters=dict(GUARD_ON),
         yaw_deg=FRONTAL_YAW,
     )
 
@@ -263,17 +286,17 @@ def test_xseg_respected_when_frontal_face_is_heavily_occluded():
 def test_xseg_ratio_uses_binarized_area_not_soft_probability_mass():
     """
     The guard must measure thresholded AREA, not soft probability mass. A mask
-    covering 45% of the crop at p=0.6 has a soft mean of 0.27 -- under the 0.30
+    covering 15% of the crop at p=0.6 has a soft mean of 0.09 -- under the 0.10
     threshold, so a mean-based check would wrongly call it a collapse -- while its
-    binarized area is 0.45 and correctly passes.
+    binarized area is 0.15 and correctly passes.
     """
     fm = _make_face_masks()
 
     def _soft(img, output):
         output.zero_()
-        # 45% of the crop at p=0.6 -> soft mean 0.27 (would trip a mean-based
-        # check) but thresholded area 0.45 (correctly passes).
-        output.view(256, 256)[: int(256 * 0.45), :] = 0.6
+        # 15% of the crop at p=0.6 -> soft mean 0.09 (would trip a mean-based
+        # check) but thresholded area 0.15 (correctly passes).
+        output.view(256, 256)[: int(256 * 0.15), :] = 0.6
 
     fm.run_dfl_xseg = _soft
 
@@ -281,12 +304,12 @@ def test_xseg_ratio_uses_binarized_area_not_soft_probability_mass():
         torch.zeros((3, 256, 256)),
         amount=0,
         mouth=torch.zeros((1, 256, 256)),
-        parameters={},
+        parameters=dict(GUARD_ON),
         yaw_deg=PROFILE_YAW,
     )
 
-    # Not bypassed: the face region is inverted to ~0.4, background stays 1.0.
-    assert mask.max().item() == 1.0
+    # Not bypassed: the center (row 128) was not filled by the top-15% stub and stays 1.0 (BG).
+    assert mask[0, 128, 128].item() == 1.0
 
 
 def test_clip_mask_is_not_silently_overridden():
@@ -322,7 +345,7 @@ def test_soft_oval_mask_zero_radius_protection():
 # ---------------------------------------------------------------------------
 
 
-def _occluder_mask(params, yaw=55.0, fill=0.05):
+def _occluder_mask(params, yaw=75.0, fill=0.02):
     """Run apply_occlusion with a collapsed mask and the given UI parameters."""
     fm = _make_face_masks()
     rows = int(round(256 * fill))
@@ -332,15 +355,18 @@ def _occluder_mask(params, yaw=55.0, fill=0.05):
         output.view(256, 256)[:rows, :] = 1.0
 
     fm.run_occluder = _stub
+    merged = {"SegGuardEnableToggle": True}
+    if params:
+        merged.update(params)
     return fm.apply_occlusion(
-        torch.zeros((3, 256, 256)), amount=0, parameters=params, yaw_deg=yaw
+        torch.zeros((3, 256, 256)), amount=0, parameters=merged, yaw_deg=yaw
     )
 
 
 def test_seg_guard_defaults_match_module_constants():
     """
-    Workspaces saved before these controls existed have no keys, and internal callers
-    pass none at all. Both must keep the previous always-on behaviour.
+    Profile Safeguard is disabled by default so normal XSeg / Occluder masks are never
+    overridden unless the user explicitly enables SegGuardEnableToggle.
     """
     from app.processors.face_masks import (
         _SEG_GUARD_MIN_ABS_YAW,
@@ -350,9 +376,9 @@ def test_seg_guard_defaults_match_module_constants():
 
     for params in (None, {}):
         enabled, min_yaw, min_ratio = FaceMasks._seg_guard_settings(params)
-        assert enabled is True
-        assert min_yaw == _SEG_GUARD_MIN_ABS_YAW
-        assert min_ratio == pytest.approx(_SEG_GUARD_MIN_FACE_RATIO)
+        assert enabled is False
+        assert min_yaw == _SEG_GUARD_MIN_ABS_YAW == 60.0
+        assert min_ratio == pytest.approx(_SEG_GUARD_MIN_FACE_RATIO) == pytest.approx(0.10)
 
 
 def test_seg_guard_converts_ui_percentage_to_fraction():
@@ -376,16 +402,16 @@ def test_seg_guard_min_face_area_zero_disables():
 
 
 def test_seg_guard_respects_raised_min_angle():
-    """At 55 deg of yaw, a 90 deg minimum must not fire."""
-    assert _occluder_mask({"SegGuardMinYawSlider": 90}, yaw=55.0).min().item() == 0.0
+    """At 75 deg of yaw, a 90 deg minimum must not fire."""
+    assert _occluder_mask({"SegGuardMinYawSlider": 90}, yaw=75.0).min().item() == 0.0
     # ...but the same frame fires once the minimum drops below the actual angle.
-    assert _occluder_mask({"SegGuardMinYawSlider": 30}, yaw=55.0).min().item() == 1.0
+    assert _occluder_mask({"SegGuardMinYawSlider": 30}, yaw=75.0).min().item() == 1.0
 
 
 def test_seg_guard_respects_lowered_min_face_area():
     """
-    A mask keeping 20% of the crop is a collapse at the 30% default but plausible at
-    a 10% setting, so the lower setting must leave the occluder alone.
+    A mask keeping 20% of the crop is a collapse at a 30% setting (softly blended > 0)
+    but plausible at the 10% default, so the 10% setting must leave the occluder alone.
     """
     assert (
         _occluder_mask({"SegGuardMinFaceRatioSlider": 10}, fill=0.20).min().item()
@@ -393,7 +419,7 @@ def test_seg_guard_respects_lowered_min_face_area():
     )
     assert (
         _occluder_mask({"SegGuardMinFaceRatioSlider": 30}, fill=0.20).min().item()
-        == 1.0
+        > 0.5
     )
 
 
