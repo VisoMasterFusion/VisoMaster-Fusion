@@ -2278,7 +2278,7 @@ class PipelineProcessor:
         if yawnet_deg is not None:
             guard_yaw_deg = self.worker.function_worker.yaw_from_frontal(yawnet_deg)
         else:
-            guard_yaw_deg = abs(float(yaw_deg))
+            guard_yaw_deg = min(abs(float(yaw_deg)), 90.0)
         side_mask = self.get_dynamic_side_mask(
             yaw_deg,
             pitch_deg,

@@ -235,7 +235,7 @@ def test_guard_threshold_is_documented_as_uncalibrated():
     from app.processors import face_masks
 
     src = inspect.getsource(face_masks)
-    assert "_SEG_GUARD_MIN_ABS_YAW = 40.0" in src
+    assert "_SEG_GUARD_MIN_ABS_YAW = 60.0" in src
     assert "NOT CALIBRATED" in src
 
 
