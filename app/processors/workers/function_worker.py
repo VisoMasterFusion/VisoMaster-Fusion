@@ -96,6 +96,7 @@ class FunctionWorker:
             return
         with self._session_locks_mutex:
             self._ort_shrink_generation += 1
+            self._ort_shrunk_generation.clear()
 
     def _ort_run_options(self, session: Any) -> Optional[Any]:
         """RunOptions that shrink the session's arena, once per shrink request."""
@@ -167,7 +168,10 @@ class FunctionWorker:
             # 3. INFERENCE AND CORRECT POST-SYNC (Inside the session lock)
             with session_lock:
                 # Execute ONNX Runtime / TensorRT.
-                session.run_with_iobinding(io_binding, run_options)
+                if run_options is not None:
+                    session.run_with_iobinding(io_binding, run_options)
+                else:
+                    session.run_with_iobinding(io_binding)
 
                 # 4. POST-INFERENCE SYNC (MUST BE INSIDE BOTH LOCKS)
                 # We use ORT's native synchronization instead of PyTorch's stream sync.
