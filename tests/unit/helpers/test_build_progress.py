@@ -1,4 +1,4 @@
-"""Unit tests for app.helpers.build_progress (Qt-free build-progress logic)."""
+"""Unit tests for app.helpers.build_progress and TrtBuildDialog lifecycle."""
 
 import json
 
@@ -50,6 +50,10 @@ class TestParseBuildStage:
     def test_unrelated_line_returns_none(self):
         assert parse_build_stage("[INFO] Loading model: Inswapper128") is None
         assert parse_build_stage("") is None
+
+    def test_negative_cache_or_deserialize_lines_do_not_jump_ahead(self):
+        assert parse_build_stage("[TRT] Engine cache not found, will rebuild") is None
+        assert parse_build_stage("[TRT] Failed to deserialize engine") is None
 
 
 class TestStageTracker:
@@ -104,8 +108,10 @@ class TestFormatDuration:
         assert format_duration(3600) == "1:00:00"
         assert format_duration(3661) == "1:01:01"
 
-    def test_negative_clamps_to_zero(self):
+    def test_negative_and_non_finite_clamp_to_zero(self):
         assert format_duration(-5) == "0:00"
+        assert format_duration(float("inf")) == "0:00"
+        assert format_duration(float("nan")) == "0:00"
 
 
 class TestBuildTimeStore:
@@ -152,14 +158,62 @@ class TestBuildTimeStore:
         store = BuildTimeStore(str(path))
         assert store.expected_seconds("ModelA") == 90.0
 
-    def test_non_positive_durations_are_ignored(self, tmp_path):
-        store = BuildTimeStore(str(tmp_path / "times.json"))
+    def test_non_positive_and_non_finite_durations_are_ignored(self, tmp_path):
+        path = tmp_path / "times.json"
+        path.write_text(
+            '{"models": {"ModelA": {"times": [1e999, 60.0]}}}',
+            encoding="utf-8",
+        )
+        store = BuildTimeStore(str(path))
+        assert store.expected_seconds("ModelA") == 60.0
         store.record("ModelA", 0)
         store.record("ModelA", -3)
-        assert store.expected_seconds("ModelA") is None
+        store.record("ModelA", float("inf"))
+        store.record("ModelA", float("nan"))
+        assert store.expected_seconds("ModelA") == 60.0
 
     def test_creates_missing_directory(self, tmp_path):
         path = str(tmp_path / "nested" / "dir" / "times.json")
         store = BuildTimeStore(path)
         store.record("ModelA", 42.0)
         assert BuildTimeStore(path).expected_seconds("ModelA") == 42.0
+
+
+class TestTrtBuildDialog:
+    def test_escape_routes_through_cancel_and_final_stage_disables_cancel(
+        self, monkeypatch
+    ):
+        from PySide6 import QtWidgets
+        from app.ui.widgets.trt_build_dialog import TrtBuildDialog
+
+        app = QtWidgets.QApplication.instance() or QtWidgets.QApplication([])
+        assert app is not None
+        dlg = TrtBuildDialog()
+        cancelled = []
+        dlg.cancel_requested.connect(lambda: cancelled.append(True))
+
+        dlg.start_build("Building TensorRT Cache", "ModelA", 30.0, 1)
+        assert dlg.isVisible()
+        assert dlg.cancel_button.isEnabled()
+
+        # Declining cancel confirmation keeps dialog open and Cancel enabled.
+        monkeypatch.setattr(
+            QtWidgets.QMessageBox,
+            "exec",
+            lambda self: QtWidgets.QMessageBox.StandardButton.No,
+        )
+        dlg.reject()
+        assert dlg.isVisible()
+        assert not cancelled
+        assert dlg.cancel_button.isEnabled()
+
+        # Final loading stage disables Cancel; Escape during finalization is ignored.
+        dlg.set_stage("Loading the built engine into the app...")
+        assert not dlg.cancel_button.isEnabled()
+        dlg.reject()
+        assert dlg.isVisible()
+        assert not cancelled
+
+        # finish() cleanly closes the dialog.
+        dlg.finish()
+        assert not dlg.isVisible()

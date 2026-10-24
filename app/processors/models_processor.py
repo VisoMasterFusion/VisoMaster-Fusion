@@ -212,6 +212,9 @@ class ModelsProcessor(QtCore.QObject):
         self._trt_build_dialog: Any = None
         # Set by the dialog's Cancel button; polled by the probe wait loop.
         self._build_cancel_event = threading.Event()
+        # In-flight model loads (guards against GUI-thread re-entrancy while
+        # processEvents() pumps during modal TensorRT engine builds).
+        self._models_loading: set = set()
         # How many engine builds were triggered this session (dialog counter).
         self._trt_build_session_count = 0
         # Remembers past per-model build durations for the dialog's estimate.
@@ -432,6 +435,10 @@ class ModelsProcessor(QtCore.QObject):
                 time.sleep(0.1)
 
             reader.join(timeout=5)
+            if self._build_cancel_event.is_set():
+                print(f"[INFO] Engine build for {model_name} cancelled by user.")
+                self._clean_tensorrt_cache(onnx_path, trt_options)
+                raise RuntimeError("TensorRT engine build cancelled by user.")
             return (
                 probe_process.returncode
                 if probe_process.returncode is not None
@@ -735,9 +742,21 @@ class ModelsProcessor(QtCore.QObject):
             if self.models.get(canonical_name):
                 return self.models[canonical_name]
 
+            models_loading = getattr(self, "_models_loading", None)
+            if models_loading is None:
+                models_loading = set()
+                self._models_loading = models_loading
+            if canonical_name in models_loading:
+                print(
+                    f"[INFO] Load already in progress for '{canonical_name}'; skipping re-entrant load request."
+                )
+                return self.models.get(canonical_name)
+            models_loading.add(canonical_name)
+
             model_instance = None
             onnx_path = self.models_path.get(canonical_name)
             if not onnx_path:
+                models_loading.discard(canonical_name)
                 print(
                     f"[ERROR] Model path for '{canonical_name}' not found in models_data."
                 )
@@ -903,6 +922,7 @@ class ModelsProcessor(QtCore.QObject):
                             self.models[canonical_name] = (
                                 None  # Ensure it's marked as not loaded
                             )
+                            models_loading.discard(canonical_name)
                             return None  # Abort the load
 
             # Now, proceed with the *actual* load in the calling thread.
@@ -922,22 +942,23 @@ class ModelsProcessor(QtCore.QObject):
                 session_options.log_severity_level = 3
 
                 if build_was_triggered:
+                    if self._build_cancel_event.is_set():
+                        self._clean_tensorrt_cache(onnx_path, model_trt_options)
+                        raise RuntimeError("TensorRT engine build cancelled by user.")
                     self.build_dialog_stage.emit(
                         "Loading the built engine into the app..."
                     )
 
-                # Deserializing an engine cache can take a while for large
-                # models. When load_model runs on the GUI thread, do the
-                # load in a worker and pump the event loop meanwhile, so
-                # Windows never marks the window "Not Responding". (ORT
-                # releases the GIL during session creation; if that ever
-                # changes, this degrades gracefully to the old behavior.)
+                # Deserializing a freshly built engine cache can take a while
+                # for large models. When a modal build dialog is active on the
+                # GUI thread, do the load in a worker and pump the event loop
+                # meanwhile, so Windows never marks the window "Not Responding".
                 app = QtCore.QCoreApplication.instance()
                 on_gui_thread = (
                     app is not None
                     and QtCore.QThread.currentThread() == app.thread()
                 )
-                if on_gui_thread:
+                if build_was_triggered and on_gui_thread:
                     load_outcome: Dict[str, Any] = {}
 
                     def _load_session_worker() -> None:
@@ -1025,6 +1046,7 @@ class ModelsProcessor(QtCore.QObject):
                 return None
 
             finally:
+                models_loading.discard(canonical_name)
                 # MP-05: Only emit hide_build_dialog when a build was triggered.
                 if build_was_triggered:
                     self.build_dialog_hide.emit()

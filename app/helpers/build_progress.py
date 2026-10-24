@@ -8,6 +8,7 @@ Qt application instance. It is used by ``app.processors.models_processor``
 from __future__ import annotations
 
 import json
+import math
 import os
 import tempfile
 from typing import Optional
@@ -55,10 +56,12 @@ STAGE_DEFINITIONS: tuple[tuple[str, tuple[str, ...]], ...] = (
     (
         "Writing the engine cache to disk",
         (
-            "serializ",
+            "serializing",
+            "serialize ",
+            "serialized",
+            "serialization",
             "writing engine",
             "saving engine",
-            "engine cache",
             "dumping engine",
             "flushed",
         ),
@@ -67,7 +70,6 @@ STAGE_DEFINITIONS: tuple[tuple[str, tuple[str, ...]], ...] = (
         "Build complete",
         (
             "load successful",
-            "deserialize",
         ),
     ),
 )
@@ -81,7 +83,8 @@ def parse_build_stage(line: str) -> Optional[str]:
     "Load successful. TRT engine cache built and flushed." mentions both the
     cache and the success) maps to the most advanced one.
     """
-    lowered = line.lower()
+    # Mask out "deserializ*" so it cannot match "serializ*" fragments.
+    lowered = line.lower().replace("deserializ", "")
     for label, fragments in reversed(STAGE_DEFINITIONS):
         if any(fragment in lowered for fragment in fragments):
             return label
@@ -124,7 +127,15 @@ class StageTracker:
 
 def format_duration(seconds: float) -> str:
     """Format a duration in seconds as ``m:ss`` (``h:mm:ss`` past one hour)."""
-    total = max(0, int(round(seconds)))
+    if (
+        not isinstance(seconds, (int, float))
+        or isinstance(seconds, bool)
+        or not math.isfinite(seconds)
+        or seconds <= 0
+    ):
+        total = 0
+    else:
+        total = max(0, int(round(seconds)))
     minutes, secs = divmod(total, 60)
     hours, minutes = divmod(minutes, 60)
     if hours:
@@ -169,7 +180,9 @@ class BuildTimeStore:
             clean = [
                 float(value)
                 for value in values
-                if isinstance(value, (int, float)) and not isinstance(value, bool)
+                if isinstance(value, (int, float))
+                and not isinstance(value, bool)
+                and math.isfinite(value)
                 and value > 0
             ]
             if clean:
@@ -189,7 +202,12 @@ class BuildTimeStore:
 
     def record(self, model_key: str, seconds: float) -> None:
         """Record one successful build duration and persist the store."""
-        if seconds <= 0:
+        if (
+            not isinstance(seconds, (int, float))
+            or isinstance(seconds, bool)
+            or not math.isfinite(seconds)
+            or seconds <= 0
+        ):
             return
         times = self._times.setdefault(model_key, [])
         times.append(float(seconds))

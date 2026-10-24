@@ -43,6 +43,7 @@ class TrtBuildDialog(QtWidgets.QDialog):
 
         self._started_monotonic = 0.0
         self._expected_seconds: float | None = None
+        self._build_active = False
 
         layout = QtWidgets.QVBoxLayout(self)
         layout.setContentsMargins(12, 12, 12, 12)
@@ -118,6 +119,7 @@ class TrtBuildDialog(QtWidgets.QDialog):
         means the work is not a cancellable engine build (e.g. a one-time
         shape-inference step), which hides the counter and disables Cancel.
         """
+        self._build_active = True
         self.setWindowTitle(title)
         self.model_label.setText(model_label)
         self._expected_seconds = expected_seconds if expected_seconds > 0 else None
@@ -143,9 +145,14 @@ class TrtBuildDialog(QtWidgets.QDialog):
     def set_stage(self, stage_label: str) -> None:
         """Update the human-readable build phase label."""
         self.stage_label.setText(stage_label)
+        if stage_label.startswith("Loading the built engine"):
+            # Once the isolated probe finishes and the app begins in-process
+            # session deserialization, cancellation is no longer possible.
+            self.cancel_button.setEnabled(False)
 
     def finish(self) -> None:
         """Close the dialog after the build attempt ends."""
+        self._build_active = False
         self._elapsed_timer.stop()
         self.close()
 
@@ -197,8 +204,23 @@ class TrtBuildDialog(QtWidgets.QDialog):
             self.stage_label.setText("Cancelling - waiting for the build worker...")
             self.cancel_requested.emit()
 
+    def reject(self) -> None:
+        # Pressing Escape while a build is active must not silently hide the
+        # modal dialog and unblock the main window. Route Escape through the
+        # Cancel confirmation if cancellation is available, or ignore it while
+        # finalizing.
+        if self._build_active:
+            if self.cancel_button.isEnabled():
+                self._confirm_cancel()
+            return
+        super().reject()
+
     def closeEvent(self, event: QtGui.QCloseEvent) -> None:
-        # The title-bar close button is disabled, but be explicit: closing the
-        # window only ends the display; cancellation must go through Cancel.
+        # While a build is active, only finish() may close the window.
+        if self._build_active:
+            event.ignore()
+            if self.cancel_button.isEnabled():
+                self._confirm_cancel()
+            return
         self._elapsed_timer.stop()
         super().closeEvent(event)

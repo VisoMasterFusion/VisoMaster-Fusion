@@ -49,6 +49,10 @@ def main() -> int:
         sys.path.insert(0, repo_root)
 
     try:
+        try:
+            import tensorrt  # noqa: F401 - initializes packaged TensorRT DLLs on Windows wheel installs
+        except ModuleNotFoundError:
+            pass
         import onnxruntime
         import torch
 
