@@ -61,6 +61,7 @@ jobs:
               'processors/test_perform_recast.py',
               'ui/test_save_load_actions.py',
               'ui/test_embedding_tabs_stability.py',
+              'ui/test_workspace_filter_lifecycle.py',
               'ui/test_settings_layout_data.py',
               'ui/test_common_layout_recast.py',
               'ui/test_list_view_actions.py',

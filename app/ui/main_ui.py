@@ -1138,6 +1138,7 @@ class MainWindow(QtWidgets.QMainWindow, Ui_MainWindow):
     def closeEvent(self, event):
         print("[INFO] MainWindow: closeEvent called.")
 
+        list_view_actions.stop_filter_workers(self)
         self.video_processor.stop_processing()
         list_view_actions.clear_stop_loading_input_media(self)
         list_view_actions.clear_stop_loading_target_media(self)
