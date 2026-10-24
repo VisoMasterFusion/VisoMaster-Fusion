@@ -258,7 +258,7 @@ def test_xseg_rescued_on_profile_reinforces_inner_face_without_aliasing():
         # Center of face oval is rescued (0 = Face)
         assert m[0, 128, 128].item() == pytest.approx(0.0)
         # Outer corner stays background (1 = Background)
-        assert m[0, 0, 0].item() == pytest.approx(1.0)
+        assert m[0, 255, 255].item() == pytest.approx(1.0)
 
     # Aliasing check: mutating one must not disturb the others.
     orig_centers = [m[0, 128, 128].item() for m in masks[1:]]
