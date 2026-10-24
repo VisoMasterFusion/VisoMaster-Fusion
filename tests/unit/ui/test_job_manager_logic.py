@@ -39,6 +39,8 @@ _STUBS = [
     "PySide6.QtGui",
     "PySide6.QtWidgets.QMessageBox",
     "send2trash",
+    "qdarktheme",
+    "shiboken6",
     "app.ui.widgets.widget_components",
     # Stub only the leaf action modules that job_manager_actions.py actually imports.
     # Do NOT stub the parent package ("app.ui.widgets.actions") — it's a namespace
@@ -56,6 +58,8 @@ _STUBS = [
 for _s in _STUBS:
     if _s not in sys.modules:
         sys.modules[_s] = _stub(_s)
+if isinstance(sys.modules.get("PySide6.QtCore"), MagicMock):
+    sys.modules["PySide6.QtCore"].Slot = lambda *a, **kw: (lambda fn: fn)
 
 from app.helpers.miscellaneous import ParametersDict  # noqa: E402
 
@@ -434,3 +438,34 @@ def test_list_jobs_nonexistent_dir(tmp_path):
     # No "jobs" subdir created — get_jobs_dir will create it (empty) → returns []
     result = list_jobs(_mock_mw(tmp_path))
     assert result == []
+
+
+
+def test_load_job_settings_restores_selected_target_face_safely(monkeypatch):
+    import app.ui.widgets.actions.job_manager_actions as jma
+
+    face_a = MagicMock()
+    face_b = MagicMock()
+    mw = MagicMock()
+    mw.target_videos = {"m1": MagicMock()}
+    mw.target_faces = {"face_a": face_a, "face_b": face_b}
+    mw.selected_target_face_id = None
+    mw.cur_selected_target_face_button = None
+    mw.job_processor = None
+
+    monkeypatch.setattr(jma, "_load_job_target_faces_and_params", lambda *_a, **_kw: None)
+    monkeypatch.setattr(jma, "_load_job_controls_and_state", lambda *_a, **_kw: None)
+    monkeypatch.setattr(jma, "_load_job_markers", lambda *_a, **_kw: None)
+    monkeypatch.setattr(jma, "_restore_state_and_refresh", lambda *_a, **_kw: None)
+
+    # 1. Explicit saved face_b is restored
+    jma.load_job_settings(mw, {"selected_media_id": "m1", "selected_target_face_id": "face_b"})
+    assert mw.selected_target_face_id == "face_b"
+    assert mw.cur_selected_target_face_button is face_b
+    face_b.setChecked.assert_called_with(True)
+
+    # 2. Missing key or None falls back to first available target face without KeyError
+    jma.load_job_settings(mw, {"selected_media_id": "m1"})
+    assert mw.selected_target_face_id == "face_a"
+    assert mw.cur_selected_target_face_button is face_a
+    face_a.setChecked.assert_called_with(True)
