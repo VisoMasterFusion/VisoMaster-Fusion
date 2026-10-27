@@ -76,6 +76,9 @@ def _run_app() -> None:
         )
         app.setStyleSheet(_style)
     window = main_ui.MainWindow(gpu_id=args.gpu_id)
+    from app.ui.widgets.actions import screenshot_actions
+
+    screenshot_actions.add_screenshot_controls(window)
     window.show()
     app.exec()
 
