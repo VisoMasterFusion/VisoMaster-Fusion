@@ -105,7 +105,7 @@ FACE_EDITOR_LAYOUT_DATA: Any = {  # noqa: F811
         },
 
         # ---------------- HEAD POSE ----------------
-        "__sep_head_pose__": {"level": 1, "type": "separator", "label": "HEAD POSE", "help": ""},
+        "__sep_head_pose__": {"level": 1, "type": "separator", "label": "HEAD POSE ‍👩‍🦰", "help": ""},
         "HeadPitchSlider": {
             "level": 2,
             "label": "Head Pitch",
@@ -141,7 +141,7 @@ FACE_EDITOR_LAYOUT_DATA: Any = {  # noqa: F811
         },
 
         # ---------------- HEAD POSITION ----------------
-        "__sep_head_position__": {"level": 1, "type": "separator", "label": "HEAD POSITION", "help": ""},
+        "__sep_head_position__": {"level": 1, "type": "separator", "label": "HEAD POSITION 👤", "help": ""},
         "XAxisMovementDecimalSlider": {
             "level": 2,
             "label": "X-Axis Movement",
@@ -180,10 +180,10 @@ FACE_EDITOR_LAYOUT_DATA: Any = {  # noqa: F811
         },
 
         # ---------------- EYES & EYEBROWS ----------------
-        "__sep_eyes__": {"level": 1, "type": "separator", "label": "EYES & EYEBROWS", "help": ""},
+        "__sep_eyes__": {"level": 1, "type": "separator", "label": "EYES & EYEBROWS 👁", "help": ""},
         "EyesOpenRatioDecimalSlider": {
             "level": 2,
-            "label": "Eyes Close <--> Open Ratio",
+            "label": "Eyes Close ⇽⇾ Open",
             "min_value": "-0.80",
             "max_value": "0.80",
             "default": "0.00",
@@ -203,11 +203,11 @@ FACE_EDITOR_LAYOUT_DATA: Any = {  # noqa: F811
             "decimals": 2,
             "parentToggle": "FaceEditorEnableToggle",
             "requiredToggleValue": True,
-            "help": "Makes one eye close leaving the other normal. Impossible to tell which one will be affected.",
+            "help": "Makes one eye close leaving the other normal. Mostly, the left eye.",
         },
         "EyeGazeHorizontalDecimalSlider": {
             "level": 2,
-            "label": "EyeGaze Horizontal",
+            "label": "EyeGaze Horizontal ⮂",
             "min_value": "-30.00",
             "max_value": "30.00",
             "default": "0.00",
@@ -219,7 +219,7 @@ FACE_EDITOR_LAYOUT_DATA: Any = {  # noqa: F811
         },
         "EyeGazeVerticalDecimalSlider": {
             "level": 2,
-            "label": "EyeGaze Vertical",
+            "label": "EyeGaze Vertical ⮃",
             "min_value": "-63.00",
             "max_value": "63.00",
             "default": "0.00",
@@ -243,10 +243,10 @@ FACE_EDITOR_LAYOUT_DATA: Any = {  # noqa: F811
         },
 
         # ---------------- MOUTH & LIPS ----------------
-        "__sep_mouth__": {"level": 1, "type": "separator", "label": "MOUTH & LIPS", "help": ""},
+        "__sep_mouth__": {"level": 1, "type": "separator", "label": "MOUTH & LIPS 👄", "help": ""},
         "LipsOpenRatioDecimalSlider": {
             "level": 2,
-            "label": "Lips Close <--> Open Ratio",
+            "label": "Lips Close ⇽⇾ Open",
             "min_value": "-0.80",
             "max_value": "0.80",
             "default": "0.00",
@@ -258,7 +258,7 @@ FACE_EDITOR_LAYOUT_DATA: Any = {  # noqa: F811
         },
         "LipsCloseOpenSlider": {
             "level": 2,
-            "label": "Mouth Close <--> Open Value",
+            "label": "Mouth Close ⇽⇾ Open",
             "min_value": "-90",
             "max_value": "120",
             "default": "0",
