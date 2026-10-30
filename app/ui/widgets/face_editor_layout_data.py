@@ -1,8 +1,11 @@
 from typing import Any
 from app.ui.widgets.actions import control_actions
+from app.ui.widgets.actions import face_editor_profile_actions
 
 FACE_EDITOR_LAYOUT_DATA: Any = {  # noqa: F811
     "": {
+        # ---------------- GENERAL ----------------
+        "__sep_general__": {"level": 1, "type": "separator", "label": "GENERAL", "help": ""},
         "FaceEditorBeforeTypeSelection": {
             "level": 1,
             "label": "Pipeline Position",
@@ -57,40 +60,52 @@ FACE_EDITOR_LAYOUT_DATA: Any = {  # noqa: F811
                 "exec_function": control_actions.reset_face_editor_expression_params,
             },
         },
+
+        # ---------------- PROFILES ----------------
+        "__sep_profiles__": {"level": 1, "type": "separator", "label": "PROFILES", "help": ""},
+        "FaceEditorProfileSelection": {
+            "level": 2,
+            "label": "Profile",
+            "options": lambda _dfm: face_editor_profile_actions.get_profile_names(),
+            "default": "none",
+            "parentToggle": "FaceEditorEnableToggle",
+            "requiredToggleValue": True,
+            "exec_function": face_editor_profile_actions.on_profile_changed,
+            "help": "Select a saved profile to load, or 'none' for defaults.",
+            "below_row_buttons": [
+                {
+                    "label": "Save",
+                    "help": "Overwrite the selected profile with current settings.",
+                    "exec_function": face_editor_profile_actions.on_save_clicked,
+                },
+                {
+                    "label": "Save As…",
+                    "help": "Save current settings to a new profile.",
+                    "exec_function": face_editor_profile_actions.on_save_as_clicked,
+                },
+                {
+                    "label": "🗑",
+                    "help": "Delete the selected profile.",
+                    "exec_function": face_editor_profile_actions.on_delete_clicked,
+                    "fixed_width": 32,
+                },
+            ],
+        },
+
+        # Kept for internal use, hidden from UI
         "FaceEditorTypeSelection": {
             "level": 2,
             "label": "Face Editor Type",
-            #'options': ['Human-Face', 'Animal-Face'],
             "options": ["Human-Face"],
             "default": "Human-Face",
             "parentToggle": "FaceEditorEnableToggle",
             "requiredToggleValue": True,
-            "help": "Select the target type to be edited in Face Editor.",
+            "hidden": True,
+            "help": "Target type to be edited in Face Editor.",
         },
-        "EyesOpenRatioDecimalSlider": {
-            "level": 2,
-            "label": "Eyes Close <--> Open Ratio",
-            "min_value": "-0.80",
-            "max_value": "0.80",
-            "default": "0.00",
-            "step": 0.01,
-            "decimals": 2,
-            "parentToggle": "FaceEditorEnableToggle",
-            "requiredToggleValue": True,
-            "help": "Changes the opening of the eyes.",
-        },
-        "LipsOpenRatioDecimalSlider": {
-            "level": 2,
-            "label": "Lips Close <--> Open Ratio",
-            "min_value": "-0.80",
-            "max_value": "0.80",
-            "default": "0.00",
-            "step": 0.01,
-            "decimals": 2,
-            "parentToggle": "FaceEditorEnableToggle",
-            "requiredToggleValue": True,
-            "help": "Changes the opening of the lips.",
-        },
+
+        # ---------------- HEAD POSE ----------------
+        "__sep_head_pose__": {"level": 1, "type": "separator", "label": "HEAD POSE ‍👩‍🦰", "help": ""},
         "HeadPitchSlider": {
             "level": 2,
             "label": "Head Pitch",
@@ -100,7 +115,7 @@ FACE_EDITOR_LAYOUT_DATA: Any = {  # noqa: F811
             "step": 1,
             "parentToggle": "FaceEditorEnableToggle",
             "requiredToggleValue": True,
-            "help": "Changes the opening of the lips.",
+            "help": "Tilts the head up or down.",
         },
         "HeadYawSlider": {
             "level": 2,
@@ -111,7 +126,7 @@ FACE_EDITOR_LAYOUT_DATA: Any = {  # noqa: F811
             "step": 1,
             "parentToggle": "FaceEditorEnableToggle",
             "requiredToggleValue": True,
-            "help": "Changes the head yaw.",
+            "help": "Turns the head left or right.",
         },
         "HeadRollSlider": {
             "level": 2,
@@ -122,8 +137,11 @@ FACE_EDITOR_LAYOUT_DATA: Any = {  # noqa: F811
             "step": 1,
             "parentToggle": "FaceEditorEnableToggle",
             "requiredToggleValue": True,
-            "help": "Changes the head roll.",
+            "help": "Rotates the head around its axis.",
         },
+
+        # ---------------- HEAD POSITION ----------------
+        "__sep_head_position__": {"level": 1, "type": "separator", "label": "HEAD POSITION 👤", "help": ""},
         "XAxisMovementDecimalSlider": {
             "level": 2,
             "label": "X-Axis Movement",
@@ -134,7 +152,7 @@ FACE_EDITOR_LAYOUT_DATA: Any = {  # noqa: F811
             "decimals": 2,
             "parentToggle": "FaceEditorEnableToggle",
             "requiredToggleValue": True,
-            "help": "Changes the head direction x-axis.",
+            "help": "Moves the head along the horizontal axis.",
         },
         "YAxisMovementDecimalSlider": {
             "level": 2,
@@ -146,7 +164,7 @@ FACE_EDITOR_LAYOUT_DATA: Any = {  # noqa: F811
             "decimals": 2,
             "parentToggle": "FaceEditorEnableToggle",
             "requiredToggleValue": True,
-            "help": "Changes the head direction y-axis.",
+            "help": "Moves the head along the vertical axis.",
         },
         "ZAxisMovementDecimalSlider": {
             "level": 2,
@@ -158,7 +176,120 @@ FACE_EDITOR_LAYOUT_DATA: Any = {  # noqa: F811
             "decimals": 2,
             "parentToggle": "FaceEditorEnableToggle",
             "requiredToggleValue": True,
-            "help": "Changes the head direction z-axis.",
+            "help": "Moves the head along the depth axis.",
+        },
+
+        # ---------------- EYES & EYEBROWS ----------------
+        "__sep_eyes__": {"level": 1, "type": "separator", "label": "EYES & EYEBROWS 👁", "help": ""},
+        "EyesOpenRatioDecimalSlider": {
+            "level": 2,
+            "label": "Eyes Close ⇽⇾ Open",
+            "min_value": "-0.80",
+            "max_value": "0.80",
+            "default": "0.00",
+            "step": 0.01,
+            "decimals": 2,
+            "parentToggle": "FaceEditorEnableToggle",
+            "requiredToggleValue": True,
+            "help": "Changes the opening of the eyes.",
+        },
+        "EyeWinkDecimalSlider": {
+            "level": 2,
+            "label": "Eye Wink",
+            "min_value": "0.00",
+            "max_value": "39.00",
+            "default": "0.00",
+            "step": 1,
+            "decimals": 2,
+            "parentToggle": "FaceEditorEnableToggle",
+            "requiredToggleValue": True,
+            "help": "Makes one eye close leaving the other normal. Mostly, the left eye.",
+        },
+        "EyeGazeHorizontalDecimalSlider": {
+            "level": 2,
+            "label": "EyeGaze Horizontal ⮂",
+            "min_value": "-30.00",
+            "max_value": "30.00",
+            "default": "0.00",
+            "step": 1,
+            "decimals": 2,
+            "parentToggle": "FaceEditorEnableToggle",
+            "requiredToggleValue": True,
+            "help": "Changes the horizontal eyegaze direction.",
+        },
+        "EyeGazeVerticalDecimalSlider": {
+            "level": 2,
+            "label": "EyeGaze Vertical ⮃",
+            "min_value": "-63.00",
+            "max_value": "63.00",
+            "default": "0.00",
+            "step": 1,
+            "decimals": 2,
+            "parentToggle": "FaceEditorEnableToggle",
+            "requiredToggleValue": True,
+            "help": "Changes the vertical eyegaze direction. May move the eyes up instead of the gaze.",
+        },
+        "EyeBrowsDirectionDecimalSlider": {
+            "level": 2,
+            "label": "EyeBrows Direction",
+            "min_value": "-30.00",
+            "max_value": "30.00",
+            "default": "0.00",
+            "step": 1,
+            "decimals": 2,
+            "parentToggle": "FaceEditorEnableToggle",
+            "requiredToggleValue": True,
+            "help": "Changes the eyebrows direction. 'Worried' <-- --> 'Surprised'",
+        },
+
+        # ---------------- MOUTH & LIPS ----------------
+        "__sep_mouth__": {"level": 1, "type": "separator", "label": "MOUTH & LIPS 👄", "help": ""},
+        "LipsOpenRatioDecimalSlider": {
+            "level": 2,
+            "label": "Lips Close ⇽⇾ Open",
+            "min_value": "-0.80",
+            "max_value": "0.80",
+            "default": "0.00",
+            "step": 0.01,
+            "decimals": 2,
+            "parentToggle": "FaceEditorEnableToggle",
+            "requiredToggleValue": True,
+            "help": "Changes the opening of the lips. Can also open and close the mouth.",
+        },
+        "LipsCloseOpenSlider": {
+            "level": 2,
+            "label": "Mouth Close ⇽⇾ Open",
+            "min_value": "-90",
+            "max_value": "120",
+            "default": "0",
+            "step": 1,
+            "parentToggle": "FaceEditorEnableToggle",
+            "requiredToggleValue": True,
+            "help": "Changes the closing or opening of the mouth.",
+        },
+        "MouthSmileDecimalSlider": {
+            "level": 2,
+            "label": "Mouth Smile",
+            "min_value": "-0.80",
+            "max_value": "1.30",
+            "default": "0.00",
+            "step": 0.05,
+            "decimals": 2,
+            "parentToggle": "FaceEditorEnableToggle",
+            "requiredToggleValue": True,
+            "help": "Changes the mouth smile.",
+        },
+        "MouthGrinDecimalSlider": {
+            "level": 2,
+            "label": "Mouth Grin",
+            "min_value": "0.00",
+            "max_value": "15.00",
+            "default": "0.00",
+            "step": 0.05,
+            "decimals": 2,
+            "parentToggle": "FaceEditorEnableToggle",
+            "requiredToggleValue": True,
+            "help": "Changes the mouth grin.",
         },
         "MouthPoutingDecimalSlider": {
             "level": 2,
@@ -184,89 +315,9 @@ FACE_EDITOR_LAYOUT_DATA: Any = {  # noqa: F811
             "requiredToggleValue": True,
             "help": "Pursing the mouth.",
         },
-        "MouthGrinDecimalSlider": {
-            "level": 2,
-            "label": "Mouth Grin",
-            "min_value": "0.00",
-            "max_value": "15.00",
-            "default": "0.00",
-            "step": 0.05,
-            "decimals": 2,
-            "parentToggle": "FaceEditorEnableToggle",
-            "requiredToggleValue": True,
-            "help": "Changes the mouth grin.",
-        },
-        "LipsCloseOpenSlider": {
-            "level": 2,
-            "label": "Lips Close <--> Open Value",
-            "min_value": "-90",
-            "max_value": "120",
-            "default": "0",
-            "step": 1,
-            "parentToggle": "FaceEditorEnableToggle",
-            "requiredToggleValue": True,
-            "help": "Changes the closing or opening of the lips.",
-        },
-        "MouthSmileDecimalSlider": {
-            "level": 2,
-            "label": "Mouth Smile",
-            "min_value": "-0.80",
-            "max_value": "1.30",
-            "default": "0.00",
-            "step": 0.05,
-            "decimals": 2,
-            "parentToggle": "FaceEditorEnableToggle",
-            "requiredToggleValue": True,
-            "help": "Changes the mouth smile.",
-        },
-        "EyeWinkDecimalSlider": {
-            "level": 2,
-            "label": "Eye Wink",
-            "min_value": "0.00",
-            "max_value": "39.00",
-            "default": "0.00",
-            "step": 1,
-            "decimals": 2,
-            "parentToggle": "FaceEditorEnableToggle",
-            "requiredToggleValue": True,
-            "help": "Winking eye.",
-        },
-        "EyeBrowsDirectionDecimalSlider": {
-            "level": 2,
-            "label": "EyeBrows Direction",
-            "min_value": "-30.00",
-            "max_value": "30.00",
-            "default": "0.00",
-            "step": 1,
-            "decimals": 2,
-            "parentToggle": "FaceEditorEnableToggle",
-            "requiredToggleValue": True,
-            "help": "Changes the eyebrows direction.",
-        },
-        "EyeGazeHorizontalDecimalSlider": {
-            "level": 2,
-            "label": "EyeGaze Horizontal",
-            "min_value": "-30.00",
-            "max_value": "30.00",
-            "default": "0.00",
-            "step": 1,
-            "decimals": 2,
-            "parentToggle": "FaceEditorEnableToggle",
-            "requiredToggleValue": True,
-            "help": "Changes the horizontal eyegaze direction.",
-        },
-        "EyeGazeVerticalDecimalSlider": {
-            "level": 2,
-            "label": "EyeGaze Vertical",
-            "min_value": "-63.00",
-            "max_value": "63.00",
-            "default": "0.00",
-            "step": 1,
-            "decimals": 2,
-            "parentToggle": "FaceEditorEnableToggle",
-            "requiredToggleValue": True,
-            "help": "Changes the vertical eyegaze direction.",
-        },
+
+        # ---------------- MAKEUP - FACE ----------------
+        "__sep_makeup_face__": {"level": 1, "type": "separator", "label": "MAKEUP - FACE", "help": ""},
         "FaceMakeupEnableToggle": {
             "level": 1,
             "label": "Face Makeup",
@@ -318,6 +369,9 @@ FACE_EDITOR_LAYOUT_DATA: Any = {  # noqa: F811
             "requiredToggleValue": True,
             "help": "Blend the value: 0.00 represents the original color, 1.00 represents the full target color.",
         },
+
+        # ---------------- MAKEUP - HAIR ----------------
+        "__sep_makeup_hair__": {"level": 1, "type": "separator", "label": "MAKEUP - HAIR", "help": ""},
         "HairMakeupEnableToggle": {
             "level": 1,
             "label": "Hair Makeup",
@@ -369,6 +423,9 @@ FACE_EDITOR_LAYOUT_DATA: Any = {  # noqa: F811
             "requiredToggleValue": True,
             "help": "Blend the value: 0.00 represents the original color, 1.00 represents the full target color.",
         },
+
+        # ---------------- MAKEUP - EYEBROWS ----------------
+        "__sep_makeup_brows__": {"level": 1, "type": "separator", "label": "MAKEUP - EYEBROWS", "help": ""},
         "EyeBrowsMakeupEnableToggle": {
             "level": 1,
             "label": "EyeBrows Makeup",
@@ -420,6 +477,9 @@ FACE_EDITOR_LAYOUT_DATA: Any = {  # noqa: F811
             "requiredToggleValue": True,
             "help": "Blend the value: 0.00 represents the original color, 1.00 represents the full target color.",
         },
+
+        # ---------------- MAKEUP - LIPS ----------------
+        "__sep_makeup_lips__": {"level": 1, "type": "separator", "label": "MAKEUP - LIPS", "help": ""},
         "LipsMakeupEnableToggle": {
             "level": 1,
             "label": "Lips Makeup",
@@ -471,6 +531,9 @@ FACE_EDITOR_LAYOUT_DATA: Any = {  # noqa: F811
             "requiredToggleValue": True,
             "help": "Blend the value: 0.0 represents the original color, 1.0 represents the full target color.",
         },
+
+        # ---------------- FACE SHAPING ----------------
+        "__sep_face_shaping__": {"level": 1, "type": "separator", "label": "FACE SHAPING", "help": ""},
         "FaceShapingEnableToggle": {
             "level": 1,
             "label": "Enable Face Shaping (2D Mesh)",

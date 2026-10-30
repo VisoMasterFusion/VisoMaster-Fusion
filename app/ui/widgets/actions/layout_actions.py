@@ -53,6 +53,34 @@ def add_widgets_to_tab_layout(
         category_layout.addRow(row_widget)
         return row_widget, horizontal_layout
 
+    def add_separator_to_category(
+        category_layout: QtWidgets.QFormLayout, label_text: str
+    ):
+        separator_container = QtWidgets.QWidget()
+        separator_container.setSizePolicy(
+            QtWidgets.QSizePolicy.Policy.Expanding,
+            QtWidgets.QSizePolicy.Policy.Maximum,
+        )
+        vbox = QtWidgets.QVBoxLayout(separator_container)
+        vbox.setContentsMargins(0, 10, 0, 2)
+        vbox.setSpacing(2)
+
+        line = QtWidgets.QFrame()
+        line.setFrameShape(QtWidgets.QFrame.Shape.HLine)
+        line.setFrameShadow(QtWidgets.QFrame.Shadow.Sunken)
+        line.setStyleSheet("color: #555;")
+
+        title = QtWidgets.QLabel(label_text)
+        title.setStyleSheet(
+            "font-weight: bold; font-size: 11px; color: #ddd; "
+            "padding: 2px 0 0 0; letter-spacing: 1px;"
+        )
+
+        vbox.addWidget(line)
+        vbox.addWidget(title)
+        category_layout.addRow(separator_container)
+        return separator_container
+
     def create_layout_action_button(button_data: dict):
         action_button = QtWidgets.QPushButton(cast(str, button_data["label"]))
         action_button.setToolTip(cast(str, button_data.get("help", "")))
@@ -89,6 +117,15 @@ def add_widgets_to_tab_layout(
         main_window.register_parameter_section(section_id, group_box)
 
         for widget_name, widget_data in widgets.items():
+            is_hidden = bool(widget_data.get("hidden", False))
+
+            # --- separator branch (must be first) ---
+            if widget_data.get("type") == "separator":
+                add_separator_to_category(
+                    category_layout, cast(str, widget_data.get("label", ""))
+                )
+                continue
+
             spacing_level = cast(int, widget_data["level"])
             label = QtWidgets.QLabel(cast(str, widget_data["label"]))
             label.setToolTip(cast(str, widget_data["help"]))
@@ -197,6 +234,21 @@ def add_widgets_to_tab_layout(
                 row_widget, horizontal_layout = add_horizontal_layout_to_category(
                     category_layout, label, widget, widget.reset_default_button
                 )
+
+                if "below_row_buttons" in widget_data:
+                    _btns_row = QtWidgets.QWidget()
+                    _btns_row.setSizePolicy(
+                        QtWidgets.QSizePolicy.Policy.Expanding,
+                        QtWidgets.QSizePolicy.Policy.Maximum,
+                    )
+                    _btns_layout = QtWidgets.QHBoxLayout(_btns_row)
+                    _btns_layout.setContentsMargins(0, 0, 0, 0)
+                    for _bd in cast(list, widget_data["below_row_buttons"]):
+                        _bd = cast(dict, _bd)
+                        _btn = create_layout_action_button(_bd)
+                        _btns_layout.addWidget(_btn)
+                    _btns_layout.addStretch(1)
+                    category_layout.addRow(_btns_row)
 
                 if data_type == "parameter":
                     common_widget_actions.create_default_parameter(
@@ -573,12 +625,15 @@ def add_widgets_to_tab_layout(
                         main_window, widget_name, cast(str, widget_data["default"])
                     )
 
-                # The exec_function is now handled within the ParameterLineEdit itself
-                # widget.returnPressed.connect(partial(on_enter_pressed, widget, widget_name))
-
             horizontal_layout.setContentsMargins(spacing_level * 10, 0, 0, 0)
             widget.row_widget = row_widget
-            main_window.parameter_widgets[widget_name] = widget
+
+            if is_hidden:
+                # Hide the row but do not delete it, and do not register the
+                # widget so show_hide_related_widgets() never touches it.
+                row_widget.setVisible(False)
+            else:
+                main_window.parameter_widgets[widget_name] = widget
 
         category_layout.setVerticalSpacing(2)
         category_layout.setHorizontalSpacing(2)
@@ -591,7 +646,13 @@ def add_widgets_to_tab_layout(
     # Default show/hide widgets
     for category, widgets in LAYOUT_DATA.items():
         for widget_name, widget_data in widgets.items():
-            widget = main_window.parameter_widgets[widget_name]
+            if widget_data.get("type") == "separator":
+                continue
+            if widget_data.get("hidden", False):
+                continue
+            widget = main_window.parameter_widgets.get(widget_name)
+            if widget is None:
+                continue
             common_widget_actions.show_hide_related_widgets(
                 main_window, widget, widget_name
             )
