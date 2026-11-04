@@ -224,6 +224,8 @@ def add_widgets_to_tab_layout(
                     default_value=default,
                     selection_values=options,
                 )
+                if widget_data.get("enable_refresh_frame") is False:
+                    widget.enable_refresh_frame = False
 
                 widget.addItems(cast(List[str], options))
                 widget.setCurrentText(cast(str, default))
@@ -249,6 +251,7 @@ def add_widgets_to_tab_layout(
                         _btns_layout.addWidget(_btn)
                     _btns_layout.addStretch(1)
                     category_layout.addRow(_btns_row)
+                    widget.below_row_widget = _btns_row
 
                 if data_type == "parameter":
                     common_widget_actions.create_default_parameter(
@@ -628,12 +631,10 @@ def add_widgets_to_tab_layout(
             horizontal_layout.setContentsMargins(spacing_level * 10, 0, 0, 0)
             widget.row_widget = row_widget
 
+            widget._layout_hidden = is_hidden
             if is_hidden:
-                # Hide the row but do not delete it, and do not register the
-                # widget so show_hide_related_widgets() never touches it.
                 row_widget.setVisible(False)
-            else:
-                main_window.parameter_widgets[widget_name] = widget
+            main_window.parameter_widgets[widget_name] = widget
 
         category_layout.setVerticalSpacing(2)
         category_layout.setHorizontalSpacing(2)

@@ -71,6 +71,7 @@ FACE_EDITOR_LAYOUT_DATA: Any = {  # noqa: F811
             "parentToggle": "FaceEditorEnableToggle",
             "requiredToggleValue": True,
             "exec_function": face_editor_profile_actions.on_profile_changed,
+            "enable_refresh_frame": False,
             "help": "Select a saved profile to load, or 'none' for defaults.",
             "below_row_buttons": [
                 {
