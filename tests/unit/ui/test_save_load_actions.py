@@ -84,6 +84,10 @@ def _load_save_load_actions_module():
         )
 
         module = importlib.import_module("app.ui.widgets.actions.save_load_actions")
+        # Explicit attributes survive monkeypatch teardown across tests, including
+        # pytest versions that inspect an object's dictionary before patching.
+        module.QtWidgets.QMessageBox = MagicMock()
+        module.QtWidgets.QFileDialog = MagicMock()
     finally:
         for stub_name, original_module in original_modules.items():
             if original_module is None:

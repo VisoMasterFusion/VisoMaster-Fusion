@@ -97,6 +97,20 @@ def video_actions_env():
         video_control_actions = importlib.import_module(
             "app.ui.widgets.actions.video_control_actions"
         )
+        # These shared mocks are patched by several tests. Define their attributes
+        # eagerly so monkeypatch restores them rather than deleting lazy children.
+        video_control_actions.QtWidgets.QMessageBox = MagicMock()
+        video_control_actions.QtWidgets.QMessageBox.question = MagicMock()
+        video_control_actions.QtCore.QThread.msleep = MagicMock()
+        video_control_actions.widget_components.ProgressDialog = MagicMock()
+        video_control_actions.misc_helpers.read_image_file = MagicMock()
+        video_control_actions.misc_helpers.read_frame = MagicMock()
+        video_control_actions.misc_helpers.seek_frame = MagicMock()
+        video_control_actions.misc_helpers.release_capture = MagicMock()
+        video_control_actions.misc_helpers.get_output_file_path = MagicMock()
+        video_control_actions.card_actions.clear_target_faces = MagicMock()
+        video_control_actions.card_actions.find_target_faces = MagicMock()
+        video_control_actions.cv2.VideoCapture = MagicMock()
 
         yield SimpleNamespace(
             module=video_control_actions,
