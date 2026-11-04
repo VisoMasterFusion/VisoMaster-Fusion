@@ -44,4 +44,5 @@ tensorrt-engines/
 test_frames*/
 test_videos*/
 presets/
+profiles/face_editor/
 temp_files/

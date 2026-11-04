@@ -342,6 +342,7 @@ def reset_selected_face_parameters(
 # Keep a parameter row container and its child widgets in sync when hiding/showing
 # dependency-driven controls.
 def set_parameter_row_visibility(current_widget, visible: bool):
+    visible = visible and not getattr(current_widget, "_layout_hidden", False)
     if hasattr(current_widget, "row_widget") and current_widget.row_widget:
         current_widget.row_widget.setVisible(visible)
     else:

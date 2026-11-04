@@ -67,6 +67,7 @@ jobs:
               'ui/test_common_layout_recast.py',
               'ui/test_list_view_actions.py',
               'ui/test_video_control_actions.py',
+              'ui/test_face_editor_profiles.py',
           ]
           # Include PR 361's regressions as soon as that feature lands.
           if pathlib.Path('tests/unit/processors/test_face_mattings.py').exists():
