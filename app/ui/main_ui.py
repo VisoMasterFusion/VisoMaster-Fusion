@@ -73,6 +73,12 @@ _FACE_STRIP_MAX_HEIGHT = 120
 _FACE_STRIP_LIST_HEIGHT = 80
 _FACE_STRIP_BUTTONS_HEIGHT = 32
 _FACES_PANEL_ROW_HEIGHT = 147
+# Bottom (faces / embeddings) area. Only the detected-faces list is capped;
+# the embeddings list takes whatever width is left, so it follows the window.
+_FACES_LIST_MIN_WIDTH = 150
+_FACES_LIST_MAX_WIDTH = 250
+_EMBEDDINGS_LIST_MIN_WIDTH = 200
+_EMBEDDINGS_SEARCH_MAX_WIDTH = 320
 
 
 class MainWindow(QtWidgets.QMainWindow, Ui_MainWindow):
@@ -272,6 +278,7 @@ class MainWindow(QtWidgets.QMainWindow, Ui_MainWindow):
         self.targetVideosList.viewport().installEventFilter(list_widget_event_filter)
         self.inputFacesList.installEventFilter(list_widget_event_filter)
         self.inputFacesList.viewport().installEventFilter(list_widget_event_filter)
+        target_videos_list_actions.install_target_thumbnail_zoom(self)
 
         # Set up folder open buttons for Target and Input
         self.buttonTargetVideosPath.clicked.connect(
@@ -515,6 +522,8 @@ class MainWindow(QtWidgets.QMainWindow, Ui_MainWindow):
         self._install_media_controls_layout()
         self._install_compare_mask_toggle_buttons()
         self._install_media_controls_separator()
+        self._apply_custom_bottom_layout()
+        QtCore.QTimer.singleShot(0, self._install_dynamic_sizing)
         self.verticalSpacer.changeSize(
             20,
             2,
@@ -694,6 +703,7 @@ class MainWindow(QtWidgets.QMainWindow, Ui_MainWindow):
         self.scan_progress_dialog.setAutoClose(False)
         self.scan_progress_dialog.setAutoReset(False)
         self.scan_progress_dialog.close()
+        
 
     def _configure_output_folder_controls(self):
         style = self.style()
@@ -1321,59 +1331,28 @@ class MainWindow(QtWidgets.QMainWindow, Ui_MainWindow):
             getattr(self, "scanToolsToggleButton", None),
         ]
 
-        for button in transport_buttons:
-            min_width = max(32, transport_icon_size.width() + 18)
-            button.setMinimumHeight(target_size.height())
-            button.setMaximumHeight(target_size.height())
-            button.setMinimumWidth(min_width)
-            button.setMaximumWidth(target_size.width())
-            size_policy = button.sizePolicy()
-            size_policy.setHorizontalPolicy(QtWidgets.QSizePolicy.Minimum)
-            size_policy.setVerticalPolicy(QtWidgets.QSizePolicy.Fixed)
-            button.setSizePolicy(size_policy)
-            button.setIconSize(transport_icon_size)
+        def style(buttons, min_width, icon_size=None):
+            for button in buttons:
+                button.setMinimumHeight(target_size.height())
+                button.setMaximumHeight(target_size.height())
+                button.setMinimumWidth(min_width(button))
+                button.setMaximumWidth(target_size.width())
+                size_policy = button.sizePolicy()
+                size_policy.setHorizontalPolicy(QtWidgets.QSizePolicy.Minimum)
+                size_policy.setVerticalPolicy(QtWidgets.QSizePolicy.Fixed)
+                button.setSizePolicy(size_policy)
+                if icon_size is not None:
+                    button.setIconSize(icon_size)
 
-        for button in marker_buttons:
-            min_width = max(30, marker_icon_size.width() + 16)
-            button.setMinimumHeight(target_size.height())
-            button.setMaximumHeight(target_size.height())
-            button.setMinimumWidth(min_width)
-            button.setMaximumWidth(target_size.width())
-            size_policy = button.sizePolicy()
-            size_policy.setHorizontalPolicy(QtWidgets.QSizePolicy.Minimum)
-            size_policy.setVerticalPolicy(QtWidgets.QSizePolicy.Fixed)
-            button.setSizePolicy(size_policy)
-            button.setIconSize(marker_icon_size)
-
-        for button in icon_utility_buttons:
-            min_width = max(30, utility_icon_size.width() + 16)
-            button.setMinimumHeight(target_size.height())
-            button.setMaximumHeight(target_size.height())
-            button.setMinimumWidth(min_width)
-            button.setMaximumWidth(target_size.width())
-            size_policy = button.sizePolicy()
-            size_policy.setHorizontalPolicy(QtWidgets.QSizePolicy.Minimum)
-            size_policy.setVerticalPolicy(QtWidgets.QSizePolicy.Fixed)
-            button.setSizePolicy(size_policy)
-            button.setIconSize(utility_icon_size)
-
+        style(transport_buttons, lambda _b: max(32, transport_icon_size.width() + 18), transport_icon_size)
+        style(marker_buttons, lambda _b: max(30, marker_icon_size.width() + 16), marker_icon_size)
+        style(icon_utility_buttons, lambda _b: max(30, utility_icon_size.width() + 16), utility_icon_size)
         self.liveSoundButton.setIconSize(QtCore.QSize(24, 24))
         self.theatreModeButton.setIconSize(QtCore.QSize(28, 28))
-
-        for button in text_utility_buttons:
-            if button is None:
-                continue
-            font_metrics = QtGui.QFontMetrics(button.font())
-            text_width = font_metrics.horizontalAdvance(button.text()) + 28
-            minimum_width = text_width
-            button.setMinimumHeight(target_size.height())
-            button.setMaximumHeight(target_size.height())
-            button.setMinimumWidth(minimum_width)
-            button.setMaximumWidth(target_size.width())
-            size_policy = button.sizePolicy()
-            size_policy.setHorizontalPolicy(QtWidgets.QSizePolicy.Minimum)
-            size_policy.setVerticalPolicy(QtWidgets.QSizePolicy.Fixed)
-            button.setSizePolicy(size_policy)
+        style(
+            [b for b in text_utility_buttons if b is not None],
+            lambda b: QtGui.QFontMetrics(b.font()).horizontalAdvance(b.text()) + 28,
+        )
 
         if hasattr(self, "mediaControlsMainLayout"):
             self.mediaControlsMainLayout.setSpacing(12)
@@ -1412,14 +1391,14 @@ class MainWindow(QtWidgets.QMainWindow, Ui_MainWindow):
         )
         self.mediaControlsCenterWidget.setObjectName("mediaControlsCenterWidget")
         self.mediaControlsCenterWidget.setSizePolicy(
-            QtWidgets.QSizePolicy.Fixed, QtWidgets.QSizePolicy.Fixed
+            QtWidgets.QSizePolicy.Preferred, QtWidgets.QSizePolicy.Fixed
         )
         self.mediaControlsCenterLayout = QtWidgets.QHBoxLayout(
             self.mediaControlsCenterWidget
         )
         self.mediaControlsCenterLayout.setContentsMargins(0, 0, 0, 0)
         self.mediaControlsCenterLayout.setSpacing(12)
-        self.mediaControlsCenterLayout.setAlignment(QtCore.Qt.AlignmentFlag.AlignCenter)
+        self.mediaControlsCenterLayout.setAlignment(QtCore.Qt.AlignmentFlag.AlignLeft)
         self.mediaControlsViewportLayout.addItem(
             QtWidgets.QSpacerItem(
                 0,
@@ -1441,7 +1420,7 @@ class MainWindow(QtWidgets.QMainWindow, Ui_MainWindow):
             0,
             2,
         )
-        self.mediaControlsViewportLayout.setColumnStretch(0, 1)
+        self.mediaControlsViewportLayout.setColumnStretch(0, 0)
         self.mediaControlsViewportLayout.setColumnStretch(2, 1)
 
         top_layout.addWidget(self.mediaControlsViewportWidget, 1)
@@ -1897,9 +1876,8 @@ class MainWindow(QtWidgets.QMainWindow, Ui_MainWindow):
 
     def _sync_media_controls_balance(self):
         """Keep the centered media controls minimum width in sync with their content."""
-        viewport_widget = getattr(self, "mediaControlsViewportWidget", None)
         center_widget = getattr(self, "mediaControlsCenterWidget", None)
-        if viewport_widget is None or center_widget is None:
+        if center_widget is None:
             return
 
         main_layout = getattr(self, "mediaControlsMainLayout", None)
@@ -1921,10 +1899,7 @@ class MainWindow(QtWidgets.QMainWindow, Ui_MainWindow):
                 separator_margin, 0, separator_margin, 0
             )
 
-        center_width = max(
-            center_widget.sizeHint().width(), center_widget.minimumSizeHint().width()
-        )
-        viewport_widget.setMinimumWidth(center_width)
+        center_widget.updateGeometry()
 
     def _configure_faces_panel_button_column(self):
         """Keep the left-side face buttons matched to the visible target-faces box height."""
@@ -1935,11 +1910,9 @@ class MainWindow(QtWidgets.QMainWindow, Ui_MainWindow):
             self.editFacesButton,
         ]
 
-        self.gridLayout_2.setRowStretch(1, 0)
+        self.gridLayout_2.setRowStretch(1, 1)
         self.controlButtonsLayout.setSpacing(4)
 
-        self.targetFacesList.setMinimumHeight(_FACES_PANEL_ROW_HEIGHT)
-        self.targetFacesList.setMaximumHeight(_FACES_PANEL_ROW_HEIGHT)
         if getattr(self, "_faces_list_offset_container", None) is None:
             self._faces_list_offset_container = QtWidgets.QWidget(self)
             offset_layout = QtWidgets.QVBoxLayout(self._faces_list_offset_container)
@@ -2002,9 +1975,230 @@ class MainWindow(QtWidgets.QMainWindow, Ui_MainWindow):
             button.setMaximumWidth(target_width)
 
         panel_policy = self.facesPanelGroupBox.sizePolicy()
-        panel_policy.setVerticalPolicy(QtWidgets.QSizePolicy.Maximum)
+        panel_policy.setVerticalPolicy(QtWidgets.QSizePolicy.Preferred)
         self.facesPanelGroupBox.setSizePolicy(panel_policy)
         self.facesPanelGroupBox.setMinimumHeight(0)
+
+    # ------------------------------------------------------------------
+    # Layout helpers (work with box AND grid layouts, nested or not)
+    # ------------------------------------------------------------------
+    def _locate_in_layout(self, layout, widget):
+        """Return (layout, index) of the layout that directly holds `widget`."""
+        for i in range(layout.count()):
+            item = layout.itemAt(i)
+            if item is None:
+                continue
+            if item.widget() is widget:
+                return layout, i
+            child = item.layout()
+            if child is not None:
+                found = self._locate_in_layout(child, widget)
+                if found:
+                    return found
+        return None
+
+    def _find_widget_layout(self, widget):
+        """Climb the parent chain until a layout containing `widget` is found."""
+        parent = widget.parentWidget()
+        while parent is not None:
+            layout = parent.layout()
+            if layout is not None:
+                found = self._locate_in_layout(layout, widget)
+                if found:
+                    return found
+            parent = parent.parentWidget()
+        return None
+
+    @staticmethod
+    def _set_expanding(widget, horizontal=False, vertical=False):
+        policy = widget.sizePolicy()
+        if horizontal:
+            policy.setHorizontalPolicy(QtWidgets.QSizePolicy.Expanding)
+        if vertical:
+            policy.setVerticalPolicy(QtWidgets.QSizePolicy.Expanding)
+        widget.setSizePolicy(policy)
+
+    def _set_widget_stretch(self, widget, stretch=1, horizontal=True):
+        """Give `widget` a stretch factor in the layout that holds it."""
+        found = self._find_widget_layout(widget)
+        if not found:
+            return
+        layout, index = found
+        if isinstance(layout, QtWidgets.QGridLayout):
+            row, col, _rs, _cs = layout.getItemPosition(index)
+            if horizontal:
+                layout.setColumnStretch(col, stretch)
+            else:
+                layout.setRowStretch(row, stretch)
+        elif isinstance(layout, QtWidgets.QBoxLayout):
+            is_h = layout.direction() in (
+                QtWidgets.QBoxLayout.LeftToRight,
+                QtWidgets.QBoxLayout.RightToLeft,
+            )
+            if is_h == horizontal:
+                layout.setStretch(index, stretch)
+
+    def _place_container_at(self, anchor, container):
+        """Put `container` into the layout cell that `anchor` currently occupies."""
+        found = self._find_widget_layout(anchor)
+        if not found:
+            return False
+        layout, index = found
+        if isinstance(layout, QtWidgets.QGridLayout):
+            row, col, rs, cs = layout.getItemPosition(index)
+            layout.addWidget(container, row, col, rs, cs)
+        elif isinstance(layout, QtWidgets.QBoxLayout):
+            layout.insertWidget(index, container)
+        else:
+            return False
+        return True
+
+    def _detach_from_layout(self, widget):
+        found = self._find_widget_layout(widget)
+        if found:
+            found[0].removeWidget(widget)
+
+    # ------------------------------------------------------------------
+    # Bottom area: stacked batch buttons (left) + embedding controls (right)
+    # ------------------------------------------------------------------
+    def _apply_custom_bottom_layout(self):
+        """Save Image | stacked batch buttons | embedding tools (+ the '+' button).
+
+        Each group goes back into the grid cell its first widget used to occupy,
+        so the batch stack sits over the detected-faces list and the embedding
+        tools sit exactly over the embeddings list.
+        """
+        if getattr(self, "_custom_bottom_layout_applied", False):
+            return
+
+        self.targetFacesList.setMinimumWidth(_FACES_LIST_MIN_WIDTH)
+        self.targetFacesList.setMaximumWidth(_FACES_LIST_MAX_WIDTH)
+        self.inputEmbeddingsList.setMinimumWidth(_EMBEDDINGS_LIST_MIN_WIDTH)
+
+        # Batch buttons, stacked.
+        batch_widget = QtWidgets.QWidget(self)
+        batch_layout = QtWidgets.QVBoxLayout(batch_widget)
+        batch_layout.setContentsMargins(0, 0, 0, 0)
+        batch_layout.setSpacing(4)
+
+        # Embedding tools: search box on top, button row (incl. '+') below.
+        embed_widget = QtWidgets.QWidget(self)
+        embed_layout = QtWidgets.QVBoxLayout(embed_widget)
+        embed_layout.setContentsMargins(0, 0, 0, 0)
+        embed_layout.setSpacing(4)
+        embed_btn_row = QtWidgets.QHBoxLayout()
+        embed_btn_row.setContentsMargins(0, 0, 0, 0)
+        embed_btn_row.setSpacing(4)
+
+        if not self._place_container_at(self.batchImageButton, batch_widget):
+            batch_widget.deleteLater()
+            embed_widget.deleteLater()
+            return
+        if not self._place_container_at(self.inputEmbeddingsSearchBox, embed_widget):
+            embed_widget.deleteLater()
+            return
+
+        for w in (
+            self.batchImageButton,
+            self.batchallImageButton,
+            self.inputEmbeddingsSearchBox,
+            self.openEditorButton,
+            self.openEmbeddingButton,
+            self.saveEmbeddingButton,
+            self.saveEmbeddingAsButton,
+        ):
+            self._detach_from_layout(w)
+
+        batch_layout.addWidget(self.batchImageButton)
+        batch_layout.addWidget(self.batchallImageButton)
+
+        self.inputEmbeddingsSearchBox.setMaximumWidth(_EMBEDDINGS_SEARCH_MAX_WIDTH)
+        embed_layout.addWidget(
+            self.inputEmbeddingsSearchBox, 0, QtCore.Qt.AlignmentFlag.AlignLeft
+        )
+        for btn in (
+            self.openEditorButton,
+            self.openEmbeddingButton,
+            self.saveEmbeddingButton,
+            self.saveEmbeddingAsButton,
+        ):
+            embed_btn_row.addWidget(btn)
+        plus_button = self._find_embeddings_plus_button()
+        if plus_button is not None:
+            self._detach_from_layout(plus_button)
+            embed_btn_row.addWidget(plus_button)
+            plus_button.show()
+        embed_btn_row.addStretch()
+        embed_layout.addLayout(embed_btn_row)
+
+        # Save Image keeps its own cell, centered next to the stacked buttons.
+        save_loc = self._find_widget_layout(self.saveImageButton)
+        if save_loc is not None:
+            save_loc[0].setAlignment(
+                self.saveImageButton,
+                QtCore.Qt.AlignmentFlag.AlignLeft | QtCore.Qt.AlignmentFlag.AlignVCenter,
+            )
+
+        # Tighten spacing around the groups.
+        for anchor in (batch_widget, embed_widget):
+            loc = self._find_widget_layout(anchor)
+            if loc is not None:
+                loc[0].setSpacing(4)
+        self.gridLayout_2.setVerticalSpacing(2)
+
+        self._custom_bottom_layout_applied = True
+
+    def _give_all_stretch_to(self, widget):
+        """In the layout holding `widget`, only that column/item takes extra width."""
+        found = self._find_widget_layout(widget)
+        if not found:
+            return
+        layout, index = found
+        if isinstance(layout, QtWidgets.QGridLayout):
+            _row, col, _rs, _cs = layout.getItemPosition(index)
+            for c in range(layout.columnCount()):
+                layout.setColumnStretch(c, 1 if c == col else 0)
+        elif isinstance(layout, QtWidgets.QBoxLayout) and layout.direction() in (
+            QtWidgets.QBoxLayout.LeftToRight,
+            QtWidgets.QBoxLayout.RightToLeft,
+        ):
+            for j in range(layout.count()):
+                layout.setStretch(j, 1 if j == index else 0)
+
+    def _find_embeddings_plus_button(self):
+        """The '+' that adds a new embeddings tab (corner widget or plain button)."""
+        tab = self.inputEmbeddingsList.parentWidget()
+        while tab is not None and not isinstance(tab, QtWidgets.QTabWidget):
+            tab = tab.parentWidget()
+        if tab is not None:
+            for corner in (QtCore.Qt.Corner.TopRightCorner, QtCore.Qt.Corner.TopLeftCorner):
+                w = tab.cornerWidget(corner)
+                if w is not None:
+                    tab.setCornerWidget(None, corner)
+                    return w
+        media = getattr(self, "mediaControlsCenterWidget", None)
+        for root in (self.facesPanelGroupBox, self):
+            for b in root.findChildren(QtWidgets.QAbstractButton):
+                if (b.text() or "").strip() == "+" and not (
+                    media is not None and media.isAncestorOf(b)
+                ):
+                    return b
+        return None
+
+    def _install_dynamic_sizing(self):
+        """Make the preview and the embeddings list follow the window size."""
+        # Preview: expands in both directions and soaks up extra window height.
+        self._set_expanding(self.graphicsViewFrame, horizontal=True, vertical=True)
+        self._set_widget_stretch(self.graphicsViewFrame, 1, horizontal=False)
+        self._set_widget_stretch(self.graphicsViewFrame, 1, horizontal=True)
+
+        # Embeddings list (and the tab widget / containers around it): only this
+        # column takes leftover width; the faces list column stays compact.
+        widget = self.inputEmbeddingsList
+        while widget is not None and widget is not self.facesPanelGroupBox:
+            self._set_expanding(widget, horizontal=True)
+            self._give_all_stretch_to(widget)
+            widget = widget.parentWidget()
 
     def _ensure_right_faces_strip(self):
         """Initializes the right faces strip container once."""
@@ -2099,17 +2293,17 @@ class MainWindow(QtWidgets.QMainWindow, Ui_MainWindow):
 
         for btn in btns:
             self.controlButtonsLayout.addWidget(btn)
-            if hasattr(self, "_faceButtonsOriginalTexts"):
-                orig = self._faceButtonsOriginalTexts.get(btn.objectName())
-                if orig:
-                    btn.setText(orig)
+            orig = getattr(self, "_faceButtonsOriginalTexts", {}).get(btn.objectName())
+            if orig:
+                btn.setText(orig)
             btn.setFlat(True)
 
-        self.targetFacesList.setMaximumHeight(16777215)
-        if hasattr(self, "_rightFacesStrip"):
-            self._rightFacesStrip.setMaximumHeight(16777215)
-        if getattr(self, "_rightFacesButtonsRowContainer", None):
-            self._rightFacesButtonsRowContainer.setMaximumHeight(16777215)
+        strip = getattr(self, "_rightFacesStrip", None)
+        if strip is not None:
+            strip.setMaximumHeight(16777215)
+        buttons_row = getattr(self, "_rightFacesButtonsRowContainer", None)
+        if buttons_row is not None:
+            buttons_row.setMaximumHeight(16777215)
 
         # VERY IMPORTANT: Restore the list mode so it looks normal again on the left
         self.targetFacesList.setViewMode(QtWidgets.QListView.ListMode)

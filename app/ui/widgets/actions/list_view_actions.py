@@ -23,6 +23,8 @@ if TYPE_CHECKING:
 
 _WORKER_STOP_TIMEOUT_MS = 1000
 _TARGET_BUTTON_SIZE = (85, 85)
+_TARGET_BUTTON_MIN = 48
+_TARGET_BUTTON_MAX = 256
 _SMALL_FACE_BUTTON_SIZE = (70, 70)
 _LARGE_FACE_BUTTON_SIZE = (96, 96)
 _FACE_BUTTON_SIZE = _SMALL_FACE_BUTTON_SIZE
@@ -331,7 +333,7 @@ def add_media_thumbnail_button(
         ]
 
     if buttonClass == widget_components.TargetMediaCardButton:
-        button_size = QtCore.QSize(*_TARGET_BUTTON_SIZE)
+        button_size = QtCore.QSize(*_get_target_button_size(main_window))
     else:
         button_size = QtCore.QSize(*_get_face_button_size(main_window))
 
@@ -427,6 +429,45 @@ def refresh_target_face_display_labels(main_window: "MainWindow"):
             target_face_button.refresh_display_label()
 
 
+def _get_target_button_size(main_window: "MainWindow") -> tuple[int, int]:
+    return getattr(main_window, "target_thumbnail_button_size", _TARGET_BUTTON_SIZE)
+
+
+def apply_target_thumbnail_size(
+    main_window: "MainWindow", button_size_tuple: tuple[int, int]
+) -> None:
+    """Resize every target media card (and the list grid) to `button_size_tuple`.
+
+    New cards are created at this size too (see add_media_thumbnail_button).
+    """
+    side = max(_TARGET_BUTTON_MIN, min(_TARGET_BUTTON_MAX, int(button_size_tuple[0])))
+    button_size = QtCore.QSize(side, side)
+    main_window.target_thumbnail_button_size = (side, side)
+
+    listWidget = main_window.targetVideosList
+    listWidget.setUpdatesEnabled(False)
+    try:
+        listWidget.setGridSize(button_size + QtCore.QSize(4, 4))
+        for i in range(listWidget.count()):
+            list_item = listWidget.item(i)
+            button = listWidget.itemWidget(list_item)
+            if button is None:
+                continue
+            button.setFixedSize(button_size)
+            list_item.setSizeHint(button_size)
+    finally:
+        listWidget.setUpdatesEnabled(True)
+    listWidget.doItemsLayout()
+    listWidget.viewport().update()
+
+    selected = getattr(main_window, "selected_video_button", None)
+    selected_item = getattr(selected, "list_item", None) if selected else None
+    if selected_item is not None:
+        listWidget.scrollToItem(
+            selected_item, QtWidgets.QAbstractItemView.ScrollHint.EnsureVisible
+        )
+
+
 def _get_face_button_size(main_window: "MainWindow") -> tuple[int, int]:
     return getattr(main_window, "face_thumbnail_button_size", _FACE_BUTTON_SIZE)
 
@@ -458,9 +499,11 @@ def initialize_media_list_widgets(main_window: "MainWindow"):
     """One-time configuration for target/input media and face list widgets."""
     if not hasattr(main_window, "face_thumbnail_button_size"):
         main_window.face_thumbnail_button_size = _FACE_BUTTON_SIZE
+    if not hasattr(main_window, "target_thumbnail_button_size"):
+        main_window.target_thumbnail_button_size = _TARGET_BUTTON_SIZE
 
     for listWidget, button_size_tuple in [
-        (main_window.targetVideosList, _TARGET_BUTTON_SIZE),
+        (main_window.targetVideosList, _get_target_button_size(main_window)),
         (main_window.targetFacesList, _get_face_button_size(main_window)),
         (main_window.inputFacesList, _get_face_button_size(main_window)),
     ]:

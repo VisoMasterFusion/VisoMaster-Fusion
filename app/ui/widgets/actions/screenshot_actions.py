@@ -81,41 +81,43 @@ def add_screenshot_controls(main_window: "MainWindow") -> None:
     insertion_index += 1
     main_window.screenshotControlsSeparator = separator
 
+    # Create hidden buttons to maintain compatibility with existing signal logic
     main_window.takeScreenshotButton = QtWidgets.QPushButton("Take SS", parent)
-    main_window.takeScreenshotButton.setObjectName("takeScreenshotButton")
-    main_window.takeScreenshotButton.setIcon(QtGui.QIcon(":/media/media/image.png"))
-    main_window.takeScreenshotButton.setToolTip(
-        "Capture the current full-resolution processed frame into the session slot."
-    )
-    main_window.takeScreenshotButton.setFlat(True)
-    main_window.takeScreenshotButton.clicked.connect(
-        lambda: take_screenshot(main_window)
-    )
+    main_window.takeScreenshotButton.setVisible(False)
+    main_window.takeScreenshotButton.clicked.connect(lambda: take_screenshot(main_window))
 
     main_window.showScreenshotButton = QtWidgets.QPushButton("Show SS", parent)
-    main_window.showScreenshotButton.setObjectName("showScreenshotButton")
     main_window.showScreenshotButton.setCheckable(True)
-    main_window.showScreenshotButton.setIcon(
-        QtGui.QIcon(":/media/media/fullscreen.png")
-    )
-    main_window.showScreenshotButton.setToolTip(
-        "Show the session screenshot over the live frame; toggle again to return."
-    )
-    main_window.showScreenshotButton.setFlat(True)
-    main_window.showScreenshotButton.toggled.connect(
-        lambda checked: show_screenshot(main_window, checked)
-    )
+    main_window.showScreenshotButton.setVisible(False)
+    main_window.showScreenshotButton.toggled.connect(lambda checked: show_screenshot(main_window, checked))
 
     main_window.saveScreenshotButton = QtWidgets.QPushButton("Save SS", parent)
-    main_window.saveScreenshotButton.setObjectName("saveScreenshotButton")
-    main_window.saveScreenshotButton.setIcon(QtGui.QIcon(":/media/media/save.png"))
-    main_window.saveScreenshotButton.setToolTip(
-        "Save the session screenshot as a PNG in the configured output directory."
-    )
-    main_window.saveScreenshotButton.setFlat(True)
-    main_window.saveScreenshotButton.clicked.connect(
-        lambda: save_screenshot(main_window)
-    )
+    main_window.saveScreenshotButton.setVisible(False)
+    main_window.saveScreenshotButton.clicked.connect(lambda: save_screenshot(main_window))
+
+    # Create the new unified menu button
+    main_window.screenshotMenuButton = QtWidgets.QToolButton(parent)
+    main_window.screenshotMenuButton.setObjectName("screenshotMenuButton")
+    main_window.screenshotMenuButton.setText("Screenshot")
+    main_window.screenshotMenuButton.setIcon(QtGui.QIcon(":/media/media/image.png"))
+    main_window.screenshotMenuButton.setPopupMode(QtWidgets.QToolButton.ToolButtonPopupMode.InstantPopup)
+    main_window.screenshotMenuButton.setToolButtonStyle(QtCore.Qt.ToolButtonStyle.ToolButtonTextBesideIcon)
+    main_window.screenshotMenuButton.setAutoRaise(True)
+    
+    menu = QtWidgets.QMenu(main_window.screenshotMenuButton)
+
+    take_action = menu.addAction("Take Screenshot")
+    take_action.triggered.connect(main_window.takeScreenshotButton.click)
+
+    main_window.showScreenshotAction = menu.addAction("Show Screenshot")
+    main_window.showScreenshotAction.setCheckable(True)
+    main_window.showScreenshotAction.triggered.connect(main_window.showScreenshotButton.setChecked)
+    main_window.showScreenshotButton.toggled.connect(main_window.showScreenshotAction.setChecked)
+
+    main_window.saveScreenshotAction = menu.addAction("Save Screenshot")
+    main_window.saveScreenshotAction.triggered.connect(main_window.saveScreenshotButton.click)
+
+    main_window.screenshotMenuButton.setMenu(menu)
 
     main_window.screenshotStatusIndicator = QtWidgets.QLabel("●", parent)
     main_window.screenshotStatusIndicator.setObjectName("screenshotStatusIndicator")
@@ -124,10 +126,9 @@ def add_screenshot_controls(main_window: "MainWindow") -> None:
         QtCore.Qt.AlignmentFlag.AlignCenter
     )
 
+    # Insert only the menu button and status indicator
     for widget in (
-        main_window.takeScreenshotButton,
-        main_window.showScreenshotButton,
-        main_window.saveScreenshotButton,
+        main_window.screenshotMenuButton,
         main_window.screenshotStatusIndicator,
     ):
         layout.insertWidget(insertion_index, widget)
@@ -136,22 +137,18 @@ def add_screenshot_controls(main_window: "MainWindow") -> None:
     play_button = getattr(main_window, "buttonMediaPlay", None)
     if play_button is not None:
         target_height = play_button.sizeHint().height()
-        for button in (
-            main_window.takeScreenshotButton,
-            main_window.showScreenshotButton,
-            main_window.saveScreenshotButton,
-        ):
-            text_width = (
-                QtGui.QFontMetrics(button.font()).horizontalAdvance(button.text()) + 28
-            )
-            button.setMinimumHeight(target_height)
-            button.setMaximumHeight(target_height)
-            button.setMinimumWidth(text_width)
-            button.setMaximumWidth(96)
-            size_policy = button.sizePolicy()
-            size_policy.setHorizontalPolicy(QtWidgets.QSizePolicy.Policy.Minimum)
-            size_policy.setVerticalPolicy(QtWidgets.QSizePolicy.Policy.Fixed)
-            button.setSizePolicy(size_policy)
+        main_window.screenshotMenuButton.setMinimumHeight(target_height)
+        main_window.screenshotMenuButton.setMaximumHeight(target_height)
+
+        # Format width for the menu button
+        text_width = QtGui.QFontMetrics(main_window.screenshotMenuButton.font()).horizontalAdvance(main_window.screenshotMenuButton.text()) + 40
+        main_window.screenshotMenuButton.setMinimumWidth(text_width)
+        main_window.screenshotMenuButton.setMaximumWidth(120)
+
+        size_policy = main_window.screenshotMenuButton.sizePolicy()
+        size_policy.setHorizontalPolicy(QtWidgets.QSizePolicy.Policy.Minimum)
+        size_policy.setVerticalPolicy(QtWidgets.QSizePolicy.Policy.Fixed)
+        main_window.screenshotMenuButton.setSizePolicy(size_policy)
 
     update_screenshot_indicator(main_window)
     if hasattr(main_window, "_queue_media_controls_balance"):
@@ -176,12 +173,13 @@ def update_screenshot_indicator(main_window: "MainWindow") -> None:
         else:
             indicator.setToolTip("No session screenshot captured.")
 
-    show_button = getattr(main_window, "showScreenshotButton", None)
-    save_button = getattr(main_window, "saveScreenshotButton", None)
-    if show_button is not None:
-        show_button.setEnabled(has_screenshot)
-    if save_button is not None:
-        save_button.setEnabled(has_screenshot)
+    # Updated for the new menu actions
+    show_action = getattr(main_window, "showScreenshotAction", None)
+    save_action = getattr(main_window, "saveScreenshotAction", None)
+    if show_action is not None:
+        show_action.setEnabled(has_screenshot)
+    if save_action is not None:
+        save_action.setEnabled(has_screenshot)
 
 
 def take_screenshot(main_window: "MainWindow") -> bool:
@@ -226,15 +224,25 @@ def show_screenshot(main_window: "MainWindow", visible: bool) -> bool:
         display_item = graphics_view_actions.ensure_screenshot_overlay_item(main_window)
         display_item.setPixmap(main_window.session_screenshot)
         display_item.show()
-        if show_button := getattr(main_window, "showScreenshotButton", None):
-            show_button.setText("Hide SS")
+        
+        show_action = getattr(main_window, "showScreenshotAction", None)
+        if show_action is not None:
+            show_action.blockSignals(True)
+            show_action.setText("Hide Screenshot")
+            show_action.setChecked(True)
+            show_action.blockSignals(False)
     else:
         overlay_item = graphics_view_actions.get_screenshot_overlay_item(main_window)
         if overlay_item is not None:
             overlay_item.hide()
         display_item = graphics_view_actions.get_base_pixmap_item(main_window)
-        if show_button := getattr(main_window, "showScreenshotButton", None):
-            show_button.setText("Show SS")
+        
+        show_action = getattr(main_window, "showScreenshotAction", None)
+        if show_action is not None:
+            show_action.blockSignals(True)
+            show_action.setText("Show Screenshot")
+            show_action.setChecked(False)
+            show_action.blockSignals(False)
 
     if display_item is not None:
         scene_rect = display_item.boundingRect()
