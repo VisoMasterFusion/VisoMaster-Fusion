@@ -91,3 +91,55 @@ def sort_target_videos(main_window: "MainWindow", *args, **kwargs) -> None:
             selected_item,
             QtWidgets.QAbstractItemView.ScrollHint.EnsureVisible,
         )
+
+
+# --- Ctrl + mouse wheel: zoom the target media thumbnails -------------------
+_THUMB_PX_PER_NOTCH = 8  # one wheel notch = 120 angle-delta units
+
+
+class _ThumbnailZoomFilter(QtCore.QObject):
+    """Turns Ctrl + wheel over the target media list into thumbnail zoom."""
+
+    def __init__(self, main_window: "MainWindow"):
+        super().__init__(main_window)
+        self._main_window = main_window
+        self._size_f: float | None = None  # fractional size for smooth wheels
+
+    def eventFilter(self, watched, event):
+        if not (
+            event.type() == QtCore.QEvent.Type.Wheel
+            and event.modifiers() & QtCore.Qt.KeyboardModifier.ControlModifier
+        ):
+            return False
+
+        delta = event.angleDelta().y() or event.angleDelta().x()
+        if delta:
+            from app.ui.widgets.actions import list_view_actions
+
+            mw = self._main_window
+            current = list_view_actions._get_target_button_size(mw)[0]
+            if self._size_f is None or round(self._size_f) != current:
+                self._size_f = float(current)
+            self._size_f = min(
+                list_view_actions._TARGET_BUTTON_MAX,
+                max(
+                    list_view_actions._TARGET_BUTTON_MIN,
+                    self._size_f + delta / 120.0 * _THUMB_PX_PER_NOTCH,
+                ),
+            )
+            new_side = round(self._size_f)
+            if new_side != current:
+                list_view_actions.apply_target_thumbnail_size(mw, (new_side, new_side))
+        event.accept()
+        return True  # swallow it so the list does not also scroll
+
+
+def install_target_thumbnail_zoom(main_window: "MainWindow") -> None:
+    """Enable Ctrl+wheel thumbnail zoom on the target media list (call once)."""
+    if getattr(main_window, "_target_thumb_zoom_installed", False):
+        return
+    zoom_filter = _ThumbnailZoomFilter(main_window)
+    list_widget = main_window.targetVideosList
+    list_widget.installEventFilter(zoom_filter)
+    list_widget.viewport().installEventFilter(zoom_filter)
+    main_window._target_thumb_zoom_installed = True
