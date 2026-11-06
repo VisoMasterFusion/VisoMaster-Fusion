@@ -2293,7 +2293,7 @@ class MainWindow(QtWidgets.QMainWindow, Ui_MainWindow):
 
         for btn in btns:
             self.controlButtonsLayout.addWidget(btn)
-            orig = self._faceButtonsOriginalTexts.get(btn.objectName())
+            orig = getattr(self, "_faceButtonsOriginalTexts", {}).get(btn.objectName())
             if orig:
                 btn.setText(orig)
             btn.setFlat(True)
