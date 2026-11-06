@@ -738,16 +738,13 @@ def add_scan_review_controls(main_window: "MainWindow"):
             target_layout = cleanup_layout
         target_layout.addWidget(button)
 
-    container_layout.addStretch(1)
     container_layout.addWidget(left_group, 0, QtCore.Qt.AlignmentFlag.AlignLeft)
     container_layout.addWidget(create_divider(container))
-    container_layout.addWidget(
-        navigation_group, 0, QtCore.Qt.AlignmentFlag.AlignHCenter
-    )
+    container_layout.addWidget(navigation_group, 0, QtCore.Qt.AlignmentFlag.AlignLeft)
     container_layout.addWidget(create_divider(container))
-    container_layout.addWidget(frame_group, 0, QtCore.Qt.AlignmentFlag.AlignHCenter)
+    container_layout.addWidget(frame_group, 0, QtCore.Qt.AlignmentFlag.AlignLeft)
     container_layout.addWidget(create_divider(container))
-    container_layout.addWidget(cleanup_group, 0, QtCore.Qt.AlignmentFlag.AlignRight)
+    container_layout.addWidget(cleanup_group, 0, QtCore.Qt.AlignmentFlag.AlignLeft)
     container_layout.addStretch(1)
     section_layout.addWidget(container)
     main_window.scanToolsSection = section
