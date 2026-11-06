@@ -2298,11 +2298,12 @@ class MainWindow(QtWidgets.QMainWindow, Ui_MainWindow):
                 btn.setText(orig)
             btn.setFlat(True)
 
-        self.targetFacesList.setMaximumHeight(16777215)
-        if self._rightFacesStrip is not None:
-            self._rightFacesStrip.setMaximumHeight(16777215)
-        if getattr(self, "_rightFacesButtonsRowContainer", None):
-            self._rightFacesButtonsRowContainer.setMaximumHeight(16777215)
+        strip = getattr(self, "_rightFacesStrip", None)
+        if strip is not None:
+            strip.setMaximumHeight(16777215)
+        buttons_row = getattr(self, "_rightFacesButtonsRowContainer", None)
+        if buttons_row is not None:
+            buttons_row.setMaximumHeight(16777215)
 
         # VERY IMPORTANT: Restore the list mode so it looks normal again on the left
         self.targetFacesList.setViewMode(QtWidgets.QListView.ListMode)
